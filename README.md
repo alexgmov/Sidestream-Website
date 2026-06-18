@@ -82,9 +82,10 @@ Use the narrowest relevant check after edits:
 
 ## Recent Change Log
 
+- Restored the hero layout, media scale, and section spacing while keeping the hero headline, subline, and CTA smaller.
 - Added a shared sans width control so Helvetica-style text is subtly tighter while mock-window monospace labels stay normal.
 - Increased the Aurora-style page glow intensity and kept the pricing band translucent so the glow remains visible through the landing page.
-- Reduced the hero split, headline, subline, CTA, and hero spacing to make the first-fold hero group about 30% smaller.
+- Reduced the hero headline, subline, and CTA sizing for a smaller first-fold text treatment.
 - Extended the Aurora-style glow through the landing page and softened the pricing band so there is no hard stop after the hero.
 - Removed the Terms link from the footer and cleaned up unused footer-link styles.
 - Removed the support email link from the footer.
