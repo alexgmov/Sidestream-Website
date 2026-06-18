@@ -50,7 +50,9 @@ The feature cards are chrome-free video frames that use native autoplaying, mute
 
 The page background should preserve the provided Paper demo's shader direction without keeping its demo-site UI. The canonical HTML keeps a black CSS fallback on `body`; `#shader-background-root` is a fixed full-viewport mount, and `src/main.tsx` renders the adapted `DemoOne` component from `components/ui/demo.tsx`. The demo's default `activeEffect` is `"mesh"`, so the visible background is the original black/charcoal/gray/white `MeshGradient` branch. Page text tokens are white or translucent white for contrast, while cards and pricing surfaces are dark translucent glass.
 
-The header is a fixed transparent overlay with no scroll divider so the shader remains uninterrupted behind the nav. The `.hero-pad` top padding includes the 72px nav height to preserve the first-fold spacing.
+The header is a fixed transparent overlay with no scroll divider so the shader remains uninterrupted behind the nav. The `.hero-pad` top padding leaves room below the 72px nav while keeping first-fold spacing tight.
+
+On desktop, `.hero-pad` uses more bottom padding than top padding so the hero copy and MacBook mockup sit visually centered in a 14-inch MacBook browser viewport without changing the section height.
 
 The hero rotating-word effect is also static-page native: `.rotating-copy` provides the stable text slot, `.rotating-word` animates the current noun, and the bottom inline script cycles `[data-rotating-word]` per `.rotating-copy` group. Incoming and outgoing words use paired, monotonic `translate3d` keyframes on the compositor path so the text stays smooth without bounce or transition/keyframe handoff. The active noun also uses a clipped red/white text gradient that drifts by animating `background-position` only. Do not add React or animation dependencies for this effect.
 
@@ -120,6 +122,7 @@ Use the narrowest relevant check after edits:
 - Do not mount the optional React Three Fiber `ShaderPlane` or `EnergyRing` primitives in the active background unless the design intentionally calls for visible flares/rings.
 - No Alphanica font asset exists in this folder. The hero headline uses the SF Pro system stack to match the cleaner non-serif section style without adding a font dependency.
 - Because the header is fixed, `html` uses `scroll-padding-top: 72px` so anchor navigation does not hide section headings under the nav.
+- Desktop hero vertical placement is tuned with `.hero-pad { padding: 112px 0 176px; }`; keep the top and bottom padding total stable when nudging the hero so the first feature spacing does not drift.
 - Feature heading sublines use `.feature-subtext` with the SF Pro system stack at a light weight; avoid restoring the old serif treatment unless the whole feature-heading direction changes.
 - The large footer `.wordmark` intentionally uses a Helvetica-first bold stack instead of the global SF Pro stack.
 - The rotating noun should stay on matched keyframe animations for both enter and exit. Mixing CSS transitions with keyed enter animations or adding overshoot makes the headline feel choppy.
@@ -132,6 +135,7 @@ Use the narrowest relevant check after edits:
 
 ## Recent Change Log
 
+- Shifted the desktop hero copy and MacBook mockup upward by redistributing hero top/bottom padding for better 14-inch MacBook viewport centering.
 - Removed the pasted Paper demo's centered `21st` install text and clipboard rectangle from the background layer while keeping the active mesh shader.
 - Copied the provided Paper demo exactly into `components/ui/demo.tsx`, mounted it directly as the background, copied `background-paper-shaders.tsx` exactly, and added type declarations so the pasted prop names can remain unchanged.
 - Removed the fake stoplight/browser-title chrome from the Tudor Place Search and Preview demo cards so each feature frame is just the video.
