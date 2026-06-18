@@ -8,7 +8,7 @@ Sidestream is an HTML-first landing page for a Premiere Pro plugin that lets edi
 
 - `Sidestream front end 2/Sidestream.html` - Canonical page implementation. Contains the shader mount root, header, hero, feature sections, pricing, final CTA, footer, styles, rotating-word script, and toast behavior.
 - `index.html` - Root redirect so `http://localhost:5173/` and other local server roots open the canonical page instead of a directory listing.
-- `components/ui/demo.tsx` - Adapted Paper demo component mounted as the page background. The active default effect is the original `MeshGradient` branch with `["#000000", "#1a1a1a", "#333333", "#ffffff"]`, with demo install/clipboard overlay text removed.
+- `components/ui/demo.tsx` - Adapted Paper demo component mounted as the page background. The active default effect is the original `MeshGradient` branch with the brightest stop capped at `#cccccc`, with demo install/clipboard overlay text removed.
 - `components/ui/background-paper-shaders.tsx` - Exact pasted React Three Fiber shader primitives from the provided reference. They are kept as optional reference code and are not mounted by default.
 - `src/main.tsx` - React entry that mounts `DemoOne` into `#shader-background-root`.
 - `src/paper-shaders-compat.d.ts` - Local TypeScript compatibility declarations for the pasted prop names that the installed Paper package does not type directly.
@@ -48,7 +48,7 @@ The hero media wrapper intentionally uses a tall `24 / 25` aspect ratio while th
 
 The feature cards are chrome-free video frames that use native muted, looping MP4s from `demos/`. The active demos are `search demo.mp4` and `preview demo.mp4`, both recorded around the Tudor Place workflow. They intentionally do not use the `autoplay` attribute; the bottom inline script uses `IntersectionObserver` to play each `.demo-video` only while it is visible and pause it when it leaves the viewport. Raw Screen Studio project folders should stay out of git; export compact MP4s for the site instead.
 
-The page background should preserve the provided Paper demo's shader direction without keeping its demo-site UI. The canonical HTML keeps a black CSS fallback on `body`; `#shader-background-root` is a fixed full-viewport mount, and `src/main.tsx` renders the adapted `DemoOne` component from `components/ui/demo.tsx`. The demo's default `activeEffect` is `"mesh"`, so the visible background is the original black/charcoal/gray/white `MeshGradient` branch. Page text tokens are white or translucent white for contrast, while cards and pricing surfaces are dark translucent glass.
+The page background should preserve the provided Paper demo's shader direction without keeping its demo-site UI. The canonical HTML keeps a black CSS fallback on `body`; `#shader-background-root` is a fixed full-viewport mount, and `src/main.tsx` renders the adapted `DemoOne` component from `components/ui/demo.tsx`. The demo's default `activeEffect` is `"mesh"`, so the visible background is the original black/charcoal/gray `MeshGradient` branch with the brightest white stop reduced to `#cccccc`. Page text tokens are white or translucent white for contrast, while cards and pricing surfaces are dark translucent glass.
 
 The header is a fixed transparent overlay with no scroll divider so the shader remains uninterrupted behind the nav. The `.hero-pad` top padding leaves room below the 72px nav while keeping first-fold spacing tight.
 
@@ -98,7 +98,7 @@ Use the narrowest relevant check after edits:
 - Run `npm run build` after shader, TypeScript, Tailwind, HTML mount, Vite config, or package changes.
 - Confirm the dark Paper shader renders behind the header, hero, cards, pricing, footer, and toast.
 - Confirm the brand bug, CTA buttons, active pricing state, check icons, and rotating noun gradient use the red accent palette without leftover orange accents.
-- Confirm the background uses the exact pasted demo's default black/charcoal/gray/white `MeshGradient` branch, with no custom red CSS fog, extra overlay gradients, or mounted `EnergyRing`.
+- Confirm the background uses the pasted demo's black/charcoal/gray `MeshGradient` branch with the capped `#cccccc` bright stop, with no custom red CSS fog, extra overlay gradients, or mounted `EnergyRing`.
 - Confirm the hero MacBook Pro mockup video autoplays, loops, stays muted, and does not create horizontal overflow.
 - Confirm the feature demo videos are paused before they enter the viewport, start playing when scrolled into view, and pause again after leaving view.
 - Scrub or watch the hero MacBook rotation long enough to confirm hard alpha edges and video-plane edges do not show as dark lines.
@@ -137,6 +137,8 @@ Use the narrowest relevant check after edits:
 
 ## Recent Change Log
 
+- Reduced the Paper `MeshGradient` brightest color stop from white to `#cccccc` so the light background phase is about 20% less bright.
+- Forced the pricing heading to break after "Start free." so the desktop pricing section matches the intended two-line copy.
 - Made the Tudor Place feature demo videos start only when scrolled into view and pause when they leave the viewport.
 - Shifted the desktop hero copy and MacBook mockup upward by redistributing hero top/bottom padding for better 14-inch MacBook viewport centering.
 - Removed the pasted Paper demo's centered `21st` install text and clipboard rectangle from the background layer while keeping the active mesh shader.

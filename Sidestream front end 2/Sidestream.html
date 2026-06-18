@@ -359,8 +359,9 @@
     background: transparent;
     border: 0;
   }
-  .pricing-head { text-align: center; max-width: 40ch; margin: 0 auto 64px; }
+  .pricing-head { text-align: center; max-width: 62ch; margin: 0 auto 64px; }
   .pricing-head h2 { margin-bottom: 0; }
+  .pricing-line { display: block; white-space: nowrap; }
   .plans {
     display: grid;
     grid-template-columns: 1fr 1fr;
@@ -505,6 +506,7 @@
     h1 { font-size: 2.58rem; }
     .hero-subline { font-size: 1.48rem; }
     .rotating-copy { min-width: 0; width: 100%; }
+    .pricing-line { white-space: normal; }
     .hero-mockup-video {
       width: 177%;
       transform: translateX(-3%);
@@ -618,7 +620,7 @@
     <section class="sec-pad" id="pricing">
       <div class="wrap">
         <div class="pricing-head reveal">
-          <h2>Start free. Unlock when you need more.</h2>
+          <h2>Start free.<span class="pricing-line">Unlock when you need more.</span></h2>
         </div>
         <div class="plans">
           <div class="plan reveal">
