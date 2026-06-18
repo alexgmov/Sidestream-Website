@@ -50,7 +50,7 @@ The page background should read as one continuous black/charcoal animated shader
 
 The header is a fixed transparent overlay with no scroll divider so the shader remains uninterrupted behind the nav. The `.hero-pad` top padding includes the 72px nav height to preserve the first-fold spacing.
 
-The hero rotating-word effect is also static-page native: `.rotating-copy` provides the stable text slot, `.rotating-word` animates the current noun, and the bottom inline script cycles `[data-rotating-word]` per `.rotating-copy` group. Incoming and outgoing words use paired, monotonic `translate3d` keyframes on the compositor path so the text stays smooth without bounce or transition/keyframe handoff. The active noun also uses a clipped orange/white/teal text gradient that drifts by animating `background-position` only. Do not add React or animation dependencies for this effect.
+The hero rotating-word effect is also static-page native: `.rotating-copy` provides the stable text slot, `.rotating-word` animates the current noun, and the bottom inline script cycles `[data-rotating-word]` per `.rotating-copy` group. Incoming and outgoing words use paired, monotonic `translate3d` keyframes on the compositor path so the text stays smooth without bounce or transition/keyframe handoff. The active noun also uses a clipped red/white text gradient that drifts by animating `background-position` only. Do not add React or animation dependencies for this effect.
 
 ## Development Commands
 
@@ -93,6 +93,7 @@ Use the narrowest relevant check after edits:
 - Open the HTML page and compare the first fold against `Sidestream front end 2/screenshots/01-scan.png`.
 - Run `npm run build` after shader, TypeScript, Tailwind, or HTML mount changes.
 - Confirm the dark Paper shader renders behind all content and does not cover the header, hero, cards, pricing, footer, or toast.
+- Confirm the brand bug, CTA buttons, active pricing state, check icons, and rotating noun gradient use the red accent palette without leftover orange accents.
 - Confirm the background has no orbit-dot particle overlay, shader grain speckles, or custom lens-flare/schmutz blobs; the original page did not include random grey dots or flare artifacts.
 - Confirm the hero MacBook Pro mockup video autoplays, loops, stays muted, and does not create horizontal overflow.
 - Scrub or watch the hero MacBook rotation long enough to confirm hard alpha edges and bottom shadow-plane edges do not show as dark lines.
@@ -128,9 +129,10 @@ Use the narrowest relevant check after edits:
 
 ## Recent Change Log
 
+- Changed the landing-page accent palette from orange to red across CTAs, brand mark, rotating noun gradient, pricing highlights, check icons, glow shadows, shadcn theme tokens, and optional shader primitive defaults.
 - Removed the mounted React Three Fiber shader-plane canvas so the top-left and lower-page lens-flare/schmutz artifacts no longer appear over the background.
 - Removed the mounted `DotOrbit` layer and disabled MeshGradient grain so the background no longer shows random grey dots that were not part of the original page.
-- Removed the visible `EnergyRing` from the mounted background so the top-right hero area no longer shows a distracting orange circle.
+- Removed the visible `EnergyRing` from the mounted background so the top-right hero area no longer shows a distracting colored ring.
 - Replaced the full-page background with a dark Paper/Three shader stack, added `components/ui/background-paper-shaders.tsx`, installed the Three/R3F dependencies, and retuned page text/surfaces to white-on-dark.
 - Swapped the hero MacBook video to the cleaner `mockup1_2` alpha animation and generated a browser-sized WebM.
 - Added the Vite/React/Tailwind/shadcn project shell and the `@paper-design/shaders-react` shader background component.
@@ -138,7 +140,7 @@ Use the narrowest relevant check after edits:
 - Changed formerly black text tokens to white/translucent white and darkened page cards, placeholders, pricing cards, and toast surfaces for shader contrast.
 - Ignored generated `node_modules/` and `dist/` output.
 - Restored the page to a mostly white background and softened the MacBook video shadow/mask to reduce alpha edge artifacts during rotation.
-- Added a subtle orange/white/teal animated gradient to the hero rotating noun.
+- Added a subtle animated gradient to the hero rotating noun.
 - Increased the hero MacBook mockup scale by roughly 30% while preserving the taller media frame and bottom fade mask.
 - Enlarged the hero headline/subline and MacBook mockup slightly, removed the hero-only shader layer, and made the page glow one continuous non-repeating background field.
 - Fixed the mobile flipped-grid override so feature cards use the full mobile width.

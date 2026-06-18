@@ -48,7 +48,7 @@ const fragmentShader = `
 
 export function ShaderPlane({
   position,
-  color1 = "#ff5722",
+  color1 = "#ff2a2a",
   color2 = "#ffffff",
 }: {
   position: [number, number, number]
@@ -110,7 +110,7 @@ export function EnergyRing({
     <mesh ref={mesh} position={position}>
       <ringGeometry args={[radius * 0.8, radius, 32]} />
       <meshBasicMaterial
-        color="#ff5722"
+        color="#ff2a2a"
         transparent
         opacity={0.6}
         side={THREE.DoubleSide}

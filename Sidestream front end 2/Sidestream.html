@@ -12,9 +12,9 @@
     --ink-faint: rgba(255, 255, 255, 0.5);
     --line: rgba(255, 255, 255, 0.2);
     --line-soft: rgba(255, 255, 255, 0.14);
-    --blue: #ff5722;
-    --blue-hover: #f04b14;
-    --blue-tint: rgba(255, 87, 34, 0.18);
+    --blue: #ff2a2a;
+    --blue-hover: #e51f1f;
+    --blue-tint: rgba(255, 42, 42, 0.18);
     --chrome: rgba(0, 0, 0, 0.74);
     --surface: rgba(0, 0, 0, 0.5);
     --surface-soft: rgba(255, 255, 255, 0.08);
@@ -121,7 +121,7 @@
     height: 16px;
     border-radius: 4px;
     background: var(--blue);
-    box-shadow: 0 2px 8px rgba(255, 87, 34, 0.35);
+    box-shadow: 0 2px 8px rgba(255, 42, 42, 0.35);
   }
   .nav-links {
     display: flex;
@@ -161,12 +161,12 @@
   .btn-primary {
     background: var(--blue);
     color: #fff;
-    box-shadow: 0 6px 20px rgba(255, 87, 34, 0.28);
+    box-shadow: 0 6px 20px rgba(255, 42, 42, 0.28);
   }
   .btn-primary:hover {
     background: var(--blue-hover);
     transform: translateY(-1px);
-    box-shadow: 0 10px 26px rgba(255, 87, 34, 0.34);
+    box-shadow: 0 10px 26px rgba(255, 42, 42, 0.34);
   }
   .btn-primary:active { transform: translateY(0); }
   .btn-secondary {
@@ -225,7 +225,7 @@
     vertical-align: top;
     contain: layout paint;
     transform: translateZ(0);
-    --rotating-gradient: linear-gradient(105deg, #f26a1b 0%, #ffad5f 28%, #fff0d6 45%, #14b8a6 68%, #0077ff 100%);
+    --rotating-gradient: linear-gradient(105deg, #ff1f2d 0%, #ff4a4a 30%, #ffe1e1 48%, #ff2d55 70%, #b00020 100%);
   }
   .rotating-word {
     grid-area: 1 / 1;
@@ -453,7 +453,7 @@
   }
   .plan.featured {
     border-color: var(--blue);
-    box-shadow: 0 0 0 1px var(--blue), 0 30px 60px -36px rgba(255, 87, 34, 0.48);
+    box-shadow: 0 0 0 1px var(--blue), 0 30px 60px -36px rgba(255, 42, 42, 0.48);
   }
   .plan-name {
     font-size: 14px; font-weight: 600; letter-spacing: 0.04em;
@@ -482,7 +482,7 @@
     flex: none;
     width: 16px; height: 16px; margin-top: 3px; border-radius: 50%;
     background: var(--blue-tint);
-    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 10 10'%3E%3Cpath d='M1.5 5.2l2 2 5-5' fill='none' stroke='%23ff5722' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 10 10'%3E%3Cpath d='M1.5 5.2l2 2 5-5' fill='none' stroke='%23ff2a2a' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
     background-repeat: no-repeat;
     background-position: center;
   }
@@ -503,7 +503,7 @@
     content: "";
     position: absolute;
     width: 520px; height: 520px;
-    background: radial-gradient(circle, rgba(255,87,34,0.38), transparent 62%);
+    background: radial-gradient(circle, rgba(255,42,42,0.36), transparent 62%);
     top: -210px; right: -120px;
     pointer-events: none;
   }
