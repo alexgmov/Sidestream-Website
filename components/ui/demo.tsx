@@ -14,7 +14,7 @@ export default function DemoOne() {
       {activeEffect === "mesh" && (
         <MeshGradient
           className="w-full h-full absolute inset-0"
-          colors={["#000000", "#1a1a1a", "#333333", "#ffffff"]}
+          colors={["#000000", "#1a1a1a", "#333333", "#cccccc"]}
           speed={speed}
           backgroundColor="#000000"
         />
@@ -36,7 +36,7 @@ export default function DemoOne() {
         <>
           <MeshGradient
             className="w-full h-full absolute inset-0"
-            colors={["#000000", "#1a1a1a", "#333333", "#ffffff"]}
+            colors={["#000000", "#1a1a1a", "#333333", "#cccccc"]}
             speed={speed * 0.5}
             wireframe="true"
             backgroundColor="#000000"

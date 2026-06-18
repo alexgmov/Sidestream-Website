@@ -137,7 +137,7 @@ Use the narrowest relevant check after edits:
 
 ## Recent Change Log
 
-- Reduced the Paper `MeshGradient` brightest color stop from white to `#cccccc` so the light background phase is about 20% less bright.
+- Aligned the mounted Paper `MeshGradient` brightest color stop to `#cccccc` so the light background phase is about 20% less bright.
 - Forced the pricing heading to break after "Start free." so the desktop pricing section matches the intended two-line copy.
 - Made the Tudor Place feature demo videos start only when scrolled into view and pause when they leave the viewport.
 - Shifted the desktop hero copy and MacBook mockup upward by redistributing hero top/bottom padding for better 14-inch MacBook viewport centering.
