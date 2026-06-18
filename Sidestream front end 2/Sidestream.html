@@ -1,0 +1,830 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Sidestream Download YouTube inside Premiere</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,500;0,600;1,500;1,600&family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --white: #ffffff;
+    --ink: #0a0a0b;
+    --ink-soft: #5c5c61;
+    --ink-faint: #8a8a90;
+    --line: #e9e9ec;
+    --line-soft: #f1f1f3;
+    --blue: #0040ff;
+    --blue-hover: #0034d6;
+    --blue-tint: #eef2ff;
+    --chrome: #16171a;
+    --radius: 12px;
+    --radius-sm: 8px;
+    --maxw: 1240px;
+    --ease: cubic-bezier(0.22, 0.61, 0.36, 1);
+    --sans: "Helvetica Neue", Helvetica, "Inter", Arial, sans-serif;
+    --serif: "Cormorant Garamond", Georgia, "Times New Roman", serif;
+  }
+
+  * { box-sizing: border-box; }
+
+  html {
+    scroll-behavior: smooth;
+    scroll-padding-top: 72px;
+  }
+
+  body {
+    margin: 0;
+    background: var(--white);
+    color: var(--ink);
+    font-family: var(--sans);
+    letter-spacing: -0.02em;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+    line-height: 1.5;
+  }
+
+  ::selection { background: var(--blue); color: #fff; }
+
+  a { color: inherit; text-decoration: none; }
+
+  .wrap {
+    width: 100%;
+    max-width: var(--maxw);
+    margin: 0 auto;
+    padding: 0 40px;
+  }
+
+  /* ---------- Shared split grid: panels are 50% wide so their inner edges
+       all meet a single center guide; outer edges sit flush to the margins ---------- */
+  .split {
+    display: grid;
+    grid-template-columns: calc(50% - 72px) 50%;
+    gap: 72px;
+    align-items: center;
+  }
+  .hero-split {
+    grid-template-columns: minmax(0, 440px) minmax(0, 1fr);
+    gap: 78px;
+  }
+  .split.flip { grid-template-columns: 50% calc(50% - 72px); }
+  .split.flip .feat-copy { order: 2; }
+  .split.flip .shot { order: 1; }
+  /* right-aligned copy variant (text hugs the center guide) */
+  .feat-copy.align-right { text-align: right; }
+  .feat-copy.align-right .feat-copy p,
+  .feat-copy.align-right p { margin-left: auto; }
+  .feat-copy.align-right .cta-row { justify-content: flex-end; }
+
+  /* ---------- Header ---------- */
+  header {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    z-index: 50;
+    background: transparent;
+    border-bottom: 1px solid transparent;
+    transition: border-color 200ms var(--ease), box-shadow 200ms var(--ease);
+  }
+  header.scrolled {
+    border-bottom-color: var(--line);
+    box-shadow: 0 1px 0 rgba(10, 10, 11, 0.02);
+  }
+  .nav {
+    height: 72px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 11px;
+    font-weight: 600;
+    font-size: 18px;
+    letter-spacing: -0.03em;
+  }
+  .bug {
+    width: 16px;
+    height: 16px;
+    border-radius: 4px;
+    background: var(--blue);
+    box-shadow: 0 2px 8px rgba(0, 64, 255, 0.35);
+  }
+  .nav-links {
+    display: flex;
+    align-items: center;
+    gap: 36px;
+  }
+  .nav-links nav {
+    display: flex;
+    gap: 30px;
+  }
+  .nav-links nav a {
+    font-size: 15px;
+    color: var(--ink-soft);
+    transition: color 160ms var(--ease);
+  }
+  .nav-links nav a:hover { color: var(--ink); }
+
+  /* ---------- Buttons ---------- */
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 9px;
+    font-family: var(--sans);
+    font-size: 15px;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+    border-radius: var(--radius-sm);
+    padding: 12px 22px;
+    cursor: pointer;
+    border: 1px solid transparent;
+    transition: background 180ms var(--ease), color 180ms var(--ease),
+      border-color 180ms var(--ease), transform 180ms var(--ease),
+      box-shadow 180ms var(--ease);
+    white-space: nowrap;
+  }
+  .btn-primary {
+    background: var(--blue);
+    color: #fff;
+    box-shadow: 0 6px 20px rgba(0, 64, 255, 0.28);
+  }
+  .btn-primary:hover {
+    background: var(--blue-hover);
+    transform: translateY(-1px);
+    box-shadow: 0 10px 26px rgba(0, 64, 255, 0.34);
+  }
+  .btn-primary:active { transform: translateY(0); }
+  .btn-secondary {
+    background: #fff;
+    color: var(--ink);
+    border-color: var(--line);
+  }
+  .btn-secondary:hover { border-color: var(--ink); }
+  .btn-ghost-light {
+    background: rgba(255, 255, 255, 0.08);
+    color: #fff;
+    border-color: rgba(255, 255, 255, 0.24);
+  }
+  .btn-ghost-light:hover { background: rgba(255, 255, 255, 0.16); }
+  .btn-sm { padding: 10px 18px; font-size: 14px; }
+  .btn-lg { padding: 15px 28px; font-size: 16px; }
+
+  /* ---------- Section rhythm ---------- */
+  section { position: relative; }
+  .sec-pad { padding: 120px 0; }
+  .hero-pad { padding: 168px 0 120px; }
+  #hero {
+    overflow: hidden;
+    isolation: isolate;
+    background:
+      radial-gradient(circle at 88% 8%, rgba(125, 211, 252, 0.16), transparent 30%),
+      linear-gradient(180deg, #fbfcff 0%, #fff 78%);
+  }
+  #hero::before {
+    content: "";
+    position: absolute;
+    inset: -22% -14% -14% -4%;
+    z-index: -1;
+    pointer-events: none;
+    opacity: 0.82;
+    filter: blur(10px);
+    background-image:
+      repeating-linear-gradient(
+        100deg,
+        rgba(255, 255, 255, 0.82) 0%,
+        rgba(255, 255, 255, 0.82) 7%,
+        transparent 10%,
+        transparent 12%,
+        rgba(255, 255, 255, 0.82) 16%
+      ),
+      repeating-linear-gradient(
+        100deg,
+        rgba(0, 64, 255, 0.38) 10%,
+        rgba(129, 140, 248, 0.32) 15%,
+        rgba(125, 211, 252, 0.28) 20%,
+        rgba(196, 181, 253, 0.3) 25%,
+        rgba(0, 64, 255, 0.34) 30%
+      );
+    background-position: 50% 50%, 50% 50%;
+    background-size: 300% 300%, 220% 220%;
+    mask-image: radial-gradient(ellipse at 100% 0%, #000 10%, transparent 76%);
+    -webkit-mask-image: radial-gradient(ellipse at 100% 0%, #000 10%, transparent 76%);
+    animation: aurora-rays 60s linear infinite;
+  }
+  #hero::after {
+    content: "";
+    position: absolute;
+    inset: auto -16% -34% 38%;
+    height: 46%;
+    z-index: -1;
+    pointer-events: none;
+    background: radial-gradient(ellipse, rgba(0, 64, 255, 0.12), transparent 66%);
+  }
+  #hero > .wrap {
+    position: relative;
+    z-index: 1;
+  }
+  @keyframes aurora-rays {
+    from { background-position: 50% 50%, 50% 50%; }
+    to { background-position: 350% 50%, 350% 50%; }
+  }
+
+  h1 {
+    font-family: var(--sans);
+    font-style: normal;
+    font-weight: 600;
+    font-size: 4.7rem;
+    line-height: 0.96;
+    letter-spacing: 0;
+    margin: 0 0 32px;
+  }
+  .rotating-copy {
+    display: inline-grid;
+    position: relative;
+    overflow: hidden;
+    min-width: 4.9em;
+    padding-bottom: 0.32em;
+    margin-bottom: -0.32em;
+    color: var(--blue);
+    line-height: 1.08;
+    vertical-align: top;
+  }
+  .rotating-word {
+    grid-area: 1 / 1;
+    opacity: 0;
+    transform: translateY(var(--word-y, 1.06em));
+    transition: opacity 260ms var(--ease),
+      transform 720ms cubic-bezier(0.18, 1.08, 0.28, 1);
+    will-change: opacity, transform;
+  }
+  .rotating-word.is-below { --word-y: 1.06em; }
+  .rotating-word.is-exiting { --word-y: -1.06em; }
+  .rotating-word.is-active {
+    --word-y: 0;
+    opacity: 1;
+    transform: translateY(0);
+  }
+  .rotating-word.is-active.from-below {
+    animation: word-roll-up 720ms cubic-bezier(0.18, 1.08, 0.28, 1) both;
+  }
+  @keyframes word-roll-up {
+    0% { opacity: 0; transform: translateY(1.06em); }
+    22% { opacity: 0.62; transform: translateY(0.56em); }
+    52% { opacity: 0.96; transform: translateY(0.11em); }
+    74% { opacity: 1; transform: translateY(-0.026em); }
+    100% { opacity: 1; transform: translateY(0); }
+  }
+  h2 {
+    font-family: var(--sans);
+    font-style: normal;
+    font-weight: 600;
+    font-size: clamp(2rem, 3.2vw, 2.9rem);
+    line-height: 1.06;
+    letter-spacing: -0.032em;
+    margin: 0 0 20px;
+  }
+  .feature-subtext {
+    display: block;
+    font-family: var(--sans);
+    font-style: normal;
+    font-weight: 300;
+    font-size: 0.42em;
+    letter-spacing: 0;
+    color: rgba(10, 10, 11, 0.52);
+    margin-top: 8px;
+  }
+  .feat-copy p {
+    font-size: 17px;
+    line-height: 1.6;
+    color: var(--ink-soft);
+    max-width: 34ch;
+    margin: 0 0 28px;
+  }
+  .cta-row { display: flex; gap: 14px; flex-wrap: wrap; align-items: center; }
+  .hero-copy.reveal { transform: translateY(-12px); }
+  .hero-copy h1 { margin-bottom: 14px; }
+  .hero-subline {
+    margin: 0 0 34px;
+    color: var(--ink);
+    font-family: "Helvetica Neue", Helvetica, "Inter", Arial, sans-serif;
+    font-size: 2.8rem;
+    font-weight: 500;
+    line-height: 1.05;
+    letter-spacing: 0;
+  }
+
+  /* ---------- Screenshot cards ---------- */
+  .shot {
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    overflow: hidden;
+    background: #fff;
+    box-shadow: 0 1px 2px rgba(10, 10, 11, 0.04),
+      0 24px 60px -28px rgba(10, 10, 11, 0.22);
+  }
+  .shot-chrome {
+    height: 38px;
+    background: var(--chrome);
+    display: flex;
+    align-items: center;
+    padding: 0 14px;
+    gap: 14px;
+  }
+  .dots { display: flex; gap: 7px; }
+  .dots i {
+    width: 11px; height: 11px; border-radius: 50%;
+    background: #3a3b40; display: block;
+  }
+  .dots i:nth-child(1) { background: #ff5f57; }
+  .dots i:nth-child(2) { background: #febc2e; }
+  .dots i:nth-child(3) { background: #28c840; }
+  .chrome-label {
+    color: #b7b8be;
+    font-size: 12px;
+    letter-spacing: -0.01em;
+    font-weight: 500;
+  }
+  .shot-body {
+    position: relative;
+    aspect-ratio: 4 / 3;
+    background-color: #fbfbfc;
+    background-image: repeating-linear-gradient(
+      135deg,
+      #f4f4f6 0px,
+      #f4f4f6 1px,
+      transparent 1px,
+      transparent 11px
+    );
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 16px;
+    padding: 32px;
+    text-align: center;
+  }
+  .ph-tag {
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 12.5px;
+    letter-spacing: -0.01em;
+    color: var(--ink-soft);
+    background: #fff;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 7px 12px;
+  }
+  .ph-title {
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--ink);
+    max-width: 30ch;
+  }
+  .ph-dim {
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 11.5px;
+    color: var(--ink-faint);
+  }
+  /* representative inline element for feature shots */
+  .ph-toggle {
+    display: inline-flex;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: #fff;
+    padding: 4px;
+    gap: 4px;
+    box-shadow: 0 2px 8px rgba(10,10,11,0.05);
+  }
+  .ph-toggle span {
+    font-size: 13px; font-weight: 600; padding: 7px 18px; border-radius: 5px;
+    color: var(--ink-soft);
+  }
+  .ph-toggle span.on { background: var(--blue); color: #fff; }
+  .ph-path {
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 12.5px;
+    color: var(--ink);
+    background: #fff;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 8px 12px;
+  }
+  .ph-path b { color: var(--blue); font-weight: 600; }
+
+  /* ---------- Pricing ---------- */
+  .pricing-head { text-align: center; max-width: 40ch; margin: 0 auto 64px; }
+  .pricing-head h2 { margin-bottom: 0; }
+  .plans {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 24px;
+    max-width: 940px;
+    margin: 0 auto;
+  }
+  .plan {
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 38px 36px;
+    display: flex;
+    flex-direction: column;
+  }
+  .plan.featured {
+    border-color: var(--blue);
+    box-shadow: 0 0 0 1px var(--blue), 0 30px 60px -36px rgba(0, 64, 255, 0.4);
+  }
+  .plan-name {
+    font-size: 14px; font-weight: 600; letter-spacing: 0.04em;
+    text-transform: uppercase; color: var(--ink-soft); margin: 0 0 18px;
+    display: flex; align-items: center; gap: 10px;
+  }
+  .plan.featured .plan-name { color: var(--blue); }
+  .pill {
+    font-size: 11px; letter-spacing: 0.03em; text-transform: uppercase;
+    background: var(--blue); color: #fff; border-radius: 100px;
+    padding: 3px 9px; font-weight: 600;
+  }
+  .price { display: flex; align-items: baseline; gap: 8px; margin: 0 0 30px; }
+  .price .amt {
+    font-family: var(--sans); font-style: normal; font-weight: 600;
+    font-size: 52px; line-height: 1; letter-spacing: -0.04em;
+  }
+  .price .per { font-size: 15px; color: var(--ink-faint); }
+  .plan-sub { font-size: 14.5px; color: var(--ink-faint); margin: 0 0 28px; }
+  .plan ul { list-style: none; padding: 0; margin: 0 0 32px; display: grid; gap: 13px; }
+  .plan li {
+    font-size: 15px; color: var(--ink); display: flex; gap: 11px; align-items: flex-start;
+  }
+  .plan li::before {
+    content: "";
+    flex: none;
+    width: 16px; height: 16px; margin-top: 3px; border-radius: 50%;
+    background: var(--blue-tint);
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 10 10'%3E%3Cpath d='M1.5 5.2l2 2 5-5' fill='none' stroke='%230040ff' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: center;
+  }
+  .plan .btn { width: 100%; margin-top: auto; }
+
+  /* ---------- Final CTA ---------- */
+  .final {
+    background: var(--ink);
+    color: #fff;
+    border-radius: 20px;
+    padding: 84px 64px;
+    text-align: center;
+    position: relative;
+    overflow: hidden;
+  }
+  .final::after {
+    content: "";
+    position: absolute;
+    width: 520px; height: 520px;
+    background: radial-gradient(circle, rgba(0,64,255,0.42), transparent 62%);
+    top: -210px; right: -120px;
+    pointer-events: none;
+  }
+  .final h2 { color: #fff; position: relative; margin-bottom: 18px; }
+  .final p {
+    position: relative; color: rgba(255,255,255,0.62);
+    font-size: 18px; margin: 0 auto 36px; max-width: 42ch;
+  }
+  .final .cta-row { position: relative; justify-content: center; }
+
+  /* ---------- Footer ---------- */
+  footer { border-top: 1px solid var(--line); padding: 72px 0 56px; }
+  .foot-top {
+    display: flex; justify-content: space-between; align-items: flex-end;
+    gap: 40px; flex-wrap: wrap;
+  }
+  .wordmark {
+    font-weight: 600;
+    font-size: clamp(3rem, 9vw, 7rem);
+    letter-spacing: -0.05em;
+    line-height: 0.9;
+    color: var(--ink);
+  }
+  .foot-links { display: flex; gap: 30px; align-items: center; }
+  .foot-links a { font-size: 15px; color: var(--ink-soft); transition: color 160ms var(--ease); }
+  .foot-links a:hover { color: var(--ink); }
+  .foot-bottom {
+    margin-top: 48px; padding-top: 24px; border-top: 1px solid var(--line-soft);
+    display: flex; justify-content: space-between; gap: 20px; flex-wrap: wrap;
+    font-size: 13.5px; color: var(--ink-faint);
+  }
+
+  /* ---------- Reveal motion (disabled: environment mishandles animation fill) ---------- */
+  .reveal { opacity: 1; transform: none; }
+
+  /* ---------- Toast ---------- */
+  .toast {
+    position: fixed; left: 50%; bottom: 32px; transform: translate(-50%, 24px);
+    background: var(--ink); color: #fff; padding: 14px 20px; border-radius: 10px;
+    font-size: 14.5px; font-weight: 500; display: flex; align-items: center; gap: 12px;
+    box-shadow: 0 18px 40px -12px rgba(10,10,11,0.5);
+    opacity: 0; pointer-events: none; transition: opacity 220ms var(--ease), transform 220ms var(--ease);
+    z-index: 100;
+  }
+  .toast.show { opacity: 1; transform: translate(-50%, 0); }
+  .toast .spinner {
+    width: 15px; height: 15px; border-radius: 50%;
+    border: 2px solid rgba(255,255,255,0.3); border-top-color: #fff;
+    animation: spin 0.7s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ---------- Responsive ---------- */
+  @media (max-width: 900px) {
+    .wrap { padding: 0 24px; }
+    .split { grid-template-columns: 1fr; gap: 40px; }
+    .hero-split { grid-template-columns: 1fr; }
+    .sec-pad { padding: 84px 0; }
+    .hero-pad { padding: 136px 0 84px; }
+    h1 { font-size: 4.15rem; }
+    .hero-subline { font-size: 2.45rem; }
+    .hero-copy.reveal { transform: none; }
+    .feat-copy p { max-width: none; }
+    .plans { grid-template-columns: 1fr; }
+    .final { padding: 64px 32px; }
+    .nav-links nav { display: none; }
+    .foot-top { align-items: flex-start; }
+  }
+  @media (max-width: 520px) {
+    h1 { font-size: 3.35rem; }
+    .hero-subline { font-size: 2rem; }
+    .rotating-copy { min-width: 0; width: 100%; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .rotating-word {
+      animation: none;
+      transition: none;
+    }
+  }
+</style>
+</head>
+<body>
+
+  <!-- ===================== HEADER ===================== -->
+  <header id="hdr">
+    <div class="wrap nav">
+      <a class="brand" href="#top" aria-label="Sidestream home">
+        <span class="bug" aria-hidden="true"></span>
+        Sidestream
+      </a>
+      <div class="nav-links">
+        <nav>
+          <a href="#features">Features</a>
+          <a href="#pricing">Pricing</a>
+        </nav>
+        <a class="btn btn-primary btn-sm" href="#" data-download>Download now</a>
+      </div>
+    </div>
+  </header>
+
+  <main id="top">
+
+    <!-- ===================== HERO ===================== -->
+    <section class="hero-pad" id="hero">
+      <div class="wrap split hero-split">
+        <div class="hero-copy reveal">
+          <h1 aria-label="Download YouTube videos, songs, overlays, b-roll, references, and tutorials.">
+            Download<br>YouTube<br>
+            <span class="rotating-copy" aria-hidden="true">
+              <span class="rotating-word is-active" data-rotating-word>videos.</span>
+              <span class="rotating-word is-below" data-rotating-word>songs.</span>
+              <span class="rotating-word is-below" data-rotating-word>overlays.</span>
+              <span class="rotating-word is-below" data-rotating-word>b-roll.</span>
+              <span class="rotating-word is-below" data-rotating-word>references.</span>
+              <span class="rotating-word is-below" data-rotating-word>tutorials.</span>
+            </span>
+          </h1>
+          <p class="hero-subline">in Premiere Pro</p>
+          <div class="cta-row">
+            <a class="btn btn-primary btn-lg" href="#" data-download>Download now</a>
+          </div>
+        </div>
+        <div class="shot reveal" aria-label="Screenshot placeholder: Sidestream panel docked in Premiere Pro">
+          <div class="shot-chrome">
+            <span class="dots"><i></i><i></i><i></i></span>
+            <span class="chrome-label">Adobe Premiere Pro Sidestream</span>
+          </div>
+          <div class="shot-body">
+            <div class="ph-title">Sidestream panel docked in Premiere Pro</div>
+            <div class="ph-tag">assets/screens/hero-panel.png</div>
+            <div class="ph-dim">expected 1280 × 960 px · @2x</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===================== FEATURES ===================== -->
+    <div id="features"></div>
+
+    <!-- Feature 1 -->
+    <section class="sec-pad">
+      <div class="wrap split flip">
+        <div class="feat-copy reveal">
+          <h2>Search for YouTube videos.<span class="feature-subtext">Search using key words or paste a link.</span></h2>
+          <div class="cta-row">
+            <a class="btn btn-primary" href="#" data-download>Download now</a>
+          </div>
+        </div>
+        <div class="shot reveal" aria-label="Screenshot placeholder: search results inside the Sidestream panel">
+          <div class="shot-chrome">
+            <span class="dots"><i></i><i></i><i></i></span>
+            <span class="chrome-label">Sidestream search</span>
+          </div>
+          <div class="shot-body">
+            <div class="ph-path">Search <b>“drone footage”</b></div>
+            <div class="ph-title">Search results inside the Sidestream panel</div>
+            <div class="ph-tag">assets/screens/feature-search.png</div>
+            <div class="ph-dim">expected 1280 × 960 px · @2x</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Feature 2 -->
+    <section class="sec-pad" style="padding-top:0;">
+      <div class="wrap split">
+        <div class="feat-copy reveal align-right">
+          <h2>Preview videos.<span class="feature-subtext">Watch just as you would in YouTube.</span></h2>
+          <div class="cta-row">
+            <a class="btn btn-primary" href="#" data-download>Download now</a>
+          </div>
+        </div>
+        <div class="shot reveal" aria-label="Screenshot placeholder: a video preview inside the Sidestream panel">
+          <div class="shot-chrome">
+            <span class="dots"><i></i><i></i><i></i></span>
+            <span class="chrome-label">Sidestream preview</span>
+          </div>
+          <div class="shot-body">
+            <div class="ph-title">A video preview inside the Sidestream panel</div>
+            <div class="ph-tag">assets/screens/feature-preview.png</div>
+            <div class="ph-dim">expected 1280 × 960 px · @2x</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Feature 3 -->
+    <section class="sec-pad" style="padding-top:0;">
+      <div class="wrap split flip">
+        <div class="feat-copy reveal">
+          <h2>Download video or audio.<span class="feature-subtext">Always in max quality.</span></h2>
+          <div class="cta-row">
+            <a class="btn btn-primary" href="#" data-download>Download now</a>
+          </div>
+        </div>
+        <div class="shot reveal" aria-label="Screenshot placeholder: the video and audio toggle with quality">
+          <div class="shot-chrome">
+            <span class="dots"><i></i><i></i><i></i></span>
+            <span class="chrome-label">Sidestream download</span>
+          </div>
+          <div class="shot-body">
+            <div class="ph-toggle"><span class="on">Video</span><span>Audio</span></div>
+            <div class="ph-title">The video and audio toggle, set to max quality</div>
+            <div class="ph-tag">assets/screens/feature-download.png</div>
+            <div class="ph-dim">expected 1280 × 960 px · @2x</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===================== PRICING ===================== -->
+    <section class="sec-pad" id="pricing" style="background:#fcfcfd; border-top:1px solid var(--line); border-bottom:1px solid var(--line);">
+      <div class="wrap">
+        <div class="pricing-head reveal">
+          <h2>Start free. Unlock when you need more.</h2>
+        </div>
+        <div class="plans">
+          <div class="plan reveal">
+            <p class="plan-name">Free</p>
+            <div class="price"><span class="amt">$0</span><span class="per">forever</span></div>
+            <ul>
+              <li>Full video and audio downloads</li>
+              <li>5 downloads per day</li>
+            </ul>
+            <a class="btn btn-secondary" href="#" data-download>Download now</a>
+          </div>
+          <div class="plan featured reveal">
+            <p class="plan-name">Unlimited <span class="pill">One time</span></p>
+            <div class="price"><span class="amt">$29</span><span class="per">once, no subscription</span></div>
+            <ul>
+              <li>Unlimited downloads</li>
+              <li>24 hour support</li>
+            </ul>
+            <a class="btn btn-primary" href="#" data-purchase>Get Unlimited $29</a>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===================== FINAL CTA ===================== -->
+    <section style="padding:120px 0;">
+      <div class="wrap">
+        <div class="final reveal">
+          <h2>Stop leaving Premiere to grab footage.</h2>
+          <p>Download Sidestream, paste a link, and keep editing. Free to start, $29 to go unlimited.</p>
+          <div class="cta-row">
+            <a class="btn btn-primary btn-lg" href="#" data-download>Download now</a>
+            <a class="btn btn-ghost-light btn-lg" href="#" data-purchase>Get Unlimited</a>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===================== FOOTER ===================== -->
+    <footer>
+      <div class="wrap">
+        <div class="foot-top">
+          <div class="wordmark">SIDESTREAM</div>
+          <div class="foot-links">
+            <a href="mailto:support@sidestream.app">support@sidestream.app</a>
+            <a href="#">Terms</a>
+          </div>
+        </div>
+        <div class="foot-bottom">
+          <span>© 2026 Sidestream. A plugin for Adobe Premiere Pro.</span>
+          <span>Made for editors.</span>
+        </div>
+      </div>
+    </footer>
+
+  </main>
+
+  <div class="toast" id="toast"><span class="spinner"></span><span id="toast-msg">Starting your download…</span></div>
+
+  <script>
+    // Sticky header shadow
+    const hdr = document.getElementById("hdr");
+    const onScroll = () => hdr.classList.toggle("scrolled", window.scrollY > 8);
+    onScroll();
+    window.addEventListener("scroll", onScroll, { passive: true });
+
+    // Rotate the hero noun without shifting the headline layout.
+    const rotatingWords = Array.from(document.querySelectorAll("[data-rotating-word]"));
+    const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    let rotatingWordIndex = 0;
+    function primeRotatingWords(activeIndex) {
+      rotatingWords.forEach((word, index) => {
+        word.classList.remove("is-active", "is-below", "is-exiting", "from-below");
+
+        if (index === activeIndex) {
+          word.classList.add("is-active");
+          return;
+        }
+
+        word.classList.add("is-below");
+      });
+    }
+    primeRotatingWords(rotatingWordIndex);
+    if (rotatingWords.length > 1 && !reduceMotion) {
+      window.setInterval(() => {
+        const currentWord = rotatingWords[rotatingWordIndex];
+        rotatingWordIndex = (rotatingWordIndex + 1) % rotatingWords.length;
+        const nextWord = rotatingWords[rotatingWordIndex];
+
+        currentWord.classList.remove("is-active", "from-below");
+        currentWord.classList.add("is-exiting");
+
+        nextWord.classList.remove("is-below", "is-exiting");
+        nextWord.classList.add("is-active", "from-below");
+
+        window.setTimeout(() => {
+          currentWord.classList.remove("is-exiting");
+          currentWord.classList.add("is-below");
+        }, 720);
+      }, 2000);
+    }
+
+    // Download / purchase actions -> toast (real installer drops in here)
+    const toast = document.getElementById("toast");
+    const toastMsg = document.getElementById("toast-msg");
+    let toastTimer;
+    function ping(msg) {
+      toastMsg.textContent = msg;
+      toast.classList.add("show");
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => toast.classList.remove("show"), 3200);
+    }
+    document.querySelectorAll("[data-download]").forEach((el) =>
+      el.addEventListener("click", (ev) => {
+        ev.preventDefault();
+        ping("Starting your download…");
+        // Real build: window.location.href = "/downloads/Sidestream-Installer.dmg";
+      })
+    );
+    document.querySelectorAll("[data-purchase]").forEach((el) =>
+      el.addEventListener("click", (ev) => {
+        ev.preventDefault();
+        ping("Opening secure checkout…");
+        // Real build: window.location.href = "/checkout?plan=unlimited";
+      })
+    );
+  </script>
+</body>
+</html>
