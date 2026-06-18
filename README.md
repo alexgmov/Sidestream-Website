@@ -35,7 +35,7 @@ http://localhost:8000/
 
 The hero media is a native autoplaying, muted, looping `<video>` that loads `../mockups/mockup1.webm` from the canonical HTML file. The generated WebM keeps the page publishable; source mockup files such as `.mov`, `.aep`, `.exr`, and `.usdz` are ignored so large production assets do not get committed accidentally.
 
-The hero media wrapper intentionally uses a taller `5 / 4` aspect ratio while the video itself is wider than the wrapper. This lets the MacBook render larger without clipping through the video/shadow plane. The video also has a bottom mask fade to hide the mockup asset's lower shadow-plane edge.
+The hero media wrapper intentionally uses a tall `24 / 25` aspect ratio while the video itself is wider than the wrapper. This lets the MacBook render larger without clipping through the video/shadow plane. The video also has a bottom mask fade to hide the mockup asset's lower shadow-plane edge.
 
 The feature screenshot cards are CSS-built placeholders that reference future image paths in their labels, such as `assets/screens/hero-panel.png`; those files are not present in this folder.
 
@@ -94,6 +94,7 @@ Use the narrowest relevant check after edits:
 
 ## Recent Change Log
 
+- Increased the hero MacBook mockup scale by roughly 30% while preserving the taller media frame and bottom fade mask.
 - Enlarged the hero headline/subline and MacBook mockup slightly, removed the hero-only shader layer, and made the page glow one continuous non-repeating background field.
 - Fixed the mobile flipped-grid override so feature cards use the full mobile width.
 - Replaced the hero screenshot placeholder with an autoplaying muted loop of the rotating MacBook Pro mockup and added the generated WebM asset.
