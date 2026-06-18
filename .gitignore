@@ -4,3 +4,7 @@ dist/
 mockups/**
 !mockups/
 !mockups/*.webm
+demos/*.mp4
+!demos/search demo.mp4
+!demos/preview demo.mp4
+demos/**/*.screenstudio/

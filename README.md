@@ -15,6 +15,7 @@ Sidestream is an HTML-first landing page for a Premiere Pro plugin that lets edi
 - `components.json` - shadcn configuration with aliases rooted at the repository root.
 - `vite.config.ts` - Vite React/Tailwind build config with the root redirect and canonical Sidestream page as HTML inputs.
 - `mockups/mockup1_2.webm` - Browser-sized autoplay hero video generated from the cleaner local alpha MacBook Pro mockup source.
+- `demos/search demo.mp4` and `demos/preview demo.mp4` - Autoplaying feature demo videos showing the Tudor Place search and preview workflow.
 - `Sidestream front end 2/screenshots/` - Reference desktop screenshots for restoring the previous look. The numbered `*-scan.png` files are the canonical before-state for the hero.
 - `Sidestream front end 2/.thumbnail` - Export thumbnail that reflects an alternate sans-serif hero state.
 
@@ -23,7 +24,7 @@ Sidestream is an HTML-first landing page for a Premiere Pro plugin that lets edi
 - Header/nav - `header`, `.nav`, `.brand`, `.nav-links`
 - Shader background - `#shader-background-root`, `src/main.tsx`, `components/ui/shader-background.tsx`, and `components/ui/background-paper-shaders.tsx`
 - Hero - `#hero`, `.hero-split`, `.hero-copy`, `.rotating-copy`, `.rotating-word`, `.hero-subline`, `.hero-media`, `.hero-mockup-video`
-- Feature sections - `#features` anchor, the three `.sec-pad` feature blocks, and `.feature-subtext` heading sublines
+- Feature sections - `#features` anchor, the two `.sec-pad` feature blocks, `.feature-subtext` heading sublines, and `.demo-video` MP4 embeds
 - Pricing - `#pricing`, `.plans`, `.plan`, `.plan.featured`
 - Final CTA - `.final`
 - Footer - `footer`, `.wordmark`, `.foot-top`, `.foot-bottom`
@@ -44,7 +45,7 @@ The hero media is a native autoplaying, muted, looping `<video>` that loads `../
 
 The hero media wrapper intentionally uses a tall `24 / 25` aspect ratio while the video itself is wider than the wrapper. This lets the MacBook render large without clipping through the video plane. The video uses a soft bottom mask fade but no CSS drop shadow because filtering the alpha video can reveal a rectangular compositing edge during rotation.
 
-The feature screenshot cards are CSS-built placeholders that reference future image paths in their labels, such as `assets/screens/hero-panel.png`; those files are not present in this folder.
+The feature cards use native autoplaying, muted, looping MP4s from `demos/`. The active demos are `search demo.mp4` and `preview demo.mp4`, both recorded around the Tudor Place workflow. Raw Screen Studio project folders should stay out of git; export compact MP4s for the site instead.
 
 The page background should match the provided Paper shader reference, not a hand-rolled red CSS fog. The canonical HTML keeps a black CSS fallback on `body`; the mounted React `ShaderBackground` layer provides the full-page Paper `MeshGradient` plus a subtle `DotOrbit` overlay using `["#000000", "#1a1a1a", "#333333", "#ffffff"]`. Page text tokens are white or translucent white for contrast, while cards and pricing surfaces are dark translucent glass.
 
@@ -125,9 +126,11 @@ Use the narrowest relevant check after edits:
 - If the MacBook mockup is resized, keep enough vertical room in `.hero-media` and preserve the bottom mask on `.hero-mockup-video`; a too-short 16:9 wrapper, unmasked video edge, or video-level CSS drop shadow can create a hard line around or below the laptop.
 - Keep `mockups/mockup1_2.webm` checked after background changes; dark backgrounds can make transparent alpha edges more visible if the `.hero-mockup-video` mask or shadow is changed.
 - Mobile split sections must override both `.split` and `.split.flip`; otherwise the more-specific desktop flipped grid can leave feature cards half-width on narrow screens.
+- Feature demo cards use 1800 x 1080 MP4 exports and a `5 / 3` card body, matching the videos without crop. Keep future feature demos muted, looping, and compressed before committing.
 
 ## Recent Change Log
 
+- Replaced the Search and Preview placeholder cards with Tudor Place MP4 demos, removed the third Download feature block, and ignored raw Screen Studio project folders under `demos/`.
 - Restored the React/Paper/Tailwind shader mount and made the active background follow the pasted reference more closely with black/charcoal/gray/white `MeshGradient` plus `DotOrbit`, removing the red CSS fog approximation.
 - Added a dependency-free CSS shader/mesh background adapted from the pasted Paper/Three reference while keeping the page static HTML and Vite-only.
 - Replaced the mounted Paper/React shader background with a plain black `body` background, removed the background mount script, deleted the unused React/Tailwind/shadcn files, removed their dependencies, and simplified the Vite config.
