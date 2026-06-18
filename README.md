@@ -35,11 +35,11 @@ http://localhost:8000/
 
 The hero media is a native autoplaying, muted, looping `<video>` that loads `../mockups/mockup1.webm` from the canonical HTML file. The generated WebM keeps the page publishable; source mockup files such as `.mov`, `.aep`, `.exr`, and `.usdz` are ignored so large production assets do not get committed accidentally.
 
-The hero media wrapper intentionally uses a tall `24 / 25` aspect ratio while the video itself is wider than the wrapper. This lets the MacBook render larger without clipping through the video/shadow plane. The video also has a bottom mask fade to hide the mockup asset's lower shadow-plane edge.
+The hero media wrapper intentionally uses a tall `24 / 25` aspect ratio while the video itself is wider than the wrapper. This lets the MacBook render large without clipping through the video/shadow plane. The video uses a soft bottom mask fade and lighter drop shadow so alpha-matte edges do not read as dark shader lines over the pale page background.
 
 The feature screenshot cards are CSS-built placeholders that reference future image paths in their labels, such as `assets/screens/hero-panel.png`; those files are not present in this folder.
 
-The Aurora-style page glow is implemented as one continuous fixed background field on `body` and `main::before`. Section backgrounds should stay transparent unless the section is intentionally framed, because separate section fills, borders, or repeated ray layers make the page look broken into bands. Do not add React, shadcn, Tailwind, or framer-motion just to change that background in this static page.
+The Aurora-style page glow is implemented as one continuous fixed background field on `body` and `main::before`. It is intentionally tuned as a mostly white, low-opacity wash so the gradient stays subtle behind the hero and sections. Section backgrounds should stay transparent unless the section is intentionally framed, because separate section fills, borders, or repeated ray layers make the page look broken into bands. Do not add React, shadcn, Tailwind, or framer-motion just to change that background in this static page.
 
 The header is a fixed transparent overlay with no scroll divider so the Aurora/light-ray hero background remains uninterrupted behind the nav. The `.hero-pad` top padding includes the 72px nav height to preserve the first-fold spacing.
 
@@ -75,8 +75,10 @@ Use the narrowest relevant check after edits:
 
 - Open the HTML page and compare the first fold against `Sidestream front end 2/screenshots/01-scan.png`.
 - Confirm the hero MacBook Pro mockup video autoplays, loops, stays muted, and does not create horizontal overflow.
+- Scrub or watch the hero MacBook rotation long enough to confirm hard alpha edges and bottom shadow-plane edges do not show as dark lines.
 - Confirm the rotating noun gradient stays subtle, remains readable on "songs." and "overlays.", and pauses under reduced-motion settings.
 - Scroll from the hero through pricing and footer to confirm the background reads as one continuous gradient without horizontal seams or repeated shader lines.
+- Confirm the page background stays mostly white and does not overpower the hero text, rotating noun gradient, or MacBook mockup.
 - Check desktop at `1280x748`, because all supplied reference screenshots use that size.
 - Check mobile around `390x844` for text wrapping, CTA sizing, and image-card overflow.
 
@@ -91,11 +93,14 @@ Use the narrowest relevant check after edits:
 - Feature heading sublines use `.feature-subtext` with the SF Pro system stack at a light weight; avoid restoring the old serif treatment unless the whole feature-heading direction changes.
 - The rotating noun gradient should animate only `background-position` and color/filter values. Do not animate the word transform for the gradient drift or it will fight the roll keyframes.
 - Keep the page glow as one non-repeating field. Reintroducing hero-only ray overlays, pricing band backgrounds, section borders, or patterned placeholder fills will create visible seams again.
+- Keep the page glow pale by tuning the shared `body` and `main::before` values instead of adding section-level white overlays.
 - If the MacBook mockup is resized, keep enough vertical room in `.hero-media` and preserve the bottom mask on `.hero-mockup-video`; a too-short 16:9 wrapper or unmasked video edge creates a hard line below the laptop.
+- Keep `mockups/mockup1.webm` on a light page background with the `.hero-mockup-video` bottom mask and lighter drop shadow. Dark page backgrounds make transparent alpha edges read as shader artifacts.
 - Mobile split sections must override both `.split` and `.split.flip`; otherwise the more-specific desktop flipped grid can leave feature cards half-width on narrow screens.
 
 ## Recent Change Log
 
+- Restored the page to a mostly white background and softened the MacBook video shadow/mask to reduce alpha edge artifacts during rotation.
 - Added a subtle orange/white/teal animated gradient to the hero rotating noun.
 - Increased the hero MacBook mockup scale by roughly 30% while preserving the taller media frame and bottom fade mask.
 - Enlarged the hero headline/subline and MacBook mockup slightly, removed the hero-only shader layer, and made the page glow one continuous non-repeating background field.
