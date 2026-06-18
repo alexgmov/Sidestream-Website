@@ -82,6 +82,7 @@ Use the narrowest relevant check after edits:
 
 ## Recent Change Log
 
+- Removed the support email link from the footer.
 - Added the "Maximum audio and video quality" bullet to both pricing plans.
 - Added the "Full video and audio downloads" bullet to the Unlimited pricing plan.
 - Initialized this folder for publishing to `git@github.com:alexgmov/Sidestream-Website.git` and ignored Finder `.DS_Store` files.
