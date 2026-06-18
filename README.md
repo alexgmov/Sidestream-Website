@@ -73,17 +73,18 @@ Use the narrowest relevant check after edits:
 ## Known Gotchas
 
 - The project root was missing a README before this restoration.
-- The page uses Google Fonts for Cormorant Garamond and Inter. If fonts are blocked, the hero will fall back to local serif/sans fonts and will not be pixel-identical.
+- The page uses the local Apple/SF Pro system font stack and does not request external web fonts.
 - Several screenshot files are duplicates or alternate experiments. Prefer the numbered scan series for the restored hero state.
 - The pasted Aurora component references React, Tailwind, and shadcn conventions, but this project is static HTML. Translate those effects into local CSS unless the whole site is intentionally migrated.
-- No Alphanica font asset exists in this folder. The hero headline uses the existing sans-serif stack to match the cleaner non-serif section style without adding a font dependency.
+- No Alphanica font asset exists in this folder. The hero headline uses the SF Pro system stack to match the cleaner non-serif section style without adding a font dependency.
 - Because the header is fixed, `html` uses `scroll-padding-top: 72px` so anchor navigation does not hide section headings under the nav.
-- Feature heading sublines use `.feature-subtext` with the Helvetica-style sans stack at a light weight; avoid restoring the old serif treatment unless the whole feature-heading direction changes.
+- Feature heading sublines use `.feature-subtext` with the SF Pro system stack at a light weight; avoid restoring the old serif treatment unless the whole feature-heading direction changes.
 
 ## Recent Change Log
 
+- Switched all page text to the SF Pro system font stack and removed the unused Google Fonts request and monospace mock-label overrides.
 - Restored the hero layout, media scale, and section spacing while keeping the hero headline, subline, and CTA smaller.
-- Added a shared sans width control so Helvetica-style text is subtly tighter while mock-window monospace labels stay normal.
+- Added a shared sans width control so SF Pro-style text is subtly tighter.
 - Increased the Aurora-style page glow intensity and kept the pricing band translucent so the glow remains visible through the landing page.
 - Reduced the hero headline, subline, and CTA sizing for a smaller first-fold text treatment.
 - Extended the Aurora-style glow through the landing page and softened the pricing band so there is no hard stop after the hero.
@@ -98,13 +99,13 @@ Use the narrowest relevant check after edits:
 - Removed the "01 Search" eyebrow from the first feature section.
 - Removed the hero "Premiere Pro Plugin" eyebrow above the headline.
 - Changed the hero "in Premiere Pro" subline color to black.
-- Changed feature heading sublines from the old serif accent style to lighter Helvetica-style subtext.
-- Increased the hero "in Premiere Pro" subline to a medium Helvetica-style weight.
+- Changed feature heading sublines from the old serif accent style to lighter SF Pro-style subtext.
+- Increased the hero "in Premiere Pro" subline to a medium SF Pro-style weight.
 - Made the header a transparent fixed overlay above the Aurora hero background, preserved hero spacing with extra top padding, and added anchor scroll padding for fixed-nav links.
 - Changed the hero rotating noun to always roll upward with a subtle Bezier overshoot.
 - Added a root `index.html` redirect so the local server root opens the canonical Sidestream page.
 - Replaced the hero rotating noun rebound with smoother directional Bezier-style roll-off motion.
-- Lightened the hero "in Premiere Pro" subline with a thinner Helvetica-style treatment.
+- Lightened the hero "in Premiere Pro" subline with a thinner SF Pro-style treatment.
 - Added a lighter hero subline reading "in Premiere Pro" below the main rotating headline.
 - Removed the secondary "Get Unlimited" button from the hero CTA row.
 - Added bottom buffer to the hero rotating-word slot so descenders in words like "songs" and "overlays" are not clipped.
