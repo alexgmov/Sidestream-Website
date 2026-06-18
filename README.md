@@ -8,7 +8,7 @@ Sidestream is a static landing page for a Premiere Pro plugin that lets editors 
 
 - `Sidestream front end 2/Sidestream.html` - Canonical page implementation. Contains the header, hero, CSS light-ray background, feature sections, pricing, final CTA, footer, styles, and toast behavior.
 - `index.html` - Root redirect so `http://localhost:8000/` and other local server roots open the canonical page instead of a directory listing.
-- `mockups/mockup1.webm` - Browser-sized autoplay hero video generated from the local alpha MacBook Pro mockup source.
+- `mockups/mockup1_2.webm` - Browser-sized autoplay hero video generated from the cleaner local alpha MacBook Pro mockup source.
 - `Sidestream front end 2/screenshots/` - Reference desktop screenshots for restoring the previous look. The numbered `*-scan.png` files are the canonical before-state for the hero.
 - `Sidestream front end 2/.thumbnail` - Export thumbnail that reflects an alternate sans-serif hero state.
 
@@ -33,7 +33,7 @@ When using a local preview server, the root URL redirects to the canonical page:
 http://localhost:8000/
 ```
 
-The hero media is a native autoplaying, muted, looping `<video>` that loads `../mockups/mockup1.webm` from the canonical HTML file. The generated WebM keeps the page publishable; source mockup files such as `.mov`, `.aep`, `.exr`, and `.usdz` are ignored so large production assets do not get committed accidentally.
+The hero media is a native autoplaying, muted, looping `<video>` that loads `../mockups/mockup1_2.webm` from the canonical HTML file. The generated WebM keeps the page publishable; source mockup files such as `.mov`, `.aep`, `.exr`, and `.usdz` are ignored so large production assets do not get committed accidentally.
 
 The hero media wrapper intentionally uses a tall `24 / 25` aspect ratio while the video itself is wider than the wrapper. This lets the MacBook render large without clipping through the video/shadow plane. The video uses a soft bottom mask fade and lighter drop shadow so alpha-matte edges do not read as dark shader lines over the pale page background.
 
@@ -67,7 +67,7 @@ This folder is a git repository for `git@github.com:alexgmov/Sidestream-Website.
 
 Relevant tracked files are the root redirect, canonical static HTML page, README, `.thumbnail`, the generated hero WebM, and reference screenshots. Finder `.DS_Store` files are ignored.
 
-The generated hero video in `mockups/mockup1.webm` is tracked. Raw mockup production files in `mockups/` are intentionally ignored because they can be hundreds of megabytes.
+The generated hero video in `mockups/mockup1_2.webm` is tracked. Raw mockup production files in `mockups/` are intentionally ignored because they can be hundreds of megabytes.
 
 ## Testing Guide
 
@@ -95,11 +95,12 @@ Use the narrowest relevant check after edits:
 - Keep the page glow as one non-repeating field. Reintroducing hero-only ray overlays, pricing band backgrounds, section borders, or patterned placeholder fills will create visible seams again.
 - Keep the page glow pale by tuning the shared `body` and `main::before` values instead of adding section-level white overlays.
 - If the MacBook mockup is resized, keep enough vertical room in `.hero-media` and preserve the bottom mask on `.hero-mockup-video`; a too-short 16:9 wrapper or unmasked video edge creates a hard line below the laptop.
-- Keep `mockups/mockup1.webm` on a light page background with the `.hero-mockup-video` bottom mask and lighter drop shadow. Dark page backgrounds make transparent alpha edges read as shader artifacts.
+- Keep `mockups/mockup1_2.webm` on a light page background with the `.hero-mockup-video` bottom mask and lighter drop shadow. Dark page backgrounds make transparent alpha edges read as shader artifacts.
 - Mobile split sections must override both `.split` and `.split.flip`; otherwise the more-specific desktop flipped grid can leave feature cards half-width on narrow screens.
 
 ## Recent Change Log
 
+- Swapped the hero MacBook video to the cleaner `mockup1_2` alpha animation and generated a browser-sized WebM.
 - Restored the page to a mostly white background and softened the MacBook video shadow/mask to reduce alpha edge artifacts during rotation.
 - Added a subtle orange/white/teal animated gradient to the hero rotating noun.
 - Increased the hero MacBook mockup scale by roughly 30% while preserving the taller media frame and bottom fade mask.
