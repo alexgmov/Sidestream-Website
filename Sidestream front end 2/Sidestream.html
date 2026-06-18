@@ -24,6 +24,7 @@
     --maxw: 1240px;
     --ease: cubic-bezier(0.22, 0.61, 0.36, 1);
     --sans: "Helvetica Neue", Helvetica, "Inter", Arial, sans-serif;
+    --sans-stretch: 96%;
     --serif: "Cormorant Garamond", Georgia, "Times New Roman", serif;
   }
 
@@ -39,6 +40,7 @@
     background: var(--white);
     color: var(--ink);
     font-family: var(--sans);
+    font-stretch: var(--sans-stretch);
     letter-spacing: -0.02em;
     -webkit-font-smoothing: antialiased;
     text-rendering: optimizeLegibility;
@@ -419,6 +421,7 @@
   }
   .ph-tag {
     font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-stretch: normal;
     font-size: 12.5px;
     letter-spacing: -0.01em;
     color: var(--ink-soft);
@@ -435,6 +438,7 @@
   }
   .ph-dim {
     font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-stretch: normal;
     font-size: 11.5px;
     color: var(--ink-faint);
   }
@@ -455,6 +459,7 @@
   .ph-toggle span.on { background: var(--blue); color: #fff; }
   .ph-path {
     font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-stretch: normal;
     font-size: 12.5px;
     color: var(--ink);
     background: #fff;

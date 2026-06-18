@@ -82,6 +82,7 @@ Use the narrowest relevant check after edits:
 
 ## Recent Change Log
 
+- Added a shared sans width control so Helvetica-style text is subtly tighter while mock-window monospace labels stay normal.
 - Increased the Aurora-style page glow intensity and kept the pricing band translucent so the glow remains visible through the landing page.
 - Reduced the hero split, headline, subline, CTA, and hero spacing to make the first-fold hero group about 30% smaller.
 - Extended the Aurora-style glow through the landing page and softened the pricing band so there is no hard stop after the hero.
