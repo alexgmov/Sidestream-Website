@@ -42,11 +42,11 @@ http://localhost:5173/
 
 The hero media is a native autoplaying, muted, looping `<video>` that loads `../mockups/mockup1_2.webm` from the canonical HTML file. The generated VP9-alpha WebM keeps the page publishable; source mockup files such as `.mov`, `.aep`, `.exr`, and `.usdz` are ignored so large production assets do not get committed accidentally.
 
-The hero media wrapper intentionally uses a tall `24 / 25` aspect ratio while the video itself is wider than the wrapper. This lets the MacBook render large without clipping through the video/shadow plane. The video uses a soft bottom mask fade and a dark drop shadow so alpha-matte edges stay controlled over the dark shader background.
+The hero media wrapper intentionally uses a tall `24 / 25` aspect ratio while the video itself is wider than the wrapper. This lets the MacBook render large without clipping through the video plane. The video uses a soft bottom mask fade but no CSS drop shadow because filtering the alpha video can reveal a rectangular compositing edge during rotation.
 
 The feature screenshot cards are CSS-built placeholders that reference future image paths in their labels, such as `assets/screens/hero-panel.png`; those files are not present in this folder.
 
-The page background should read as one continuous black/charcoal animated shader field. The canonical HTML keeps a black CSS fallback on `body`; the Vite `ShaderBackground` layer provides the full-page Paper shader and must stay behind all HTML content. Page text tokens are white or translucent white for contrast, while cards and pricing surfaces are dark translucent glass.
+The page background should read as one continuous black/charcoal animated shader field. The canonical HTML keeps a black CSS fallback on `body`; the Vite `ShaderBackground` layer provides the full-page Paper shader and must stay behind all HTML content. The active shader uses low-contrast charcoal stops rather than a pure white stop so hard animated bands do not read as video-plane edges behind the MacBook. Page text tokens are white or translucent white for contrast, while cards and pricing surfaces are dark translucent glass.
 
 The header is a fixed transparent overlay with no scroll divider so the shader remains uninterrupted behind the nav. The `.hero-pad` top padding includes the 72px nav height to preserve the first-fold spacing.
 
@@ -96,7 +96,7 @@ Use the narrowest relevant check after edits:
 - Confirm the brand bug, CTA buttons, active pricing state, check icons, and rotating noun gradient use the red accent palette without leftover orange accents.
 - Confirm the background has no orbit-dot particle overlay, shader grain speckles, or custom lens-flare/schmutz blobs; the original page did not include random grey dots or flare artifacts.
 - Confirm the hero MacBook Pro mockup video autoplays, loops, stays muted, and does not create horizontal overflow.
-- Scrub or watch the hero MacBook rotation long enough to confirm hard alpha edges and bottom shadow-plane edges do not show as dark lines.
+- Scrub or watch the hero MacBook rotation long enough to confirm hard alpha edges and video-plane edges do not show as dark lines.
 - Let the hero rotating noun run through a full cycle and confirm each word swap stays smooth without bounce, clipping, or layout shift.
 - Confirm the rotating noun gradient stays subtle, remains readable on "songs." and "overlays.", and pauses under reduced-motion settings.
 - Scroll from the hero through pricing and footer to confirm the background reads as one continuous fixed field without horizontal seams.
@@ -114,6 +114,7 @@ Use the narrowest relevant check after edits:
 - `src/index.css` imports Tailwind theme/utilities and `tw-animate-css` only. Avoid full Tailwind preflight here because it can override the existing static HTML typography selectors.
 - The current `@paper-design/shaders-react` `MeshGradient` types support `colors`, `speed`, and mesh params, but not the pasted `backgroundColor` or `wireframe` props. Do not reintroduce `DotOrbit` for this page background unless the design intentionally calls for a particle/dot overlay.
 - The shader component must stay self-contained: no children, visible text, nav, header, or page copy inside `components/ui/shader-background.tsx`.
+- Keep the Paper shader low contrast behind the hero. A pure white mesh stop or aggressive distortion can create hard animated bands that look like MacBook video alpha edges.
 - Do not mount the optional React Three Fiber `ShaderPlane` or `EnergyRing` primitives in the active background unless the design intentionally calls for visible flares/rings; they previously created distracting top-left and lower-page artifacts.
 - No Alphanica font asset exists in this folder. The hero headline uses the SF Pro system stack to match the cleaner non-serif section style without adding a font dependency.
 - Because the header is fixed, `html` uses `scroll-padding-top: 72px` so anchor navigation does not hide section headings under the nav.
@@ -123,12 +124,14 @@ Use the narrowest relevant check after edits:
 - The rotating noun gradient should animate only `background-position` and color/filter values. Do not animate the word transform for the gradient drift or it will fight the roll keyframes.
 - Keep page content on `relative`/non-negative z-index surfaces. If the shader layer is enabled, it must stay behind content without forcing the page fallback to black.
 - Text tokens are tuned for a dark shader background. If the page returns to a light background, retune `--ink`, `--ink-soft`, `--ink-faint`, surfaces, and button states together.
-- If the MacBook mockup is resized, keep enough vertical room in `.hero-media` and preserve the bottom mask on `.hero-mockup-video`; a too-short 16:9 wrapper or unmasked video edge creates a hard line below the laptop.
+- If the MacBook mockup is resized, keep enough vertical room in `.hero-media` and preserve the bottom mask on `.hero-mockup-video`; a too-short 16:9 wrapper, unmasked video edge, or video-level CSS drop shadow can create a hard line around or below the laptop.
 - Keep `mockups/mockup1_2.webm` checked after shader changes; dark backgrounds can make transparent alpha edges more visible if the `.hero-mockup-video` mask or shadow is changed.
 - Mobile split sections must override both `.split` and `.split.flip`; otherwise the more-specific desktop flipped grid can leave feature cards half-width on narrow screens.
 
 ## Recent Change Log
 
+- Removed the hero MacBook video's CSS drop shadow so the alpha WebM no longer reveals a rectangular compositing edge during rotation.
+- Softened the full-page Paper shader contrast so animated background bands no longer read as hard edges around the rotating MacBook.
 - Changed the landing-page accent palette from orange to red across CTAs, brand mark, rotating noun gradient, pricing highlights, check icons, glow shadows, shadcn theme tokens, and optional shader primitive defaults.
 - Removed the mounted React Three Fiber shader-plane canvas so the top-left and lower-page lens-flare/schmutz artifacts no longer appear over the background.
 - Removed the mounted `DotOrbit` layer and disabled MeshGradient grain so the background no longer shows random grey dots that were not part of the original page.
