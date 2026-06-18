@@ -34,7 +34,7 @@ http://localhost:8000/
 
 The screenshot cards are CSS-built placeholders that reference future image paths in their labels, such as `assets/screens/hero-panel.png`; those files are not present in this folder.
 
-The Aurora-style page glow is implemented directly in CSS on `main`, `main::before`, `#hero::before`, and `#hero::after`. Do not add React, shadcn, Tailwind, or framer-motion just to change that background in this static page.
+The Aurora-style page glow is implemented directly in CSS on `main`, `main::before`, `#hero::before`, and `#hero::after`. The hero glow intentionally spills past the hero boundary so the first feature transition stays continuous. Do not add React, shadcn, Tailwind, or framer-motion just to change that background in this static page.
 
 The header is a fixed transparent overlay so the Aurora/light-ray hero background remains visible behind the nav. The `.hero-pad` top padding includes the 72px nav height to preserve the first-fold spacing.
 
@@ -82,6 +82,7 @@ Use the narrowest relevant check after edits:
 
 ## Recent Change Log
 
+- Made the Aurora-style glow continuous between the hero and first feature by removing the clipped hero edge and strengthening the page-wide glow mask.
 - Switched all page text to the SF Pro system font stack and removed the unused Google Fonts request and monospace mock-label overrides.
 - Restored the hero layout, media scale, and section spacing while keeping the hero headline, subline, and CTA smaller.
 - Added a shared sans width control so SF Pro-style text is subtly tighter.
