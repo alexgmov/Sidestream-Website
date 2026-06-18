@@ -8,8 +8,8 @@ Sidestream is an HTML-first landing page for a Premiere Pro plugin that lets edi
 
 - `Sidestream front end 2/Sidestream.html` - Canonical page implementation. Contains the shader mount root, header, hero, feature sections, pricing, final CTA, footer, styles, and toast behavior.
 - `index.html` - Root redirect so `http://localhost:5173/` and other local server roots open the canonical page instead of a directory listing.
-- `components/ui/shader-background.tsx` - Self-contained fixed React shader background layer. It combines a Paper `MeshGradient` shader with a small React Three Fiber canvas and renders no children, text, or header content.
-- `components/ui/background-paper-shaders.tsx` - React Three Fiber shader primitives. `ShaderPlane` is used by the fixed background canvas; `EnergyRing` remains available but is not mounted because the visible ring reads as a distracting orange circle.
+- `components/ui/shader-background.tsx` - Self-contained fixed React shader background layer. It uses a Paper `MeshGradient` shader and renders no children, text, or header content.
+- `components/ui/background-paper-shaders.tsx` - React Three Fiber shader primitives kept as optional reference code. They are not mounted because the custom planes and ring read as distracting flare/dot artifacts on this page.
 - `src/main.tsx` - React entry that mounts `ShaderBackground` into `#shader-background-root`.
 - `src/index.css` - Tailwind v4 theme/utilities import, `tw-animate-css`, and dark shadcn theme tokens used by the shader component. It intentionally avoids Tailwind preflight so the static HTML styles are not reset.
 - `components.json` - shadcn configuration with aliases rooted at the repository root.
@@ -21,7 +21,7 @@ Sidestream is an HTML-first landing page for a Premiere Pro plugin that lets edi
 ## Feature Map
 
 - Header/nav - `header`, `.nav`, `.brand`, `.nav-links`
-- Shader background - `#shader-background-root`, `src/main.tsx`, `components/ui/shader-background.tsx`, `components/ui/background-paper-shaders.tsx`
+- Shader background - `#shader-background-root`, `src/main.tsx`, `components/ui/shader-background.tsx`
 - Hero - `#hero`, `.hero-split`, `.hero-copy`, `.rotating-copy`, `.rotating-word`, `.hero-subline`, `.hero-media`, `.hero-mockup-video`
 - Feature sections - `#features` anchor, the three `.sec-pad` feature blocks, and `.feature-subtext` heading sublines
 - Pricing - `#pricing`, `.plans`, `.plan`, `.plan.featured`
@@ -46,7 +46,7 @@ The hero media wrapper intentionally uses a tall `24 / 25` aspect ratio while th
 
 The feature screenshot cards are CSS-built placeholders that reference future image paths in their labels, such as `assets/screens/hero-panel.png`; those files are not present in this folder.
 
-The page background should read as one continuous black/charcoal animated shader field. The canonical HTML keeps a black CSS fallback on `body`; the Vite `ShaderBackground` layer provides the full-page Paper/Three shader and must stay behind all HTML content. Page text tokens are white or translucent white for contrast, while cards and pricing surfaces are dark translucent glass.
+The page background should read as one continuous black/charcoal animated shader field. The canonical HTML keeps a black CSS fallback on `body`; the Vite `ShaderBackground` layer provides the full-page Paper shader and must stay behind all HTML content. Page text tokens are white or translucent white for contrast, while cards and pricing surfaces are dark translucent glass.
 
 The header is a fixed transparent overlay with no scroll divider so the shader remains uninterrupted behind the nav. The `.hero-pad` top padding includes the 72px nav height to preserve the first-fold spacing.
 
@@ -92,8 +92,8 @@ Use the narrowest relevant check after edits:
 
 - Open the HTML page and compare the first fold against `Sidestream front end 2/screenshots/01-scan.png`.
 - Run `npm run build` after shader, TypeScript, Tailwind, or HTML mount changes.
-- Confirm the dark Paper/Three shader renders behind all content and does not cover the header, hero, cards, pricing, footer, or toast.
-- Confirm the background has no orbit-dot particle overlay or shader grain speckles; the original page did not include random grey dots.
+- Confirm the dark Paper shader renders behind all content and does not cover the header, hero, cards, pricing, footer, or toast.
+- Confirm the background has no orbit-dot particle overlay, shader grain speckles, or custom lens-flare/schmutz blobs; the original page did not include random grey dots or flare artifacts.
 - Confirm the hero MacBook Pro mockup video autoplays, loops, stays muted, and does not create horizontal overflow.
 - Scrub or watch the hero MacBook rotation long enough to confirm hard alpha edges and bottom shadow-plane edges do not show as dark lines.
 - Let the hero rotating noun run through a full cycle and confirm each word swap stays smooth without bounce, clipping, or layout shift.
@@ -113,6 +113,7 @@ Use the narrowest relevant check after edits:
 - `src/index.css` imports Tailwind theme/utilities and `tw-animate-css` only. Avoid full Tailwind preflight here because it can override the existing static HTML typography selectors.
 - The current `@paper-design/shaders-react` `MeshGradient` types support `colors`, `speed`, and mesh params, but not the pasted `backgroundColor` or `wireframe` props. Do not reintroduce `DotOrbit` for this page background unless the design intentionally calls for a particle/dot overlay.
 - The shader component must stay self-contained: no children, visible text, nav, header, or page copy inside `components/ui/shader-background.tsx`.
+- Do not mount the optional React Three Fiber `ShaderPlane` or `EnergyRing` primitives in the active background unless the design intentionally calls for visible flares/rings; they previously created distracting top-left and lower-page artifacts.
 - No Alphanica font asset exists in this folder. The hero headline uses the SF Pro system stack to match the cleaner non-serif section style without adding a font dependency.
 - Because the header is fixed, `html` uses `scroll-padding-top: 72px` so anchor navigation does not hide section headings under the nav.
 - Feature heading sublines use `.feature-subtext` with the SF Pro system stack at a light weight; avoid restoring the old serif treatment unless the whole feature-heading direction changes.
@@ -127,6 +128,7 @@ Use the narrowest relevant check after edits:
 
 ## Recent Change Log
 
+- Removed the mounted React Three Fiber shader-plane canvas so the top-left and lower-page lens-flare/schmutz artifacts no longer appear over the background.
 - Removed the mounted `DotOrbit` layer and disabled MeshGradient grain so the background no longer shows random grey dots that were not part of the original page.
 - Removed the visible `EnergyRing` from the mounted background so the top-right hero area no longer shows a distracting orange circle.
 - Replaced the full-page background with a dark Paper/Three shader stack, added `components/ui/background-paper-shaders.tsx`, installed the Three/R3F dependencies, and retuned page text/surfaces to white-on-dark.
