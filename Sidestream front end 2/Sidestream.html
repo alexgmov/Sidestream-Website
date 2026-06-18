@@ -541,7 +541,7 @@
           <a href="#features">Features</a>
           <a href="#pricing">Pricing</a>
         </nav>
-        <a class="btn btn-primary btn-sm" href="#" data-download>Download now</a>
+        <a class="btn btn-primary btn-sm" href="/api/download" data-download>Download now</a>
       </div>
     </div>
   </header>
@@ -565,7 +565,7 @@
           </h1>
           <p class="hero-subline">in Premiere Pro</p>
           <div class="cta-row">
-            <a class="btn btn-primary btn-lg" href="#" data-download>Download now</a>
+            <a class="btn btn-primary btn-lg" href="/api/download" data-download>Download now</a>
           </div>
         </div>
         <div class="hero-media reveal" aria-label="Rotating MacBook Pro showing Sidestream in Premiere Pro">
@@ -586,7 +586,7 @@
         <div class="feat-copy reveal">
           <h2>Search for YouTube videos.<span class="feature-subtext">Search using keywords or paste a link.</span></h2>
           <div class="cta-row">
-            <a class="btn btn-primary" href="#" data-download>Download now</a>
+            <a class="btn btn-primary" href="/api/download" data-download>Download now</a>
           </div>
         </div>
         <div class="shot reveal" aria-label="Demo video: searching Tudor Place inside the Sidestream panel">
@@ -604,7 +604,7 @@
         <div class="feat-copy reveal align-right">
           <h2>Preview videos.<span class="feature-subtext">Watch just as you would in YouTube.</span></h2>
           <div class="cta-row">
-            <a class="btn btn-primary" href="#" data-download>Download now</a>
+            <a class="btn btn-primary" href="/api/download" data-download>Download now</a>
           </div>
         </div>
         <div class="shot reveal" aria-label="Demo video: previewing Tudor Place inside the Sidestream panel">
@@ -631,7 +631,7 @@
               <li>Maximum audio and video quality</li>
               <li>5 downloads per day</li>
             </ul>
-            <a class="btn btn-secondary" href="#" data-download>Download now</a>
+            <a class="btn btn-secondary" href="/api/download" data-download>Download now</a>
           </div>
           <div class="plan featured reveal">
             <p class="plan-name">Unlimited <span class="pill">One time</span></p>
@@ -655,7 +655,7 @@
           <h2>Stop leaving Premiere to grab footage.</h2>
           <p>Download Sidestream, paste a link, and keep editing. Free to start, $29 to go unlimited.</p>
           <div class="cta-row">
-            <a class="btn btn-primary btn-lg" href="#" data-download>Download now</a>
+            <a class="btn btn-primary btn-lg" href="/api/download" data-download>Download now</a>
             <a class="btn btn-ghost-light btn-lg" href="#" data-purchase>Get Unlimited</a>
           </div>
         </div>
@@ -750,7 +750,7 @@
       demoVideos.forEach(playDemoVideo);
     }
 
-    // Download / purchase actions -> toast (real installer drops in here)
+    // Download / purchase actions
     const toast = document.getElementById("toast");
     const toastMsg = document.getElementById("toast-msg");
     let toastTimer;
@@ -764,7 +764,7 @@
       el.addEventListener("click", (ev) => {
         ev.preventDefault();
         ping("Starting your download…");
-        // Real build: window.location.href = "/downloads/Sidestream-Installer.dmg";
+        window.location.assign(el.getAttribute("href") || "/api/download");
       })
     );
     document.querySelectorAll("[data-purchase]").forEach((el) =>
