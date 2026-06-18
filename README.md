@@ -43,7 +43,7 @@ The Aurora-style page glow is implemented as one continuous fixed background fie
 
 The header is a fixed transparent overlay with no scroll divider so the Aurora/light-ray hero background remains uninterrupted behind the nav. The `.hero-pad` top padding includes the 72px nav height to preserve the first-fold spacing.
 
-The hero rotating-word effect is also static-page native: `.rotating-copy` provides the stable text slot, `.rotating-word` animates the current noun, and the bottom inline script cycles `[data-rotating-word]`. Incoming words always roll up from below with a subtle Bezier-style overshoot before settling. Do not add React or animation dependencies for this effect.
+The hero rotating-word effect is also static-page native: `.rotating-copy` provides the stable text slot, `.rotating-word` animates the current noun, and the bottom inline script cycles `[data-rotating-word]`. Incoming words always roll up from below with a subtle Bezier-style overshoot before settling. The active noun also uses a clipped orange/white/teal text gradient that drifts by animating `background-position` only. Do not add React or animation dependencies for this effect.
 
 ## Development Commands
 
@@ -75,6 +75,7 @@ Use the narrowest relevant check after edits:
 
 - Open the HTML page and compare the first fold against `Sidestream front end 2/screenshots/01-scan.png`.
 - Confirm the hero MacBook Pro mockup video autoplays, loops, stays muted, and does not create horizontal overflow.
+- Confirm the rotating noun gradient stays subtle, remains readable on "songs." and "overlays.", and pauses under reduced-motion settings.
 - Scroll from the hero through pricing and footer to confirm the background reads as one continuous gradient without horizontal seams or repeated shader lines.
 - Check desktop at `1280x748`, because all supplied reference screenshots use that size.
 - Check mobile around `390x844` for text wrapping, CTA sizing, and image-card overflow.
@@ -88,12 +89,14 @@ Use the narrowest relevant check after edits:
 - No Alphanica font asset exists in this folder. The hero headline uses the SF Pro system stack to match the cleaner non-serif section style without adding a font dependency.
 - Because the header is fixed, `html` uses `scroll-padding-top: 72px` so anchor navigation does not hide section headings under the nav.
 - Feature heading sublines use `.feature-subtext` with the SF Pro system stack at a light weight; avoid restoring the old serif treatment unless the whole feature-heading direction changes.
+- The rotating noun gradient should animate only `background-position` and color/filter values. Do not animate the word transform for the gradient drift or it will fight the roll keyframes.
 - Keep the page glow as one non-repeating field. Reintroducing hero-only ray overlays, pricing band backgrounds, section borders, or patterned placeholder fills will create visible seams again.
 - If the MacBook mockup is resized, keep enough vertical room in `.hero-media` and preserve the bottom mask on `.hero-mockup-video`; a too-short 16:9 wrapper or unmasked video edge creates a hard line below the laptop.
 - Mobile split sections must override both `.split` and `.split.flip`; otherwise the more-specific desktop flipped grid can leave feature cards half-width on narrow screens.
 
 ## Recent Change Log
 
+- Added a subtle orange/white/teal animated gradient to the hero rotating noun.
 - Increased the hero MacBook mockup scale by roughly 30% while preserving the taller media frame and bottom fade mask.
 - Enlarged the hero headline/subline and MacBook mockup slightly, removed the hero-only shader layer, and made the page glow one continuous non-repeating background field.
 - Fixed the mobile flipped-grid override so feature cards use the full mobile width.

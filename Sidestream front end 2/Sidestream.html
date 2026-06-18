@@ -233,14 +233,28 @@
     color: var(--blue);
     line-height: 1.08;
     vertical-align: top;
+    --rotating-gradient: linear-gradient(105deg, #ff7a1a 0%, #fff7ea 34%, #2dd4bf 68%, #ffb36c 100%);
   }
   .rotating-word {
     grid-area: 1 / 1;
     opacity: 0;
+    color: var(--blue);
     transform: translateY(var(--word-y, 1.06em));
     transition: opacity 260ms var(--ease),
       transform 720ms cubic-bezier(0.18, 1.08, 0.28, 1);
     will-change: opacity, transform;
+  }
+  @supports ((background-clip: text) or (-webkit-background-clip: text)) {
+    .rotating-word {
+      color: transparent;
+      background-image: var(--rotating-gradient);
+      background-size: 230% 100%;
+      background-position: 0% 50%;
+      -webkit-background-clip: text;
+      background-clip: text;
+      -webkit-text-fill-color: transparent;
+      filter: saturate(1.04);
+    }
   }
   .rotating-word.is-below { --word-y: 1.06em; }
   .rotating-word.is-exiting { --word-y: -1.06em; }
@@ -248,9 +262,12 @@
     --word-y: 0;
     opacity: 1;
     transform: translateY(0);
+    animation: rotating-gradient-drift 7s ease-in-out infinite alternate;
   }
   .rotating-word.is-active.from-below {
-    animation: word-roll-up 720ms cubic-bezier(0.18, 1.08, 0.28, 1) both;
+    animation:
+      word-roll-up 720ms cubic-bezier(0.18, 1.08, 0.28, 1) both,
+      rotating-gradient-drift 7s ease-in-out infinite alternate;
   }
   @keyframes word-roll-up {
     0% { opacity: 0; transform: translateY(1.06em); }
@@ -258,6 +275,11 @@
     52% { opacity: 0.96; transform: translateY(0.11em); }
     74% { opacity: 1; transform: translateY(-0.026em); }
     100% { opacity: 1; transform: translateY(0); }
+  }
+  @keyframes rotating-gradient-drift {
+    0% { background-position: 0% 50%; filter: saturate(1.02); }
+    50% { background-position: 72% 50%; filter: saturate(1.14); }
+    100% { background-position: 100% 50%; filter: saturate(1.04); }
   }
   h2 {
     font-family: var(--sans);
@@ -566,6 +588,11 @@
     .rotating-word {
       animation: none;
       transition: none;
+      background-position: 50% 50%;
+    }
+    .rotating-word.is-active,
+    .rotating-word.is-active.from-below {
+      animation: none;
     }
   }
 </style>
