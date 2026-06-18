@@ -18,7 +18,7 @@ Sidestream is a static landing page for a Premiere Pro plugin that lets editors 
 - Feature sections - `#features` anchor, the three `.sec-pad` feature blocks, and `.feature-subtext` heading sublines
 - Pricing - `#pricing`, `.plans`, `.plan`, `.plan.featured`
 - Final CTA - `.final`
-- Footer - `footer`, `.wordmark`, `.foot-links`
+- Footer - `footer`, `.wordmark`, `.foot-top`, `.foot-bottom`
 - Hero rotating noun - bottom inline `<script>` with `[data-rotating-word]`
 - Download and purchase feedback - bottom inline `<script>` with `[data-download]`, `[data-purchase]`, and `#toast`
 
@@ -82,6 +82,7 @@ Use the narrowest relevant check after edits:
 
 ## Recent Change Log
 
+- Removed the Terms link from the footer and cleaned up unused footer-link styles.
 - Removed the support email link from the footer.
 - Added the "Maximum audio and video quality" bullet to both pricing plans.
 - Added the "Full video and audio downloads" bullet to the Unlimited pricing plan.
