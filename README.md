@@ -8,7 +8,7 @@ Sidestream is an HTML-first landing page for a Premiere Pro plugin that lets edi
 
 - `Sidestream front end 2/Sidestream.html` - Canonical page implementation. Contains the shader mount root, header, hero, feature sections, pricing, final CTA, footer, styles, rotating-word script, and toast behavior.
 - `index.html` - Root redirect so `http://localhost:5173/` and other local server roots open the canonical page instead of a directory listing.
-- `components/ui/demo.tsx` - Exact pasted Paper demo component mounted as the page background. The active default effect is the original `MeshGradient` branch with `["#000000", "#1a1a1a", "#333333", "#ffffff"]`.
+- `components/ui/demo.tsx` - Adapted Paper demo component mounted as the page background. The active default effect is the original `MeshGradient` branch with `["#000000", "#1a1a1a", "#333333", "#ffffff"]`, with demo install/clipboard overlay text removed.
 - `components/ui/background-paper-shaders.tsx` - Exact pasted React Three Fiber shader primitives from the provided reference. They are kept as optional reference code and are not mounted by default.
 - `src/main.tsx` - React entry that mounts `DemoOne` into `#shader-background-root`.
 - `src/paper-shaders-compat.d.ts` - Local TypeScript compatibility declarations for the pasted prop names that the installed Paper package does not type directly.
@@ -48,7 +48,7 @@ The hero media wrapper intentionally uses a tall `24 / 25` aspect ratio while th
 
 The feature cards are chrome-free video frames that use native autoplaying, muted, looping MP4s from `demos/`. The active demos are `search demo.mp4` and `preview demo.mp4`, both recorded around the Tudor Place workflow. Raw Screen Studio project folders should stay out of git; export compact MP4s for the site instead.
 
-The page background should copy the provided Paper demo component as closely as possible, not reinterpret it. The canonical HTML keeps a black CSS fallback on `body`; `#shader-background-root` is a fixed full-viewport mount, and `src/main.tsx` renders the exact pasted `DemoOne` component from `components/ui/demo.tsx`. The demo's default `activeEffect` is `"mesh"`, so the visible background is the original black/charcoal/gray/white `MeshGradient` branch. Page text tokens are white or translucent white for contrast, while cards and pricing surfaces are dark translucent glass.
+The page background should preserve the provided Paper demo's shader direction without keeping its demo-site UI. The canonical HTML keeps a black CSS fallback on `body`; `#shader-background-root` is a fixed full-viewport mount, and `src/main.tsx` renders the adapted `DemoOne` component from `components/ui/demo.tsx`. The demo's default `activeEffect` is `"mesh"`, so the visible background is the original black/charcoal/gray/white `MeshGradient` branch. Page text tokens are white or translucent white for contrast, while cards and pricing surfaces are dark translucent glass.
 
 The header is a fixed transparent overlay with no scroll divider so the shader remains uninterrupted behind the nav. The `.hero-pad` top padding includes the 72px nav height to preserve the first-fold spacing.
 
@@ -114,7 +114,7 @@ Use the narrowest relevant check after edits:
 - Several screenshot files are duplicates or alternate experiments. Prefer the numbered scan series for the restored hero state.
 - The React layer is intentionally limited to the background mount. Do not migrate header, hero, pricing, or toast behavior into React unless the whole page is being intentionally rebuilt.
 - `src/index.css` imports Tailwind theme/utilities and `tw-animate-css` only. Avoid full Tailwind preflight here because it can override the existing static HTML typography selectors.
-- The active Paper background is the exact pasted `DemoOne` component. Do not add wrapper overlays, extra shader props, red fog, or alternate defaults unless the design intentionally changes.
+- The active Paper background is adapted from the pasted `DemoOne` component. Do not add wrapper overlays, demo install text, clipboard controls, extra shader props, red fog, or alternate defaults unless the design intentionally changes.
 - The current `@paper-design/shaders-react` types do not include the pasted `backgroundColor`, `wireframe`, `dotColor`, `orbitColor`, or `intensity` prop names. Keep `src/paper-shaders-compat.d.ts` so the copied component can remain unchanged.
 - `components/ui/background-paper-shaders.tsx` is copied exactly from the reference and is excluded from app typechecking because the pasted `THREE.Mesh` generic is broader than this repo's strict TypeScript settings.
 - Do not mount the optional React Three Fiber `ShaderPlane` or `EnergyRing` primitives in the active background unless the design intentionally calls for visible flares/rings.
@@ -132,6 +132,7 @@ Use the narrowest relevant check after edits:
 
 ## Recent Change Log
 
+- Removed the pasted Paper demo's centered `21st` install text and clipboard rectangle from the background layer while keeping the active mesh shader.
 - Copied the provided Paper demo exactly into `components/ui/demo.tsx`, mounted it directly as the background, copied `background-paper-shaders.tsx` exactly, and added type declarations so the pasted prop names can remain unchanged.
 - Removed the fake stoplight/browser-title chrome from the Tudor Place Search and Preview demo cards so each feature frame is just the video.
 - Replaced the Search and Preview placeholder cards with Tudor Place MP4 demos, removed the third Download feature block, and ignored raw Screen Studio project folders under `demos/`.

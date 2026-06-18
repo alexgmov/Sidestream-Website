@@ -8,17 +8,6 @@ export default function DemoOne() {
   const [speed, setSpeed] = useState(1.0)
   const [isInteracting, setIsInteracting] = useState(false)
   const [activeEffect, setActiveEffect] = useState("mesh")
-  const [copied, setCopied] = useState(false)
-
-  const copyToClipboard = async () => {
-    try {
-      await navigator.clipboard.writeText("pnpm i 21st")
-      setCopied(true)
-      setTimeout(() => setCopied(false), 2000)
-    } catch (err) {
-      console.error("Failed to copy text: ", err)
-    }
-  }
 
   return (
     <div className="w-full h-screen bg-black relative overflow-hidden">
@@ -95,29 +84,6 @@ export default function DemoOne() {
         />
       </div>
 
-      <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-        <div className="text-center font-mono text-xs text-white/40">
-          <div>...21st-cli...</div>
-          <div className="mt-1 flex items-center gap-2">
-            <span>pnpm i 21st.dev</span>
-            <button
-              onClick={copyToClipboard}
-              className="pointer-events-auto opacity-30 hover:opacity-60 transition-opacity text-white/60 hover:text-white/80"
-              title="Copy to clipboard"
-            >
-              {copied ? (
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
-                  <path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z" />
-                </svg>
-              ) : (
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
-                  <path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-2 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z" />
-                </svg>
-              )}
-            </button>
-          </div>
-        </div>
-      </div>
     </div>
   )
 }
