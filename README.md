@@ -82,6 +82,7 @@ Use the narrowest relevant check after edits:
 
 ## Recent Change Log
 
+- Added the "Full video and audio downloads" bullet to the Unlimited pricing plan.
 - Initialized this folder for publishing to `git@github.com:alexgmov/Sidestream-Website.git` and ignored Finder `.DS_Store` files.
 - Removed the "Maximum available quality" bullet from the Unlimited pricing plan.
 - Removed the "03 Download" eyebrow from the third feature section and cleaned up the now-unused eyebrow styles.
