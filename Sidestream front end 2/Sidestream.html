@@ -129,12 +129,6 @@
     right: 0;
     z-index: 50;
     background: transparent;
-    border-bottom: 1px solid transparent;
-    transition: border-color 200ms var(--ease), box-shadow 200ms var(--ease);
-  }
-  header.scrolled {
-    border-bottom-color: var(--line);
-    box-shadow: 0 1px 0 rgba(10, 10, 11, 0.02);
   }
   .nav {
     height: 72px;
@@ -806,12 +800,6 @@
   <div class="toast" id="toast"><span class="spinner"></span><span id="toast-msg">Starting your download…</span></div>
 
   <script>
-    // Sticky header shadow
-    const hdr = document.getElementById("hdr");
-    const onScroll = () => hdr.classList.toggle("scrolled", window.scrollY > 8);
-    onScroll();
-    window.addEventListener("scroll", onScroll, { passive: true });
-
     // Rotate the hero noun without shifting the headline layout.
     const rotatingWords = Array.from(document.querySelectorAll("[data-rotating-word]"));
     const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;

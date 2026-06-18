@@ -36,7 +36,7 @@ The screenshot cards are CSS-built placeholders that reference future image path
 
 The Aurora-style page glow is implemented directly in CSS on `main`, `main::before`, `#hero::before`, and `#hero::after`. The hero glow intentionally spills past the hero boundary so the first feature transition stays continuous. Do not add React, shadcn, Tailwind, or framer-motion just to change that background in this static page.
 
-The header is a fixed transparent overlay so the Aurora/light-ray hero background remains visible behind the nav. The `.hero-pad` top padding includes the 72px nav height to preserve the first-fold spacing.
+The header is a fixed transparent overlay with no scroll divider so the Aurora/light-ray hero background remains uninterrupted behind the nav. The `.hero-pad` top padding includes the 72px nav height to preserve the first-fold spacing.
 
 The hero rotating-word effect is also static-page native: `.rotating-copy` provides the stable text slot, `.rotating-word` animates the current noun, and the bottom inline script cycles `[data-rotating-word]`. Incoming words always roll up from below with a subtle Bezier-style overshoot before settling. Do not add React or animation dependencies for this effect.
 
@@ -82,6 +82,7 @@ Use the narrowest relevant check after edits:
 
 ## Recent Change Log
 
+- Removed the fixed header's scroll divider/shadow so the hero glow no longer reads as a hard horizontal cutoff while scrolling into the first feature section.
 - Made the Aurora-style glow continuous between the hero and first feature by removing the clipped hero edge and strengthening the page-wide glow mask.
 - Switched all page text to the SF Pro system font stack and removed the unused Google Fonts request and monospace mock-label overrides.
 - Restored the hero layout, media scale, and section spacing while keeping the hero headline, subline, and CTA smaller.
