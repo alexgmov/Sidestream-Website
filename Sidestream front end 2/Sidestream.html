@@ -329,44 +329,12 @@
   .shot {
     border: 1px solid var(--line);
     border-radius: var(--radius);
+    aspect-ratio: 5 / 3;
     overflow: hidden;
     background: var(--surface);
     box-shadow: 0 1px 2px rgba(0, 0, 0, 0.28),
       0 24px 60px -28px rgba(0, 0, 0, 0.68);
     backdrop-filter: blur(20px);
-  }
-  .shot-chrome {
-    height: 38px;
-    background: var(--chrome);
-    display: flex;
-    align-items: center;
-    padding: 0 14px;
-    gap: 14px;
-  }
-  .dots { display: flex; gap: 7px; }
-  .dots i {
-    width: 11px; height: 11px; border-radius: 50%;
-    background: #3a3b40; display: block;
-  }
-  .dots i:nth-child(1) { background: #ff5f57; }
-  .dots i:nth-child(2) { background: #febc2e; }
-  .dots i:nth-child(3) { background: #28c840; }
-  .chrome-label {
-    color: #b7b8be;
-    font-size: 12px;
-    letter-spacing: -0.01em;
-    font-weight: 500;
-  }
-  .shot-body {
-    position: relative;
-    aspect-ratio: 5 / 3;
-    background: rgba(0, 0, 0, 0.34);
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    padding: 0;
-    text-align: center;
   }
   .demo-video {
     display: block;
@@ -610,16 +578,10 @@
           </div>
         </div>
         <div class="shot reveal" aria-label="Demo video: searching Tudor Place inside the Sidestream panel">
-          <div class="shot-chrome">
-            <span class="dots"><i></i><i></i><i></i></span>
-            <span class="chrome-label">Tudor Place search</span>
-          </div>
-          <div class="shot-body">
-            <video class="demo-video" autoplay muted loop playsinline preload="metadata">
-              <source src="../demos/search%20demo.mp4" type="video/mp4">
-              Search demo for Tudor Place inside Sidestream.
-            </video>
-          </div>
+          <video class="demo-video" autoplay muted loop playsinline preload="metadata">
+            <source src="../demos/search%20demo.mp4" type="video/mp4">
+            Search demo for Tudor Place inside Sidestream.
+          </video>
         </div>
       </div>
     </section>
@@ -634,16 +596,10 @@
           </div>
         </div>
         <div class="shot reveal" aria-label="Demo video: previewing Tudor Place inside the Sidestream panel">
-          <div class="shot-chrome">
-            <span class="dots"><i></i><i></i><i></i></span>
-            <span class="chrome-label">Tudor Place preview</span>
-          </div>
-          <div class="shot-body">
-            <video class="demo-video" autoplay muted loop playsinline preload="metadata">
-              <source src="../demos/preview%20demo.mp4" type="video/mp4">
-              Preview demo for Tudor Place inside Sidestream.
-            </video>
-          </div>
+          <video class="demo-video" autoplay muted loop playsinline preload="metadata">
+            <source src="../demos/preview%20demo.mp4" type="video/mp4">
+            Preview demo for Tudor Place inside Sidestream.
+          </video>
         </div>
       </div>
     </section>
