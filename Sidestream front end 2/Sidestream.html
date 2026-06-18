@@ -111,8 +111,9 @@
     align-items: center;
   }
   .hero-split {
-    grid-template-columns: minmax(0, 440px) minmax(0, 1fr);
-    gap: 78px;
+    max-width: 892px;
+    grid-template-columns: minmax(0, 308px) minmax(0, 1fr);
+    gap: 55px;
   }
   .split.flip { grid-template-columns: 50% calc(50% - 72px); }
   .split.flip .feat-copy { order: 2; }
@@ -223,7 +224,7 @@
   /* ---------- Section rhythm ---------- */
   section { position: relative; }
   .sec-pad { padding: 120px 0; }
-  .hero-pad { padding: 168px 0 120px; }
+  .hero-pad { padding: 118px 0 84px; }
   #hero {
     overflow: hidden;
     isolation: isolate;
@@ -282,7 +283,7 @@
     font-family: var(--sans);
     font-style: normal;
     font-weight: 600;
-    font-size: 4.7rem;
+    font-size: 3.3rem;
     line-height: 0.96;
     letter-spacing: 0;
     margin: 0 0 32px;
@@ -350,16 +351,20 @@
     margin: 0 0 28px;
   }
   .cta-row { display: flex; gap: 14px; flex-wrap: wrap; align-items: center; }
-  .hero-copy.reveal { transform: translateY(-12px); }
-  .hero-copy h1 { margin-bottom: 14px; }
+  .hero-copy.reveal { transform: translateY(-8px); }
+  .hero-copy h1 { margin-bottom: 10px; }
   .hero-subline {
-    margin: 0 0 34px;
+    margin: 0 0 24px;
     color: var(--ink);
     font-family: "Helvetica Neue", Helvetica, "Inter", Arial, sans-serif;
-    font-size: 2.8rem;
+    font-size: 1.96rem;
     font-weight: 500;
     line-height: 1.05;
     letter-spacing: 0;
+  }
+  #hero .btn-lg {
+    padding: 11px 20px;
+    font-size: 14px;
   }
 
   /* ---------- Screenshot cards ---------- */
@@ -586,11 +591,11 @@
   @media (max-width: 900px) {
     .wrap { padding: 0 24px; }
     .split { grid-template-columns: 1fr; gap: 40px; }
-    .hero-split { grid-template-columns: 1fr; }
+    .hero-split { max-width: 680px; grid-template-columns: 1fr; }
     .sec-pad { padding: 84px 0; }
-    .hero-pad { padding: 136px 0 84px; }
-    h1 { font-size: 4.15rem; }
-    .hero-subline { font-size: 2.45rem; }
+    .hero-pad { padding: 95px 0 59px; }
+    h1 { font-size: 2.9rem; }
+    .hero-subline { font-size: 1.72rem; }
     .hero-copy.reveal { transform: none; }
     .feat-copy p { max-width: none; }
     .plans { grid-template-columns: 1fr; }
@@ -599,8 +604,8 @@
     .foot-top { align-items: flex-start; }
   }
   @media (max-width: 520px) {
-    h1 { font-size: 3.35rem; }
-    .hero-subline { font-size: 2rem; }
+    h1 { font-size: 2.35rem; }
+    .hero-subline { font-size: 1.4rem; }
     .rotating-copy { min-width: 0; width: 100%; }
   }
   @media (prefers-reduced-motion: reduce) {
