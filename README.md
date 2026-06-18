@@ -1,13 +1,19 @@
-# Sidestream Static Landing Page
+# Sidestream Landing Page
 
 ## Product Overview
 
-Sidestream is a static landing page for a Premiere Pro plugin that lets editors download YouTube videos, songs, overlays, b-roll, references, tutorials, or audio without leaving Premiere. The page is a single HTML document with embedded CSS and JavaScript.
+Sidestream is an HTML-first landing page for a Premiere Pro plugin that lets editors download YouTube videos, songs, overlays, b-roll, references, tutorials, or audio without leaving Premiere. The main page remains a single canonical HTML document with embedded layout CSS and vanilla JavaScript, plus a small Vite/React/Tailwind/shadcn layer that mounts the full-page animated dark shader background.
 
 ## File Map
 
-- `Sidestream front end 2/Sidestream.html` - Canonical page implementation. Contains the header, hero, CSS light-ray background, feature sections, pricing, final CTA, footer, styles, and toast behavior.
-- `index.html` - Root redirect so `http://localhost:8000/` and other local server roots open the canonical page instead of a directory listing.
+- `Sidestream front end 2/Sidestream.html` - Canonical page implementation. Contains the shader mount root, header, hero, feature sections, pricing, final CTA, footer, styles, and toast behavior.
+- `index.html` - Root redirect so `http://localhost:5173/` and other local server roots open the canonical page instead of a directory listing.
+- `components/ui/shader-background.tsx` - Self-contained fixed React shader background layer. It combines Paper `MeshGradient`/`DotOrbit` shaders with a small React Three Fiber canvas and renders no children, text, or header content.
+- `components/ui/background-paper-shaders.tsx` - React Three Fiber shader primitives (`ShaderPlane`, `EnergyRing`) used by the fixed background canvas.
+- `src/main.tsx` - React entry that mounts `ShaderBackground` into `#shader-background-root`.
+- `src/index.css` - Tailwind v4 theme/utilities import, `tw-animate-css`, and dark shadcn theme tokens used by the shader component. It intentionally avoids Tailwind preflight so the static HTML styles are not reset.
+- `components.json` - shadcn configuration with aliases rooted at the repository root.
+- `vite.config.ts` - Vite React/Tailwind build config with the root redirect and canonical Sidestream page as HTML inputs.
 - `mockups/mockup1_2.webm` - Browser-sized autoplay hero video generated from the cleaner local alpha MacBook Pro mockup source.
 - `Sidestream front end 2/screenshots/` - Reference desktop screenshots for restoring the previous look. The numbered `*-scan.png` files are the canonical before-state for the hero.
 - `Sidestream front end 2/.thumbnail` - Export thumbnail that reflects an alternate sans-serif hero state.
@@ -15,7 +21,8 @@ Sidestream is a static landing page for a Premiere Pro plugin that lets editors 
 ## Feature Map
 
 - Header/nav - `header`, `.nav`, `.brand`, `.nav-links`
-- Hero - `#hero`, `#hero::before`, `#hero::after`, `.hero-split`, `.hero-copy`, `.rotating-copy`, `.rotating-word`, `.hero-subline`, `.hero-media`, `.hero-mockup-video`
+- Shader background - `#shader-background-root`, `src/main.tsx`, `components/ui/shader-background.tsx`, `components/ui/background-paper-shaders.tsx`
+- Hero - `#hero`, `.hero-split`, `.hero-copy`, `.rotating-copy`, `.rotating-word`, `.hero-subline`, `.hero-media`, `.hero-mockup-video`
 - Feature sections - `#features` anchor, the three `.sec-pad` feature blocks, and `.feature-subtext` heading sublines
 - Pricing - `#pricing`, `.plans`, `.plan`, `.plan.featured`
 - Final CTA - `.final`
@@ -25,47 +32,57 @@ Sidestream is a static landing page for a Premiere Pro plugin that lets editors 
 
 ## Routes and Assets
 
-There is no router or framework. Open `index.html` or `Sidestream front end 2/Sidestream.html` directly in a browser.
+There is no client router. Use Vite for local development so the TypeScript shader entry is compiled and served.
 
 When using a local preview server, the root URL redirects to the canonical page:
 
 ```text
-http://localhost:8000/
+http://localhost:5173/
 ```
 
-The hero media is a native autoplaying, muted, looping `<video>` that loads `../mockups/mockup1_2.webm` from the canonical HTML file. The generated WebM keeps the page publishable; source mockup files such as `.mov`, `.aep`, `.exr`, and `.usdz` are ignored so large production assets do not get committed accidentally.
+The hero media is a native autoplaying, muted, looping `<video>` that loads `../mockups/mockup1_2.webm` from the canonical HTML file. The generated VP9-alpha WebM keeps the page publishable; source mockup files such as `.mov`, `.aep`, `.exr`, and `.usdz` are ignored so large production assets do not get committed accidentally.
 
-The hero media wrapper intentionally uses a tall `24 / 25` aspect ratio while the video itself is wider than the wrapper. This lets the MacBook render large without clipping through the video/shadow plane. The video uses a soft bottom mask fade and lighter drop shadow so alpha-matte edges do not read as dark shader lines over the pale page background.
+The hero media wrapper intentionally uses a tall `24 / 25` aspect ratio while the video itself is wider than the wrapper. This lets the MacBook render large without clipping through the video/shadow plane. The video uses a soft bottom mask fade and a dark drop shadow so alpha-matte edges stay controlled over the dark shader background.
 
 The feature screenshot cards are CSS-built placeholders that reference future image paths in their labels, such as `assets/screens/hero-panel.png`; those files are not present in this folder.
 
-The Aurora-style page glow is implemented as one continuous fixed background field on `body` and `main::before`. It is intentionally tuned as a mostly white, low-opacity wash so the gradient stays subtle behind the hero and sections. Section backgrounds should stay transparent unless the section is intentionally framed, because separate section fills, borders, or repeated ray layers make the page look broken into bands. Do not add React, shadcn, Tailwind, or framer-motion just to change that background in this static page.
+The page background should read as one continuous black/charcoal animated shader field. The canonical HTML keeps a black CSS fallback on `body`; the Vite `ShaderBackground` layer provides the full-page Paper/Three shader and must stay behind all HTML content. Page text tokens are white or translucent white for contrast, while cards and pricing surfaces are dark translucent glass.
 
-The header is a fixed transparent overlay with no scroll divider so the Aurora/light-ray hero background remains uninterrupted behind the nav. The `.hero-pad` top padding includes the 72px nav height to preserve the first-fold spacing.
+The header is a fixed transparent overlay with no scroll divider so the shader remains uninterrupted behind the nav. The `.hero-pad` top padding includes the 72px nav height to preserve the first-fold spacing.
 
-The hero rotating-word effect is also static-page native: `.rotating-copy` provides the stable text slot, `.rotating-word` animates the current noun, and the bottom inline script cycles `[data-rotating-word]`. Incoming words always roll up from below with a subtle Bezier-style overshoot before settling. The active noun also uses a clipped orange/white/teal text gradient that drifts by animating `background-position` only. Do not add React or animation dependencies for this effect.
+The hero rotating-word effect is also static-page native: `.rotating-copy` provides the stable text slot, `.rotating-word` animates the current noun, and the bottom inline script cycles `[data-rotating-word]` per `.rotating-copy` group. Incoming and outgoing words use paired, monotonic `translate3d` keyframes on the compositor path so the text stays smooth without bounce or transition/keyframe handoff. The active noun also uses a clipped orange/white/teal text gradient that drifts by animating `background-position` only. Do not add React or animation dependencies for this effect.
 
 ## Development Commands
 
-No install or build command is required.
-
-For a local preview server if needed:
+Install dependencies once:
 
 ```bash
-python3 -m http.server 8000
+npm install
+```
+
+Run the local Vite server:
+
+```bash
+npm run dev
 ```
 
 Then open:
 
 ```text
-http://localhost:8000/
+http://localhost:5173/
+```
+
+Build before publishing or after shader/layout changes:
+
+```bash
+npm run build
 ```
 
 ## Git / Publishing
 
 This folder is a git repository for `git@github.com:alexgmov/Sidestream-Website.git`.
 
-Relevant tracked files are the root redirect, canonical static HTML page, README, `.thumbnail`, the generated hero WebM, and reference screenshots. Finder `.DS_Store` files are ignored.
+Relevant tracked files are the root redirect, canonical static HTML page, React shader entry/component files, Vite/Tailwind/shadcn config, README, `.thumbnail`, the generated hero WebM, and reference screenshots. Finder `.DS_Store`, `node_modules/`, and `dist/` are ignored.
 
 The generated hero video in `mockups/mockup1_2.webm` is tracked. Raw mockup production files in `mockups/` are intentionally ignored because they can be hundreds of megabytes.
 
@@ -74,11 +91,15 @@ The generated hero video in `mockups/mockup1_2.webm` is tracked. Raw mockup prod
 Use the narrowest relevant check after edits:
 
 - Open the HTML page and compare the first fold against `Sidestream front end 2/screenshots/01-scan.png`.
+- Run `npm run build` after shader, TypeScript, Tailwind, or HTML mount changes.
+- Confirm the dark Paper/Three shader renders behind all content and does not cover the header, hero, cards, pricing, footer, or toast.
 - Confirm the hero MacBook Pro mockup video autoplays, loops, stays muted, and does not create horizontal overflow.
 - Scrub or watch the hero MacBook rotation long enough to confirm hard alpha edges and bottom shadow-plane edges do not show as dark lines.
+- Let the hero rotating noun run through a full cycle and confirm each word swap stays smooth without bounce, clipping, or layout shift.
 - Confirm the rotating noun gradient stays subtle, remains readable on "songs." and "overlays.", and pauses under reduced-motion settings.
-- Scroll from the hero through pricing and footer to confirm the background reads as one continuous gradient without horizontal seams or repeated shader lines.
-- Confirm the page background stays mostly white and does not overpower the hero text, rotating noun gradient, or MacBook mockup.
+- Scroll from the hero through pricing and footer to confirm the background reads as one continuous fixed field without horizontal seams.
+- Confirm white and translucent-white text remains readable over the dark shader on desktop and mobile.
+- Confirm the background canvases are nonblank on desktop and mobile and continue animating after scroll.
 - Check desktop at `1280x748`, because all supplied reference screenshots use that size.
 - Check mobile around `390x844` for text wrapping, CTA sizing, and image-card overflow.
 
@@ -87,25 +108,37 @@ Use the narrowest relevant check after edits:
 - The project root was missing a README before this restoration.
 - The page uses the local Apple/SF Pro system font stack and does not request external web fonts.
 - Several screenshot files are duplicates or alternate experiments. Prefer the numbered scan series for the restored hero state.
-- The pasted Aurora component references React, Tailwind, and shadcn conventions, but this project is static HTML. Translate those effects into local CSS unless the whole site is intentionally migrated.
+- The React layer is intentionally limited to the background mount. Do not migrate header, hero, pricing, or toast behavior into React unless the whole page is being intentionally rebuilt.
+- `src/index.css` imports Tailwind theme/utilities and `tw-animate-css` only. Avoid full Tailwind preflight here because it can override the existing static HTML typography selectors.
+- The current `@paper-design/shaders-react` `MeshGradient` types support `colors`, `speed`, and mesh params, but not the pasted `backgroundColor` or `wireframe` props. `DotOrbit` uses `colorBack`, `colors`, `size`, `sizeRange`, `spreading`, and `stepsPerColor`, not the pasted `dotColor`, `orbitColor`, or `intensity` props.
+- The shader component must stay self-contained: no children, visible text, nav, header, or page copy inside `components/ui/shader-background.tsx`.
 - No Alphanica font asset exists in this folder. The hero headline uses the SF Pro system stack to match the cleaner non-serif section style without adding a font dependency.
 - Because the header is fixed, `html` uses `scroll-padding-top: 72px` so anchor navigation does not hide section headings under the nav.
 - Feature heading sublines use `.feature-subtext` with the SF Pro system stack at a light weight; avoid restoring the old serif treatment unless the whole feature-heading direction changes.
+- The large footer `.wordmark` intentionally uses a Helvetica-first bold stack instead of the global SF Pro stack.
+- The rotating noun should stay on matched keyframe animations for both enter and exit. Mixing CSS transitions with keyed enter animations or adding overshoot makes the headline feel choppy.
 - The rotating noun gradient should animate only `background-position` and color/filter values. Do not animate the word transform for the gradient drift or it will fight the roll keyframes.
-- Keep the page glow as one non-repeating field. Reintroducing hero-only ray overlays, pricing band backgrounds, section borders, or patterned placeholder fills will create visible seams again.
-- Keep the page glow pale by tuning the shared `body` and `main::before` values instead of adding section-level white overlays.
+- Keep page content on `relative`/non-negative z-index surfaces. If the shader layer is enabled, it must stay behind content without forcing the page fallback to black.
+- Text tokens are tuned for a dark shader background. If the page returns to a light background, retune `--ink`, `--ink-soft`, `--ink-faint`, surfaces, and button states together.
 - If the MacBook mockup is resized, keep enough vertical room in `.hero-media` and preserve the bottom mask on `.hero-mockup-video`; a too-short 16:9 wrapper or unmasked video edge creates a hard line below the laptop.
-- Keep `mockups/mockup1_2.webm` on a light page background with the `.hero-mockup-video` bottom mask and lighter drop shadow. Dark page backgrounds make transparent alpha edges read as shader artifacts.
+- Keep `mockups/mockup1_2.webm` checked after shader changes; dark backgrounds can make transparent alpha edges more visible if the `.hero-mockup-video` mask or shadow is changed.
 - Mobile split sections must override both `.split` and `.split.flip`; otherwise the more-specific desktop flipped grid can leave feature cards half-width on narrow screens.
 
 ## Recent Change Log
 
+- Replaced the full-page background with a dark Paper/Three shader stack, added `components/ui/background-paper-shaders.tsx`, installed the Three/R3F dependencies, and retuned page text/surfaces to white-on-dark.
 - Swapped the hero MacBook video to the cleaner `mockup1_2` alpha animation and generated a browser-sized WebM.
+- Added the Vite/React/Tailwind/shadcn project shell and the `@paper-design/shaders-react` shader background component.
+- Mounted `ShaderBackground` once at the top of the canonical page and removed the old CSS Aurora/body glow.
+- Changed formerly black text tokens to white/translucent white and darkened page cards, placeholders, pricing cards, and toast surfaces for shader contrast.
+- Ignored generated `node_modules/` and `dist/` output.
 - Restored the page to a mostly white background and softened the MacBook video shadow/mask to reduce alpha edge artifacts during rotation.
 - Added a subtle orange/white/teal animated gradient to the hero rotating noun.
 - Increased the hero MacBook mockup scale by roughly 30% while preserving the taller media frame and bottom fade mask.
 - Enlarged the hero headline/subline and MacBook mockup slightly, removed the hero-only shader layer, and made the page glow one continuous non-repeating background field.
 - Fixed the mobile flipped-grid override so feature cards use the full mobile width.
+- Set the large footer SIDESTREAM wordmark to Helvetica Bold.
+- Smoothed the hero rotating noun by replacing the mixed transition/keyframe handoff with matched monotonic `translate3d` keyframes and per-group rotation setup.
 - Replaced the hero screenshot placeholder with an autoplaying muted loop of the rotating MacBook Pro mockup and added the generated WebM asset.
 - Removed the fixed header's scroll divider/shadow so the hero glow no longer reads as a hard horizontal cutoff while scrolling into the first feature section.
 - Made the Aurora-style glow continuous between the hero and first feature by removing the clipped hero edge and strengthening the page-wide glow mask.
