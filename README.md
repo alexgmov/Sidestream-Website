@@ -35,9 +35,11 @@ http://localhost:8000/
 
 The hero media is a native autoplaying, muted, looping `<video>` that loads `../mockups/mockup1.webm` from the canonical HTML file. The generated WebM keeps the page publishable; source mockup files such as `.mov`, `.aep`, `.exr`, and `.usdz` are ignored so large production assets do not get committed accidentally.
 
+The hero media wrapper intentionally uses a taller `5 / 4` aspect ratio while the video itself is wider than the wrapper. This lets the MacBook render larger without clipping through the video/shadow plane. The video also has a bottom mask fade to hide the mockup asset's lower shadow-plane edge.
+
 The feature screenshot cards are CSS-built placeholders that reference future image paths in their labels, such as `assets/screens/hero-panel.png`; those files are not present in this folder.
 
-The Aurora-style page glow is implemented directly in CSS on `main`, `main::before`, `#hero::before`, and `#hero::after`. The hero glow intentionally spills past the hero boundary so the first feature transition stays continuous. Do not add React, shadcn, Tailwind, or framer-motion just to change that background in this static page.
+The Aurora-style page glow is implemented as one continuous fixed background field on `body` and `main::before`. Section backgrounds should stay transparent unless the section is intentionally framed, because separate section fills, borders, or repeated ray layers make the page look broken into bands. Do not add React, shadcn, Tailwind, or framer-motion just to change that background in this static page.
 
 The header is a fixed transparent overlay with no scroll divider so the Aurora/light-ray hero background remains uninterrupted behind the nav. The `.hero-pad` top padding includes the 72px nav height to preserve the first-fold spacing.
 
@@ -73,6 +75,7 @@ Use the narrowest relevant check after edits:
 
 - Open the HTML page and compare the first fold against `Sidestream front end 2/screenshots/01-scan.png`.
 - Confirm the hero MacBook Pro mockup video autoplays, loops, stays muted, and does not create horizontal overflow.
+- Scroll from the hero through pricing and footer to confirm the background reads as one continuous gradient without horizontal seams or repeated shader lines.
 - Check desktop at `1280x748`, because all supplied reference screenshots use that size.
 - Check mobile around `390x844` for text wrapping, CTA sizing, and image-card overflow.
 
@@ -85,9 +88,14 @@ Use the narrowest relevant check after edits:
 - No Alphanica font asset exists in this folder. The hero headline uses the SF Pro system stack to match the cleaner non-serif section style without adding a font dependency.
 - Because the header is fixed, `html` uses `scroll-padding-top: 72px` so anchor navigation does not hide section headings under the nav.
 - Feature heading sublines use `.feature-subtext` with the SF Pro system stack at a light weight; avoid restoring the old serif treatment unless the whole feature-heading direction changes.
+- Keep the page glow as one non-repeating field. Reintroducing hero-only ray overlays, pricing band backgrounds, section borders, or patterned placeholder fills will create visible seams again.
+- If the MacBook mockup is resized, keep enough vertical room in `.hero-media` and preserve the bottom mask on `.hero-mockup-video`; a too-short 16:9 wrapper or unmasked video edge creates a hard line below the laptop.
+- Mobile split sections must override both `.split` and `.split.flip`; otherwise the more-specific desktop flipped grid can leave feature cards half-width on narrow screens.
 
 ## Recent Change Log
 
+- Enlarged the hero headline/subline and MacBook mockup slightly, removed the hero-only shader layer, and made the page glow one continuous non-repeating background field.
+- Fixed the mobile flipped-grid override so feature cards use the full mobile width.
 - Replaced the hero screenshot placeholder with an autoplaying muted loop of the rotating MacBook Pro mockup and added the generated WebM asset.
 - Removed the fixed header's scroll divider/shadow so the hero glow no longer reads as a hard horizontal cutoff while scrolling into the first feature section.
 - Made the Aurora-style glow continuous between the hero and first feature by removing the clipped hero edge and strengthening the page-wide glow mask.

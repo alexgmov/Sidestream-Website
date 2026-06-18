@@ -33,7 +33,11 @@
 
   body {
     margin: 0;
-    background: var(--white);
+    background:
+      linear-gradient(115deg, rgba(0, 64, 255, 0.18) -18%, rgba(0, 64, 255, 0) 34%),
+      linear-gradient(245deg, rgba(125, 211, 252, 0.22) -8%, rgba(125, 211, 252, 0) 38%),
+      linear-gradient(180deg, #f7faff 0%, #ffffff 42%, #f6fbff 72%, #ffffff 100%);
+    background-attachment: fixed;
     color: var(--ink);
     font-family: var(--sans);
     font-stretch: var(--sans-stretch);
@@ -46,43 +50,22 @@
   main {
     position: relative;
     overflow: hidden;
-    background:
-      radial-gradient(circle at 88% 5%, rgba(125, 211, 252, 0.24), transparent 28%),
-      radial-gradient(ellipse at 78% 34%, rgba(0, 64, 255, 0.16), transparent 34%),
-      radial-gradient(ellipse at 18% 50%, rgba(196, 181, 253, 0.16), transparent 30%),
-      radial-gradient(ellipse at 82% 76%, rgba(125, 211, 252, 0.16), transparent 35%),
-      linear-gradient(180deg, #f7faff 0%, #fff 32%, #f7faff 64%, #fff 100%);
+    background: transparent;
   }
   main::before {
     content: "";
-    position: absolute;
-    inset: -12% -18% -2% -8%;
+    position: fixed;
+    inset: -18% -16%;
     z-index: 0;
     pointer-events: none;
-    opacity: 0.58;
-    filter: blur(16px);
+    opacity: 0.78;
+    filter: blur(52px);
     background-image:
-      repeating-linear-gradient(
-        100deg,
-        rgba(255, 255, 255, 0.76) 0%,
-        rgba(255, 255, 255, 0.76) 7%,
-        transparent 10%,
-        transparent 12%,
-        rgba(255, 255, 255, 0.76) 16%
-      ),
-      repeating-linear-gradient(
-        100deg,
-        rgba(0, 64, 255, 0.38) 10%,
-        rgba(129, 140, 248, 0.32) 15%,
-        rgba(125, 211, 252, 0.3) 20%,
-        rgba(196, 181, 253, 0.32) 25%,
-        rgba(0, 64, 255, 0.36) 30%
-      );
-    background-position: 50% 0%, 50% 0%;
-    background-size: 360% 180%, 260% 180%;
-    mask-image: linear-gradient(180deg, #000 0%, rgba(0, 0, 0, 0.9) 38%, rgba(0, 0, 0, 0.76) 68%, rgba(0, 0, 0, 0.52) 100%);
-    -webkit-mask-image: linear-gradient(180deg, #000 0%, rgba(0, 0, 0, 0.9) 38%, rgba(0, 0, 0, 0.76) 68%, rgba(0, 0, 0, 0.52) 100%);
-    animation: aurora-rays 80s linear infinite;
+      linear-gradient(105deg, rgba(0, 64, 255, 0) 8%, rgba(0, 64, 255, 0.2) 34%, rgba(0, 64, 255, 0) 62%),
+      linear-gradient(72deg, rgba(125, 211, 252, 0) 18%, rgba(125, 211, 252, 0.2) 48%, rgba(125, 211, 252, 0) 76%),
+      linear-gradient(155deg, rgba(196, 181, 253, 0) 20%, rgba(196, 181, 253, 0.18) 54%, rgba(196, 181, 253, 0) 82%);
+    background-size: 150% 150%, 140% 140%, 160% 160%;
+    background-position: 12% 8%, 88% 24%, 50% 92%;
   }
   main > * {
     position: relative;
@@ -109,8 +92,8 @@
     align-items: center;
   }
   .hero-split {
-    grid-template-columns: minmax(0, 440px) minmax(0, 1fr);
-    gap: 78px;
+    grid-template-columns: minmax(0, 475px) minmax(0, 1fr);
+    gap: 58px;
   }
   .split.flip { grid-template-columns: 50% calc(50% - 72px); }
   .split.flip .feat-copy { order: 2; }
@@ -222,59 +205,20 @@
     background: transparent;
   }
   #hero::before {
-    content: "";
-    position: absolute;
-    inset: -22% -14% -52% -4%;
-    z-index: 0;
-    pointer-events: none;
-    opacity: 0.96;
-    filter: blur(10px);
-    background-image:
-      repeating-linear-gradient(
-        100deg,
-        rgba(255, 255, 255, 0.82) 0%,
-        rgba(255, 255, 255, 0.82) 7%,
-        transparent 10%,
-        transparent 12%,
-        rgba(255, 255, 255, 0.82) 16%
-      ),
-      repeating-linear-gradient(
-        100deg,
-        rgba(0, 64, 255, 0.5) 10%,
-        rgba(129, 140, 248, 0.42) 15%,
-        rgba(125, 211, 252, 0.38) 20%,
-        rgba(196, 181, 253, 0.4) 25%,
-        rgba(0, 64, 255, 0.46) 30%
-      );
-    background-position: 50% 50%, 50% 50%;
-    background-size: 300% 300%, 220% 220%;
-    mask-image: radial-gradient(ellipse at 100% 0%, #000 10%, rgba(0, 0, 0, 0.62) 48%, transparent 92%);
-    -webkit-mask-image: radial-gradient(ellipse at 100% 0%, #000 10%, rgba(0, 0, 0, 0.62) 48%, transparent 92%);
-    animation: aurora-rays 60s linear infinite;
+    content: none;
   }
   #hero::after {
-    content: "";
-    position: absolute;
-    inset: auto -18% -64% 28%;
-    height: 76%;
-    z-index: 0;
-    pointer-events: none;
-    background: radial-gradient(ellipse, rgba(0, 64, 255, 0.2), transparent 66%);
+    content: none;
   }
   #hero > .wrap {
     position: relative;
     z-index: 1;
   }
-  @keyframes aurora-rays {
-    from { background-position: 50% 50%, 50% 50%; }
-    to { background-position: 350% 50%, 350% 50%; }
-  }
-
   h1 {
     font-family: var(--sans);
     font-style: normal;
     font-weight: 600;
-    font-size: 3.3rem;
+    font-size: 3.65rem;
     line-height: 0.96;
     letter-spacing: 0;
     margin: 0 0 32px;
@@ -348,7 +292,7 @@
     margin: 0 0 24px;
     color: var(--ink);
     font-family: var(--sans);
-    font-size: 1.96rem;
+    font-size: 2.12rem;
     font-weight: 500;
     line-height: 1.05;
     letter-spacing: 0;
@@ -362,16 +306,18 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    aspect-ratio: 16 / 9;
+    aspect-ratio: 5 / 4;
     overflow: hidden;
   }
   .hero-mockup-video {
     display: block;
-    width: 130%;
+    width: 142%;
     max-width: none;
     height: auto;
     object-fit: contain;
     filter: drop-shadow(0 28px 40px rgba(10, 10, 11, 0.2));
+    mask-image: linear-gradient(180deg, #000 0%, #000 84%, rgba(0, 0, 0, 0.72) 91%, transparent 100%);
+    -webkit-mask-image: linear-gradient(180deg, #000 0%, #000 84%, rgba(0, 0, 0, 0.72) 91%, transparent 100%);
   }
 
   /* ---------- Screenshot cards ---------- */
@@ -379,7 +325,7 @@
     border: 1px solid var(--line);
     border-radius: var(--radius);
     overflow: hidden;
-    background: #fff;
+    background: rgba(255, 255, 255, 0.66);
     box-shadow: 0 1px 2px rgba(10, 10, 11, 0.04),
       0 24px 60px -28px rgba(10, 10, 11, 0.22);
   }
@@ -408,14 +354,7 @@
   .shot-body {
     position: relative;
     aspect-ratio: 4 / 3;
-    background-color: #fbfbfc;
-    background-image: repeating-linear-gradient(
-      135deg,
-      #f4f4f6 0px,
-      #f4f4f6 1px,
-      transparent 1px,
-      transparent 11px
-    );
+    background: rgba(255, 255, 255, 0.56);
     display: flex;
     flex-direction: column;
     align-items: center;
@@ -473,9 +412,8 @@
 
   /* ---------- Pricing ---------- */
   #pricing {
-    background: rgba(252, 252, 253, 0.64);
-    border-top: 1px solid rgba(233, 233, 236, 0.64);
-    border-bottom: 1px solid rgba(233, 233, 236, 0.64);
+    background: transparent;
+    border: 0;
   }
   .pricing-head { text-align: center; max-width: 40ch; margin: 0 auto 64px; }
   .pricing-head h2 { margin-bottom: 0; }
@@ -556,7 +494,7 @@
   .final .cta-row { position: relative; justify-content: center; }
 
   /* ---------- Footer ---------- */
-  footer { border-top: 1px solid var(--line); padding: 72px 0 56px; }
+  footer { border-top: 0; padding: 72px 0 56px; }
   .foot-top {
     display: flex; justify-content: space-between; align-items: flex-end;
     gap: 40px; flex-wrap: wrap;
@@ -598,11 +536,16 @@
   @media (max-width: 900px) {
     .wrap { padding: 0 24px; }
     .split { grid-template-columns: 1fr; gap: 40px; }
+    .split.flip { grid-template-columns: 1fr; }
+    .split.flip .feat-copy,
+    .split.flip .shot { order: initial; }
+    .feat-copy.align-right { text-align: left; }
+    .feat-copy.align-right .cta-row { justify-content: flex-start; }
     .hero-split { grid-template-columns: 1fr; }
     .sec-pad { padding: 84px 0; }
     .hero-pad { padding: 136px 0 84px; }
-    h1 { font-size: 2.9rem; }
-    .hero-subline { font-size: 1.72rem; }
+    h1 { font-size: 3.08rem; }
+    .hero-subline { font-size: 1.86rem; }
     .hero-copy.reveal { transform: none; }
     .feat-copy p { max-width: none; }
     .plans { grid-template-columns: 1fr; }
@@ -611,9 +554,13 @@
     .foot-top { align-items: flex-start; }
   }
   @media (max-width: 520px) {
-    h1 { font-size: 2.35rem; }
-    .hero-subline { font-size: 1.4rem; }
+    h1 { font-size: 2.58rem; }
+    .hero-subline { font-size: 1.48rem; }
     .rotating-copy { min-width: 0; width: 100%; }
+    .hero-mockup-video {
+      width: 136%;
+      transform: translateX(-3%);
+    }
   }
   @media (prefers-reduced-motion: reduce) {
     .rotating-word {
