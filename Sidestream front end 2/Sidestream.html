@@ -357,6 +357,22 @@
     padding: 11px 20px;
     font-size: 14px;
   }
+  .hero-media {
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    aspect-ratio: 16 / 9;
+    overflow: hidden;
+  }
+  .hero-mockup-video {
+    display: block;
+    width: 130%;
+    max-width: none;
+    height: auto;
+    object-fit: contain;
+    filter: drop-shadow(0 28px 40px rgba(10, 10, 11, 0.2));
+  }
 
   /* ---------- Screenshot cards ---------- */
   .shot {
@@ -648,16 +664,11 @@
             <a class="btn btn-primary btn-lg" href="#" data-download>Download now</a>
           </div>
         </div>
-        <div class="shot reveal" aria-label="Screenshot placeholder: Sidestream panel docked in Premiere Pro">
-          <div class="shot-chrome">
-            <span class="dots"><i></i><i></i><i></i></span>
-            <span class="chrome-label">Adobe Premiere Pro Sidestream</span>
-          </div>
-          <div class="shot-body">
-            <div class="ph-title">Sidestream panel docked in Premiere Pro</div>
-            <div class="ph-tag">assets/screens/hero-panel.png</div>
-            <div class="ph-dim">expected 1280 × 960 px · @2x</div>
-          </div>
+        <div class="hero-media reveal" aria-label="Rotating MacBook Pro showing Sidestream in Premiere Pro">
+          <video class="hero-mockup-video" autoplay muted loop playsinline preload="metadata">
+            <source src="../mockups/mockup1.webm" type="video/webm">
+            Rotating MacBook Pro preview.
+          </video>
         </div>
       </div>
     </section>

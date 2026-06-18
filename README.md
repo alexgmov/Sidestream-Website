@@ -8,13 +8,14 @@ Sidestream is a static landing page for a Premiere Pro plugin that lets editors 
 
 - `Sidestream front end 2/Sidestream.html` - Canonical page implementation. Contains the header, hero, CSS light-ray background, feature sections, pricing, final CTA, footer, styles, and toast behavior.
 - `index.html` - Root redirect so `http://localhost:8000/` and other local server roots open the canonical page instead of a directory listing.
+- `mockups/mockup1.webm` - Browser-sized autoplay hero video generated from the local alpha MacBook Pro mockup source.
 - `Sidestream front end 2/screenshots/` - Reference desktop screenshots for restoring the previous look. The numbered `*-scan.png` files are the canonical before-state for the hero.
 - `Sidestream front end 2/.thumbnail` - Export thumbnail that reflects an alternate sans-serif hero state.
 
 ## Feature Map
 
 - Header/nav - `header`, `.nav`, `.brand`, `.nav-links`
-- Hero - `#hero`, `#hero::before`, `#hero::after`, `.hero-split`, `.hero-copy`, `.rotating-copy`, `.rotating-word`, `.hero-subline`, `.shot`
+- Hero - `#hero`, `#hero::before`, `#hero::after`, `.hero-split`, `.hero-copy`, `.rotating-copy`, `.rotating-word`, `.hero-subline`, `.hero-media`, `.hero-mockup-video`
 - Feature sections - `#features` anchor, the three `.sec-pad` feature blocks, and `.feature-subtext` heading sublines
 - Pricing - `#pricing`, `.plans`, `.plan`, `.plan.featured`
 - Final CTA - `.final`
@@ -32,7 +33,9 @@ When using a local preview server, the root URL redirects to the canonical page:
 http://localhost:8000/
 ```
 
-The screenshot cards are CSS-built placeholders that reference future image paths in their labels, such as `assets/screens/hero-panel.png`; those files are not present in this folder.
+The hero media is a native autoplaying, muted, looping `<video>` that loads `../mockups/mockup1.webm` from the canonical HTML file. The generated WebM keeps the page publishable; source mockup files such as `.mov`, `.aep`, `.exr`, and `.usdz` are ignored so large production assets do not get committed accidentally.
+
+The feature screenshot cards are CSS-built placeholders that reference future image paths in their labels, such as `assets/screens/hero-panel.png`; those files are not present in this folder.
 
 The Aurora-style page glow is implemented directly in CSS on `main`, `main::before`, `#hero::before`, and `#hero::after`. The hero glow intentionally spills past the hero boundary so the first feature transition stays continuous. Do not add React, shadcn, Tailwind, or framer-motion just to change that background in this static page.
 
@@ -60,13 +63,16 @@ http://localhost:8000/
 
 This folder is a git repository for `git@github.com:alexgmov/Sidestream-Website.git`.
 
-Relevant tracked files are the root redirect, canonical static HTML page, README, `.thumbnail`, and reference screenshots. Finder `.DS_Store` files are ignored.
+Relevant tracked files are the root redirect, canonical static HTML page, README, `.thumbnail`, the generated hero WebM, and reference screenshots. Finder `.DS_Store` files are ignored.
+
+The generated hero video in `mockups/mockup1.webm` is tracked. Raw mockup production files in `mockups/` are intentionally ignored because they can be hundreds of megabytes.
 
 ## Testing Guide
 
 Use the narrowest relevant check after edits:
 
 - Open the HTML page and compare the first fold against `Sidestream front end 2/screenshots/01-scan.png`.
+- Confirm the hero MacBook Pro mockup video autoplays, loops, stays muted, and does not create horizontal overflow.
 - Check desktop at `1280x748`, because all supplied reference screenshots use that size.
 - Check mobile around `390x844` for text wrapping, CTA sizing, and image-card overflow.
 
@@ -82,6 +88,7 @@ Use the narrowest relevant check after edits:
 
 ## Recent Change Log
 
+- Replaced the hero screenshot placeholder with an autoplaying muted loop of the rotating MacBook Pro mockup and added the generated WebM asset.
 - Removed the fixed header's scroll divider/shadow so the hero glow no longer reads as a hard horizontal cutoff while scrolling into the first feature section.
 - Made the Aurora-style glow continuous between the hero and first feature by removing the clipped hero edge and strengthening the page-wide glow mask.
 - Switched all page text to the SF Pro system font stack and removed the unused Google Fonts request and monospace mock-label overrides.
