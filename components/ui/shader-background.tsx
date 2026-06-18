@@ -1,7 +1,7 @@
 "use client"
 
 import { Canvas } from "@react-three/fiber"
-import { DotOrbit, MeshGradient } from "@paper-design/shaders-react"
+import { MeshGradient } from "@paper-design/shaders-react"
 
 import { ShaderPlane } from "@/components/ui/background-paper-shaders"
 
@@ -12,20 +12,10 @@ export function ShaderBackground() {
         className="absolute inset-0 h-full w-full opacity-90"
         colors={["#000000", "#1a1a1a", "#333333", "#ffffff"]}
         distortion={0.82}
-        grainMixer={0.18}
-        grainOverlay={0.14}
+        grainMixer={0}
+        grainOverlay={0}
         speed={0.7}
         swirl={0.42}
-      />
-      <DotOrbit
-        className="absolute inset-0 h-full w-full opacity-30 mix-blend-screen"
-        colorBack="#000000"
-        colors={["#1a1a1a", "#333333", "#ffffff"]}
-        size={0.32}
-        sizeRange={0.48}
-        speed={0.32}
-        spreading={0.72}
-        stepsPerColor={2}
       />
       <Canvas
         className="absolute inset-0 h-full w-full opacity-40 mix-blend-screen"
