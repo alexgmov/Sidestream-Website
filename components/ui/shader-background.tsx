@@ -3,7 +3,7 @@
 import { Canvas } from "@react-three/fiber"
 import { DotOrbit, MeshGradient } from "@paper-design/shaders-react"
 
-import { EnergyRing, ShaderPlane } from "@/components/ui/background-paper-shaders"
+import { ShaderPlane } from "@/components/ui/background-paper-shaders"
 
 export function ShaderBackground() {
   return (
@@ -33,7 +33,6 @@ export function ShaderBackground() {
       >
         <ShaderPlane position={[-1.85, 1.15, 0]} />
         <ShaderPlane position={[1.9, -1.2, -0.4]} color1="#333333" />
-        <EnergyRing radius={0.78} position={[1.8, 1.05, 0]} />
       </Canvas>
       <div className="absolute inset-0 bg-black/42" />
       <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_38%,rgba(255,255,255,0.16),transparent_34%)]" />

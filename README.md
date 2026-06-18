@@ -9,7 +9,7 @@ Sidestream is an HTML-first landing page for a Premiere Pro plugin that lets edi
 - `Sidestream front end 2/Sidestream.html` - Canonical page implementation. Contains the shader mount root, header, hero, feature sections, pricing, final CTA, footer, styles, and toast behavior.
 - `index.html` - Root redirect so `http://localhost:5173/` and other local server roots open the canonical page instead of a directory listing.
 - `components/ui/shader-background.tsx` - Self-contained fixed React shader background layer. It combines Paper `MeshGradient`/`DotOrbit` shaders with a small React Three Fiber canvas and renders no children, text, or header content.
-- `components/ui/background-paper-shaders.tsx` - React Three Fiber shader primitives (`ShaderPlane`, `EnergyRing`) used by the fixed background canvas.
+- `components/ui/background-paper-shaders.tsx` - React Three Fiber shader primitives. `ShaderPlane` is used by the fixed background canvas; `EnergyRing` remains available but is not mounted because the visible ring reads as a distracting orange circle.
 - `src/main.tsx` - React entry that mounts `ShaderBackground` into `#shader-background-root`.
 - `src/index.css` - Tailwind v4 theme/utilities import, `tw-animate-css`, and dark shadcn theme tokens used by the shader component. It intentionally avoids Tailwind preflight so the static HTML styles are not reset.
 - `components.json` - shadcn configuration with aliases rooted at the repository root.
@@ -126,6 +126,7 @@ Use the narrowest relevant check after edits:
 
 ## Recent Change Log
 
+- Removed the visible `EnergyRing` from the mounted background so the top-right hero area no longer shows a distracting orange circle.
 - Replaced the full-page background with a dark Paper/Three shader stack, added `components/ui/background-paper-shaders.tsx`, installed the Three/R3F dependencies, and retuned page text/surfaces to white-on-dark.
 - Swapped the hero MacBook video to the cleaner `mockup1_2` alpha animation and generated a browser-sized WebM.
 - Added the Vite/React/Tailwind/shadcn project shell and the `@paper-design/shaders-react` shader background component.
