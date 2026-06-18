@@ -25,7 +25,7 @@ Sidestream is an HTML-first landing page for a Premiere Pro plugin that lets edi
 - Header/nav - `header`, `.nav`, `.brand`, `.nav-links`
 - Shader background - `#shader-background-root`, `src/main.tsx`, `components/ui/demo.tsx`, `components/ui/background-paper-shaders.tsx`, and `src/paper-shaders-compat.d.ts`
 - Hero - `#hero`, `.hero-split`, `.hero-copy`, `.rotating-copy`, `.rotating-word`, `.hero-subline`, `.hero-media`, `.hero-mockup-video`
-- Feature sections - `#features` anchor, the two `.sec-pad` feature blocks, `.feature-subtext` heading sublines, `.shot` video frames, and `.demo-video` MP4 embeds
+- Feature sections - `#features` anchor, the two `.sec-pad` feature blocks, `.feature-subtext` heading sublines, `.shot` video frames, `.demo-video` MP4 embeds, and the bottom inline viewport-playback observer
 - Pricing - `#pricing`, `.plans`, `.plan`, `.plan.featured`
 - Final CTA - `.final`
 - Footer - `footer`, `.wordmark`, `.foot-top`, `.foot-bottom`
@@ -46,7 +46,7 @@ The hero media is a native autoplaying, muted, looping `<video>` that loads `../
 
 The hero media wrapper intentionally uses a tall `24 / 25` aspect ratio while the video itself is wider than the wrapper. This lets the MacBook render large without clipping through the video plane. The video uses a soft bottom mask fade but no CSS drop shadow because filtering the alpha video can reveal a rectangular compositing edge during rotation.
 
-The feature cards are chrome-free video frames that use native autoplaying, muted, looping MP4s from `demos/`. The active demos are `search demo.mp4` and `preview demo.mp4`, both recorded around the Tudor Place workflow. Raw Screen Studio project folders should stay out of git; export compact MP4s for the site instead.
+The feature cards are chrome-free video frames that use native muted, looping MP4s from `demos/`. The active demos are `search demo.mp4` and `preview demo.mp4`, both recorded around the Tudor Place workflow. They intentionally do not use the `autoplay` attribute; the bottom inline script uses `IntersectionObserver` to play each `.demo-video` only while it is visible and pause it when it leaves the viewport. Raw Screen Studio project folders should stay out of git; export compact MP4s for the site instead.
 
 The page background should preserve the provided Paper demo's shader direction without keeping its demo-site UI. The canonical HTML keeps a black CSS fallback on `body`; `#shader-background-root` is a fixed full-viewport mount, and `src/main.tsx` renders the adapted `DemoOne` component from `components/ui/demo.tsx`. The demo's default `activeEffect` is `"mesh"`, so the visible background is the original black/charcoal/gray/white `MeshGradient` branch. Page text tokens are white or translucent white for contrast, while cards and pricing surfaces are dark translucent glass.
 
@@ -100,6 +100,7 @@ Use the narrowest relevant check after edits:
 - Confirm the brand bug, CTA buttons, active pricing state, check icons, and rotating noun gradient use the red accent palette without leftover orange accents.
 - Confirm the background uses the exact pasted demo's default black/charcoal/gray/white `MeshGradient` branch, with no custom red CSS fog, extra overlay gradients, or mounted `EnergyRing`.
 - Confirm the hero MacBook Pro mockup video autoplays, loops, stays muted, and does not create horizontal overflow.
+- Confirm the feature demo videos are paused before they enter the viewport, start playing when scrolled into view, and pause again after leaving view.
 - Scrub or watch the hero MacBook rotation long enough to confirm hard alpha edges and video-plane edges do not show as dark lines.
 - Let the hero rotating noun run through a full cycle and confirm each word swap stays smooth without bounce, clipping, or layout shift.
 - Confirm the rotating noun gradient stays subtle, remains readable on "songs." and "overlays.", and pauses under reduced-motion settings.
@@ -132,9 +133,11 @@ Use the narrowest relevant check after edits:
 - Keep `mockups/mockup1_2.webm` checked after background changes; dark backgrounds can make transparent alpha edges more visible if the `.hero-mockup-video` mask or shadow is changed.
 - Mobile split sections must override both `.split` and `.split.flip`; otherwise the more-specific desktop flipped grid can leave feature cards half-width on narrow screens.
 - Feature demo cards use 1800 x 1080 MP4 exports and a chrome-free `.shot` frame with a `5 / 3` aspect ratio, matching the videos without crop. Keep future feature demos muted, looping, and compressed before committing.
+- Feature demo playback is viewport-driven in the bottom inline script. Keep `.demo-video` elements without `autoplay`; otherwise they can start before the user scrolls to the feature cards.
 
 ## Recent Change Log
 
+- Made the Tudor Place feature demo videos start only when scrolled into view and pause when they leave the viewport.
 - Shifted the desktop hero copy and MacBook mockup upward by redistributing hero top/bottom padding for better 14-inch MacBook viewport centering.
 - Removed the pasted Paper demo's centered `21st` install text and clipboard rectangle from the background layer while keeping the active mesh shader.
 - Copied the provided Paper demo exactly into `components/ui/demo.tsx`, mounted it directly as the background, copied `background-paper-shaders.tsx` exactly, and added type declarations so the pasted prop names can remain unchanged.

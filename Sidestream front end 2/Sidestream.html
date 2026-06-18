@@ -588,7 +588,7 @@
           </div>
         </div>
         <div class="shot reveal" aria-label="Demo video: searching Tudor Place inside the Sidestream panel">
-          <video class="demo-video" autoplay muted loop playsinline preload="metadata">
+          <video class="demo-video" muted loop playsinline preload="metadata">
             <source src="../demos/search%20demo.mp4" type="video/mp4">
             Search demo for Tudor Place inside Sidestream.
           </video>
@@ -606,7 +606,7 @@
           </div>
         </div>
         <div class="shot reveal" aria-label="Demo video: previewing Tudor Place inside the Sidestream panel">
-          <video class="demo-video" autoplay muted loop playsinline preload="metadata">
+          <video class="demo-video" muted loop playsinline preload="metadata">
             <source src="../demos/preview%20demo.mp4" type="video/mp4">
             Preview demo for Tudor Place inside Sidestream.
           </video>
@@ -719,6 +719,34 @@
         }, wordAnimationMs);
       }, 2000);
     });
+
+    // Feature demos should stay idle until their cards enter the viewport.
+    const demoVideos = Array.from(document.querySelectorAll(".demo-video"));
+    demoVideos.forEach((video) => video.pause());
+    function playDemoVideo(video) {
+      const playAttempt = video.play();
+      if (playAttempt) playAttempt.catch(() => {});
+    }
+    if ("IntersectionObserver" in window) {
+      const demoVideoObserver = new IntersectionObserver(
+        (entries) => {
+          entries.forEach((entry) => {
+            const video = entry.target;
+            if (entry.isIntersecting && entry.intersectionRatio > 0) {
+              playDemoVideo(video);
+              return;
+            }
+
+            video.pause();
+          });
+        },
+        { threshold: 0.1 }
+      );
+
+      demoVideos.forEach((video) => demoVideoObserver.observe(video));
+    } else {
+      demoVideos.forEach(playDemoVideo);
+    }
 
     // Download / purchase actions -> toast (real installer drops in here)
     const toast = document.getElementById("toast");
