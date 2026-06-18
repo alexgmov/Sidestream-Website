@@ -34,7 +34,7 @@ http://localhost:8000/
 
 The screenshot cards are CSS-built placeholders that reference future image paths in their labels, such as `assets/screens/hero-panel.png`; those files are not present in this folder.
 
-The Aurora-style hero light rays are implemented directly in CSS on `#hero::before` and `#hero::after`. Do not add React, shadcn, Tailwind, or framer-motion just to change that background in this static page.
+The Aurora-style page glow is implemented directly in CSS on `main`, `main::before`, `#hero::before`, and `#hero::after`. Do not add React, shadcn, Tailwind, or framer-motion just to change that background in this static page.
 
 The header is a fixed transparent overlay so the Aurora/light-ray hero background remains visible behind the nav. The `.hero-pad` top padding includes the 72px nav height to preserve the first-fold spacing.
 
@@ -82,6 +82,7 @@ Use the narrowest relevant check after edits:
 
 ## Recent Change Log
 
+- Extended the Aurora-style glow through the landing page and softened the pricing band so there is no hard stop after the hero.
 - Removed the Terms link from the footer and cleaned up unused footer-link styles.
 - Removed the support email link from the footer.
 - Added the "Maximum audio and video quality" bullet to both pricing plans.
