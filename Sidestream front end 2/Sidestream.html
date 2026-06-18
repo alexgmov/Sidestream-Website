@@ -46,77 +46,6 @@
     line-height: 1.5;
   }
 
-  .shader-background {
-    position: fixed;
-    inset: 0;
-    z-index: 0;
-    overflow: hidden;
-    pointer-events: none;
-    background:
-      linear-gradient(128deg, #000 0%, #050505 22%, #111 44%, #030303 70%, #000 100%);
-  }
-  .shader-background::before,
-  .shader-background::after {
-    content: "";
-    position: absolute;
-    inset: -32%;
-    transform: translate3d(0, 0, 0);
-    will-change: transform;
-  }
-  .shader-background::before {
-    background:
-      conic-gradient(
-        from 225deg at 54% 42%,
-        rgba(0, 0, 0, 0) 0deg,
-        rgba(255, 255, 255, 0.18) 48deg,
-        rgba(255, 42, 42, 0.16) 86deg,
-        rgba(36, 36, 36, 0.68) 138deg,
-        rgba(255, 255, 255, 0.08) 190deg,
-        rgba(0, 0, 0, 0) 255deg,
-        rgba(255, 42, 42, 0.12) 315deg,
-        rgba(0, 0, 0, 0) 360deg
-      );
-    filter: blur(52px);
-    opacity: 0.74;
-    animation: shader-mesh-flow 24s ease-in-out infinite alternate;
-  }
-  .shader-background::after {
-    background:
-      linear-gradient(108deg, transparent 14%, rgba(255, 255, 255, 0.09) 34%, transparent 51%),
-      linear-gradient(18deg, rgba(255, 42, 42, 0.14) 0%, transparent 42%, rgba(120, 120, 120, 0.1) 74%, transparent 100%);
-    filter: blur(30px);
-    mix-blend-mode: screen;
-    opacity: 0.46;
-    animation: shader-light-sweep 18s ease-in-out infinite alternate;
-  }
-  .shader-background__mesh {
-    position: absolute;
-    inset: -10%;
-    background-image:
-      linear-gradient(90deg, rgba(255, 255, 255, 0.045) 1px, transparent 1px),
-      linear-gradient(0deg, rgba(255, 255, 255, 0.035) 1px, transparent 1px);
-    background-size: 118px 118px;
-    mask-image: linear-gradient(180deg, transparent 0%, #000 14%, #000 84%, transparent 100%);
-    -webkit-mask-image: linear-gradient(180deg, transparent 0%, #000 14%, #000 84%, transparent 100%);
-    opacity: 0.12;
-    transform: perspective(900px) rotateX(58deg) translateY(8%);
-    transform-origin: center top;
-    will-change: background-position;
-    animation: shader-grid-drift 28s linear infinite;
-  }
-  @keyframes shader-mesh-flow {
-    0% { transform: translate3d(-2%, -1%, 0) rotate(-4deg) scale(1); }
-    48% { transform: translate3d(3%, 2%, 0) rotate(6deg) scale(1.04); }
-    100% { transform: translate3d(-1%, 3%, 0) rotate(10deg) scale(1.08); }
-  }
-  @keyframes shader-light-sweep {
-    0% { transform: translate3d(-4%, 2%, 0) rotate(2deg) scale(1.02); }
-    100% { transform: translate3d(4%, -2%, 0) rotate(-5deg) scale(1.08); }
-  }
-  @keyframes shader-grid-drift {
-    to { background-position: 118px 118px; }
-  }
-
   main {
     position: relative;
     z-index: 1;
@@ -638,14 +567,6 @@
     h1 { font-size: 2.58rem; }
     .hero-subline { font-size: 1.48rem; }
     .rotating-copy { min-width: 0; width: 100%; }
-    .shader-background::before {
-      filter: blur(44px);
-      opacity: 0.64;
-    }
-    .shader-background__mesh {
-      background-size: 88px 88px;
-      opacity: 0.08;
-    }
     .hero-mockup-video {
       width: 177%;
       transform: translateX(-3%);
@@ -661,18 +582,12 @@
     .rotating-word.is-active.from-below {
       animation: none;
     }
-    .shader-background::before,
-    .shader-background::after,
-    .shader-background__mesh {
-      animation: none;
-    }
   }
 </style>
 </head>
 <body>
-  <div class="shader-background" aria-hidden="true">
-    <span class="shader-background__mesh"></span>
-  </div>
+  <div id="shader-background-root" aria-hidden="true"></div>
+  <script type="module" src="/src/main.tsx"></script>
 
   <!-- ===================== HEADER ===================== -->
   <header id="hdr">

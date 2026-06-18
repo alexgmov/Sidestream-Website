@@ -2,13 +2,18 @@
 
 ## Product Overview
 
-Sidestream is an HTML-first landing page for a Premiere Pro plugin that lets editors download YouTube videos, songs, overlays, b-roll, references, tutorials, or audio without leaving Premiere. The main page remains a single canonical HTML document with embedded layout CSS and vanilla JavaScript. Vite is used only for local serving and static production builds.
+Sidestream is an HTML-first landing page for a Premiere Pro plugin that lets editors download YouTube videos, songs, overlays, b-roll, references, tutorials, or audio without leaving Premiere. The main page remains a single canonical HTML document with embedded layout CSS and vanilla JavaScript, plus a small React/Tailwind layer mounted only for the full-page Paper shader background.
 
 ## File Map
 
-- `Sidestream front end 2/Sidestream.html` - Canonical page implementation. Contains the CSS shader-inspired page background, header, hero, feature sections, pricing, final CTA, footer, styles, rotating-word script, and toast behavior.
+- `Sidestream front end 2/Sidestream.html` - Canonical page implementation. Contains the shader mount root, header, hero, feature sections, pricing, final CTA, footer, styles, rotating-word script, and toast behavior.
 - `index.html` - Root redirect so `http://localhost:5173/` and other local server roots open the canonical page instead of a directory listing.
-- `vite.config.ts` - Vite build config with the root redirect and canonical Sidestream page as HTML inputs.
+- `components/ui/shader-background.tsx` - Mounted React background layer. It uses Paper `MeshGradient` and `DotOrbit` with the pasted reference's black, charcoal, gray, and white palette.
+- `components/ui/background-paper-shaders.tsx` - React Three Fiber shader primitives copied from the provided reference. They are kept as optional reference code and are not mounted by default.
+- `src/main.tsx` - React entry that mounts `ShaderBackground` into `#shader-background-root`.
+- `src/index.css` - Tailwind v4 theme/utilities import, `tw-animate-css`, shadcn theme tokens, and source paths for the background component. It avoids Tailwind preflight so the static HTML styles are not reset.
+- `components.json` - shadcn configuration with aliases rooted at the repository root.
+- `vite.config.ts` - Vite React/Tailwind build config with the root redirect and canonical Sidestream page as HTML inputs.
 - `mockups/mockup1_2.webm` - Browser-sized autoplay hero video generated from the cleaner local alpha MacBook Pro mockup source.
 - `Sidestream front end 2/screenshots/` - Reference desktop screenshots for restoring the previous look. The numbered `*-scan.png` files are the canonical before-state for the hero.
 - `Sidestream front end 2/.thumbnail` - Export thumbnail that reflects an alternate sans-serif hero state.
@@ -16,7 +21,7 @@ Sidestream is an HTML-first landing page for a Premiere Pro plugin that lets edi
 ## Feature Map
 
 - Header/nav - `header`, `.nav`, `.brand`, `.nav-links`
-- Page background - `.shader-background`, `.shader-background__mesh`, and the black `body` fallback in `Sidestream front end 2/Sidestream.html`
+- Shader background - `#shader-background-root`, `src/main.tsx`, `components/ui/shader-background.tsx`, and `components/ui/background-paper-shaders.tsx`
 - Hero - `#hero`, `.hero-split`, `.hero-copy`, `.rotating-copy`, `.rotating-word`, `.hero-subline`, `.hero-media`, `.hero-mockup-video`
 - Feature sections - `#features` anchor, the three `.sec-pad` feature blocks, and `.feature-subtext` heading sublines
 - Pricing - `#pricing`, `.plans`, `.plan`, `.plan.featured`
@@ -27,7 +32,7 @@ Sidestream is an HTML-first landing page for a Premiere Pro plugin that lets edi
 
 ## Routes and Assets
 
-There is no client router. Use Vite for local development so the root redirect and canonical static page are served consistently.
+There is no client router. Use Vite for local development so the TypeScript shader entry is compiled and served.
 
 When using a local preview server, the root URL redirects to the canonical page:
 
@@ -41,9 +46,9 @@ The hero media wrapper intentionally uses a tall `24 / 25` aspect ratio while th
 
 The feature screenshot cards are CSS-built placeholders that reference future image paths in their labels, such as `assets/screens/hero-panel.png`; those files are not present in this folder.
 
-The page background is a dependency-free CSS translation of the pasted Paper/Three shader reference. The fixed `.shader-background` layer uses low-contrast charcoal, red, and white gradient bands plus a subtle wireframe-style mesh, while `body` remains black as the fallback. There is no mounted shader canvas, pointer-reactive layer, Tailwind bundle, React entry, React Three Fiber, or Three.js dependency for the page background. Page text tokens are white or translucent white for contrast, while cards and pricing surfaces are dark translucent glass.
+The page background should match the provided Paper shader reference, not a hand-rolled red CSS fog. The canonical HTML keeps a black CSS fallback on `body`; the mounted React `ShaderBackground` layer provides the full-page Paper `MeshGradient` plus a subtle `DotOrbit` overlay using `["#000000", "#1a1a1a", "#333333", "#ffffff"]`. Page text tokens are white or translucent white for contrast, while cards and pricing surfaces are dark translucent glass.
 
-The header is a fixed transparent overlay with no scroll divider so the CSS shader background remains uninterrupted behind the nav. The `.hero-pad` top padding includes the 72px nav height to preserve the first-fold spacing.
+The header is a fixed transparent overlay with no scroll divider so the shader remains uninterrupted behind the nav. The `.hero-pad` top padding includes the 72px nav height to preserve the first-fold spacing.
 
 The hero rotating-word effect is also static-page native: `.rotating-copy` provides the stable text slot, `.rotating-word` animates the current noun, and the bottom inline script cycles `[data-rotating-word]` per `.rotating-copy` group. Incoming and outgoing words use paired, monotonic `translate3d` keyframes on the compositor path so the text stays smooth without bounce or transition/keyframe handoff. The active noun also uses a clipped red/white text gradient that drifts by animating `background-position` only. Do not add React or animation dependencies for this effect.
 
@@ -67,7 +72,7 @@ Then open:
 http://localhost:5173/
 ```
 
-Build before publishing or after static HTML, background, layout, or Vite config changes:
+Build before publishing or after shader, TypeScript, Tailwind, static HTML, layout, or Vite config changes:
 
 ```bash
 npm run build
@@ -77,7 +82,7 @@ npm run build
 
 This folder is a git repository for `git@github.com:alexgmov/Sidestream-Website.git`.
 
-Relevant tracked files are the root redirect, canonical static HTML page, Vite config, TypeScript config for the Vite config, README, `.thumbnail`, the generated hero WebM, and reference screenshots. Finder `.DS_Store`, `node_modules/`, and `dist/` are ignored.
+Relevant tracked files are the root redirect, canonical static HTML page, React shader entry/component files, Vite/Tailwind/shadcn config, README, `.thumbnail`, the generated hero WebM, and reference screenshots. Finder `.DS_Store`, `node_modules/`, and `dist/` are ignored.
 
 The generated hero video in `mockups/mockup1_2.webm` is tracked. Raw mockup production files in `mockups/` are intentionally ignored because they can be hundreds of megabytes.
 
@@ -86,17 +91,17 @@ The generated hero video in `mockups/mockup1_2.webm` is tracked. Raw mockup prod
 Use the narrowest relevant check after edits:
 
 - Open the HTML page and compare the first fold against `Sidestream front end 2/screenshots/01-scan.png`.
-- Run `npm run build` after HTML, Vite config, or package changes.
-- Confirm the CSS shader background renders behind the header, hero, cards, pricing, footer, and toast.
+- Run `npm run build` after shader, TypeScript, Tailwind, HTML mount, Vite config, or package changes.
+- Confirm the dark Paper shader renders behind the header, hero, cards, pricing, footer, and toast.
 - Confirm the brand bug, CTA buttons, active pricing state, check icons, and rotating noun gradient use the red accent palette without leftover orange accents.
-- Confirm the page has no shader canvas, orbit-dot particle overlay, shader grain speckles, pointer wake, or custom lens-flare/ring artifacts.
+- Confirm the background uses the reference-like black/charcoal/gray/white `MeshGradient` and subtle `DotOrbit` feel, with no red fog taking over the page and no visible `EnergyRing`/custom lens-flare artifact.
 - Confirm the hero MacBook Pro mockup video autoplays, loops, stays muted, and does not create horizontal overflow.
 - Scrub or watch the hero MacBook rotation long enough to confirm hard alpha edges and video-plane edges do not show as dark lines.
 - Let the hero rotating noun run through a full cycle and confirm each word swap stays smooth without bounce, clipping, or layout shift.
 - Confirm the rotating noun gradient stays subtle, remains readable on "songs." and "overlays.", and pauses under reduced-motion settings.
-- Confirm the CSS background animation pauses under reduced-motion settings.
-- Scroll from the hero through pricing and footer to confirm the background reads as one continuous fixed field without horizontal seams.
-- Confirm white and translucent-white text remains readable over the CSS shader background on desktop and mobile.
+- Scroll from the hero through pricing and footer to confirm the background reads as one continuous fixed shader field without horizontal seams.
+- Confirm white and translucent-white text remains readable over the dark shader on desktop and mobile.
+- Confirm the background canvases are nonblank on desktop and mobile and continue rendering after scroll.
 - Check desktop at `1280x748`, because all supplied reference screenshots use that size.
 - Check mobile around `390x844` for text wrapping, CTA sizing, and image-card overflow.
 
@@ -105,21 +110,25 @@ Use the narrowest relevant check after edits:
 - The project root was missing a README before this restoration.
 - The page uses the local Apple/SF Pro system font stack and does not request external web fonts.
 - Several screenshot files are duplicates or alternate experiments. Prefer the numbered scan series for the restored hero state.
-- The active background is CSS-only. Do not add React, Tailwind, shadcn, Paper shader, React Three Fiber, or Three.js for the background unless the design intentionally calls for a full rebuild.
-- Keep the body fallback black and keep the CSS shader low contrast. The previous mounted shader, pointer wake, dot orbit, grain, and flare/ring paths created visual artifacts and were removed.
+- The React layer is intentionally limited to the background mount. Do not migrate header, hero, pricing, or toast behavior into React unless the whole page is being intentionally rebuilt.
+- `src/index.css` imports Tailwind theme/utilities and `tw-animate-css` only. Avoid full Tailwind preflight here because it can override the existing static HTML typography selectors.
+- The active Paper background should follow the pasted component's black/gray/white `MeshGradient` plus `DotOrbit` direction. Avoid reintroducing the red CSS fog look.
+- The current `@paper-design/shaders-react` `DotOrbit` types use `colors` and `colorBack`, not the pasted `dotColor` and `orbitColor` props. The package also does not accept the pasted `backgroundColor` or `wireframe` props on `MeshGradient`.
+- Do not mount the optional React Three Fiber `ShaderPlane` or `EnergyRing` primitives in the active background unless the design intentionally calls for visible flares/rings.
 - No Alphanica font asset exists in this folder. The hero headline uses the SF Pro system stack to match the cleaner non-serif section style without adding a font dependency.
 - Because the header is fixed, `html` uses `scroll-padding-top: 72px` so anchor navigation does not hide section headings under the nav.
 - Feature heading sublines use `.feature-subtext` with the SF Pro system stack at a light weight; avoid restoring the old serif treatment unless the whole feature-heading direction changes.
 - The large footer `.wordmark` intentionally uses a Helvetica-first bold stack instead of the global SF Pro stack.
 - The rotating noun should stay on matched keyframe animations for both enter and exit. Mixing CSS transitions with keyed enter animations or adding overshoot makes the headline feel choppy.
 - The rotating noun gradient should animate only `background-position` and color/filter values. Do not animate the word transform for the gradient drift or it will fight the roll keyframes.
-- Text tokens are tuned for a dark CSS shader background. If the page returns to a light background, retune `--ink`, `--ink-soft`, `--ink-faint`, surfaces, and button states together.
+- Text tokens are tuned for a dark shader background. If the page returns to a light background, retune `--ink`, `--ink-soft`, `--ink-faint`, surfaces, and button states together.
 - If the MacBook mockup is resized, keep enough vertical room in `.hero-media` and preserve the bottom mask on `.hero-mockup-video`; a too-short 16:9 wrapper, unmasked video edge, or video-level CSS drop shadow can create a hard line around or below the laptop.
 - Keep `mockups/mockup1_2.webm` checked after background changes; dark backgrounds can make transparent alpha edges more visible if the `.hero-mockup-video` mask or shadow is changed.
 - Mobile split sections must override both `.split` and `.split.flip`; otherwise the more-specific desktop flipped grid can leave feature cards half-width on narrow screens.
 
 ## Recent Change Log
 
+- Restored the React/Paper/Tailwind shader mount and made the active background follow the pasted reference more closely with black/charcoal/gray/white `MeshGradient` plus `DotOrbit`, removing the red CSS fog approximation.
 - Added a dependency-free CSS shader/mesh background adapted from the pasted Paper/Three reference while keeping the page static HTML and Vite-only.
 - Replaced the mounted Paper/React shader background with a plain black `body` background, removed the background mount script, deleted the unused React/Tailwind/shadcn files, removed their dependencies, and simplified the Vite config.
 - Added a pointer-reactive gravity/water wake to the full-page Paper `MeshGradient` background using `requestAnimationFrame` and CSS variables, while keeping the background to a single shader canvas.
