@@ -1,9 +1,9 @@
 "use client"
 
-import { useMemo, useRef } from "react"
+import { useRef, useMemo } from "react"
 import { useFrame } from "@react-three/fiber"
 import * as THREE from "three"
-
+// Custom shader material for advanced effects
 const vertexShader = `
   uniform float time;
   uniform float intensity;
@@ -33,12 +33,15 @@ const fragmentShader = `
   void main() {
     vec2 uv = vUv;
 
+    // Create animated noise pattern
     float noise = sin(uv.x * 20.0 + time) * cos(uv.y * 15.0 + time * 0.8);
     noise += sin(uv.x * 35.0 - time * 2.0) * cos(uv.y * 25.0 + time * 1.2) * 0.5;
 
+    // Mix colors based on noise and position
     vec3 color = mix(color1, color2, noise * 0.5 + 0.5);
     color = mix(color, vec3(1.0), pow(abs(noise), 2.0) * intensity);
 
+    // Add glow effect
     float glow = 1.0 - length(uv - 0.5) * 2.0;
     glow = pow(glow, 2.0);
 
@@ -55,7 +58,7 @@ export function ShaderPlane({
   color1?: string
   color2?: string
 }) {
-  const mesh = useRef<THREE.Mesh<THREE.PlaneGeometry, THREE.ShaderMaterial>>(null)
+  const mesh = useRef<THREE.Mesh>(null)
 
   const uniforms = useMemo(
     () => ({
@@ -70,8 +73,7 @@ export function ShaderPlane({
   useFrame((state) => {
     if (mesh.current) {
       uniforms.time.value = state.clock.elapsedTime
-      uniforms.intensity.value =
-        1.0 + Math.sin(state.clock.elapsedTime * 2) * 0.3
+      uniforms.intensity.value = 1.0 + Math.sin(state.clock.elapsedTime * 2) * 0.3
     }
   })
 
@@ -96,25 +98,19 @@ export function EnergyRing({
   radius?: number
   position?: [number, number, number]
 }) {
-  const mesh = useRef<THREE.Mesh<THREE.RingGeometry, THREE.MeshBasicMaterial>>(null)
+  const mesh = useRef<THREE.Mesh>(null)
 
   useFrame((state) => {
     if (mesh.current) {
       mesh.current.rotation.z = state.clock.elapsedTime
-      mesh.current.material.opacity =
-        0.5 + Math.sin(state.clock.elapsedTime * 3) * 0.3
+      mesh.current.material.opacity = 0.5 + Math.sin(state.clock.elapsedTime * 3) * 0.3
     }
   })
 
   return (
     <mesh ref={mesh} position={position}>
       <ringGeometry args={[radius * 0.8, radius, 32]} />
-      <meshBasicMaterial
-        color="#ff5722"
-        transparent
-        opacity={0.6}
-        side={THREE.DoubleSide}
-      />
+      <meshBasicMaterial color="#ff5722" transparent opacity={0.6} side={THREE.DoubleSide} />
     </mesh>
   )
 }
