@@ -36,9 +36,8 @@ uniform float u_grainMixer;
 uniform float u_grainOverlay;
 
 uniform vec2 u_pointer;
-uniform vec2 u_velocity;
-uniform float u_wake;
-uniform float u_wakeDirection;
+uniform vec2 u_pointerVelocity;
+uniform float u_hover;
 uniform float u_interactionEnabled;
 
 in vec2 v_objectUV;
@@ -74,6 +73,15 @@ float noise(vec2 n, vec2 seedOffset) {
   return valueNoise(n + seedOffset);
 }
 
+vec2 curlNoise(vec2 p, vec2 seedOffset) {
+  float e = .035;
+  float n1 = noise(p + vec2(0., e), seedOffset);
+  float n2 = noise(p - vec2(0., e), seedOffset);
+  float n3 = noise(p + vec2(e, 0.), seedOffset);
+  float n4 = noise(p - vec2(e, 0.), seedOffset);
+  return vec2(n1 - n2, n4 - n3) / (2. * e);
+}
+
 vec2 getPosition(int i, float t) {
   float a = float(i) * .37;
   float b = .6 + fract(float(i) / 3.) * .9;
@@ -89,18 +97,31 @@ void main() {
   vec2 uv = v_objectUV;
   uv += .5;
 
-  vec2 pointer = clamp(u_pointer, vec2(0.), vec2(1.));
   float aspect = max(u_resolution.x / max(u_resolution.y, 1.), .001);
+  vec2 pointer = clamp(u_pointer, vec2(0.), vec2(1.));
   vec2 delta = uv - pointer;
   vec2 metricDelta = vec2(delta.x * aspect, delta.y);
-  float pointerDistance = length(metricDelta);
-  float wake = clamp(u_wake, 0., 1.) * u_interactionEnabled;
-  float pressure = exp(-pointerDistance * pointerDistance / .022) * wake;
-  float softRing = exp(-pow(pointerDistance - .2, 2.) / .005) * wake;
-  vec2 tangent = vec2(-delta.y, delta.x);
-  tangent /= max(length(tangent), 1e-4);
-  uv += (-u_velocity * .86 + tangent * u_wakeDirection * .016) * pressure;
-  uv -= delta * softRing * .032;
+  float cursorDist = max(length(metricDelta), 1e-4);
+  vec2 metricDir = metricDelta / cursorDist;
+  vec2 uvDir = vec2(metricDir.x / aspect, metricDir.y);
+  uvDir /= max(length(uvDir), 1e-4);
+  vec2 tangent = vec2(-uvDir.y, uvDir.x);
+
+  vec2 pointerVelocity = u_pointerVelocity;
+  float pointerSpeed = clamp(length(vec2(pointerVelocity.x * aspect, pointerVelocity.y)) * 24., 0., 1.);
+  float hover = clamp(u_hover, 0., 1.) * u_interactionEnabled;
+  float broadCurrent = exp(-cursorDist * cursorDist / .26);
+  float coreCurrent = exp(-cursorDist * cursorDist / .085);
+  vec2 flowSpace = uv * 2.4 + vec2(.045 * u_time, -.035 * u_time);
+  vec2 curlCurrent = curlNoise(flowSpace, vec2(5.7)) * .5;
+  float velocitySpin = clamp((pointerVelocity.x - .65 * pointerVelocity.y) * 22., -1., 1.);
+  float idleSpin = .42 * sin(.85 * u_time + pointer.x * 5.1 + pointer.y * 3.7);
+  float spin = mix(idleSpin, velocitySpin, smoothstep(.02, .55, pointerSpeed));
+  vec2 current = -pointerVelocity * broadCurrent * (2.1 + 2.35 * pointerSpeed)
+    + tangent * coreCurrent * (.034 + .026 * pointerSpeed) * spin
+    + curlCurrent * broadCurrent * (.026 + .016 * pointerSpeed);
+
+  uv += current * hover;
 
   vec2 grainUV = uv * 1000.;
 
@@ -182,27 +203,25 @@ function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value))
 }
 
-function usePointerWake(shaderRef: RefObject<PaperShaderElement | null>) {
+function usePointerCurrents(shaderRef: RefObject<PaperShaderElement | null>) {
   useEffect(() => {
     const finePointer = window.matchMedia("(hover: hover) and (pointer: fine)")
     const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)")
     let isEnabled = finePointer.matches && !reducedMotion.matches
     let frame = 0
-
-    const wake = {
-      active: false,
-      currentX: 0.5,
-      currentY: 0.5,
+    const current = {
+      x: 0.5,
+      y: 0.5,
       targetX: 0.5,
       targetY: 0.5,
       velocityX: 0,
       velocityY: 0,
       targetVelocityX: 0,
       targetVelocityY: 0,
-      amount: 0,
-      targetAmount: 0,
-      direction: 1,
+      hover: 0,
+      targetHover: 0,
       lastEventTime: performance.now(),
+      hasPointer: false,
     }
 
     const setInteractionEnabled = () => {
@@ -214,19 +233,18 @@ function usePointerWake(shaderRef: RefObject<PaperShaderElement | null>) {
     const handleMediaChange = () => {
       isEnabled = finePointer.matches && !reducedMotion.matches
       if (!isEnabled) {
-        wake.active = false
-        wake.targetAmount = 0
-        wake.targetVelocityX = 0
-        wake.targetVelocityY = 0
+        current.targetHover = 0
+        current.targetVelocityX = 0
+        current.targetVelocityY = 0
       }
       setInteractionEnabled()
     }
 
-    const settleWake = () => {
-      wake.active = false
-      wake.targetAmount = 0
-      wake.targetVelocityX = 0
-      wake.targetVelocityY = 0
+    const settleCurrent = () => {
+      current.targetHover = 0
+      current.targetVelocityX = 0
+      current.targetVelocityY = 0
+      current.hasPointer = false
     }
 
     const handlePointerMove = (event: PointerEvent) => {
@@ -239,39 +257,47 @@ function usePointerWake(shaderRef: RefObject<PaperShaderElement | null>) {
       const nextX = clamp(event.clientX / width, 0, 1)
       const nextY = clamp(1 - event.clientY / height, 0, 1)
       const now = performance.now()
-      const frameScale = 16.67 / Math.max(now - wake.lastEventTime, 16.67)
-      const deltaX = nextX - wake.targetX
-      const deltaY = nextY - wake.targetY
-      const nextVelocityX = clamp(deltaX * frameScale, -0.06, 0.06)
-      const nextVelocityY = clamp(deltaY * frameScale, -0.06, 0.06)
-      const impulse = clamp(Math.hypot(deltaX, deltaY) * 58, 0, 1)
+      const previousX = current.targetX
+      const previousY = current.targetY
+      const dt = Math.max(now - current.lastEventTime, 16.67)
+      const frameScale = 16.67 / dt
+      const deltaX = nextX - previousX
+      const deltaY = nextY - previousY
 
-      wake.active = true
-      wake.targetX = nextX
-      wake.targetY = nextY
-      wake.targetVelocityX = wake.targetVelocityX * 0.35 + nextVelocityX * 0.65
-      wake.targetVelocityY = wake.targetVelocityY * 0.35 + nextVelocityY * 0.65
-      wake.targetAmount = Math.max(wake.targetAmount, impulse)
-      wake.direction = wake.targetVelocityX + wake.targetVelocityY * 0.55 >= 0 ? 1 : -1
-      wake.lastEventTime = now
+      if (!current.hasPointer) {
+        current.x = nextX
+        current.y = nextY
+        current.targetX = nextX
+        current.targetY = nextY
+        current.targetVelocityX = 0
+        current.targetVelocityY = 0
+        current.targetHover = 1
+        current.lastEventTime = now
+        current.hasPointer = true
+        return
+      }
+
+      current.targetX = nextX
+      current.targetY = nextY
+      current.targetVelocityX = clamp(deltaX * frameScale, -0.05, 0.05)
+      current.targetVelocityY = clamp(deltaY * frameScale, -0.05, 0.05)
+      current.targetHover = 1
+      current.lastEventTime = now
     }
 
     const tick = () => {
-      wake.currentX += (wake.targetX - wake.currentX) * 0.18
-      wake.currentY += (wake.targetY - wake.currentY) * 0.18
-      wake.velocityX += (wake.targetVelocityX - wake.velocityX) * 0.16
-      wake.velocityY += (wake.targetVelocityY - wake.velocityY) * 0.16
-      wake.amount += (wake.targetAmount - wake.amount) * 0.12
-
-      wake.targetAmount *= wake.active ? 0.91 : 0.84
-      wake.targetVelocityX *= 0.9
-      wake.targetVelocityY *= 0.9
+      current.x += (current.targetX - current.x) * 0.16
+      current.y += (current.targetY - current.y) * 0.16
+      current.velocityX += (current.targetVelocityX - current.velocityX) * 0.18
+      current.velocityY += (current.targetVelocityY - current.velocityY) * 0.18
+      current.hover += (current.targetHover - current.hover) * 0.1
+      current.targetVelocityX *= 0.88
+      current.targetVelocityY *= 0.88
 
       shaderRef.current?.paperShaderMount?.setUniforms({
-        u_pointer: [wake.currentX, wake.currentY],
-        u_velocity: [wake.velocityX, wake.velocityY],
-        u_wake: isEnabled ? wake.amount : 0,
-        u_wakeDirection: wake.direction,
+        u_pointer: [current.x, current.y],
+        u_pointerVelocity: [current.velocityX, current.velocityY],
+        u_hover: isEnabled ? current.hover : 0,
         u_interactionEnabled: isEnabled ? 1 : 0,
       })
 
@@ -281,9 +307,9 @@ function usePointerWake(shaderRef: RefObject<PaperShaderElement | null>) {
     finePointer.addEventListener("change", handleMediaChange)
     reducedMotion.addEventListener("change", handleMediaChange)
     window.addEventListener("pointermove", handlePointerMove, { passive: true })
-    window.addEventListener("pointerleave", settleWake)
-    window.addEventListener("blur", settleWake)
-    document.addEventListener("visibilitychange", settleWake)
+    window.addEventListener("pointerleave", settleCurrent)
+    window.addEventListener("blur", settleCurrent)
+    document.addEventListener("visibilitychange", settleCurrent)
     setInteractionEnabled()
     frame = window.requestAnimationFrame(tick)
 
@@ -292,25 +318,24 @@ function usePointerWake(shaderRef: RefObject<PaperShaderElement | null>) {
       finePointer.removeEventListener("change", handleMediaChange)
       reducedMotion.removeEventListener("change", handleMediaChange)
       window.removeEventListener("pointermove", handlePointerMove)
-      window.removeEventListener("pointerleave", settleWake)
-      window.removeEventListener("blur", settleWake)
-      document.removeEventListener("visibilitychange", settleWake)
+      window.removeEventListener("pointerleave", settleCurrent)
+      window.removeEventListener("blur", settleCurrent)
+      document.removeEventListener("visibilitychange", settleCurrent)
     }
   }, [shaderRef])
 }
 
 function InteractiveMeshGradient({ speed }: { speed: number }) {
   const shaderRef = useRef<PaperShaderElement | null>(null)
-  usePointerWake(shaderRef)
+  usePointerCurrents(shaderRef)
 
   const uniforms = useMemo(() => ({
     ...meshGradientBaseUniforms,
     u_colors: meshColors.map(hexToRgba),
     u_colorsCount: meshColors.length,
     u_pointer: [0.5, 0.5],
-    u_velocity: [0, 0],
-    u_wake: 0,
-    u_wakeDirection: 1,
+    u_pointerVelocity: [0, 0],
+    u_hover: 0,
     u_interactionEnabled: 1,
   }), [])
 
@@ -318,7 +343,7 @@ function InteractiveMeshGradient({ speed }: { speed: number }) {
     <ShaderMount
       ref={shaderRef}
       className="w-full h-full absolute inset-0"
-      data-pointer-wake="true"
+      data-pointer-current="true"
       fragmentShader={interactiveMeshGradientFragmentShader}
       speed={speed}
       uniforms={uniforms}
