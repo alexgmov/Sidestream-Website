@@ -2,7 +2,7 @@
 
 ## Product Overview
 
-Sidestream is an HTML-first landing page for a Premiere Pro plugin that lets editors download YouTube videos, songs, overlays, b-roll, references, tutorials, or audio without leaving Premiere. The main page remains a single canonical HTML document with embedded layout CSS and vanilla JavaScript, plus a small React/Tailwind layer mounted only for the full-page Paper shader background.
+Sidestream is an HTML-first landing page for a Premiere Pro panel that lets editors search, preview, and download YouTube videos, songs, overlays, b-roll, references, tutorials, or audio without leaving Premiere. The main page remains a single canonical HTML document with embedded layout CSS and vanilla JavaScript, plus a small React/Tailwind layer mounted only for the full-page Paper shader background.
 
 ## File Map
 
@@ -170,7 +170,7 @@ Use the narrowest relevant check after edits:
 - `components/ui/background-paper-shaders.tsx` is copied exactly from the reference and is excluded from app typechecking because the pasted `THREE.Mesh` generic is broader than this repo's strict TypeScript settings.
 - Do not mount the optional React Three Fiber `ShaderPlane` or `EnergyRing` primitives in the active background unless the design intentionally calls for visible flares/rings.
 - No Alphanica font asset exists in this folder. The hero headline uses the SF Pro system stack to match the cleaner non-serif section style without adding a font dependency. The "in Premiere Pro" `.hero-subline` intentionally uses the same stack in italic.
-- The hero explanation lives in `.hero-description` below `.hero-subline`; keep it short, light, outside the animated H1, and wide enough to reach slightly past the "Download YouTube" title edge on desktop.
+- The hero explanation lives in `.hero-description` below `.hero-subline`; keep it short, light, outside the animated H1, and explicit that Sidestream is a Premiere Pro panel for searching, previewing, and downloading YouTube videos without leaving the app.
 - Download CTAs use a `[data-download]` button override that wins over primary/secondary button classes: white capsule background, black `Download` label, and red hover fill with white hover text while preserving existing sizing.
 - Because the header is fixed, `html` uses `scroll-padding-top: 72px` so anchor navigation does not hide section headings under the nav. Keep `.nav-links` anchored from the full viewport rather than the centered first-fold shell, or the control cluster drifts inward on wider screens.
 - Desktop hero-to-feature spacing is tuned with `.hero-pad` filling `100svh`, bottom-aligning content, and using `padding: 112px 0 clamp(72px, 9vh, 104px)`, plus `.feature-start { margin-top: 0; padding-top: clamp(96px, 12vh, 136px); }`. The mobile override uses `.hero-pad { padding: 128px 0 72px; }` and `.feature-start { padding-top: 84px; }`, with a narrower override of `64px`/`72px` at `520px`. Adjust those first-feature entries before changing shared `.sec-pad` rhythm, but keep the Search copy grid-centered beside its demo video.
@@ -194,6 +194,7 @@ Use the narrowest relevant check after edits:
 
 ## Recent Change Log
 
+- Reworded the hero description to explicitly call Sidestream a panel inside Premiere Pro for searching, previewing, and downloading YouTube videos without leaving the app.
 - Moved the "Stop leaving Premiere to grab footage." final CTA panel above the rotating pricing MacBook mockup.
 - Italicized the hero "in Premiere Pro" subline while keeping it outside the animated H1.
 - Anchored the hero headline, description, and primary Download CTA to the lower-left first-fold gutter, then moved the Search demo group down to add breathing room below the hero Download button.
