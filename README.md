@@ -198,6 +198,7 @@ Use the narrowest relevant check after edits:
 
 ## Recent Change Log
 
+- Increased the hero rotating noun slot's lower paint buffer so descenders like the `g` in `songs` no longer clip during the word cycle.
 - Lowered the pricing headline by equalizing the space above and below it, centering it between the `.feature-glass` band and pricing cards without moving the cards.
 - Moved the `.feature-glass` bottom separator to the end of the feature wrapper so the Preview demo video has more buffer above the lower line.
 - Moved the `.feature-glass` top separator to the start of the feature wrapper so the Search demo video has more buffer below the line.
