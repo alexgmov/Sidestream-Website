@@ -70,7 +70,7 @@ The page background should preserve the provided Paper demo's shader direction w
 
 The header is a fixed transparent overlay with no scroll divider so the shader remains uninterrupted behind the nav. The `.hero-pad` top padding leaves room below the 72px nav while keeping first-fold spacing tight.
 
-On desktop, `.hero-pad` uses more bottom padding than top padding so the hero copy and MacBook mockup sit visually centered in a 14-inch MacBook browser viewport without changing the section height.
+On desktop, `.hero-pad` uses a shorter bottom padding and the first feature section uses `.feature-start` to pull the Search demo group upward without changing the shared lower-page `.sec-pad` rhythm.
 
 The hero rotating-word effect is also static-page native: `.rotating-copy` provides the stable text slot, `.rotating-word` animates the current noun, and the bottom inline script cycles `[data-rotating-word]` per `.rotating-copy` group. Incoming and outgoing words use paired, monotonic `translate3d` keyframes on the compositor path so the text stays smooth without bounce or transition/keyframe handoff. The active noun also uses a clipped red/white text gradient that drifts by animating `background-position` only. Do not add React or animation dependencies for this effect.
 
@@ -136,6 +136,7 @@ Use the narrowest relevant check after edits:
 - Confirm the brand wordmark, pill-rounded download CTAs, active pricing state, check icons, and rotating noun gradient use the red accent palette without leftover orange accents.
 - Confirm the background uses the pasted demo's black/charcoal/gray `MeshGradient` branch with the 20%-darker `#151515`, `#292929`, and `#a3a3a3` non-black stops, with no custom red CSS fog, extra overlay gradients, or mounted `EnergyRing`.
 - Confirm the hero MacBook Pro mockup video autoplays, loops, stays muted, and does not create horizontal overflow.
+- Confirm the Search demo group starts close enough to the hero that the "Search for YouTube videos." heading is visible at the bottom of the `1280x748` first fold and on `390x844` mobile.
 - Confirm the feature demo videos are paused before they enter the viewport, start playing when scrolled into view, and pause again after leaving view.
 - Confirm `/api/download` responds to `HEAD` with `200`, `Content-Disposition: attachment`, `Content-Length`, and a private cache policy after Blob auth is available in the tested environment.
 - Confirm a browser click on any `/api/download` CTA starts a same-origin download navigation instead of only showing the old placeholder toast.
@@ -163,7 +164,7 @@ Use the narrowest relevant check after edits:
 - The hero explanation lives in `.hero-description` below `.hero-subline`; keep it short, light, outside the animated H1, and wide enough to reach slightly past the "Download YouTube" title edge on desktop.
 - Download CTAs are rounded with a `[data-download]` button override so they feel closer to Apple's capsule action buttons without changing their existing padding, copy, or red primary fill.
 - Because the header is fixed, `html` uses `scroll-padding-top: 72px` so anchor navigation does not hide section headings under the nav.
-- Desktop hero vertical placement is tuned with `.hero-pad { padding: 112px 0 176px; }`; keep the top and bottom padding total stable when nudging the hero so the first feature spacing does not drift.
+- Desktop hero-to-feature spacing is tuned with `.hero-pad { padding: 112px 0 56px; }` plus `.feature-start { margin-top: -88px; padding-top: 32px; }`; the mobile override uses `margin-top: -80px` and `padding-top: 24px`. Adjust that first-feature entry before changing shared `.sec-pad` rhythm.
 - Desktop hero horizontal placement is tuned on `.hero-split` with a capped `1180px` max width and `clamp(36px, 3.5vw, 44px)` gap, plus a small desktop-only `.hero-mockup-video` `translateX(-4%)` offset to compensate for transparent space inside the alpha WebM.
 - Feature heading sublines use `.feature-subtext` with the SF Pro system stack at a light weight; avoid restoring the old serif treatment unless the whole feature-heading direction changes.
 - The large footer `.wordmark` intentionally uses a Helvetica-first bold stack instead of the global SF Pro stack.
@@ -182,6 +183,7 @@ Use the narrowest relevant check after edits:
 
 ## Recent Change Log
 
+- Reduced the hero bottom padding and added `.feature-start` so the Search demo group starts inside the first fold on desktop and mobile.
 - Nudged the desktop hero MacBook mockup slightly right by easing the desktop-only alpha video offset from `translateX(-6%)` to `translateX(-4%)`.
 - Rounded `[data-download]` CTAs into Apple-style capsules while preserving their existing size and red primary treatment.
 - Reverted the hero CTA experiment back to a single red `Download now` button that points to `/api/download`.
