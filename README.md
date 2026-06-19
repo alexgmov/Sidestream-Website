@@ -8,7 +8,7 @@ Sidestream is an HTML-first landing page for a Premiere Pro panel that lets edit
 
 - `Sidestream front end 2/Sidestream.html` - Canonical page implementation. Contains the shader mount root, header, hero, feature sections, pricing, final CTA, footer, styles, rotating-word script, and toast behavior.
 - `index.html` - Root redirect so `http://localhost:5173/` and other local server roots open the canonical page instead of a directory listing.
-- `components/ui/demo.tsx` - Adapted Paper demo component mounted as the page background. The active default effect is the original `MeshGradient` branch with non-black stops darkened 20% to `#151515`, `#292929`, and `#a3a3a3`, with demo install/clipboard overlay text removed.
+- `components/ui/demo.tsx` - Adapted Paper demo component mounted as the page background. The active default effect keeps the original `MeshGradient` look with non-black stops darkened 20% to `#151515`, `#292929`, and `#a3a3a3`, with demo install/clipboard overlay text removed and a pointer wake implemented through the active shader uniforms.
 - `components/ui/background-paper-shaders.tsx` - Exact pasted React Three Fiber shader primitives from the provided reference. They are kept as optional reference code and are not mounted by default.
 - `api/download.ts` - Vercel Node Function that streams the configured private Vercel Blob installer to the browser through `/api/download`. Supports `GET` and `HEAD` only.
 - `src/main.tsx` - React entry that mounts `DemoOne` into `#shader-background-root`.
@@ -25,7 +25,7 @@ Sidestream is an HTML-first landing page for a Premiere Pro panel that lets edit
 ## Feature Map
 
 - Header/nav - `header`, `.nav`, `.brand`, `.nav-links`
-- Shader background - `#shader-background-root`, `src/main.tsx`, `components/ui/demo.tsx`, `components/ui/background-paper-shaders.tsx`, and `src/paper-shaders-compat.d.ts`
+- Shader background - `#shader-background-root`, `src/main.tsx`, `components/ui/demo.tsx`, the active `InteractiveMeshGradient`/`usePointerWake` implementation, `components/ui/background-paper-shaders.tsx`, and `src/paper-shaders-compat.d.ts`
 - Hero - `#hero`, `.hero-split`, `.hero-copy`, `.hero-title-line`, `.rotating-copy`, `.rotating-word`, `.hero-subline`, `.hero-description`
 - Feature sections - `#features` anchor, the two `.sec-pad` feature blocks, `.feature-subtext` heading sublines, `.shot` video frames, `.demo-video` MP4 embeds, the bottom inline viewport-playback observer, and the pointer-driven `.shot` 3D tilt handler
 - Pricing - `#pricing`, `.pricing-head`, `.plans`, `.plan`, `.plan.featured`, `.final`, `.pricing-mockup`, `.macbook-mockup-video`, the MacBook playback helper, and the pricing-panel scroll reveal observer
@@ -64,7 +64,7 @@ The MacBook mockup media is a native autoplaying, muted, looping `<video>` that 
 
 The feature cards are chrome-free video frames that use native muted, looping MP4s from `demos/`. The active demos are `search demo.mp4` and `preview demo.mp4`, both recorded around the Tudor Place workflow. The Search and Preview feature copy blocks intentionally do not include inline download CTAs; each keeps the heading plus `.feature-subtext` as the centered copy block beside its demo video. They intentionally do not use the `autoplay` attribute; the bottom inline script uses `IntersectionObserver` to play each `.demo-video` only while it is visible and pause it when it leaves the viewport. On fine-pointer hover, the same script tilts the parent `.shot` from its midpoint with CSS variables capped at 15 degrees on X/Y and a tiny Z-axis twist, so the video frame reads as one subtle 3D plane. The hover math tracks against the card's untransformed layout box and resets with an S-curve transition to prevent corner-entry jitter. Raw Screen Studio project folders should stay out of git; export compact MP4s for the site instead.
 
-The page background should preserve the provided Paper demo's shader direction without keeping its demo-site UI. The canonical HTML keeps a black CSS fallback on `body`; `#shader-background-root` is a fixed full-viewport mount, and `src/main.tsx` renders the adapted `DemoOne` component from `components/ui/demo.tsx`. The demo's default `activeEffect` is `"mesh"`, so the visible background is the original black/charcoal/gray `MeshGradient` branch with non-black stops darkened 20% to `#151515`, `#292929`, and `#a3a3a3`. Page text tokens use the off-white `#E2E8F0` and translucent off-white variants for contrast, while cards and pricing surfaces are dark translucent glass.
+The page background should preserve the provided Paper demo's shader direction without keeping its demo-site UI. The canonical HTML keeps a black CSS fallback on `body`; `#shader-background-root` is a fixed full-viewport mount, and `src/main.tsx` renders the adapted `DemoOne` component from `components/ui/demo.tsx`. The demo's default `activeEffect` is `"mesh"`, so the visible background keeps the original black/charcoal/gray `MeshGradient` branch with non-black stops darkened 20% to `#151515`, `#292929`, and `#a3a3a3`. The active mesh branch uses `ShaderMount` with the Paper mesh fragment shader structure plus tiny `u_pointer`, `u_velocity`, and `u_wake` UV displacement uniforms, making fine-pointer mouse movement push the existing swirls like a soft water current without adding overlays, extra canvases, new colors, or CSS filters. Page text tokens use the off-white `#E2E8F0` and translucent off-white variants for contrast, while cards and pricing surfaces are dark translucent glass.
 
 The header is a fixed transparent overlay with no scroll divider so the shader remains uninterrupted behind the nav. The `.hero-pad` section fills the first viewport and aligns the hero headline, description, and primary Free Download CTA to the lower-left first-fold gutter. The Sidestream wordmark and hero copy share the viewport-left `24px` first-fold gutter, and the Features/Pricing/Free Download control cluster is absolutely anchored to the viewport's top-right corner with a `15px` top offset and matching `24px` right gutter.
 
@@ -136,6 +136,7 @@ Use the narrowest relevant check after edits:
 - Confirm the Sidestream wordmark and desktop hero copy share the viewport-left `24px` first-fold gutter, and the Features/Pricing/Free Download header cluster sits at the viewport's top-right with a `15px` top offset and `24px` right gutter.
 - Confirm the brand wordmark, white pill-rounded download CTAs with the black Apple platform mark, black text, red hover fill/white hover text, check icons, and rotating noun gradient use the red accent palette without leftover orange accents.
 - Confirm the background uses the pasted demo's black/charcoal/gray `MeshGradient` branch with the 20%-darker `#151515`, `#292929`, and `#a3a3a3` non-black stops, with no custom red CSS fog, extra overlay gradients, or mounted `EnergyRing`.
+- Confirm moving the mouse across the desktop hero subtly bends/pushes the existing shader bands while the idle frame still reads like the same Paper mesh background. Confirm this remains one visible canvas and does not block CTA hit targets.
 - Confirm the final CTA panel stays clean above the pricing MacBook mockup and does not render the old top-right red radial glow.
 - Confirm the pricing MacBook Pro mockup video autoplays, loops, stays muted, sits centered below the two pricing panels plus final CTA, and does not create horizontal overflow. If browser autoplay is fussy, confirm the inline `.macbook-mockup-video` playback helper kicks it after load or visibility return.
 - Confirm the desktop hero copy still uses the wider left-anchored first-fold shell while staying aligned with the fixed Sidestream wordmark, sitting near the bottom-left corner of the first viewport, and rendering the "in Premiere Pro" subline in italic.
@@ -166,6 +167,7 @@ Use the narrowest relevant check after edits:
 - The React layer is intentionally limited to the background mount. Do not migrate header, hero, pricing, or toast behavior into React unless the whole page is being intentionally rebuilt.
 - `src/index.css` imports Tailwind theme/utilities and `tw-animate-css` only. Avoid full Tailwind preflight here because it can override the existing static HTML typography selectors.
 - The active Paper background is adapted from the pasted `DemoOne` component. Do not add wrapper overlays, demo install text, clipboard controls, extra shader props, red fog, or alternate defaults unless the design intentionally changes.
+- The desktop pointer wake lives inside `components/ui/demo.tsx` as `InteractiveMeshGradient` plus `usePointerWake`. Keep it as shader UV displacement, not CSS blur/filter, particle decoration, or a second visible overlay. It is intentionally gated to fine pointers and disabled under reduced motion.
 - The current `@paper-design/shaders-react` types do not include the pasted `backgroundColor`, `wireframe`, `dotColor`, `orbitColor`, or `intensity` prop names. Keep `src/paper-shaders-compat.d.ts` so the copied component can remain unchanged.
 - `components/ui/background-paper-shaders.tsx` is copied exactly from the reference and is excluded from app typechecking because the pasted `THREE.Mesh` generic is broader than this repo's strict TypeScript settings.
 - Do not mount the optional React Three Fiber `ShaderPlane` or `EnergyRing` primitives in the active background unless the design intentionally calls for visible flares/rings.
@@ -194,6 +196,7 @@ Use the narrowest relevant check after edits:
 
 ## Recent Change Log
 
+- Added a fine-pointer water-wake interaction to the active Paper-style mesh background by forking only the mesh fragment shader path in `components/ui/demo.tsx`, preserving the same colors, timing, and single-canvas mount.
 - Added a black Apple platform mark inside the visible `Free Download` CTAs and accessible `Free Download for Mac` labels for `/api/download` links.
 - Reworded the hero description to explicitly call Sidestream a panel inside Premiere Pro for searching, previewing, and downloading YouTube videos without leaving the app.
 - Changed every visible `/api/download` CTA label from `Download` to `Free Download`.
