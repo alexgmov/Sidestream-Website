@@ -138,7 +138,7 @@ Use the narrowest relevant check after edits:
 - Confirm the background uses the pasted demo's black/charcoal/gray `MeshGradient` branch with the 20%-darker `#151515`, `#292929`, and `#a3a3a3` non-black stops, with no custom red CSS fog, extra overlay gradients, or mounted `EnergyRing`.
 - Confirm the final CTA panel stays clean and does not render the old top-right red radial glow.
 - Confirm the pricing MacBook Pro mockup video autoplays, loops, stays muted, sits centered below the two pricing panels, and does not create horizontal overflow. If browser autoplay is fussy, confirm the inline `.macbook-mockup-video` playback helper kicks it after load or visibility return.
-- Confirm the desktop hero copy still uses the wider left-anchored first-fold shell while staying aligned with the fixed Sidestream wordmark and sitting near the bottom-left corner of the first viewport.
+- Confirm the desktop hero copy still uses the wider left-anchored first-fold shell while staying aligned with the fixed Sidestream wordmark, sitting near the bottom-left corner of the first viewport, and rendering the "in Premiere Pro" subline in italic.
 - Watch the pricing MacBook rotation long enough to confirm the laptop stays centered and the alpha edges are not clipped by the pricing wrapper.
 - Confirm the Search demo group starts below the first fold with a deliberate gap between the hero Download CTA and the "Search for YouTube videos." heading on desktop and mobile.
 - Confirm the "Start free. Unlock when you need more." headline sits centered in the vertical space between the Preview demo video and the pricing cards.
@@ -169,7 +169,7 @@ Use the narrowest relevant check after edits:
 - The current `@paper-design/shaders-react` types do not include the pasted `backgroundColor`, `wireframe`, `dotColor`, `orbitColor`, or `intensity` prop names. Keep `src/paper-shaders-compat.d.ts` so the copied component can remain unchanged.
 - `components/ui/background-paper-shaders.tsx` is copied exactly from the reference and is excluded from app typechecking because the pasted `THREE.Mesh` generic is broader than this repo's strict TypeScript settings.
 - Do not mount the optional React Three Fiber `ShaderPlane` or `EnergyRing` primitives in the active background unless the design intentionally calls for visible flares/rings.
-- No Alphanica font asset exists in this folder. The hero headline uses the SF Pro system stack to match the cleaner non-serif section style without adding a font dependency.
+- No Alphanica font asset exists in this folder. The hero headline uses the SF Pro system stack to match the cleaner non-serif section style without adding a font dependency. The "in Premiere Pro" `.hero-subline` intentionally uses the same stack in italic.
 - The hero explanation lives in `.hero-description` below `.hero-subline`; keep it short, light, outside the animated H1, and wide enough to reach slightly past the "Download YouTube" title edge on desktop.
 - Download CTAs use a `[data-download]` button override that wins over primary/secondary button classes: white capsule background, black `Download` label, and red hover fill with white hover text while preserving existing sizing.
 - Because the header is fixed, `html` uses `scroll-padding-top: 72px` so anchor navigation does not hide section headings under the nav. Keep `.nav-links` anchored from the full viewport rather than the centered first-fold shell, or the control cluster drifts inward on wider screens.
@@ -194,6 +194,7 @@ Use the narrowest relevant check after edits:
 
 ## Recent Change Log
 
+- Italicized the hero "in Premiere Pro" subline while keeping it outside the animated H1.
 - Anchored the hero headline, description, and primary Download CTA to the lower-left first-fold gutter, then moved the Search demo group down to add breathing room below the hero Download button.
 - Removed the inline Download buttons from the Search and Preview demo sections and kept their heading/subtext blocks centered beside the videos.
 - Removed trailing periods from the visible hero rotating noun labels and matching aria label.
