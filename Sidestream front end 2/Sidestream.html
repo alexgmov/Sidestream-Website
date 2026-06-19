@@ -236,7 +236,7 @@
   .feature-glass::before {
     content: "";
     position: absolute;
-    inset: 0 0 clamp(28px, 5vw, 56px);
+    inset: 0;
     z-index: 0;
     pointer-events: none;
     border: 1px solid rgba(255, 255, 255, 0.08);
@@ -623,7 +623,7 @@
       padding-top: 84px;
     }
     .feature-glass::before {
-      inset: 0 0 20px;
+      inset: 0;
       backdrop-filter: blur(30px) saturate(108%);
       -webkit-backdrop-filter: blur(30px) saturate(108%);
     }
