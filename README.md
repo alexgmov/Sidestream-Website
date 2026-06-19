@@ -27,8 +27,8 @@ Sidestream is an HTML-first landing page for a Premiere Pro plugin that lets edi
 - Header/nav - `header`, `.nav`, `.brand`, `.nav-links`
 - Shader background - `#shader-background-root`, `src/main.tsx`, `components/ui/demo.tsx`, `components/ui/background-paper-shaders.tsx`, and `src/paper-shaders-compat.d.ts`
 - Hero - `#hero`, `.hero-split`, `.hero-copy`, `.hero-title-line`, `.rotating-copy`, `.rotating-word`, `.hero-subline`, `.hero-description`, `.hero-media`, `.hero-mockup-video`
-- Feature sections - `#features` anchor, the two `.sec-pad` feature blocks, `.feature-subtext` heading sublines, `.shot` video frames, `.demo-video` MP4 embeds, and the bottom inline viewport-playback observer
-- Pricing - `#pricing`, `.plans`, `.plan`, `.plan.featured`
+- Feature sections - `#features` anchor, the two `.sec-pad` feature blocks, `.feature-subtext` heading sublines, `.shot` video frames, `.demo-video` MP4 embeds, the bottom inline viewport-playback observer, and the pointer-driven `.shot` 3D tilt handler
+- Pricing - `#pricing`, `.pricing-head`, `.plans`, `.plan`, `.plan.featured`, and the pricing-panel scroll reveal observer
 - Final CTA - `.final`
 - Footer - `footer`, `.wordmark`, `.foot-top`, `.foot-bottom`
 - Hero rotating noun - bottom inline `<script>` with `[data-rotating-word]`
@@ -64,13 +64,15 @@ The hero media is a native autoplaying, muted, looping `<video>` that loads `../
 
 The hero media wrapper intentionally uses a tall `24 / 25` aspect ratio while the video itself is wider than the wrapper. This lets the MacBook render large without clipping through the video plane. The desktop mockup video width is `222%`, and the narrow-mobile override is `212%`. `.hero-media` keeps `overflow: visible` so the rotating laptop is not sliced at the grid-column boundary; `main` still contains page-level overflow. The video uses a soft bottom mask fade but no CSS drop shadow because filtering the alpha video can reveal a rectangular compositing edge during rotation.
 
-The feature cards are chrome-free video frames that use native muted, looping MP4s from `demos/`. The active demos are `search demo.mp4` and `preview demo.mp4`, both recorded around the Tudor Place workflow. They intentionally do not use the `autoplay` attribute; the bottom inline script uses `IntersectionObserver` to play each `.demo-video` only while it is visible and pause it when it leaves the viewport. Raw Screen Studio project folders should stay out of git; export compact MP4s for the site instead.
+The feature cards are chrome-free video frames that use native muted, looping MP4s from `demos/`. The active demos are `search demo.mp4` and `preview demo.mp4`, both recorded around the Tudor Place workflow. They intentionally do not use the `autoplay` attribute; the bottom inline script uses `IntersectionObserver` to play each `.demo-video` only while it is visible and pause it when it leaves the viewport. On fine-pointer hover, the same script tilts the parent `.shot` from its midpoint with CSS variables capped at 15 degrees on X/Y and a tiny Z-axis twist, so the video frame reads as one subtle 3D plane. Raw Screen Studio project folders should stay out of git; export compact MP4s for the site instead.
 
 The page background should preserve the provided Paper demo's shader direction without keeping its demo-site UI. The canonical HTML keeps a black CSS fallback on `body`; `#shader-background-root` is a fixed full-viewport mount, and `src/main.tsx` renders the adapted `DemoOne` component from `components/ui/demo.tsx`. The demo's default `activeEffect` is `"mesh"`, so the visible background is the original black/charcoal/gray `MeshGradient` branch with non-black stops darkened 20% to `#151515`, `#292929`, and `#a3a3a3`. Page text tokens use the off-white `#E2E8F0` and translucent off-white variants for contrast, while cards and pricing surfaces are dark translucent glass.
 
 The header is a fixed transparent overlay with no scroll divider so the shader remains uninterrupted behind the nav. The `.hero-pad` top padding leaves room below the 72px nav while keeping first-fold spacing tight.
 
 On desktop, `.hero-pad` uses a shorter bottom padding and the first feature section uses `.feature-start` to pull the Search demo group upward without changing the shared lower-page `.sec-pad` rhythm.
+
+The pricing headline intentionally sits halfway between the Preview demo video and the pricing cards: `#pricing` overrides the shared section top padding to `32px`, while `.pricing-head` uses a larger bottom margin to keep the cards in place. `.pricing-line` keeps "Unlock when you need more." on its own lighter-weight line. The two pricing cards use a larger `28px` corner radius and a pricing-only `IntersectionObserver` that adds `html.pricing-motion-ready` plus `.is-visible` so the cards glide up once as they enter the viewport; no global `.reveal` behavior is restored.
 
 The hero rotating-word effect is also static-page native: `.rotating-copy` provides the stable text slot, `.rotating-word` animates the current noun, and the bottom inline script cycles `[data-rotating-word]` per `.rotating-copy` group. Incoming and outgoing words use paired, monotonic `translate3d` keyframes on the compositor path so the text stays smooth without bounce or transition/keyframe handoff. The active noun also uses a clipped red/white text gradient that drifts by animating `background-position` only. Do not add React or animation dependencies for this effect.
 
@@ -133,13 +135,17 @@ Use the narrowest relevant check after edits:
 - Open the HTML page and compare the first fold against `Sidestream front end 2/screenshots/01-scan.png`.
 - Run `npm run build` after shader, TypeScript, Tailwind, HTML mount, Vite config, or package changes.
 - Confirm the dark Paper shader renders behind the header, hero, cards, pricing, footer, and toast.
-- Confirm the brand wordmark, pill-rounded download CTAs, active pricing state, check icons, and rotating noun gradient use the red accent palette without leftover orange accents.
+- Confirm the brand wordmark, white pill-rounded download CTAs with black text and red hover fill/white hover text, check icons, and rotating noun gradient use the red accent palette without leftover orange accents.
 - Confirm the background uses the pasted demo's black/charcoal/gray `MeshGradient` branch with the 20%-darker `#151515`, `#292929`, and `#a3a3a3` non-black stops, with no custom red CSS fog, extra overlay gradients, or mounted `EnergyRing`.
 - Confirm the final CTA panel stays clean and does not render the old top-right red radial glow.
 - Confirm the hero MacBook Pro mockup video autoplays, loops, stays muted, and does not create horizontal overflow.
 - Watch the hero MacBook rotation long enough to confirm the left edge is not sliced by the hero media column boundary.
 - Confirm the Search demo group starts close enough to the hero that the "Search for YouTube videos." heading is visible at the bottom of the `1280x748` first fold and on `390x844` mobile.
+- Confirm the "Start free. Unlock when you need more." headline sits centered in the vertical space between the Preview demo video and the pricing cards.
+- Confirm "Unlock when you need more." renders as the lighter-weight `.pricing-line`, while "Start free." stays heavier.
+- Scroll down to pricing and confirm both pricing cards animate upward smoothly once, with the Unlimited card following the Free card by a slight stagger, both cards using visibly rounder 28px corners, and the Unlimited card using a white outline with no drop shadow.
 - Confirm the feature demo videos are paused before they enter the viewport, start playing when scrolled into view, and pause again after leaving view.
+- Confirm hovering each feature demo video tilts the frame subtly from its center, with the top-right pointer position pushing the top-right corner away from the camera and no hover tilt on reduced-motion or coarse-pointer devices.
 - Confirm `/api/download` responds to `HEAD` with `200`, `Content-Disposition: attachment`, `Content-Length`, and a private cache policy after Blob auth is available in the tested environment.
 - Confirm a browser click on any `/api/download` CTA starts a same-origin download navigation instead of only showing the old placeholder toast.
 - Scrub or watch the hero MacBook rotation long enough to confirm hard alpha edges and video-plane edges do not show as dark lines.
@@ -164,9 +170,10 @@ Use the narrowest relevant check after edits:
 - Do not mount the optional React Three Fiber `ShaderPlane` or `EnergyRing` primitives in the active background unless the design intentionally calls for visible flares/rings.
 - No Alphanica font asset exists in this folder. The hero headline uses the SF Pro system stack to match the cleaner non-serif section style without adding a font dependency.
 - The hero explanation lives in `.hero-description` below `.hero-subline`; keep it short, light, outside the animated H1, and wide enough to reach slightly past the "Download YouTube" title edge on desktop.
-- Download CTAs are rounded with a `[data-download]` button override so they feel closer to Apple's capsule action buttons without changing their existing padding, copy, or red primary fill.
+- Download CTAs use a `[data-download]` button override that wins over primary/secondary button classes: white capsule background, black `Download` label, and red hover fill with white hover text while preserving existing sizing.
 - Because the header is fixed, `html` uses `scroll-padding-top: 72px` so anchor navigation does not hide section headings under the nav.
 - Desktop hero-to-feature spacing is tuned with `.hero-pad { padding: 112px 0 56px; }` plus `.feature-start { margin-top: -88px; padding-top: 32px; }`; the mobile override uses `margin-top: -80px` and `padding-top: 24px`. Adjust that first-feature entry before changing shared `.sec-pad` rhythm.
+- Pricing headline placement is tuned independently from shared `.sec-pad`: `#pricing { padding-top: 32px; }`, `.pricing-head { margin-bottom: 152px; }`, and the mobile override uses `116px` bottom margin. `.pricing-line` is intentionally `font-weight: 300`. The Unlimited card uses a white border and no drop shadow. The pricing-card motion should stay scoped to `#pricing .plan.reveal`; do not re-enable global `.reveal` because it was previously disabled for environment fill-mode issues.
 - Desktop hero horizontal placement is tuned on `.hero-split` with a capped `1180px` max width and `clamp(36px, 3.5vw, 44px)` gap, plus a small `.hero-mockup-video` `translateX(-2%)` offset to compensate for transparent space inside the alpha WebM. The narrow-mobile override keeps the same horizontal nudge while resizing the mockup.
 - Feature heading sublines use `.feature-subtext` with the SF Pro system stack at a light weight; avoid restoring the old serif treatment unless the whole feature-heading direction changes.
 - The large footer `.wordmark` intentionally uses a Helvetica-first bold stack instead of the global SF Pro stack.
@@ -177,7 +184,7 @@ Use the narrowest relevant check after edits:
 - Keep `mockups/mockup1_2.webm` checked after background changes; dark backgrounds can make transparent alpha edges more visible if the `.hero-mockup-video` mask or shadow is changed.
 - Mobile split sections must override both `.split` and `.split.flip`; otherwise the more-specific desktop flipped grid can leave feature cards half-width on narrow screens.
 - Feature demo cards use 1800 x 1080 MP4 exports and a chrome-free `.shot` frame with a `5 / 3` aspect ratio, matching the videos without crop. Keep future feature demos muted, looping, and compressed before committing.
-- Feature demo playback is viewport-driven in the bottom inline script. Keep `.demo-video` elements without `autoplay`; otherwise they can start before the user scrolls to the feature cards.
+- Feature demo playback and pointer tilt both live in the bottom inline script. Keep `.demo-video` elements without `autoplay`; otherwise they can start before the user scrolls to the feature cards. Keep the tilt on `.shot`, not `.demo-video`, so the border, shadow, and video plane move together.
 - The final CTA uses the shared dark glass panel only. Do not restore the old `.final::after` red radial glow unless the design intentionally calls for a decorative flare.
 - Plain `npm run dev`/Vite does not run Vercel Functions. Use `npx vercel@latest dev` when testing `/api/download`.
 - Vercel CLI versions before the current `54.x` line can report stale Blob auth/token errors. Prefer `npx vercel@latest ...` for Blob store checks.
@@ -186,10 +193,16 @@ Use the narrowest relevant check after edits:
 
 ## Recent Change Log
 
+- Changed the Unlimited pricing card from a red outline/drop shadow treatment to a white outline with no shadow.
+- Rounded the two pricing cards to `28px` corners and added a pricing-only scroll reveal that glides them upward with a slight stagger when they enter the viewport.
+- Added a subtle center-origin 3D hover tilt to the two feature demo video frames, capped at 15 degrees and disabled for reduced-motion/coarse-pointer users.
 - Removed the red radial corner glow from the final "Stop leaving Premiere to grab footage." CTA panel.
 - Moved the hero MacBook mockup a little farther right by easing `.hero-mockup-video` from `translateX(-4%)` to `translateX(-2%)` on desktop and matching the narrow-mobile offset.
+- Lightened the "Unlock when you need more." pricing headline line with `.pricing-line { font-weight: 300; }`.
+- Raised the pricing headline and increased its gap above the pricing cards so it sits halfway between the Preview demo video and pricing cards.
 - Increased the hero MacBook mockup scale by 20%, changing `.hero-mockup-video` from `185%` to `222%` on desktop and from `177%` to `212%` on narrow mobile.
 - Let `.hero-media` overflow visibly so the enlarged rotating MacBook no longer gets clipped by the hero grid boundary.
+- Changed every `/api/download` CTA label from `Download now` to `Download` and moved download buttons to a white capsule style with black text, red hover fill, and white hover text.
 - Reduced the hero bottom padding and added `.feature-start` so the Search demo group starts inside the first fold on desktop and mobile.
 - Nudged the desktop hero MacBook mockup slightly right by easing the desktop-only alpha video offset from `translateX(-6%)` to `translateX(-4%)`.
 - Rounded `[data-download]` CTAs into Apple-style capsules while preserving their existing size and red primary treatment.
