@@ -174,7 +174,7 @@ Use the narrowest relevant check after edits:
 - Because the header is fixed, `html` uses `scroll-padding-top: 72px` so anchor navigation does not hide section headings under the nav.
 - Desktop hero-to-feature spacing is tuned with `.hero-pad { padding: 112px 0 56px; }` plus `.feature-start { margin-top: -88px; padding-top: 32px; }`; the mobile override uses `margin-top: -80px` and `padding-top: 24px`. Adjust that first-feature entry before changing shared `.sec-pad` rhythm.
 - Pricing headline placement is tuned independently from shared `.sec-pad`: `#pricing { padding-top: 32px; }`, `.pricing-head { margin-bottom: 152px; }`, and the mobile override uses `116px` bottom margin. `.pricing-line` is intentionally `font-weight: 300`. The Unlimited card uses a white border and no drop shadow. The pricing-card motion should stay scoped to `#pricing .plan.reveal`; do not re-enable global `.reveal` because it was previously disabled for environment fill-mode issues.
-- Desktop hero horizontal placement is tuned on `.hero-split` with a capped `1180px` max width and `clamp(36px, 3.5vw, 44px)` gap, plus a small `.hero-mockup-video` `translateX(-2%)` offset to compensate for transparent space inside the alpha WebM. The narrow-mobile override keeps the same horizontal nudge while resizing the mockup.
+- Desktop hero horizontal placement is tuned on `.hero-split` with a capped `1180px` max width and `clamp(36px, 3.5vw, 44px)` gap, plus a neutral `.hero-mockup-video` `translateX(0)` position after the latest rightward nudge. The narrow-mobile override keeps the same neutral position while resizing the mockup.
 - Feature heading sublines use `.feature-subtext` with the SF Pro system stack at a light weight; avoid restoring the old serif treatment unless the whole feature-heading direction changes.
 - The large footer `.wordmark` intentionally uses a Helvetica-first bold stack instead of the global SF Pro stack.
 - The rotating noun should stay on matched keyframe animations for both enter and exit. Mixing CSS transitions with keyed enter animations or adding overshoot makes the headline feel choppy.
@@ -198,6 +198,7 @@ Use the narrowest relevant check after edits:
 - Rounded the two pricing cards to `28px` corners and added a pricing-only scroll reveal that glides them upward with a slight stagger when they enter the viewport.
 - Added a subtle center-origin 3D hover tilt to the two feature demo video frames, capped at 15 degrees and disabled for reduced-motion/coarse-pointer users.
 - Removed the red radial corner glow from the final "Stop leaving Premiere to grab footage." CTA panel.
+- Moved the enlarged hero MacBook mockup a little farther right by easing `.hero-mockup-video` from `translateX(-2%)` to `translateX(0)` on desktop and narrow mobile.
 - Moved the hero MacBook mockup a little farther right by easing `.hero-mockup-video` from `translateX(-4%)` to `translateX(-2%)` on desktop and matching the narrow-mobile offset.
 - Lightened the "Unlock when you need more." pricing headline line with `.pricing-line { font-weight: 300; }`.
 - Raised the pricing headline and increased its gap above the pricing cards so it sits halfway between the Preview demo video and pricing cards.
