@@ -62,7 +62,7 @@ The Blob store is the private `products` store in Vercel project `sidestream`, s
 
 The hero media is a native autoplaying, muted, looping `<video>` that loads `../mockups/mockup1_2.webm` from the canonical HTML file. The generated VP9-alpha WebM keeps the page publishable; source mockup files such as `.mov`, `.aep`, `.exr`, and `.usdz` are ignored so large production assets do not get committed accidentally.
 
-The hero media wrapper intentionally uses a tall `24 / 25` aspect ratio while the video itself is wider than the wrapper. This lets the MacBook render large without clipping through the video plane. The desktop mockup video width is `222%`, and the narrow-mobile override is `212%`. The video uses a soft bottom mask fade but no CSS drop shadow because filtering the alpha video can reveal a rectangular compositing edge during rotation.
+The hero media wrapper intentionally uses a tall `24 / 25` aspect ratio while the video itself is wider than the wrapper. This lets the MacBook render large without clipping through the video plane. The desktop mockup video width is `222%`, and the narrow-mobile override is `212%`. `.hero-media` keeps `overflow: visible` so the rotating laptop is not sliced at the grid-column boundary; `main` still contains page-level overflow. The video uses a soft bottom mask fade but no CSS drop shadow because filtering the alpha video can reveal a rectangular compositing edge during rotation.
 
 The feature cards are chrome-free video frames that use native muted, looping MP4s from `demos/`. The active demos are `search demo.mp4` and `preview demo.mp4`, both recorded around the Tudor Place workflow. They intentionally do not use the `autoplay` attribute; the bottom inline script uses `IntersectionObserver` to play each `.demo-video` only while it is visible and pause it when it leaves the viewport. Raw Screen Studio project folders should stay out of git; export compact MP4s for the site instead.
 
@@ -136,6 +136,7 @@ Use the narrowest relevant check after edits:
 - Confirm the brand wordmark, pill-rounded download CTAs, active pricing state, check icons, and rotating noun gradient use the red accent palette without leftover orange accents.
 - Confirm the background uses the pasted demo's black/charcoal/gray `MeshGradient` branch with the 20%-darker `#151515`, `#292929`, and `#a3a3a3` non-black stops, with no custom red CSS fog, extra overlay gradients, or mounted `EnergyRing`.
 - Confirm the hero MacBook Pro mockup video autoplays, loops, stays muted, and does not create horizontal overflow.
+- Watch the hero MacBook rotation long enough to confirm the left edge is not sliced by the hero media column boundary.
 - Confirm the Search demo group starts close enough to the hero that the "Search for YouTube videos." heading is visible at the bottom of the `1280x748` first fold and on `390x844` mobile.
 - Confirm the feature demo videos are paused before they enter the viewport, start playing when scrolled into view, and pause again after leaving view.
 - Confirm `/api/download` responds to `HEAD` with `200`, `Content-Disposition: attachment`, `Content-Length`, and a private cache policy after Blob auth is available in the tested environment.
@@ -185,6 +186,7 @@ Use the narrowest relevant check after edits:
 
 - Moved the hero MacBook mockup a little farther right by easing `.hero-mockup-video` from `translateX(-4%)` to `translateX(-2%)` on desktop and matching the narrow-mobile offset.
 - Increased the hero MacBook mockup scale by 20%, changing `.hero-mockup-video` from `185%` to `222%` on desktop and from `177%` to `212%` on narrow mobile.
+- Let `.hero-media` overflow visibly so the enlarged rotating MacBook no longer gets clipped by the hero grid boundary.
 - Reduced the hero bottom padding and added `.feature-start` so the Search demo group starts inside the first fold on desktop and mobile.
 - Nudged the desktop hero MacBook mockup slightly right by easing the desktop-only alpha video offset from `translateX(-6%)` to `translateX(-4%)`.
 - Rounded `[data-download]` CTAs into Apple-style capsules while preserving their existing size and red primary treatment.
