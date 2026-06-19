@@ -32,7 +32,7 @@ Sidestream is an HTML-first landing page for a Premiere Pro panel that lets edit
 - Final CTA - `.final` sits inside `#pricing` between the pricing cards and laptop mockup, with a single `/api/download` button
 - Footer - `footer`, `.wordmark`, `.foot-top`, `.foot-bottom`
 - Hero rotating noun - bottom inline `<script>` with `[data-rotating-word]`
-- Download and purchase feedback - bottom inline `<script>` with `[data-download]`, `[data-purchase]`, and `#toast`; download CTAs now point at `/api/download`
+- Download and purchase feedback - bottom inline `<script>` with `[data-download]`, `[data-purchase]`, and `#toast`; download CTAs now point at `/api/download` and use the CSS Apple platform mark from `.btn[data-download]::before`
 - Installer fulfillment - `api/download.ts` reads `SIDESTREAM_INSTALLER_BLOB_PATHNAME` and streams the private Blob object with attachment headers
 
 ## Routes and Assets
@@ -66,9 +66,9 @@ The feature cards are chrome-free video frames that use native muted, looping MP
 
 The page background should preserve the provided Paper demo's shader direction without keeping its demo-site UI. The canonical HTML keeps a black CSS fallback on `body`; `#shader-background-root` is a fixed full-viewport mount, and `src/main.tsx` renders the adapted `DemoOne` component from `components/ui/demo.tsx`. The demo's default `activeEffect` is `"mesh"`, so the visible background is the original black/charcoal/gray `MeshGradient` branch with non-black stops darkened 20% to `#151515`, `#292929`, and `#a3a3a3`. Page text tokens use the off-white `#E2E8F0` and translucent off-white variants for contrast, while cards and pricing surfaces are dark translucent glass.
 
-The header is a fixed transparent overlay with no scroll divider so the shader remains uninterrupted behind the nav. The `.hero-pad` section fills the first viewport and aligns the hero headline, description, and primary Download CTA to the lower-left first-fold gutter. The Sidestream wordmark and hero copy share the viewport-left `24px` first-fold gutter, and the Features/Pricing/Download control cluster is absolutely anchored to the viewport's top-right corner with a `15px` top offset and matching `24px` right gutter.
+The header is a fixed transparent overlay with no scroll divider so the shader remains uninterrupted behind the nav. The `.hero-pad` section fills the first viewport and aligns the hero headline, description, and primary Free Download CTA to the lower-left first-fold gutter. The Sidestream wordmark and hero copy share the viewport-left `24px` first-fold gutter, and the Features/Pricing/Free Download control cluster is absolutely anchored to the viewport's top-right corner with a `15px` top offset and matching `24px` right gutter.
 
-On desktop, `.feature-start` keeps the Search demo group below the hero with positive top padding, creating a clear margin between the hero Download button and the "Search for YouTube videos." heading without changing the shared lower-page `.sec-pad` rhythm.
+On desktop, `.feature-start` keeps the Search demo group below the hero with positive top padding, creating a clear margin between the hero Free Download button and the "Search for YouTube videos." heading without changing the shared lower-page `.sec-pad` rhythm.
 
 The pricing headline intentionally sits halfway between the Preview demo video and the pricing cards: `#pricing` overrides the shared section top padding to `32px`, while `.pricing-head` uses a larger bottom margin to keep the cards in place. `.pricing-line` keeps "Unlock when you need more." on its own lighter-weight line. The two pricing cards use a larger `28px` corner radius and a pricing-only `IntersectionObserver` that adds `html.pricing-motion-ready` plus `.is-visible` so the cards glide up once as they enter the viewport; no global `.reveal` behavior is restored.
 
@@ -133,14 +133,14 @@ Use the narrowest relevant check after edits:
 - Open the HTML page and check that the first fold intentionally places the hero copy lower than the older `Sidestream front end 2/screenshots/01-scan.png` reference.
 - Run `npm run build` after shader, TypeScript, Tailwind, HTML mount, Vite config, or package changes.
 - Confirm the dark Paper shader renders behind the header, hero, cards, pricing, footer, and toast.
-- Confirm the Sidestream wordmark and desktop hero copy share the viewport-left `24px` first-fold gutter, and the Features/Pricing/Download header cluster sits at the viewport's top-right with a `15px` top offset and `24px` right gutter.
-- Confirm the brand wordmark, white pill-rounded download CTAs with black text and red hover fill/white hover text, check icons, and rotating noun gradient use the red accent palette without leftover orange accents.
+- Confirm the Sidestream wordmark and desktop hero copy share the viewport-left `24px` first-fold gutter, and the Features/Pricing/Free Download header cluster sits at the viewport's top-right with a `15px` top offset and `24px` right gutter.
+- Confirm the brand wordmark, white pill-rounded download CTAs with the black Apple platform mark, black text, red hover fill/white hover text, check icons, and rotating noun gradient use the red accent palette without leftover orange accents.
 - Confirm the background uses the pasted demo's black/charcoal/gray `MeshGradient` branch with the 20%-darker `#151515`, `#292929`, and `#a3a3a3` non-black stops, with no custom red CSS fog, extra overlay gradients, or mounted `EnergyRing`.
 - Confirm the final CTA panel stays clean above the pricing MacBook mockup and does not render the old top-right red radial glow.
 - Confirm the pricing MacBook Pro mockup video autoplays, loops, stays muted, sits centered below the two pricing panels plus final CTA, and does not create horizontal overflow. If browser autoplay is fussy, confirm the inline `.macbook-mockup-video` playback helper kicks it after load or visibility return.
 - Confirm the desktop hero copy still uses the wider left-anchored first-fold shell while staying aligned with the fixed Sidestream wordmark, sitting near the bottom-left corner of the first viewport, and rendering the "in Premiere Pro" subline in italic.
 - Watch the pricing MacBook rotation long enough to confirm the laptop stays centered and the alpha edges are not clipped by the pricing wrapper.
-- Confirm the Search demo group starts below the first fold with a deliberate gap between the hero Download CTA and the "Search for YouTube videos." heading on desktop and mobile.
+- Confirm the Search demo group starts below the first fold with a deliberate gap between the hero Free Download CTA and the "Search for YouTube videos." heading on desktop and mobile.
 - Confirm the "Start free. Unlock when you need more." headline sits centered in the vertical space between the Preview demo video and the pricing cards.
 - Confirm "Unlock when you need more." renders as the lighter-weight `.pricing-line`, while "Start free." stays heavier.
 - Scroll down to pricing and confirm both pricing cards animate upward smoothly once, with the Unlimited card following the Free card by a slight stagger, both cards using visibly rounder 28px corners, and the Unlimited card using a white outline with no drop shadow.
@@ -171,7 +171,7 @@ Use the narrowest relevant check after edits:
 - Do not mount the optional React Three Fiber `ShaderPlane` or `EnergyRing` primitives in the active background unless the design intentionally calls for visible flares/rings.
 - No Alphanica font asset exists in this folder. The hero headline uses the SF Pro system stack to match the cleaner non-serif section style without adding a font dependency. The "in Premiere Pro" `.hero-subline` intentionally uses the same stack in italic.
 - The hero explanation lives in `.hero-description` below `.hero-subline`; keep it short, light, outside the animated H1, and explicit that Sidestream is a Premiere Pro panel for searching, previewing, and downloading YouTube videos without leaving the app.
-- Download CTAs use a `[data-download]` button override that wins over primary/secondary button classes: white capsule background, black `Download` label, and red hover fill with white hover text while preserving existing sizing.
+- Download CTAs use a `[data-download]` button override that wins over primary/secondary button classes: white capsule background, a black Apple platform mark, black `Free Download` label, and red hover fill with white hover text while preserving existing sizing. Each `/api/download` CTA should keep `aria-label="Free Download for Mac"` because the platform mark is visual-only.
 - Because the header is fixed, `html` uses `scroll-padding-top: 72px` so anchor navigation does not hide section headings under the nav. Keep `.nav-links` anchored from the full viewport rather than the centered first-fold shell, or the control cluster drifts inward on wider screens.
 - Desktop hero-to-feature spacing is tuned with `.hero-pad` filling `100svh`, bottom-aligning content, and using `padding: 112px 0 clamp(72px, 9vh, 104px)`, plus `.feature-start { margin-top: 0; padding-top: clamp(96px, 12vh, 136px); }`. The mobile override uses `.hero-pad { padding: 128px 0 72px; }` and `.feature-start { padding-top: 84px; }`, with a narrower override of `64px`/`72px` at `520px`. Adjust those first-feature entries before changing shared `.sec-pad` rhythm, but keep the Search copy grid-centered beside its demo video.
 - Pricing headline placement is tuned independently from shared `.sec-pad`: `#pricing { padding-top: 32px; }`, `.pricing-head { margin-bottom: 152px; }`, and the mobile override uses `116px` bottom margin. `.pricing-line` is intentionally `font-weight: 300`. The Unlimited card uses a white border and no drop shadow. The pricing-card motion should stay scoped to `#pricing .plan.reveal`; do not re-enable global `.reveal` because it was previously disabled for environment fill-mode issues.
@@ -194,14 +194,16 @@ Use the narrowest relevant check after edits:
 
 ## Recent Change Log
 
+- Added a black Apple platform mark inside the visible `Free Download` CTAs and accessible `Free Download for Mac` labels for `/api/download` links.
 - Reworded the hero description to explicitly call Sidestream a panel inside Premiere Pro for searching, previewing, and downloading YouTube videos without leaving the app.
+- Changed every visible `/api/download` CTA label from `Download` to `Free Download`.
 - Moved the "Stop leaving Premiere to grab footage." final CTA panel above the rotating pricing MacBook mockup.
 - Italicized the hero "in Premiere Pro" subline while keeping it outside the animated H1.
-- Anchored the hero headline, description, and primary Download CTA to the lower-left first-fold gutter, then moved the Search demo group down to add breathing room below the hero Download button.
+- Anchored the hero headline, description, and primary Free Download CTA to the lower-left first-fold gutter, then moved the Search demo group down to add breathing room below the hero Free Download button.
 - Removed the inline Download buttons from the Search and Preview demo sections and kept their heading/subtext blocks centered beside the videos.
 - Removed trailing periods from the visible hero rotating noun labels and matching aria label.
 - Moved the rotating MacBook mockup out of the hero and centered it below the two pricing panels inside `.pricing-mockup`, with a small playback helper to keep it spinning.
-- Removed the secondary "Get Unlimited" button from the final CTA so the closing panel only offers `Download`.
+- Removed the secondary "Get Unlimited" button from the final CTA so the closing panel only offers `Free Download`.
 - Smoothed the demo-video 3D hover by tracking against the card's stable layout box and returning to rest with an S-curve reset.
 - Anchored the Features/Pricing/Download header cluster to the viewport's top-right with a `15px` top offset and `24px` right gutter.
 - Pinned the fixed Sidestream wordmark and desktop hero copy to the shared viewport-left `24px` first-fold gutter instead of the older centered shell.
