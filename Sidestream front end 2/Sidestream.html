@@ -21,6 +21,8 @@
     --radius: 12px;
     --radius-sm: 8px;
     --maxw: 1240px;
+    --hero-shell-maxw: 1280px;
+    --first-fold-gutter: 24px;
     --ease: cubic-bezier(0.22, 0.61, 0.36, 1);
     --sans: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Helvetica Neue", Arial, sans-serif;
     --sans-stretch: 96%;
@@ -86,9 +88,8 @@
     align-items: center;
   }
   .hero-split {
-    grid-template-columns: minmax(0, 500px) minmax(0, 1fr);
-    max-width: 1180px;
-    gap: clamp(36px, 3.5vw, 44px);
+    display: block;
+    max-width: var(--hero-shell-maxw);
   }
   .split.flip { grid-template-columns: 50% calc(50% - 72px); }
   .split.flip .feat-copy { order: 2; }
@@ -108,11 +109,18 @@
     z-index: 50;
     background: transparent;
   }
+  header .wrap {
+    max-width: none;
+    margin: 0;
+    padding-left: var(--first-fold-gutter);
+    padding-right: var(--first-fold-gutter);
+  }
   .nav {
     height: 72px;
     display: flex;
     align-items: center;
     justify-content: space-between;
+    max-width: none;
   }
   .brand {
     display: flex;
@@ -123,6 +131,9 @@
     letter-spacing: -0.03em;
   }
   .nav-links {
+    position: absolute;
+    top: 15px;
+    right: var(--first-fold-gutter);
     display: flex;
     align-items: center;
     gap: 36px;
@@ -197,14 +208,16 @@
   /* ---------- Section rhythm ---------- */
   section { position: relative; }
   .sec-pad { padding: 120px 0; }
-  .hero-pad { padding: 112px 0 56px; }
-  .feature-start {
-    margin-top: -88px;
-    padding-top: 32px;
+  .hero-pad {
+    min-height: 100vh;
+    min-height: 100svh;
+    display: flex;
+    align-items: flex-end;
+    padding: 112px 0 clamp(72px, 9vh, 104px);
   }
-  .feature-start .feat-copy {
-    align-self: start;
-    padding-top: 8px;
+  .feature-start {
+    margin-top: 0;
+    padding-top: clamp(96px, 12vh, 136px);
   }
   #hero {
     overflow: visible;
@@ -305,6 +318,9 @@
     color: rgba(226, 232, 240, 0.58);
     margin-top: 8px;
   }
+  .feat-copy > h2:last-child {
+    margin-bottom: 0;
+  }
   .feat-copy p {
     font-size: 17px;
     line-height: 1.6;
@@ -342,21 +358,22 @@
     padding: 11px 20px;
     font-size: 14px;
   }
-  .hero-media {
-    min-width: 0;
+  .pricing-mockup {
     display: flex;
     align-items: center;
     justify-content: center;
-    aspect-ratio: 24 / 25;
+    max-width: 1120px;
+    min-height: clamp(300px, 40vw, 560px);
+    margin: 56px auto -40px;
     overflow: visible;
+    pointer-events: none;
   }
-  .hero-mockup-video {
+  .macbook-mockup-video {
     display: block;
-    width: 222%;
+    width: min(1180px, 116vw);
     max-width: none;
     height: auto;
     object-fit: contain;
-    transform: translateX(0);
     background: transparent;
     mask-image: linear-gradient(180deg, #000 0%, #000 80%, rgba(0, 0, 0, 0.72) 88%, transparent 98%);
     -webkit-mask-image: linear-gradient(180deg, #000 0%, #000 80%, rgba(0, 0, 0, 0.72) 88%, transparent 98%);
@@ -377,8 +394,8 @@
     backdrop-filter: blur(20px);
     transform-origin: center center;
     transform-style: preserve-3d;
-    transition: transform 150ms var(--ease), border-color 150ms var(--ease),
-      box-shadow 150ms var(--ease);
+    transition: transform 560ms cubic-bezier(0.45, 0, 0.55, 1),
+      border-color 220ms var(--ease), box-shadow 220ms var(--ease);
     will-change: transform;
   }
   .shot.reveal {
@@ -386,9 +403,16 @@
       rotateY(var(--demo-tilt-y)) rotateZ(var(--demo-tilt-z));
   }
   .shot.is-tilting {
+    transition-duration: 90ms, 150ms, 150ms;
+    transition-timing-function: var(--ease), var(--ease), var(--ease);
     border-color: rgba(255, 255, 255, 0.28);
     box-shadow: 0 1px 2px rgba(0, 0, 0, 0.28),
       0 28px 68px -28px rgba(0, 0, 0, 0.74);
+  }
+  .shot.is-resetting {
+    transition-duration: 560ms, 240ms, 240ms;
+    transition-timing-function: cubic-bezier(0.45, 0, 0.55, 1), var(--ease),
+      var(--ease);
   }
   .demo-video {
     display: block;
@@ -536,6 +560,15 @@
   @keyframes spin { to { transform: rotate(360deg); } }
 
   /* ---------- Responsive ---------- */
+  @media (min-width: 901px) {
+    #hero > .wrap {
+      max-width: var(--hero-shell-maxw);
+      margin-left: 0;
+      margin-right: auto;
+      padding-left: var(--first-fold-gutter);
+      padding-right: var(--first-fold-gutter);
+    }
+  }
   @media (max-width: 900px) {
     .wrap { padding: 0 24px; }
     .split { grid-template-columns: 1fr; gap: 40px; }
@@ -544,22 +577,26 @@
     .split.flip .shot { order: initial; }
     .feat-copy.align-right { text-align: left; }
     .feat-copy.align-right .cta-row { justify-content: flex-start; }
-    .hero-split { grid-template-columns: 1fr; }
     .sec-pad { padding: 84px 0; }
-    .hero-pad { padding: 136px 0 56px; }
+    .hero-pad { padding: 128px 0 72px; }
     .feature-start {
-      margin-top: -80px;
-      padding-top: 24px;
+      margin-top: 0;
+      padding-top: 84px;
     }
-    .feature-start .feat-copy { padding-top: 8px; }
     h1 { font-size: 3.08rem; }
     .hero-subline { font-size: 1.86rem; }
     .hero-description { font-size: 16px; }
-    .hero-mockup-video { transform: none; }
     .hero-copy.reveal { transform: none; }
     .feat-copy p { max-width: none; }
     .pricing-head { margin-bottom: 116px; }
     .plans { grid-template-columns: 1fr; }
+    .pricing-mockup {
+      min-height: clamp(220px, 62vw, 420px);
+      margin: 44px auto -28px;
+    }
+    .macbook-mockup-video {
+      width: min(760px, 148vw);
+    }
     .final { padding: 64px 32px; }
     .nav-links nav { display: none; }
     .foot-top { align-items: flex-start; }
@@ -570,9 +607,14 @@
     .hero-description { font-size: 15.5px; }
     .rotating-copy { min-width: 0; width: 100%; }
     .pricing-line { white-space: normal; }
-    .hero-mockup-video {
-      width: 212%;
-      transform: translateX(0);
+    .hero-pad { padding-bottom: 64px; }
+    .feature-start { padding-top: 72px; }
+    .pricing-mockup {
+      min-height: clamp(210px, 70vw, 340px);
+      margin-top: 34px;
+    }
+    .macbook-mockup-video {
+      width: 166vw;
     }
   }
   @media (prefers-reduced-motion: reduce) {
@@ -632,7 +674,7 @@
 
     <!-- ===================== HERO ===================== -->
     <section class="hero-pad" id="hero">
-      <div class="wrap split hero-split">
+      <div class="wrap hero-split">
         <div class="hero-copy reveal">
           <h1 aria-label="Download YouTube videos, songs, overlays, b-roll, references, and tutorials">
             <span class="hero-title-line">Download YouTube</span>
@@ -651,12 +693,6 @@
             <a class="btn btn-primary btn-lg" href="/api/download" data-download>Download</a>
           </div>
         </div>
-        <div class="hero-media reveal" aria-label="Rotating MacBook Pro showing Sidestream in Premiere Pro">
-          <video class="hero-mockup-video" autoplay muted loop playsinline preload="metadata">
-            <source src="../mockups/mockup1_2.webm" type="video/webm">
-            Rotating MacBook Pro preview.
-          </video>
-        </div>
       </div>
     </section>
 
@@ -668,9 +704,6 @@
       <div class="wrap split flip">
         <div class="feat-copy reveal">
           <h2>Search for YouTube videos.<span class="feature-subtext">Search using keywords or paste a link.</span></h2>
-          <div class="cta-row">
-            <a class="btn btn-primary" href="/api/download" data-download>Download</a>
-          </div>
         </div>
         <div class="shot reveal" aria-label="Demo video: searching Tudor Place inside the Sidestream panel">
           <video class="demo-video" muted loop playsinline preload="metadata">
@@ -686,9 +719,6 @@
       <div class="wrap split">
         <div class="feat-copy reveal align-right">
           <h2>Preview videos.<span class="feature-subtext">Watch just as you would in YouTube.</span></h2>
-          <div class="cta-row">
-            <a class="btn btn-primary" href="/api/download" data-download>Download</a>
-          </div>
         </div>
         <div class="shot reveal" aria-label="Demo video: previewing Tudor Place inside the Sidestream panel">
           <video class="demo-video" muted loop playsinline preload="metadata">
@@ -727,6 +757,12 @@
             </ul>
             <a class="btn btn-primary" href="#" data-purchase>Get Unlimited $29</a>
           </div>
+        </div>
+        <div class="pricing-mockup reveal" aria-label="Rotating MacBook Pro showing Sidestream in Premiere Pro">
+          <video class="macbook-mockup-video" autoplay muted loop playsinline preload="auto">
+            <source src="../mockups/mockup1_2.webm" type="video/webm">
+            Rotating MacBook Pro preview.
+          </video>
         </div>
       </div>
     </section>
@@ -832,12 +868,33 @@
       demoVideos.forEach(playDemoVideo);
     }
 
+    const macbookVideos = Array.from(document.querySelectorAll(".macbook-mockup-video"));
+    function playMacbookVideo(video) {
+      video.muted = true;
+      const playAttempt = video.play();
+      if (playAttempt) playAttempt.catch(() => {});
+    }
+    macbookVideos.forEach((video) => {
+      if (video.readyState >= 2) {
+        playMacbookVideo(video);
+        return;
+      }
+
+      video.addEventListener("canplay", () => playMacbookVideo(video), { once: true });
+    });
+    document.addEventListener("visibilitychange", () => {
+      if (document.hidden) return;
+      macbookVideos.forEach(playMacbookVideo);
+    });
+
     const demoTiltCards = demoVideos
       .map((video) => video.closest(".shot"))
       .filter(Boolean);
     const canTiltDemos =
       !reduceMotion &&
       window.matchMedia("(hover: hover) and (pointer: fine)").matches;
+    const demoTiltResetTimers = new WeakMap();
+    let activeDemoTilt = null;
 
     function setDemoTilt(card, rotateX, rotateY, rotateZ) {
       card.style.setProperty("--demo-tilt-x", `${rotateX.toFixed(2)}deg`);
@@ -845,18 +902,38 @@
       card.style.setProperty("--demo-tilt-z", `${rotateZ.toFixed(2)}deg`);
     }
 
-    function resetDemoTilt(card) {
-      card.classList.remove("is-tilting");
-      setDemoTilt(card, 0, 0, 0);
-    }
-
     if (canTiltDemos) {
       const maxDemoTilt = 15;
       const maxDemoTwist = 1.2;
+      const demoTiltHoverBuffer = 18;
 
-      function updateDemoTilt(event) {
-        const card = event.currentTarget;
-        const rect = card.getBoundingClientRect();
+      function getDemoTiltLayoutRect(card) {
+        let left = 0;
+        let top = 0;
+        let node = card;
+        while (node) {
+          left += node.offsetLeft;
+          top += node.offsetTop;
+          node = node.offsetParent;
+        }
+        return {
+          left: left - window.scrollX,
+          top: top - window.scrollY,
+          width: card.offsetWidth,
+          height: card.offsetHeight
+        };
+      }
+
+      function pointerIsInDemoTiltRect(event, rect, buffer = 0) {
+        return (
+          event.clientX >= rect.left - buffer &&
+          event.clientX <= rect.left + rect.width + buffer &&
+          event.clientY >= rect.top - buffer &&
+          event.clientY <= rect.top + rect.height + buffer
+        );
+      }
+
+      function updateDemoTilt(event, card, rect) {
         const pointerX = ((event.clientX - rect.left) / rect.width - 0.5) * 2;
         const pointerY = ((event.clientY - rect.top) / rect.height - 0.5) * 2;
         const clampedX = Math.max(-1, Math.min(1, pointerX));
@@ -869,14 +946,80 @@
         );
       }
 
+      function resetDemoTilt(card) {
+        if (activeDemoTilt && activeDemoTilt.card === card) {
+          activeDemoTilt = null;
+          window.removeEventListener("pointermove", trackActiveDemoTilt);
+        }
+        card.classList.remove("is-tilting");
+        card.classList.add("is-resetting");
+        setDemoTilt(card, 0, 0, 0);
+        window.clearTimeout(demoTiltResetTimers.get(card));
+        demoTiltResetTimers.set(
+          card,
+          window.setTimeout(() => {
+            card.classList.remove("is-resetting");
+          }, 580)
+        );
+      }
+
+      function trackActiveDemoTilt(event) {
+        if (!activeDemoTilt) return;
+        if (
+          !pointerIsInDemoTiltRect(
+            event,
+            activeDemoTilt.rect,
+            demoTiltHoverBuffer
+          )
+        ) {
+          resetDemoTilt(activeDemoTilt.card);
+          return;
+        }
+        updateDemoTilt(event, activeDemoTilt.card, activeDemoTilt.rect);
+      }
+
+      function activateDemoTilt(event, card) {
+        window.clearTimeout(demoTiltResetTimers.get(card));
+        card.classList.remove("is-resetting");
+        card.classList.add("is-tilting");
+        activeDemoTilt = {
+          card,
+          rect: getDemoTiltLayoutRect(card)
+        };
+        updateDemoTilt(event, card, activeDemoTilt.rect);
+        window.addEventListener("pointermove", trackActiveDemoTilt);
+      }
+
       demoTiltCards.forEach((card) => {
         card.addEventListener("pointerenter", (event) => {
-          card.classList.add("is-tilting");
-          updateDemoTilt(event);
+          activateDemoTilt(event, card);
         });
-        card.addEventListener("pointermove", updateDemoTilt);
-        card.addEventListener("pointerleave", () => resetDemoTilt(card));
+        card.addEventListener("pointermove", (event) => {
+          if (!activeDemoTilt || activeDemoTilt.card !== card) {
+            activateDemoTilt(event, card);
+            return;
+          }
+          updateDemoTilt(event, card, activeDemoTilt.rect);
+        });
+        card.addEventListener("pointerleave", (event) => {
+          if (!activeDemoTilt || activeDemoTilt.card !== card) return;
+          if (
+            !pointerIsInDemoTiltRect(
+              event,
+              activeDemoTilt.rect,
+              demoTiltHoverBuffer
+            )
+          ) {
+            resetDemoTilt(card);
+          }
+        });
         card.addEventListener("pointercancel", () => resetDemoTilt(card));
+      });
+      window.addEventListener("scroll", () => {
+        if (activeDemoTilt) resetDemoTilt(activeDemoTilt.card);
+      }, { passive: true });
+      window.addEventListener("blur", () => {
+        if (activeDemoTilt) resetDemoTilt(activeDemoTilt.card);
       });
     }
 
