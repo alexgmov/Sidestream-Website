@@ -135,6 +135,7 @@ Use the narrowest relevant check after edits:
 - Confirm the dark Paper shader renders behind the header, hero, cards, pricing, footer, and toast.
 - Confirm the brand wordmark, pill-rounded download CTAs, active pricing state, check icons, and rotating noun gradient use the red accent palette without leftover orange accents.
 - Confirm the background uses the pasted demo's black/charcoal/gray `MeshGradient` branch with the 20%-darker `#151515`, `#292929`, and `#a3a3a3` non-black stops, with no custom red CSS fog, extra overlay gradients, or mounted `EnergyRing`.
+- Confirm the final CTA panel stays clean and does not render the old top-right red radial glow.
 - Confirm the hero MacBook Pro mockup video autoplays, loops, stays muted, and does not create horizontal overflow.
 - Watch the hero MacBook rotation long enough to confirm the left edge is not sliced by the hero media column boundary.
 - Confirm the Search demo group starts close enough to the hero that the "Search for YouTube videos." heading is visible at the bottom of the `1280x748` first fold and on `390x844` mobile.
@@ -177,6 +178,7 @@ Use the narrowest relevant check after edits:
 - Mobile split sections must override both `.split` and `.split.flip`; otherwise the more-specific desktop flipped grid can leave feature cards half-width on narrow screens.
 - Feature demo cards use 1800 x 1080 MP4 exports and a chrome-free `.shot` frame with a `5 / 3` aspect ratio, matching the videos without crop. Keep future feature demos muted, looping, and compressed before committing.
 - Feature demo playback is viewport-driven in the bottom inline script. Keep `.demo-video` elements without `autoplay`; otherwise they can start before the user scrolls to the feature cards.
+- The final CTA uses the shared dark glass panel only. Do not restore the old `.final::after` red radial glow unless the design intentionally calls for a decorative flare.
 - Plain `npm run dev`/Vite does not run Vercel Functions. Use `npx vercel@latest dev` when testing `/api/download`.
 - Vercel CLI versions before the current `54.x` line can report stale Blob auth/token errors. Prefer `npx vercel@latest ...` for Blob store checks.
 - Without `vercel.json`, `vercel dev` may inherit a Yarn command from the Vercel project settings and hang on machines without Yarn.
@@ -184,6 +186,7 @@ Use the narrowest relevant check after edits:
 
 ## Recent Change Log
 
+- Removed the red radial corner glow from the final "Stop leaving Premiere to grab footage." CTA panel.
 - Moved the hero MacBook mockup a little farther right by easing `.hero-mockup-video` from `translateX(-4%)` to `translateX(-2%)` on desktop and matching the narrow-mobile offset.
 - Increased the hero MacBook mockup scale by 20%, changing `.hero-mockup-video` from `185%` to `222%` on desktop and from `177%` to `212%` on narrow mobile.
 - Let `.hero-media` overflow visibly so the enlarged rotating MacBook no longer gets clipped by the hero grid boundary.
