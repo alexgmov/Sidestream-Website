@@ -14,7 +14,7 @@ export default function DemoOne() {
       {activeEffect === "mesh" && (
         <MeshGradient
           className="w-full h-full absolute inset-0"
-          colors={["#000000", "#1a1a1a", "#333333", "#cccccc"]}
+          colors={["#000000", "#151515", "#292929", "#a3a3a3"]}
           speed={speed}
           backgroundColor="#000000"
         />
@@ -24,8 +24,8 @@ export default function DemoOne() {
         <div className="w-full h-full absolute inset-0 bg-black">
           <DotOrbit
             className="w-full h-full"
-            dotColor="#333333"
-            orbitColor="#1a1a1a"
+            dotColor="#292929"
+            orbitColor="#151515"
             speed={speed}
             intensity={intensity}
           />
@@ -36,7 +36,7 @@ export default function DemoOne() {
         <>
           <MeshGradient
             className="w-full h-full absolute inset-0"
-            colors={["#000000", "#1a1a1a", "#333333", "#cccccc"]}
+            colors={["#000000", "#151515", "#292929", "#a3a3a3"]}
             speed={speed * 0.5}
             wireframe="true"
             backgroundColor="#000000"
@@ -44,8 +44,8 @@ export default function DemoOne() {
           <div className="w-full h-full absolute inset-0 opacity-60">
             <DotOrbit
               className="w-full h-full"
-              dotColor="#333333"
-              orbitColor="#1a1a1a"
+              dotColor="#292929"
+              orbitColor="#151515"
               speed={speed * 1.5}
               intensity={intensity * 0.8}
             />

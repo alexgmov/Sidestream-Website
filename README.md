@@ -8,7 +8,7 @@ Sidestream is an HTML-first landing page for a Premiere Pro plugin that lets edi
 
 - `Sidestream front end 2/Sidestream.html` - Canonical page implementation. Contains the shader mount root, header, hero, feature sections, pricing, final CTA, footer, styles, rotating-word script, and toast behavior.
 - `index.html` - Root redirect so `http://localhost:5173/` and other local server roots open the canonical page instead of a directory listing.
-- `components/ui/demo.tsx` - Adapted Paper demo component mounted as the page background. The active default effect is the original `MeshGradient` branch with the brightest stop capped at `#cccccc`, with demo install/clipboard overlay text removed.
+- `components/ui/demo.tsx` - Adapted Paper demo component mounted as the page background. The active default effect is the original `MeshGradient` branch with non-black stops darkened 20% to `#151515`, `#292929`, and `#a3a3a3`, with demo install/clipboard overlay text removed.
 - `components/ui/background-paper-shaders.tsx` - Exact pasted React Three Fiber shader primitives from the provided reference. They are kept as optional reference code and are not mounted by default.
 - `api/download.ts` - Vercel Node Function that streams the configured private Vercel Blob installer to the browser through `/api/download`. Supports `GET` and `HEAD` only.
 - `src/main.tsx` - React entry that mounts `DemoOne` into `#shader-background-root`.
@@ -26,7 +26,7 @@ Sidestream is an HTML-first landing page for a Premiere Pro plugin that lets edi
 
 - Header/nav - `header`, `.nav`, `.brand`, `.nav-links`
 - Shader background - `#shader-background-root`, `src/main.tsx`, `components/ui/demo.tsx`, `components/ui/background-paper-shaders.tsx`, and `src/paper-shaders-compat.d.ts`
-- Hero - `#hero`, `.hero-split`, `.hero-copy`, `.rotating-copy`, `.rotating-word`, `.hero-subline`, `.hero-media`, `.hero-mockup-video`
+- Hero - `#hero`, `.hero-split`, `.hero-copy`, `.hero-title-line`, `.rotating-copy`, `.rotating-word`, `.hero-subline`, `.hero-description`, `.cta-row`, `.hero-media`, `.hero-mockup-video`
 - Feature sections - `#features` anchor, the two `.sec-pad` feature blocks, `.feature-subtext` heading sublines, `.shot` video frames, `.demo-video` MP4 embeds, and the bottom inline viewport-playback observer
 - Pricing - `#pricing`, `.plans`, `.plan`, `.plan.featured`
 - Final CTA - `.final`
@@ -66,7 +66,7 @@ The hero media wrapper intentionally uses a tall `24 / 25` aspect ratio while th
 
 The feature cards are chrome-free video frames that use native muted, looping MP4s from `demos/`. The active demos are `search demo.mp4` and `preview demo.mp4`, both recorded around the Tudor Place workflow. They intentionally do not use the `autoplay` attribute; the bottom inline script uses `IntersectionObserver` to play each `.demo-video` only while it is visible and pause it when it leaves the viewport. Raw Screen Studio project folders should stay out of git; export compact MP4s for the site instead.
 
-The page background should preserve the provided Paper demo's shader direction without keeping its demo-site UI. The canonical HTML keeps a black CSS fallback on `body`; `#shader-background-root` is a fixed full-viewport mount, and `src/main.tsx` renders the adapted `DemoOne` component from `components/ui/demo.tsx`. The demo's default `activeEffect` is `"mesh"`, so the visible background is the original black/charcoal/gray `MeshGradient` branch with the brightest white stop reduced to `#cccccc`. Page text tokens are white or translucent white for contrast, while cards and pricing surfaces are dark translucent glass.
+The page background should preserve the provided Paper demo's shader direction without keeping its demo-site UI. The canonical HTML keeps a black CSS fallback on `body`; `#shader-background-root` is a fixed full-viewport mount, and `src/main.tsx` renders the adapted `DemoOne` component from `components/ui/demo.tsx`. The demo's default `activeEffect` is `"mesh"`, so the visible background is the original black/charcoal/gray `MeshGradient` branch with non-black stops darkened 20% to `#151515`, `#292929`, and `#a3a3a3`. Page text tokens use the off-white `#E2E8F0` and translucent off-white variants for contrast, while cards and pricing surfaces are dark translucent glass.
 
 The header is a fixed transparent overlay with no scroll divider so the shader remains uninterrupted behind the nav. The `.hero-pad` top padding leaves room below the 72px nav while keeping first-fold spacing tight.
 
@@ -133,17 +133,17 @@ Use the narrowest relevant check after edits:
 - Open the HTML page and compare the first fold against `Sidestream front end 2/screenshots/01-scan.png`.
 - Run `npm run build` after shader, TypeScript, Tailwind, HTML mount, Vite config, or package changes.
 - Confirm the dark Paper shader renders behind the header, hero, cards, pricing, footer, and toast.
-- Confirm the brand bug, CTA buttons, active pricing state, check icons, and rotating noun gradient use the red accent palette without leftover orange accents.
-- Confirm the background uses the pasted demo's black/charcoal/gray `MeshGradient` branch with the capped `#cccccc` bright stop, with no custom red CSS fog, extra overlay gradients, or mounted `EnergyRing`.
+- Confirm the hero CTA row uses the outlined `Pricing` pill and white `Get Started` pill from the reference, while non-hero CTAs, active pricing state, check icons, and rotating noun gradient keep the red accent palette without leftover orange accents.
+- Confirm the background uses the pasted demo's black/charcoal/gray `MeshGradient` branch with the 20%-darker `#151515`, `#292929`, and `#a3a3a3` non-black stops, with no custom red CSS fog, extra overlay gradients, or mounted `EnergyRing`.
 - Confirm the hero MacBook Pro mockup video autoplays, loops, stays muted, and does not create horizontal overflow.
 - Confirm the feature demo videos are paused before they enter the viewport, start playing when scrolled into view, and pause again after leaving view.
 - Confirm `/api/download` responds to `HEAD` with `200`, `Content-Disposition: attachment`, `Content-Length`, and a private cache policy after Blob auth is available in the tested environment.
-- Confirm a browser click on any `Download now` CTA starts a same-origin `/api/download` navigation instead of only showing the old placeholder toast.
+- Confirm a browser click on any `/api/download` CTA starts a same-origin download navigation instead of only showing the old placeholder toast.
 - Scrub or watch the hero MacBook rotation long enough to confirm hard alpha edges and video-plane edges do not show as dark lines.
 - Let the hero rotating noun run through a full cycle and confirm each word swap stays smooth without bounce, clipping, or layout shift.
 - Confirm the rotating noun gradient stays subtle, remains readable on "songs." and "overlays.", and pauses under reduced-motion settings.
 - Scroll from the hero through pricing and footer to confirm the background reads as one continuous fixed shader field without horizontal seams.
-- Confirm white and translucent-white text remains readable over the dark shader on desktop and mobile.
+- Confirm `#E2E8F0` off-white and translucent off-white text remains readable over the dark shader on desktop and mobile.
 - Confirm the background canvases are nonblank on desktop and mobile and continue rendering after scroll.
 - Check desktop at `1280x748`, because all supplied reference screenshots use that size.
 - Check mobile around `390x844` for text wrapping, CTA sizing, and image-card overflow.
@@ -160,13 +160,16 @@ Use the narrowest relevant check after edits:
 - `components/ui/background-paper-shaders.tsx` is copied exactly from the reference and is excluded from app typechecking because the pasted `THREE.Mesh` generic is broader than this repo's strict TypeScript settings.
 - Do not mount the optional React Three Fiber `ShaderPlane` or `EnergyRing` primitives in the active background unless the design intentionally calls for visible flares/rings.
 - No Alphanica font asset exists in this folder. The hero headline uses the SF Pro system stack to match the cleaner non-serif section style without adding a font dependency.
+- The hero explanation lives in `.hero-description` below `.hero-subline`; keep it short, light, outside the animated H1, and wide enough to reach slightly past the "Download YouTube" title edge on desktop.
+- Hero CTA styling is intentionally scoped under `#hero`: the first-fold buttons use an outlined `Pricing` pill and a white `Get Started` pill, while global `.btn-primary` remains red for nav, pricing, and final CTAs.
 - Because the header is fixed, `html` uses `scroll-padding-top: 72px` so anchor navigation does not hide section headings under the nav.
 - Desktop hero vertical placement is tuned with `.hero-pad { padding: 112px 0 176px; }`; keep the top and bottom padding total stable when nudging the hero so the first feature spacing does not drift.
+- Desktop hero horizontal placement is tuned on `.hero-split` with a capped `1180px` max width and `clamp(36px, 3.5vw, 44px)` gap, plus a small desktop-only `.hero-mockup-video` `translateX(-6%)` offset to compensate for transparent space inside the alpha WebM.
 - Feature heading sublines use `.feature-subtext` with the SF Pro system stack at a light weight; avoid restoring the old serif treatment unless the whole feature-heading direction changes.
 - The large footer `.wordmark` intentionally uses a Helvetica-first bold stack instead of the global SF Pro stack.
 - The rotating noun should stay on matched keyframe animations for both enter and exit. Mixing CSS transitions with keyed enter animations or adding overshoot makes the headline feel choppy.
 - The rotating noun gradient should animate only `background-position` and color/filter values. Do not animate the word transform for the gradient drift or it will fight the roll keyframes.
-- Text tokens are tuned for a dark shader background. If the page returns to a light background, retune `--ink`, `--ink-soft`, `--ink-faint`, surfaces, and button states together.
+- Text tokens are tuned for a dark shader background, with `--ink` and `--white` set to `#E2E8F0` and `--ink-soft`/`--ink-faint` using translucent `#E2E8F0`. If the page returns to a light background, retune `--ink`, `--ink-soft`, `--ink-faint`, surfaces, and button states together.
 - If the MacBook mockup is resized, keep enough vertical room in `.hero-media` and preserve the bottom mask on `.hero-mockup-video`; a too-short 16:9 wrapper, unmasked video edge, or video-level CSS drop shadow can create a hard line around or below the laptop.
 - Keep `mockups/mockup1_2.webm` checked after background changes; dark backgrounds can make transparent alpha edges more visible if the `.hero-mockup-video` mask or shadow is changed.
 - Mobile split sections must override both `.split` and `.split.flip`; otherwise the more-specific desktop flipped grid can leave feature cards half-width on narrow screens.
@@ -179,6 +182,15 @@ Use the narrowest relevant check after edits:
 
 ## Recent Change Log
 
+- Tightened the desktop hero composition by capping `.hero-split` width, reducing its responsive grid gap, and nudging the alpha MacBook video left so the copy and mockup sit closer together.
+- Changed the solid and translucent white text tokens plus direct white text cases to the slightly softer off-white `#E2E8F0`.
+- Restyled the hero CTA row as an outlined `Pricing` pill and white `Get Started` pill scoped to `#hero`.
+- Darkened the active Paper `MeshGradient` background by 20% by scaling the non-black shader stops from `#1a1a1a`, `#333333`, and `#cccccc` to `#151515`, `#292929`, and `#a3a3a3`.
+- Removed the red square brand mark from the fixed top-left nav so the header starts with the Sidestream wordmark only.
+- Added a lighter `.hero-description` line below "in Premiere Pro" to explain that Sidestream searches, previews, and downloads YouTube media inside the Premiere workflow.
+- Removed red drop shadows from primary CTA buttons while keeping their fill, hover color, and hover lift.
+- Widened `.hero-description` so the explanatory line extends a little past the right edge of "Download YouTube" on desktop.
+- Kept "Download YouTube" together on the hero's first headline line with `.hero-title-line`, widened the desktop hero copy track to fit it at `1280x748`, and left the rotating noun on the second line.
 - Added `@vercel/blob`, linked the repo to Vercel project `sidestream`, pulled local env, configured the private `products` Blob store id and installer pathname, and added `/api/download` to stream the current Sidestream installer from private Blob storage.
 - Added `vercel.json` to force npm-based Vercel install/build/dev commands and `dist` output for this Vite project.
 - Updated all `Download now` CTAs to target `/api/download` while preserving the toast feedback before navigation.
