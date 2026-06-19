@@ -365,7 +365,7 @@
     justify-content: center;
     max-width: 1120px;
     min-height: clamp(300px, 40vw, 560px);
-    margin: 56px auto -40px;
+    margin: 48px auto -40px;
     overflow: visible;
     pointer-events: none;
   }
@@ -508,6 +508,8 @@
     color: var(--ink);
     border: 1px solid var(--line);
     border-radius: 20px;
+    max-width: 940px;
+    margin: 96px auto 0;
     padding: 84px 64px;
     text-align: center;
     position: relative;
@@ -593,12 +595,12 @@
     .plans { grid-template-columns: 1fr; }
     .pricing-mockup {
       min-height: clamp(220px, 62vw, 420px);
-      margin: 44px auto -28px;
+      margin: 36px auto -28px;
     }
     .macbook-mockup-video {
       width: min(760px, 148vw);
     }
-    .final { padding: 64px 32px; }
+    .final { margin-top: 72px; padding: 64px 32px; }
     .nav-links nav { display: none; }
     .foot-top { align-items: flex-start; }
   }
@@ -612,7 +614,7 @@
     .feature-start { padding-top: 72px; }
     .pricing-mockup {
       min-height: clamp(210px, 70vw, 340px);
-      margin-top: 34px;
+      margin-top: 30px;
     }
     .macbook-mockup-video {
       width: 166vw;
@@ -759,24 +761,18 @@
             <a class="btn btn-primary" href="#" data-purchase>Get Unlimited $29</a>
           </div>
         </div>
-        <div class="pricing-mockup reveal" aria-label="Rotating MacBook Pro showing Sidestream in Premiere Pro">
-          <video class="macbook-mockup-video" autoplay muted loop playsinline preload="auto">
-            <source src="../mockups/mockup1_2.webm" type="video/webm">
-            Rotating MacBook Pro preview.
-          </video>
-        </div>
-      </div>
-    </section>
-
-    <!-- ===================== FINAL CTA ===================== -->
-    <section style="padding:120px 0;">
-      <div class="wrap">
         <div class="final reveal">
           <h2>Stop leaving Premiere to grab footage.</h2>
           <p>Download Sidestream, paste a link, and keep editing. Free to start, $29 to go unlimited.</p>
           <div class="cta-row">
             <a class="btn btn-primary btn-lg" href="/api/download" data-download>Download</a>
           </div>
+        </div>
+        <div class="pricing-mockup reveal" aria-label="Rotating MacBook Pro showing Sidestream in Premiere Pro">
+          <video class="macbook-mockup-video" autoplay muted loop playsinline preload="auto">
+            <source src="../mockups/mockup1_2.webm" type="video/webm">
+            Rotating MacBook Pro preview.
+          </video>
         </div>
       </div>
     </section>
