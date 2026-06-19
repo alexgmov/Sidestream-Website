@@ -150,7 +150,7 @@ Use the narrowest relevant check after edits:
 - Confirm a browser click on any `/api/download` CTA starts a same-origin download navigation instead of only showing the old placeholder toast.
 - Scrub or watch the hero MacBook rotation long enough to confirm hard alpha edges and video-plane edges do not show as dark lines.
 - Let the hero rotating noun run through a full cycle and confirm each word swap stays smooth without bounce, clipping, or layout shift.
-- Confirm the rotating noun gradient stays subtle, remains readable on "songs." and "overlays.", and pauses under reduced-motion settings.
+- Confirm the rotating noun gradient stays subtle, remains readable on "songs" and "overlays", and pauses under reduced-motion settings.
 - Scroll from the hero through pricing and footer to confirm the background reads as one continuous fixed shader field without horizontal seams.
 - Confirm `#E2E8F0` off-white and translucent off-white text remains readable over the dark shader on desktop and mobile.
 - Confirm the background canvases are nonblank on desktop and mobile and continue rendering after scroll.
@@ -193,6 +193,7 @@ Use the narrowest relevant check after edits:
 
 ## Recent Change Log
 
+- Removed trailing periods from the visible hero rotating noun labels and matching aria label.
 - Removed the secondary "Get Unlimited" button from the final CTA so the closing panel only offers `Download`.
 - Changed the Unlimited pricing card from a red outline/drop shadow treatment to a white outline with no shadow.
 - Rounded the two pricing cards to `28px` corners and added a pricing-only scroll reveal that glides them upward with a slight stagger when they enter the viewport.
