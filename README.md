@@ -26,7 +26,7 @@ Sidestream is an HTML-first landing page for a Premiere Pro plugin that lets edi
 
 - Header/nav - `header`, `.nav`, `.brand`, `.nav-links`
 - Shader background - `#shader-background-root`, `src/main.tsx`, `components/ui/demo.tsx`, `components/ui/background-paper-shaders.tsx`, and `src/paper-shaders-compat.d.ts`
-- Hero - `#hero`, `.hero-split`, `.hero-copy`, `.hero-title-line`, `.rotating-copy`, `.rotating-word`, `.hero-subline`, `.hero-description`, `.cta-row`, `.hero-media`, `.hero-mockup-video`
+- Hero - `#hero`, `.hero-split`, `.hero-copy`, `.hero-title-line`, `.rotating-copy`, `.rotating-word`, `.hero-subline`, `.hero-description`, `.hero-media`, `.hero-mockup-video`
 - Feature sections - `#features` anchor, the two `.sec-pad` feature blocks, `.feature-subtext` heading sublines, `.shot` video frames, `.demo-video` MP4 embeds, and the bottom inline viewport-playback observer
 - Pricing - `#pricing`, `.plans`, `.plan`, `.plan.featured`
 - Final CTA - `.final`
@@ -133,7 +133,7 @@ Use the narrowest relevant check after edits:
 - Open the HTML page and compare the first fold against `Sidestream front end 2/screenshots/01-scan.png`.
 - Run `npm run build` after shader, TypeScript, Tailwind, HTML mount, Vite config, or package changes.
 - Confirm the dark Paper shader renders behind the header, hero, cards, pricing, footer, and toast.
-- Confirm the hero CTA row uses the outlined `Pricing` pill and white `Get Started` pill from the reference, while non-hero CTAs, active pricing state, check icons, and rotating noun gradient keep the red accent palette without leftover orange accents.
+- Confirm the brand wordmark, shadow-free CTA buttons, active pricing state, check icons, and rotating noun gradient use the red accent palette without leftover orange accents.
 - Confirm the background uses the pasted demo's black/charcoal/gray `MeshGradient` branch with the 20%-darker `#151515`, `#292929`, and `#a3a3a3` non-black stops, with no custom red CSS fog, extra overlay gradients, or mounted `EnergyRing`.
 - Confirm the hero MacBook Pro mockup video autoplays, loops, stays muted, and does not create horizontal overflow.
 - Confirm the feature demo videos are paused before they enter the viewport, start playing when scrolled into view, and pause again after leaving view.
@@ -161,7 +161,6 @@ Use the narrowest relevant check after edits:
 - Do not mount the optional React Three Fiber `ShaderPlane` or `EnergyRing` primitives in the active background unless the design intentionally calls for visible flares/rings.
 - No Alphanica font asset exists in this folder. The hero headline uses the SF Pro system stack to match the cleaner non-serif section style without adding a font dependency.
 - The hero explanation lives in `.hero-description` below `.hero-subline`; keep it short, light, outside the animated H1, and wide enough to reach slightly past the "Download YouTube" title edge on desktop.
-- Hero CTA styling is intentionally scoped under `#hero`: the first-fold buttons use an outlined `Pricing` pill and a white `Get Started` pill, while global `.btn-primary` remains red for nav, pricing, and final CTAs.
 - Because the header is fixed, `html` uses `scroll-padding-top: 72px` so anchor navigation does not hide section headings under the nav.
 - Desktop hero vertical placement is tuned with `.hero-pad { padding: 112px 0 176px; }`; keep the top and bottom padding total stable when nudging the hero so the first feature spacing does not drift.
 - Desktop hero horizontal placement is tuned on `.hero-split` with a capped `1180px` max width and `clamp(36px, 3.5vw, 44px)` gap, plus a small desktop-only `.hero-mockup-video` `translateX(-6%)` offset to compensate for transparent space inside the alpha WebM.
@@ -182,9 +181,9 @@ Use the narrowest relevant check after edits:
 
 ## Recent Change Log
 
+- Reverted the hero CTA experiment back to a single red `Download now` button that points to `/api/download`.
 - Tightened the desktop hero composition by capping `.hero-split` width, reducing its responsive grid gap, and nudging the alpha MacBook video left so the copy and mockup sit closer together.
 - Changed the solid and translucent white text tokens plus direct white text cases to the slightly softer off-white `#E2E8F0`.
-- Restyled the hero CTA row as an outlined `Pricing` pill and white `Get Started` pill scoped to `#hero`.
 - Darkened the active Paper `MeshGradient` background by 20% by scaling the non-black shader stops from `#1a1a1a`, `#333333`, and `#cccccc` to `#151515`, `#292929`, and `#a3a3a3`.
 - Removed the red square brand mark from the fixed top-left nav so the header starts with the Sidestream wordmark only.
 - Added a lighter `.hero-description` line below "in Premiere Pro" to explain that Sidestream searches, previews, and downloads YouTube media inside the Premiere workflow.
