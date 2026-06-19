@@ -20,6 +20,15 @@ const meshGradientBaseUniforms = {
   u_worldWidth: 0,
   u_worldHeight: 0,
 }
+const rippleUniformNames = [
+  "u_ripple0",
+  "u_ripple1",
+  "u_ripple2",
+  "u_ripple3",
+  "u_ripple4",
+  "u_ripple5",
+] as const
+const emptyRippleUniform: [number, number, number, number] = [0.5, 0.5, 99, 0]
 
 const interactiveMeshGradientFragmentShader = `#version 300 es
 precision mediump float;
@@ -39,6 +48,12 @@ uniform vec2 u_pointer;
 uniform vec2 u_pointerVelocity;
 uniform float u_hover;
 uniform float u_interactionEnabled;
+uniform vec4 u_ripple0;
+uniform vec4 u_ripple1;
+uniform vec4 u_ripple2;
+uniform vec4 u_ripple3;
+uniform vec4 u_ripple4;
+uniform vec4 u_ripple5;
 
 in vec2 v_objectUV;
 out vec4 fragColor;
@@ -82,6 +97,58 @@ vec2 curlNoise(vec2 p, vec2 seedOffset) {
   return vec2(n1 - n2, n4 - n3) / (2. * e);
 }
 
+vec2 rippleOffset(vec2 uv, vec4 ripple, float aspect) {
+  if (ripple.w <= 0. || ripple.z <= 0. || ripple.z > 2.4) {
+    return vec2(0.);
+  }
+
+  vec2 center = clamp(ripple.xy, vec2(0.), vec2(1.));
+  vec2 delta = uv - center;
+  vec2 metricDelta = vec2(delta.x * aspect, delta.y);
+  float dist = max(length(metricDelta), 1e-4);
+  vec2 radial = vec2(metricDelta.x / aspect, metricDelta.y);
+  radial /= max(length(radial), 1e-4);
+
+  float age = ripple.z;
+  float radius = .02 + age * .31;
+  float width = .13 + age * .045;
+  float ring = dist - radius;
+  float envelope = exp(-(ring * ring) / max(width * width, 1e-4));
+  float shoulderWidth = width * 1.45;
+  float shoulderRing = dist - radius - width * .9;
+  float shoulder = exp(-(shoulderRing * shoulderRing) / max(shoulderWidth * shoulderWidth, 1e-4));
+  float fadeIn = smoothstep(0., .16, age);
+  float fadeOut = 1. - smoothstep(1.45, 2.25, age);
+  float pressure = (-ring / width) * envelope - .34 * (shoulderRing / shoulderWidth) * shoulder;
+  float lens = envelope * .38;
+  float wave = sin(ring * 18. - age) * envelope * .24;
+  float centerSoftener = smoothstep(.012, .085, dist);
+  float push = (pressure + lens + wave) * fadeIn * fadeOut * centerSoftener * ripple.w;
+
+  return radial * push * .03;
+}
+
+float rippleShade(vec2 uv, vec4 ripple, float aspect) {
+  if (ripple.w <= 0. || ripple.z <= 0. || ripple.z > 2.4) {
+    return 0.;
+  }
+
+  vec2 center = clamp(ripple.xy, vec2(0.), vec2(1.));
+  vec2 delta = uv - center;
+  float dist = max(length(vec2(delta.x * aspect, delta.y)), 1e-4);
+  float age = ripple.z;
+  float radius = .02 + age * .31;
+  float width = .13 + age * .045;
+  float ring = dist - radius;
+  float envelope = exp(-(ring * ring) / max(width * width, 1e-4));
+  float fadeIn = smoothstep(0., .16, age);
+  float fadeOut = 1. - smoothstep(1.45, 2.25, age);
+  float centerSoftener = smoothstep(.012, .085, dist);
+  float band = sin(ring * 20. - age * 1.15) * envelope;
+
+  return band * fadeIn * fadeOut * centerSoftener * ripple.w;
+}
+
 vec2 getPosition(int i, float t) {
   float a = float(i) * .37;
   float b = .6 + fract(float(i) / 3.) * .9;
@@ -109,19 +176,25 @@ void main() {
 
   vec2 pointerVelocity = u_pointerVelocity;
   float pointerSpeed = clamp(length(vec2(pointerVelocity.x * aspect, pointerVelocity.y)) * 24., 0., 1.);
-  float hover = clamp(u_hover, 0., 1.) * u_interactionEnabled;
-  float broadCurrent = exp(-cursorDist * cursorDist / .26);
-  float coreCurrent = exp(-cursorDist * cursorDist / .085);
+  float hover = smoothstep(0., 1., clamp(u_hover, 0., 1.)) * u_interactionEnabled;
+  float broadCurrent = exp(-cursorDist * cursorDist / .42);
+  float coreCurrent = exp(-cursorDist * cursorDist / .16);
   vec2 flowSpace = uv * 2.4 + vec2(.045 * u_time, -.035 * u_time);
   vec2 curlCurrent = curlNoise(flowSpace, vec2(5.7)) * .5;
-  float velocitySpin = clamp((pointerVelocity.x - .65 * pointerVelocity.y) * 22., -1., 1.);
+  float velocitySpin = clamp((pointerVelocity.x - .65 * pointerVelocity.y) * 18., -1., 1.);
   float idleSpin = .42 * sin(.85 * u_time + pointer.x * 5.1 + pointer.y * 3.7);
   float spin = mix(idleSpin, velocitySpin, smoothstep(.02, .55, pointerSpeed));
-  vec2 current = -pointerVelocity * broadCurrent * (2.1 + 2.35 * pointerSpeed)
-    + tangent * coreCurrent * (.034 + .026 * pointerSpeed) * spin
-    + curlCurrent * broadCurrent * (.026 + .016 * pointerSpeed);
+  vec2 current = -pointerVelocity * broadCurrent * (.72 + 1.05 * pointerSpeed)
+    + tangent * coreCurrent * (.016 + .012 * pointerSpeed) * spin
+    + curlCurrent * broadCurrent * (.01 + .008 * pointerSpeed);
+  vec2 rippleCurrent = rippleOffset(uv, u_ripple0, aspect)
+    + rippleOffset(uv, u_ripple1, aspect)
+    + rippleOffset(uv, u_ripple2, aspect)
+    + rippleOffset(uv, u_ripple3, aspect)
+    + rippleOffset(uv, u_ripple4, aspect)
+    + rippleOffset(uv, u_ripple5, aspect);
 
-  uv += current * hover;
+  uv += current * hover + rippleCurrent * u_interactionEnabled;
 
   vec2 grainUV = uv * 1000.;
 
@@ -167,6 +240,14 @@ void main() {
   color /= max(1e-4, totalWeight);
   opacity /= max(1e-4, totalWeight);
 
+  float rippleLight = rippleShade(uv, u_ripple0, aspect)
+    + rippleShade(uv, u_ripple1, aspect)
+    + rippleShade(uv, u_ripple2, aspect)
+    + rippleShade(uv, u_ripple3, aspect)
+    + rippleShade(uv, u_ripple4, aspect)
+    + rippleShade(uv, u_ripple5, aspect);
+  color = clamp(color + vec3(clamp(rippleLight, -.75, .75) * .04 * u_interactionEnabled), vec3(0.), vec3(1.));
+
   float grainOverlay = valueNoise(rotate(grainUV, 1.) + vec2(3.));
   grainOverlay = mix(grainOverlay, valueNoise(rotate(grainUV, 2.) + vec2(-1.)), .5);
   grainOverlay = pow(grainOverlay, 1.3);
@@ -203,12 +284,24 @@ function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value))
 }
 
+type PointerRipple = {
+  x: number
+  y: number
+  startedAt: number
+  strength: number
+}
+
 function usePointerCurrents(shaderRef: RefObject<PaperShaderElement | null>) {
   useEffect(() => {
     const finePointer = window.matchMedia("(hover: hover) and (pointer: fine)")
     const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)")
     let isEnabled = finePointer.matches && !reducedMotion.matches
     let frame = 0
+    let lastRippleTime = 0
+    let lastRippleX = 0.5
+    let lastRippleY = 0.5
+    const rippleLifetime = 2300
+    const ripples: PointerRipple[] = []
     const current = {
       x: 0.5,
       y: 0.5,
@@ -224,6 +317,38 @@ function usePointerCurrents(shaderRef: RefObject<PaperShaderElement | null>) {
       hasPointer: false,
     }
 
+    const queueRipple = (x: number, y: number, strength: number, now: number) => {
+      ripples.push({
+        x,
+        y,
+        startedAt: now,
+        strength: clamp(strength, 0.12, 0.88),
+      })
+      lastRippleTime = now
+      lastRippleX = x
+      lastRippleY = y
+
+      if (ripples.length > rippleUniformNames.length * 2) {
+        ripples.splice(0, ripples.length - rippleUniformNames.length * 2)
+      }
+    }
+
+    const getRippleUniforms = (now: number) => {
+      for (let index = ripples.length - 1; index >= 0; index -= 1) {
+        if (now - ripples[index].startedAt > rippleLifetime) {
+          ripples.splice(index, 1)
+        }
+      }
+
+      return rippleUniformNames.reduce<Record<string, [number, number, number, number]>>((uniforms, name, index) => {
+        const ripple = ripples[index]
+        uniforms[name] = ripple
+          ? [ripple.x, ripple.y, (now - ripple.startedAt) / 1000, ripple.strength]
+          : emptyRippleUniform
+        return uniforms
+      }, {})
+    }
+
     const setInteractionEnabled = () => {
       shaderRef.current?.paperShaderMount?.setUniforms({
         u_interactionEnabled: isEnabled ? 1 : 0,
@@ -236,6 +361,7 @@ function usePointerCurrents(shaderRef: RefObject<PaperShaderElement | null>) {
         current.targetHover = 0
         current.targetVelocityX = 0
         current.targetVelocityY = 0
+        ripples.length = 0
       }
       setInteractionEnabled()
     }
@@ -274,7 +400,17 @@ function usePointerCurrents(shaderRef: RefObject<PaperShaderElement | null>) {
         current.targetHover = 1
         current.lastEventTime = now
         current.hasPointer = true
+        queueRipple(nextX, nextY, 0.5, now)
         return
+      }
+
+      const movement = Math.hypot(deltaX, deltaY)
+      const distanceFromLastRipple = Math.hypot(nextX - lastRippleX, nextY - lastRippleY)
+      if (
+        (now - lastRippleTime > 170 && distanceFromLastRipple > 0.052)
+        || (now - lastRippleTime > 500 && movement > 0.008)
+      ) {
+        queueRipple(nextX, nextY, 0.42 + movement * frameScale * 5.5, now)
       }
 
       current.targetX = nextX
@@ -286,6 +422,7 @@ function usePointerCurrents(shaderRef: RefObject<PaperShaderElement | null>) {
     }
 
     const tick = () => {
+      const now = performance.now()
       current.x += (current.targetX - current.x) * 0.16
       current.y += (current.targetY - current.y) * 0.16
       current.velocityX += (current.targetVelocityX - current.velocityX) * 0.18
@@ -294,11 +431,16 @@ function usePointerCurrents(shaderRef: RefObject<PaperShaderElement | null>) {
       current.targetVelocityX *= 0.88
       current.targetVelocityY *= 0.88
 
+      if (isEnabled && current.hasPointer && current.targetHover > 0.5 && now - lastRippleTime > 880) {
+        queueRipple(current.targetX, current.targetY, 0.22, now)
+      }
+
       shaderRef.current?.paperShaderMount?.setUniforms({
         u_pointer: [current.x, current.y],
         u_pointerVelocity: [current.velocityX, current.velocityY],
         u_hover: isEnabled ? current.hover : 0,
         u_interactionEnabled: isEnabled ? 1 : 0,
+        ...getRippleUniforms(now),
       })
 
       frame = window.requestAnimationFrame(tick)
@@ -337,6 +479,12 @@ function InteractiveMeshGradient({ speed }: { speed: number }) {
     u_pointerVelocity: [0, 0],
     u_hover: 0,
     u_interactionEnabled: 1,
+    u_ripple0: emptyRippleUniform,
+    u_ripple1: emptyRippleUniform,
+    u_ripple2: emptyRippleUniform,
+    u_ripple3: emptyRippleUniform,
+    u_ripple4: emptyRippleUniform,
+    u_ripple5: emptyRippleUniform,
   }), [])
 
   return (
