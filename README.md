@@ -29,7 +29,7 @@ Sidestream is an HTML-first landing page for a Premiere Pro plugin that lets edi
 - Hero - `#hero`, `.hero-split`, `.hero-copy`, `.hero-title-line`, `.rotating-copy`, `.rotating-word`, `.hero-subline`, `.hero-description`, `.hero-media`, `.hero-mockup-video`
 - Feature sections - `#features` anchor, the two `.sec-pad` feature blocks, `.feature-subtext` heading sublines, `.shot` video frames, `.demo-video` MP4 embeds, the bottom inline viewport-playback observer, and the pointer-driven `.shot` 3D tilt handler
 - Pricing - `#pricing`, `.pricing-head`, `.plans`, `.plan`, `.plan.featured`, and the pricing-panel scroll reveal observer
-- Final CTA - `.final`
+- Final CTA - `.final` with a single `/api/download` button
 - Footer - `footer`, `.wordmark`, `.foot-top`, `.foot-bottom`
 - Hero rotating noun - bottom inline `<script>` with `[data-rotating-word]`
 - Download and purchase feedback - bottom inline `<script>` with `[data-download]`, `[data-purchase]`, and `#toast`; download CTAs now point at `/api/download`
@@ -193,6 +193,7 @@ Use the narrowest relevant check after edits:
 
 ## Recent Change Log
 
+- Removed the secondary "Get Unlimited" button from the final CTA so the closing panel only offers `Download`.
 - Changed the Unlimited pricing card from a red outline/drop shadow treatment to a white outline with no shadow.
 - Rounded the two pricing cards to `28px` corners and added a pricing-only scroll reveal that glides them upward with a slight stagger when they enter the viewport.
 - Added a subtle center-origin 3D hover tilt to the two feature demo video frames, capped at 15 degrees and disabled for reduced-motion/coarse-pointer users.
