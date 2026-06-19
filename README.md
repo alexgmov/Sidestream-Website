@@ -165,7 +165,7 @@ Use the narrowest relevant check after edits:
 - Download CTAs are rounded with a `[data-download]` button override so they feel closer to Apple's capsule action buttons without changing their existing padding, copy, or red primary fill.
 - Because the header is fixed, `html` uses `scroll-padding-top: 72px` so anchor navigation does not hide section headings under the nav.
 - Desktop hero-to-feature spacing is tuned with `.hero-pad { padding: 112px 0 56px; }` plus `.feature-start { margin-top: -88px; padding-top: 32px; }`; the mobile override uses `margin-top: -80px` and `padding-top: 24px`. Adjust that first-feature entry before changing shared `.sec-pad` rhythm.
-- Desktop hero horizontal placement is tuned on `.hero-split` with a capped `1180px` max width and `clamp(36px, 3.5vw, 44px)` gap, plus a small desktop-only `.hero-mockup-video` `translateX(-4%)` offset to compensate for transparent space inside the alpha WebM.
+- Desktop hero horizontal placement is tuned on `.hero-split` with a capped `1180px` max width and `clamp(36px, 3.5vw, 44px)` gap, plus a small `.hero-mockup-video` `translateX(-2%)` offset to compensate for transparent space inside the alpha WebM. The narrow-mobile override keeps the same horizontal nudge while resizing the mockup.
 - Feature heading sublines use `.feature-subtext` with the SF Pro system stack at a light weight; avoid restoring the old serif treatment unless the whole feature-heading direction changes.
 - The large footer `.wordmark` intentionally uses a Helvetica-first bold stack instead of the global SF Pro stack.
 - The rotating noun should stay on matched keyframe animations for both enter and exit. Mixing CSS transitions with keyed enter animations or adding overshoot makes the headline feel choppy.
@@ -183,6 +183,7 @@ Use the narrowest relevant check after edits:
 
 ## Recent Change Log
 
+- Moved the hero MacBook mockup a little farther right by easing `.hero-mockup-video` from `translateX(-4%)` to `translateX(-2%)` on desktop and matching the narrow-mobile offset.
 - Reduced the hero bottom padding and added `.feature-start` so the Search demo group starts inside the first fold on desktop and mobile.
 - Nudged the desktop hero MacBook mockup slightly right by easing the desktop-only alpha video offset from `translateX(-6%)` to `translateX(-4%)`.
 - Rounded `[data-download]` CTAs into Apple-style capsules while preserving their existing size and red primary treatment.
