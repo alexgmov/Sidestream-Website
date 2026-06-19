@@ -164,7 +164,7 @@ Use the narrowest relevant check after edits:
 - Download CTAs are rounded with a `[data-download]` button override so they feel closer to Apple's capsule action buttons without changing their existing padding, copy, or red primary fill.
 - Because the header is fixed, `html` uses `scroll-padding-top: 72px` so anchor navigation does not hide section headings under the nav.
 - Desktop hero vertical placement is tuned with `.hero-pad { padding: 112px 0 176px; }`; keep the top and bottom padding total stable when nudging the hero so the first feature spacing does not drift.
-- Desktop hero horizontal placement is tuned on `.hero-split` with a capped `1180px` max width and `clamp(36px, 3.5vw, 44px)` gap, plus a small desktop-only `.hero-mockup-video` `translateX(-6%)` offset to compensate for transparent space inside the alpha WebM.
+- Desktop hero horizontal placement is tuned on `.hero-split` with a capped `1180px` max width and `clamp(36px, 3.5vw, 44px)` gap, plus a small desktop-only `.hero-mockup-video` `translateX(-4%)` offset to compensate for transparent space inside the alpha WebM.
 - Feature heading sublines use `.feature-subtext` with the SF Pro system stack at a light weight; avoid restoring the old serif treatment unless the whole feature-heading direction changes.
 - The large footer `.wordmark` intentionally uses a Helvetica-first bold stack instead of the global SF Pro stack.
 - The rotating noun should stay on matched keyframe animations for both enter and exit. Mixing CSS transitions with keyed enter animations or adding overshoot makes the headline feel choppy.
@@ -182,6 +182,7 @@ Use the narrowest relevant check after edits:
 
 ## Recent Change Log
 
+- Nudged the desktop hero MacBook mockup slightly right by easing the desktop-only alpha video offset from `translateX(-6%)` to `translateX(-4%)`.
 - Rounded `[data-download]` CTAs into Apple-style capsules while preserving their existing size and red primary treatment.
 - Reverted the hero CTA experiment back to a single red `Download now` button that points to `/api/download`.
 - Tightened the desktop hero composition by capping `.hero-split` width, reducing its responsive grid gap, and nudging the alpha MacBook video left so the copy and mockup sit closer together.
