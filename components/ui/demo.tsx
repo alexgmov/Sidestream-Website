@@ -98,7 +98,7 @@ vec2 curlNoise(vec2 p, vec2 seedOffset) {
 }
 
 vec2 rippleOffset(vec2 uv, vec4 ripple, float aspect) {
-  if (ripple.w <= 0. || ripple.z <= 0. || ripple.z > 2.4) {
+  if (ripple.w <= 0. || ripple.z <= 0. || ripple.z > 2.8) {
     return vec2(0.);
   }
 
@@ -110,26 +110,23 @@ vec2 rippleOffset(vec2 uv, vec4 ripple, float aspect) {
   radial /= max(length(radial), 1e-4);
 
   float age = ripple.z;
-  float radius = .02 + age * .31;
-  float width = .13 + age * .045;
-  float ring = dist - radius;
-  float envelope = exp(-(ring * ring) / max(width * width, 1e-4));
-  float shoulderWidth = width * 1.45;
-  float shoulderRing = dist - radius - width * .9;
-  float shoulder = exp(-(shoulderRing * shoulderRing) / max(shoulderWidth * shoulderWidth, 1e-4));
-  float fadeIn = smoothstep(0., .16, age);
-  float fadeOut = 1. - smoothstep(1.45, 2.25, age);
-  float pressure = (-ring / width) * envelope - .34 * (shoulderRing / shoulderWidth) * shoulder;
-  float lens = envelope * .38;
-  float wave = sin(ring * 18. - age) * envelope * .24;
-  float centerSoftener = smoothstep(.012, .085, dist);
-  float push = (pressure + lens + wave) * fadeIn * fadeOut * centerSoftener * ripple.w;
+  float radius = .025 + age * .38;
+  float frontWidth = .062 + age * .024;
+  float trail = radius - dist;
+  float frontRing = exp(-(trail * trail) / max(frontWidth * frontWidth, 1e-4));
+  float trailMask = smoothstep(-frontWidth, frontWidth * .8, trail) * exp(-max(trail, 0.) * 2.2);
+  float waveTrain = sin(trail * 54.) * trailMask;
+  float fadeIn = smoothstep(0., .14, age);
+  float fadeOut = 1. - smoothstep(1.85, 2.65, age);
+  float centerSoftener = smoothstep(.014, .075, dist);
+  float displacementFade = 1. - smoothstep(.75, 1.7, age);
+  float push = (frontRing * .5 + waveTrain * .24) * fadeIn * fadeOut * displacementFade * centerSoftener * ripple.w;
 
-  return radial * push * .03;
+  return radial * push * .01;
 }
 
 float rippleShade(vec2 uv, vec4 ripple, float aspect) {
-  if (ripple.w <= 0. || ripple.z <= 0. || ripple.z > 2.4) {
+  if (ripple.w <= 0. || ripple.z <= 0. || ripple.z > 2.8) {
     return 0.;
   }
 
@@ -137,16 +134,17 @@ float rippleShade(vec2 uv, vec4 ripple, float aspect) {
   vec2 delta = uv - center;
   float dist = max(length(vec2(delta.x * aspect, delta.y)), 1e-4);
   float age = ripple.z;
-  float radius = .02 + age * .31;
-  float width = .13 + age * .045;
-  float ring = dist - radius;
-  float envelope = exp(-(ring * ring) / max(width * width, 1e-4));
-  float fadeIn = smoothstep(0., .16, age);
-  float fadeOut = 1. - smoothstep(1.45, 2.25, age);
-  float centerSoftener = smoothstep(.012, .085, dist);
-  float band = sin(ring * 20. - age * 1.15) * envelope;
+  float radius = .025 + age * .38;
+  float frontWidth = .052 + age * .02;
+  float trail = radius - dist;
+  float frontRing = exp(-(trail * trail) / max(frontWidth * frontWidth, 1e-4));
+  float trailMask = smoothstep(-frontWidth, frontWidth * .65, trail) * exp(-max(trail, 0.) * 1.95);
+  float waveTrain = sin(trail * 62.) * trailMask;
+  float fadeIn = smoothstep(0., .14, age);
+  float fadeOut = 1. - smoothstep(1.85, 2.65, age);
+  float centerSoftener = smoothstep(.014, .075, dist);
 
-  return band * fadeIn * fadeOut * centerSoftener * ripple.w;
+  return (frontRing * .26 + waveTrain * .74) * fadeIn * fadeOut * centerSoftener * ripple.w;
 }
 
 vec2 getPosition(int i, float t) {
@@ -163,6 +161,7 @@ vec2 getPosition(int i, float t) {
 void main() {
   vec2 uv = v_objectUV;
   uv += .5;
+  vec2 interactionUV = uv;
 
   float aspect = max(u_resolution.x / max(u_resolution.y, 1.), .001);
   vec2 pointer = clamp(u_pointer, vec2(0.), vec2(1.));
@@ -187,12 +186,12 @@ void main() {
   vec2 current = -pointerVelocity * broadCurrent * (.72 + 1.05 * pointerSpeed)
     + tangent * coreCurrent * (.016 + .012 * pointerSpeed) * spin
     + curlCurrent * broadCurrent * (.01 + .008 * pointerSpeed);
-  vec2 rippleCurrent = rippleOffset(uv, u_ripple0, aspect)
-    + rippleOffset(uv, u_ripple1, aspect)
-    + rippleOffset(uv, u_ripple2, aspect)
-    + rippleOffset(uv, u_ripple3, aspect)
-    + rippleOffset(uv, u_ripple4, aspect)
-    + rippleOffset(uv, u_ripple5, aspect);
+  vec2 rippleCurrent = rippleOffset(interactionUV, u_ripple0, aspect)
+    + rippleOffset(interactionUV, u_ripple1, aspect)
+    + rippleOffset(interactionUV, u_ripple2, aspect)
+    + rippleOffset(interactionUV, u_ripple3, aspect)
+    + rippleOffset(interactionUV, u_ripple4, aspect)
+    + rippleOffset(interactionUV, u_ripple5, aspect);
 
   uv += current * hover + rippleCurrent * u_interactionEnabled;
 
@@ -240,13 +239,13 @@ void main() {
   color /= max(1e-4, totalWeight);
   opacity /= max(1e-4, totalWeight);
 
-  float rippleLight = rippleShade(uv, u_ripple0, aspect)
-    + rippleShade(uv, u_ripple1, aspect)
-    + rippleShade(uv, u_ripple2, aspect)
-    + rippleShade(uv, u_ripple3, aspect)
-    + rippleShade(uv, u_ripple4, aspect)
-    + rippleShade(uv, u_ripple5, aspect);
-  color = clamp(color + vec3(clamp(rippleLight, -.75, .75) * .04 * u_interactionEnabled), vec3(0.), vec3(1.));
+  float rippleLight = rippleShade(interactionUV, u_ripple0, aspect)
+    + rippleShade(interactionUV, u_ripple1, aspect)
+    + rippleShade(interactionUV, u_ripple2, aspect)
+    + rippleShade(interactionUV, u_ripple3, aspect)
+    + rippleShade(interactionUV, u_ripple4, aspect)
+    + rippleShade(interactionUV, u_ripple5, aspect);
+  color = clamp(color + vec3(clamp(rippleLight, -.85, .85) * .068 * u_interactionEnabled), vec3(0.), vec3(1.));
 
   float grainOverlay = valueNoise(rotate(grainUV, 1.) + vec2(3.));
   grainOverlay = mix(grainOverlay, valueNoise(rotate(grainUV, 2.) + vec2(-1.)), .5);
@@ -300,7 +299,7 @@ function usePointerCurrents(shaderRef: RefObject<PaperShaderElement | null>) {
     let lastRippleTime = 0
     let lastRippleX = 0.5
     let lastRippleY = 0.5
-    const rippleLifetime = 2300
+    const rippleLifetime = 2800
     const ripples: PointerRipple[] = []
     const current = {
       x: 0.5,
@@ -322,7 +321,7 @@ function usePointerCurrents(shaderRef: RefObject<PaperShaderElement | null>) {
         x,
         y,
         startedAt: now,
-        strength: clamp(strength, 0.12, 0.88),
+        strength: clamp(strength, 0.18, 0.98),
       })
       lastRippleTime = now
       lastRippleX = x
@@ -400,17 +399,17 @@ function usePointerCurrents(shaderRef: RefObject<PaperShaderElement | null>) {
         current.targetHover = 1
         current.lastEventTime = now
         current.hasPointer = true
-        queueRipple(nextX, nextY, 0.5, now)
+        queueRipple(nextX, nextY, 0.78, now)
         return
       }
 
       const movement = Math.hypot(deltaX, deltaY)
       const distanceFromLastRipple = Math.hypot(nextX - lastRippleX, nextY - lastRippleY)
       if (
-        (now - lastRippleTime > 170 && distanceFromLastRipple > 0.052)
-        || (now - lastRippleTime > 500 && movement > 0.008)
+        (now - lastRippleTime > 320 && distanceFromLastRipple > 0.075)
+        || (now - lastRippleTime > 720 && movement > 0.012)
       ) {
-        queueRipple(nextX, nextY, 0.42 + movement * frameScale * 5.5, now)
+        queueRipple(nextX, nextY, 0.58 + movement * frameScale * 4.2, now)
       }
 
       current.targetX = nextX
@@ -431,8 +430,8 @@ function usePointerCurrents(shaderRef: RefObject<PaperShaderElement | null>) {
       current.targetVelocityX *= 0.88
       current.targetVelocityY *= 0.88
 
-      if (isEnabled && current.hasPointer && current.targetHover > 0.5 && now - lastRippleTime > 880) {
-        queueRipple(current.targetX, current.targetY, 0.22, now)
+      if (isEnabled && current.hasPointer && current.targetHover > 0.5 && now - lastRippleTime > 1250) {
+        queueRipple(current.targetX, current.targetY, 0.32, now)
       }
 
       shaderRef.current?.paperShaderMount?.setUniforms({
