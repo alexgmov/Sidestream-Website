@@ -1096,10 +1096,8 @@
       toastTimer = setTimeout(() => toast.classList.remove("show"), 3200);
     }
     document.querySelectorAll("[data-download]").forEach((el) =>
-      el.addEventListener("click", (ev) => {
-        ev.preventDefault();
+      el.addEventListener("click", () => {
         ping("Starting your download…");
-        window.location.assign(el.getAttribute("href") || "/api/download");
       })
     );
     document.querySelectorAll("[data-purchase]").forEach((el) =>

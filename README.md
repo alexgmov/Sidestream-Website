@@ -32,7 +32,7 @@ Sidestream is an HTML-first landing page for a Premiere Pro panel that lets edit
 - Final CTA - `.final` sits inside `#pricing` between the pricing cards and laptop mockup, with a single `/api/download` button
 - Footer - `footer`, `.wordmark`, `.foot-top`, `.foot-bottom`
 - Hero rotating noun - bottom inline `<script>` with `[data-rotating-word]`
-- Download and purchase feedback - bottom inline `<script>` with `[data-download]`, `[data-purchase]`, and `#toast`; download CTAs now point at `/api/download` and use the CSS Apple platform mark from `.btn[data-download]::before`
+- Download and purchase feedback - bottom inline `<script>` with `[data-download]`, `[data-purchase]`, and `#toast`; download CTAs are native `/api/download` anchors with toast-only click feedback and the CSS Apple platform mark from `.btn[data-download]::before`
 - Installer fulfillment - `api/download.ts` reads `SIDESTREAM_INSTALLER_BLOB_PATHNAME` and streams the private Blob object with attachment headers
 
 ## Routes and Assets
@@ -151,7 +151,7 @@ Use the narrowest relevant check after edits:
 - Confirm the top and bottom `.feature-glass` separator lines leave enough vertical breathing room around the first Search demo video and last Preview demo video.
 - Confirm hovering each feature demo video tilts the frame subtly from its center, with the top-right pointer position pushing the top-right corner away from the camera, no top-left corner-entry jitter, a smooth S-curve reset on exit, and no hover tilt on reduced-motion or coarse-pointer devices.
 - Confirm `/api/download` responds to `HEAD` with `200`, `Content-Disposition: attachment`, `Content-Length`, and a private cache policy after Blob auth is available in the tested environment.
-- Confirm a browser click on any `/api/download` CTA starts a same-origin download navigation instead of only showing the old placeholder toast.
+- Confirm a browser click on any `/api/download` CTA starts a same-origin native anchor download navigation while still showing the toast.
 - Scrub or watch the pricing MacBook rotation long enough to confirm hard alpha edges and video-plane edges do not show as dark lines.
 - Let the hero rotating noun run through a full cycle and confirm each word swap stays smooth without bounce, clipping, or layout shift.
 - Confirm the rotating noun gradient stays subtle, remains readable on "songs" and "overlays", and pauses under reduced-motion settings.
@@ -175,7 +175,7 @@ Use the narrowest relevant check after edits:
 - Do not mount the optional React Three Fiber `ShaderPlane` or `EnergyRing` primitives in the active background unless the design intentionally calls for visible flares/rings.
 - No Alphanica font asset exists in this folder. The hero headline uses the SF Pro system stack to match the cleaner non-serif section style without adding a font dependency. The "in Premiere Pro" `.hero-subline` intentionally uses the same stack in italic.
 - The hero explanation lives in `.hero-description` below `.hero-subline`; keep it short, light, outside the animated H1, and explicit that Sidestream is a Premiere Pro panel for searching, previewing, and downloading YouTube videos without leaving the app.
-- Download CTAs use a `[data-download]` button override that wins over primary/secondary button classes: white capsule background, a black Apple platform mark, black `Free Download` label, and red hover fill with white hover text while preserving existing sizing. Each `/api/download` CTA should keep `aria-label="Free Download for Mac"` because the platform mark is visual-only.
+- Download CTAs use a `[data-download]` button override that wins over primary/secondary button classes: white capsule background, a black Apple platform mark, black `Free Download` label, and red hover fill with white hover text while preserving existing sizing. Each `/api/download` CTA should keep `aria-label="Free Download for Mac"` because the platform mark is visual-only. The click handler must not call `preventDefault()` for downloads; native anchor navigation is the reliable fulfillment path, and JavaScript should only show the toast.
 - Because the header is fixed, `html` uses `scroll-padding-top: 72px` so anchor navigation does not hide section headings under the nav. Keep `.nav-links` anchored from the full viewport rather than the centered first-fold shell, or the control cluster drifts inward on wider screens.
 - Desktop hero-to-feature spacing is tuned with `.hero-pad` filling `100svh`, bottom-aligning content, and using `padding: 112px 0 clamp(72px, 9vh, 104px)`, plus `.feature-start { margin-top: 0; padding-top: clamp(96px, 12vh, 136px); }`. The mobile override uses `.hero-pad { padding: 128px 0 72px; }` and `.feature-start { padding-top: 84px; }`, with a narrower override of `64px`/`72px` at `520px`. Adjust those first-feature entries before changing shared `.sec-pad` rhythm, but keep the Search copy grid-centered beside its demo video.
 - Pricing headline placement is tuned independently from shared `.sec-pad`: `#pricing { padding-top: 92px; }`, `.pricing-head { margin-bottom: 92px; }`, and the mobile override uses matching `74px` top and bottom spacing. `.pricing-line` is intentionally `font-weight: 300`. The Unlimited card uses a white border and no drop shadow. The pricing-card motion should stay scoped to `#pricing .plan.reveal`, use an early positive bottom `IntersectionObserver` margin, and avoid re-enabling global `.reveal` because it was previously disabled for environment fill-mode issues.
@@ -199,6 +199,7 @@ Use the narrowest relevant check after edits:
 
 ## Recent Change Log
 
+- Let `/api/download` CTA clicks navigate through their native anchors and kept the toast as feedback-only, removing the fragile `preventDefault()` plus manual `window.location.assign()` download handoff.
 - Uploaded the native/base `Sidestream-1.0.4-Mac-Installer.dmg` to private Vercel Blob and switched the documented Vercel download pathname away from the ZXP-helper DMG.
 - Changed the visible Unlimited one-time price from `$29` to `$19` across the pricing card, purchase CTA, and final CTA copy.
 - Increased the hero rotating noun slot's lower paint buffer so descenders like the `g` in `songs` no longer clip during the word cycle.
