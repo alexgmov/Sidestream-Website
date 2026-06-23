@@ -20,15 +20,32 @@ const meshGradientBaseUniforms = {
   u_worldWidth: 0,
   u_worldHeight: 0,
 }
-const rippleUniformNames = [
-  "u_ripple0",
-  "u_ripple1",
-  "u_ripple2",
-  "u_ripple3",
-  "u_ripple4",
-  "u_ripple5",
+const wakeUniformNames = [
+  "u_wake0",
+  "u_wake1",
+  "u_wake2",
+  "u_wake3",
+  "u_wake4",
+  "u_wake5",
+  "u_wake6",
+  "u_wake7",
+  "u_wake8",
+  "u_wake9",
 ] as const
-const emptyRippleUniform: [number, number, number, number] = [0.5, 0.5, 99, 0]
+const wakeMotionUniformNames = [
+  "u_wakeMotion0",
+  "u_wakeMotion1",
+  "u_wakeMotion2",
+  "u_wakeMotion3",
+  "u_wakeMotion4",
+  "u_wakeMotion5",
+  "u_wakeMotion6",
+  "u_wakeMotion7",
+  "u_wakeMotion8",
+  "u_wakeMotion9",
+] as const
+const emptyWakeUniform: [number, number, number, number] = [0.5, 0.5, 99, 0]
+const emptyWakeMotionUniform: [number, number, number, number] = [1, 0, 0, 0]
 
 const interactiveMeshGradientFragmentShader = `#version 300 es
 precision mediump float;
@@ -44,22 +61,30 @@ uniform float u_swirl;
 uniform float u_grainMixer;
 uniform float u_grainOverlay;
 
-uniform vec2 u_pointer;
-uniform vec2 u_pointerVelocity;
-uniform float u_hover;
 uniform float u_interactionEnabled;
-uniform vec4 u_ripple0;
-uniform vec4 u_ripple1;
-uniform vec4 u_ripple2;
-uniform vec4 u_ripple3;
-uniform vec4 u_ripple4;
-uniform vec4 u_ripple5;
+uniform vec4 u_wake0;
+uniform vec4 u_wake1;
+uniform vec4 u_wake2;
+uniform vec4 u_wake3;
+uniform vec4 u_wake4;
+uniform vec4 u_wake5;
+uniform vec4 u_wake6;
+uniform vec4 u_wake7;
+uniform vec4 u_wake8;
+uniform vec4 u_wake9;
+uniform vec4 u_wakeMotion0;
+uniform vec4 u_wakeMotion1;
+uniform vec4 u_wakeMotion2;
+uniform vec4 u_wakeMotion3;
+uniform vec4 u_wakeMotion4;
+uniform vec4 u_wakeMotion5;
+uniform vec4 u_wakeMotion6;
+uniform vec4 u_wakeMotion7;
+uniform vec4 u_wakeMotion8;
+uniform vec4 u_wakeMotion9;
 
 in vec2 v_objectUV;
 out vec4 fragColor;
-
-#define TWO_PI 6.28318530718
-#define PI 3.14159265358979323846
 
 vec2 rotate(vec2 uv, float th) {
   return mat2(cos(th), sin(th), -sin(th), cos(th)) * uv;
@@ -97,56 +122,62 @@ vec2 curlNoise(vec2 p, vec2 seedOffset) {
   return vec2(n1 - n2, n4 - n3) / (2. * e);
 }
 
-vec2 rippleOffset(vec2 uv, vec4 ripple, float aspect) {
-  if (ripple.w <= 0. || ripple.z <= 0. || ripple.z > 2.4) {
-    return vec2(0.);
+vec3 wakeContribution(vec2 uv, vec4 wake, vec4 motion, float aspect, float time) {
+  if (wake.w <= 0. || wake.z < 0. || wake.z > 2.65) {
+    return vec3(0.);
   }
 
-  vec2 center = clamp(ripple.xy, vec2(0.), vec2(1.));
+  vec2 center = clamp(wake.xy, vec2(0.), vec2(1.));
   vec2 delta = uv - center;
   vec2 metricDelta = vec2(delta.x * aspect, delta.y);
   float dist = max(length(metricDelta), 1e-4);
   vec2 radial = vec2(metricDelta.x / aspect, metricDelta.y);
   radial /= max(length(radial), 1e-4);
+  vec2 tangent = vec2(-radial.y, radial.x);
 
-  float age = ripple.z;
-  float radius = .02 + age * .31;
-  float width = .13 + age * .045;
-  float ring = dist - radius;
-  float envelope = exp(-(ring * ring) / max(width * width, 1e-4));
-  float shoulderWidth = width * 1.45;
-  float shoulderRing = dist - radius - width * .9;
-  float shoulder = exp(-(shoulderRing * shoulderRing) / max(shoulderWidth * shoulderWidth, 1e-4));
-  float fadeIn = smoothstep(0., .16, age);
-  float fadeOut = 1. - smoothstep(1.45, 2.25, age);
-  float pressure = (-ring / width) * envelope - .34 * (shoulderRing / shoulderWidth) * shoulder;
-  float lens = envelope * .38;
-  float wave = sin(ring * 18. - age) * envelope * .24;
-  float centerSoftener = smoothstep(.012, .085, dist);
-  float push = (pressure + lens + wave) * fadeIn * fadeOut * centerSoftener * ripple.w;
-
-  return radial * push * .03;
-}
-
-float rippleShade(vec2 uv, vec4 ripple, float aspect) {
-  if (ripple.w <= 0. || ripple.z <= 0. || ripple.z > 2.4) {
-    return 0.;
+  vec2 flowDirMetric = vec2(motion.x * aspect, motion.y);
+  if (length(flowDirMetric) < 1e-4) {
+    flowDirMetric = vec2(1., 0.);
+  } else {
+    flowDirMetric = normalize(flowDirMetric);
   }
+  vec2 flowDirUv = vec2(flowDirMetric.x / aspect, flowDirMetric.y);
+  flowDirUv /= max(length(flowDirUv), 1e-4);
+  vec2 normalMetric = vec2(-flowDirMetric.y, flowDirMetric.x);
+  vec2 normalUv = vec2(normalMetric.x / aspect, normalMetric.y);
+  normalUv /= max(length(normalUv), 1e-4);
 
-  vec2 center = clamp(ripple.xy, vec2(0.), vec2(1.));
-  vec2 delta = uv - center;
-  float dist = max(length(vec2(delta.x * aspect, delta.y)), 1e-4);
-  float age = ripple.z;
-  float radius = .02 + age * .31;
-  float width = .13 + age * .045;
-  float ring = dist - radius;
-  float envelope = exp(-(ring * ring) / max(width * width, 1e-4));
-  float fadeIn = smoothstep(0., .16, age);
-  float fadeOut = 1. - smoothstep(1.45, 2.25, age);
-  float centerSoftener = smoothstep(.012, .085, dist);
-  float band = sin(ring * 20. - age * 1.15) * envelope;
+  float age = wake.z;
+  float speed = clamp(motion.z, 0., 1.);
+  float seed = motion.w;
+  float fadeIn = smoothstep(0., .1, age);
+  float fadeOut = 1. - smoothstep(1.25, 2.65, age);
+  float fade = fadeIn * fadeOut * wake.w;
 
-  return band * fadeIn * fadeOut * centerSoftener * ripple.w;
+  float behind = dot(metricDelta, -flowDirMetric);
+  float side = dot(metricDelta, normalMetric);
+  float trailLength = .1 + speed * .2 + age * .052;
+  float trailWidth = .052 + speed * .06 + age * .042;
+  float trail = smoothstep(-.028, .07, behind)
+    * exp(-(behind * behind) / max(trailLength * trailLength, 1e-4))
+    * exp(-(side * side) / max(trailWidth * trailWidth, 1e-4));
+  float coreWidth = .038 + speed * .032 + age * .018;
+  float core = exp(-(dist * dist) / max(coreWidth * coreWidth, 1e-4));
+
+  vec2 curl = curlNoise(
+    uv * (4.2 + speed * 2.2) + center * 2.7 + vec2(time * .024, -time * .018),
+    vec2(seed, seed * .37)
+  );
+  float roll = sin(time * .72 + age * 4.9 + seed + dist * 8.5);
+  float shear = sin(side * 18. + seed + age * 3.4) * trail;
+
+  vec2 offset = -flowDirUv * trail * (.01 + speed * .018)
+    + tangent * core * roll * (.009 + speed * .012)
+    + normalUv * shear * (.004 + speed * .006)
+    + curl * (trail * .008 + core * .004);
+  float shade = (core * roll * .18 + shear * .13 + (curl.x + curl.y) * trail * .09) * fade;
+
+  return vec3(offset * fade, shade);
 }
 
 vec2 getPosition(int i, float t) {
@@ -165,36 +196,18 @@ void main() {
   uv += .5;
 
   float aspect = max(u_resolution.x / max(u_resolution.y, 1.), .001);
-  vec2 pointer = clamp(u_pointer, vec2(0.), vec2(1.));
-  vec2 delta = uv - pointer;
-  vec2 metricDelta = vec2(delta.x * aspect, delta.y);
-  float cursorDist = max(length(metricDelta), 1e-4);
-  vec2 metricDir = metricDelta / cursorDist;
-  vec2 uvDir = vec2(metricDir.x / aspect, metricDir.y);
-  uvDir /= max(length(uvDir), 1e-4);
-  vec2 tangent = vec2(-uvDir.y, uvDir.x);
+  vec3 wake = wakeContribution(uv, u_wake0, u_wakeMotion0, aspect, u_time)
+    + wakeContribution(uv, u_wake1, u_wakeMotion1, aspect, u_time)
+    + wakeContribution(uv, u_wake2, u_wakeMotion2, aspect, u_time)
+    + wakeContribution(uv, u_wake3, u_wakeMotion3, aspect, u_time)
+    + wakeContribution(uv, u_wake4, u_wakeMotion4, aspect, u_time)
+    + wakeContribution(uv, u_wake5, u_wakeMotion5, aspect, u_time)
+    + wakeContribution(uv, u_wake6, u_wakeMotion6, aspect, u_time)
+    + wakeContribution(uv, u_wake7, u_wakeMotion7, aspect, u_time)
+    + wakeContribution(uv, u_wake8, u_wakeMotion8, aspect, u_time)
+    + wakeContribution(uv, u_wake9, u_wakeMotion9, aspect, u_time);
 
-  vec2 pointerVelocity = u_pointerVelocity;
-  float pointerSpeed = clamp(length(vec2(pointerVelocity.x * aspect, pointerVelocity.y)) * 24., 0., 1.);
-  float hover = smoothstep(0., 1., clamp(u_hover, 0., 1.)) * u_interactionEnabled;
-  float broadCurrent = exp(-cursorDist * cursorDist / .42);
-  float coreCurrent = exp(-cursorDist * cursorDist / .16);
-  vec2 flowSpace = uv * 2.4 + vec2(.045 * u_time, -.035 * u_time);
-  vec2 curlCurrent = curlNoise(flowSpace, vec2(5.7)) * .5;
-  float velocitySpin = clamp((pointerVelocity.x - .65 * pointerVelocity.y) * 18., -1., 1.);
-  float idleSpin = .42 * sin(.85 * u_time + pointer.x * 5.1 + pointer.y * 3.7);
-  float spin = mix(idleSpin, velocitySpin, smoothstep(.02, .55, pointerSpeed));
-  vec2 current = -pointerVelocity * broadCurrent * (.72 + 1.05 * pointerSpeed)
-    + tangent * coreCurrent * (.016 + .012 * pointerSpeed) * spin
-    + curlCurrent * broadCurrent * (.01 + .008 * pointerSpeed);
-  vec2 rippleCurrent = rippleOffset(uv, u_ripple0, aspect)
-    + rippleOffset(uv, u_ripple1, aspect)
-    + rippleOffset(uv, u_ripple2, aspect)
-    + rippleOffset(uv, u_ripple3, aspect)
-    + rippleOffset(uv, u_ripple4, aspect)
-    + rippleOffset(uv, u_ripple5, aspect);
-
-  uv += current * hover + rippleCurrent * u_interactionEnabled;
+  uv += wake.xy * u_interactionEnabled;
 
   vec2 grainUV = uv * 1000.;
 
@@ -239,14 +252,7 @@ void main() {
 
   color /= max(1e-4, totalWeight);
   opacity /= max(1e-4, totalWeight);
-
-  float rippleLight = rippleShade(uv, u_ripple0, aspect)
-    + rippleShade(uv, u_ripple1, aspect)
-    + rippleShade(uv, u_ripple2, aspect)
-    + rippleShade(uv, u_ripple3, aspect)
-    + rippleShade(uv, u_ripple4, aspect)
-    + rippleShade(uv, u_ripple5, aspect);
-  color = clamp(color + vec3(clamp(rippleLight, -.75, .75) * .04 * u_interactionEnabled), vec3(0.), vec3(1.));
+  color = clamp(color + vec3(clamp(wake.z, -.8, .8) * .028 * u_interactionEnabled), vec3(0.), vec3(1.));
 
   float grainOverlay = valueNoise(rotate(grainUV, 1.) + vec2(3.));
   grainOverlay = mix(grainOverlay, valueNoise(rotate(grainUV, 2.) + vec2(-1.)), .5);
@@ -284,69 +290,85 @@ function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value))
 }
 
-type PointerRipple = {
+type PointerWake = {
   x: number
   y: number
   startedAt: number
   strength: number
+  dirX: number
+  dirY: number
+  speed: number
+  spin: number
 }
 
-function usePointerCurrents(shaderRef: RefObject<PaperShaderElement | null>) {
+function useFluidWake(shaderRef: RefObject<PaperShaderElement | null>) {
   useEffect(() => {
     const finePointer = window.matchMedia("(hover: hover) and (pointer: fine)")
     const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)")
     let isEnabled = finePointer.matches && !reducedMotion.matches
     let frame = 0
-    let lastRippleTime = 0
-    let lastRippleX = 0.5
-    let lastRippleY = 0.5
-    const rippleLifetime = 2300
-    const ripples: PointerRipple[] = []
-    const current = {
+    let lastWakeTime = 0
+    let lastWakeX = 0.5
+    let lastWakeY = 0.5
+    let wakeSpin = 0
+    const wakeLifetime = 2650
+    const wakes: PointerWake[] = []
+    const pointer = {
       x: 0.5,
       y: 0.5,
-      targetX: 0.5,
-      targetY: 0.5,
-      velocityX: 0,
-      velocityY: 0,
-      targetVelocityX: 0,
-      targetVelocityY: 0,
-      hover: 0,
-      targetHover: 0,
       lastEventTime: performance.now(),
       hasPointer: false,
     }
 
-    const queueRipple = (x: number, y: number, strength: number, now: number) => {
-      ripples.push({
+    const queueWake = (
+      x: number,
+      y: number,
+      dirX: number,
+      dirY: number,
+      speed: number,
+      startedAt: number,
+    ) => {
+      wakeSpin += 1.618
+      wakes.push({
         x,
         y,
-        startedAt: now,
-        strength: clamp(strength, 0.12, 0.88),
+        dirX,
+        dirY,
+        startedAt,
+        speed,
+        strength: clamp(0.14 + speed * 0.4, 0.14, 0.54),
+        spin: wakeSpin,
       })
-      lastRippleTime = now
-      lastRippleX = x
-      lastRippleY = y
+      lastWakeTime = startedAt
+      lastWakeX = x
+      lastWakeY = y
 
-      if (ripples.length > rippleUniformNames.length * 2) {
-        ripples.splice(0, ripples.length - rippleUniformNames.length * 2)
+      if (wakes.length > wakeUniformNames.length * 2) {
+        wakes.splice(0, wakes.length - wakeUniformNames.length * 2)
       }
     }
 
-    const getRippleUniforms = (now: number) => {
-      for (let index = ripples.length - 1; index >= 0; index -= 1) {
-        if (now - ripples[index].startedAt > rippleLifetime) {
-          ripples.splice(index, 1)
+    const getWakeUniforms = (now: number) => {
+      for (let index = wakes.length - 1; index >= 0; index -= 1) {
+        if (now - wakes[index].startedAt > wakeLifetime) {
+          wakes.splice(index, 1)
         }
       }
 
-      return rippleUniformNames.reduce<Record<string, [number, number, number, number]>>((uniforms, name, index) => {
-        const ripple = ripples[index]
-        uniforms[name] = ripple
-          ? [ripple.x, ripple.y, (now - ripple.startedAt) / 1000, ripple.strength]
-          : emptyRippleUniform
-        return uniforms
-      }, {})
+      const uniforms: Record<string, [number, number, number, number]> = {}
+      wakeUniformNames.forEach((name, index) => {
+        const motionName = wakeMotionUniformNames[index]
+        const wake = wakes[wakes.length - 1 - index]
+        uniforms[name] = wake
+          ? [wake.x, wake.y, Math.max(0, (now - wake.startedAt) / 1000), wake.strength]
+          : emptyWakeUniform
+        if (motionName) {
+          uniforms[motionName] = wake
+            ? [wake.dirX, wake.dirY, wake.speed, wake.spin]
+            : emptyWakeMotionUniform
+        }
+      })
+      return uniforms
     }
 
     const setInteractionEnabled = () => {
@@ -358,19 +380,14 @@ function usePointerCurrents(shaderRef: RefObject<PaperShaderElement | null>) {
     const handleMediaChange = () => {
       isEnabled = finePointer.matches && !reducedMotion.matches
       if (!isEnabled) {
-        current.targetHover = 0
-        current.targetVelocityX = 0
-        current.targetVelocityY = 0
-        ripples.length = 0
+        wakes.length = 0
+        pointer.hasPointer = false
       }
       setInteractionEnabled()
     }
 
-    const settleCurrent = () => {
-      current.targetHover = 0
-      current.targetVelocityX = 0
-      current.targetVelocityY = 0
-      current.hasPointer = false
+    const settleWake = () => {
+      pointer.hasPointer = false
     }
 
     const handlePointerMove = (event: PointerEvent) => {
@@ -383,64 +400,58 @@ function usePointerCurrents(shaderRef: RefObject<PaperShaderElement | null>) {
       const nextX = clamp(event.clientX / width, 0, 1)
       const nextY = clamp(1 - event.clientY / height, 0, 1)
       const now = performance.now()
-      const previousX = current.targetX
-      const previousY = current.targetY
-      const dt = Math.max(now - current.lastEventTime, 16.67)
-      const frameScale = 16.67 / dt
-      const deltaX = nextX - previousX
-      const deltaY = nextY - previousY
 
-      if (!current.hasPointer) {
-        current.x = nextX
-        current.y = nextY
-        current.targetX = nextX
-        current.targetY = nextY
-        current.targetVelocityX = 0
-        current.targetVelocityY = 0
-        current.targetHover = 1
-        current.lastEventTime = now
-        current.hasPointer = true
-        queueRipple(nextX, nextY, 0.5, now)
+      if (!pointer.hasPointer) {
+        pointer.x = nextX
+        pointer.y = nextY
+        pointer.lastEventTime = now
+        pointer.hasPointer = true
+        lastWakeTime = now
+        lastWakeX = nextX
+        lastWakeY = nextY
         return
       }
 
+      const dt = Math.max(now - pointer.lastEventTime, 16.67)
+      const frameScale = 16.67 / dt
+      const deltaX = nextX - pointer.x
+      const deltaY = nextY - pointer.y
       const movement = Math.hypot(deltaX, deltaY)
-      const distanceFromLastRipple = Math.hypot(nextX - lastRippleX, nextY - lastRippleY)
-      if (
-        (now - lastRippleTime > 170 && distanceFromLastRipple > 0.052)
-        || (now - lastRippleTime > 500 && movement > 0.008)
-      ) {
-        queueRipple(nextX, nextY, 0.42 + movement * frameScale * 5.5, now)
+
+      if (movement > 0.0035) {
+        const dirX = deltaX / movement
+        const dirY = deltaY / movement
+        const distanceFromLastWake = Math.hypot(nextX - lastWakeX, nextY - lastWakeY)
+        if (now - lastWakeTime > 24 || distanceFromLastWake > 0.016) {
+          const sampleCount = Math.min(4, Math.max(1, Math.ceil(distanceFromLastWake / 0.022)))
+          const speed = clamp(movement * frameScale * 24, 0.05, 1)
+          const wakeStartX = lastWakeX
+          const wakeStartY = lastWakeY
+
+          for (let index = 1; index <= sampleCount; index += 1) {
+            const progress = index / sampleCount
+            queueWake(
+              wakeStartX + (nextX - wakeStartX) * progress,
+              wakeStartY + (nextY - wakeStartY) * progress,
+              dirX,
+              dirY,
+              speed,
+              now - (sampleCount - index) * 14,
+            )
+          }
+        }
       }
 
-      current.targetX = nextX
-      current.targetY = nextY
-      current.targetVelocityX = clamp(deltaX * frameScale, -0.05, 0.05)
-      current.targetVelocityY = clamp(deltaY * frameScale, -0.05, 0.05)
-      current.targetHover = 1
-      current.lastEventTime = now
+      pointer.x = nextX
+      pointer.y = nextY
+      pointer.lastEventTime = now
     }
 
     const tick = () => {
       const now = performance.now()
-      current.x += (current.targetX - current.x) * 0.16
-      current.y += (current.targetY - current.y) * 0.16
-      current.velocityX += (current.targetVelocityX - current.velocityX) * 0.18
-      current.velocityY += (current.targetVelocityY - current.velocityY) * 0.18
-      current.hover += (current.targetHover - current.hover) * 0.1
-      current.targetVelocityX *= 0.88
-      current.targetVelocityY *= 0.88
-
-      if (isEnabled && current.hasPointer && current.targetHover > 0.5 && now - lastRippleTime > 880) {
-        queueRipple(current.targetX, current.targetY, 0.22, now)
-      }
-
       shaderRef.current?.paperShaderMount?.setUniforms({
-        u_pointer: [current.x, current.y],
-        u_pointerVelocity: [current.velocityX, current.velocityY],
-        u_hover: isEnabled ? current.hover : 0,
         u_interactionEnabled: isEnabled ? 1 : 0,
-        ...getRippleUniforms(now),
+        ...getWakeUniforms(now),
       })
 
       frame = window.requestAnimationFrame(tick)
@@ -449,9 +460,9 @@ function usePointerCurrents(shaderRef: RefObject<PaperShaderElement | null>) {
     finePointer.addEventListener("change", handleMediaChange)
     reducedMotion.addEventListener("change", handleMediaChange)
     window.addEventListener("pointermove", handlePointerMove, { passive: true })
-    window.addEventListener("pointerleave", settleCurrent)
-    window.addEventListener("blur", settleCurrent)
-    document.addEventListener("visibilitychange", settleCurrent)
+    window.addEventListener("pointerleave", settleWake)
+    window.addEventListener("blur", settleWake)
+    document.addEventListener("visibilitychange", settleWake)
     setInteractionEnabled()
     frame = window.requestAnimationFrame(tick)
 
@@ -460,32 +471,35 @@ function usePointerCurrents(shaderRef: RefObject<PaperShaderElement | null>) {
       finePointer.removeEventListener("change", handleMediaChange)
       reducedMotion.removeEventListener("change", handleMediaChange)
       window.removeEventListener("pointermove", handlePointerMove)
-      window.removeEventListener("pointerleave", settleCurrent)
-      window.removeEventListener("blur", settleCurrent)
-      document.removeEventListener("visibilitychange", settleCurrent)
+      window.removeEventListener("pointerleave", settleWake)
+      window.removeEventListener("blur", settleWake)
+      document.removeEventListener("visibilitychange", settleWake)
     }
   }, [shaderRef])
 }
 
 function InteractiveMeshGradient({ speed }: { speed: number }) {
   const shaderRef = useRef<PaperShaderElement | null>(null)
-  usePointerCurrents(shaderRef)
+  useFluidWake(shaderRef)
 
-  const uniforms = useMemo(() => ({
-    ...meshGradientBaseUniforms,
-    u_colors: meshColors.map(hexToRgba),
-    u_colorsCount: meshColors.length,
-    u_pointer: [0.5, 0.5],
-    u_pointerVelocity: [0, 0],
-    u_hover: 0,
-    u_interactionEnabled: 1,
-    u_ripple0: emptyRippleUniform,
-    u_ripple1: emptyRippleUniform,
-    u_ripple2: emptyRippleUniform,
-    u_ripple3: emptyRippleUniform,
-    u_ripple4: emptyRippleUniform,
-    u_ripple5: emptyRippleUniform,
-  }), [])
+  const uniforms = useMemo(() => {
+    const wakeUniforms = wakeUniformNames.reduce<Record<string, [number, number, number, number]>>((uniforms, name, index) => {
+      const motionName = wakeMotionUniformNames[index]
+      uniforms[name] = emptyWakeUniform
+      if (motionName) {
+        uniforms[motionName] = emptyWakeMotionUniform
+      }
+      return uniforms
+    }, {})
+
+    return {
+      ...meshGradientBaseUniforms,
+      u_colors: meshColors.map(hexToRgba),
+      u_colorsCount: meshColors.length,
+      u_interactionEnabled: 0,
+      ...wakeUniforms,
+    }
+  }, [])
 
   return (
     <ShaderMount
@@ -543,22 +557,13 @@ export default function DemoOne() {
         </>
       )}
 
-      {/* UI Overlay */}
       <div className="absolute inset-0 pointer-events-none">
-        {/* Header */}
         <div className="absolute top-8 left-8 pointer-events-auto"></div>
-
-        {/* Effect Controls */}
         <div className="absolute bottom-8 left-8 pointer-events-auto"></div>
-
-        {/* Parameter Controls */}
         <div className="absolute bottom-8 right-8 pointer-events-auto space-y-4"></div>
-
-        {/* Status indicator */}
         <div className="absolute top-8 right-8 pointer-events-auto"></div>
       </div>
 
-      {/* Lighting overlay effects */}
       <div className="absolute inset-0 pointer-events-none">
         <div
           className="absolute top-1/4 left-1/3 w-32 h-32 bg-gray-800/5 rounded-full blur-3xl animate-pulse"
@@ -573,7 +578,6 @@ export default function DemoOne() {
           style={{ animationDuration: `${4 / speed}s`, animationDelay: "0.5s" }}
         />
       </div>
-
     </div>
   )
 }

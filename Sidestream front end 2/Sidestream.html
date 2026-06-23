@@ -227,11 +227,14 @@
   }
   .feature-start {
     margin-top: 0;
-    padding-top: clamp(96px, 12vh, 136px);
+    padding-top: calc(clamp(96px, 12vh, 136px) + 210px);
   }
   .feature-glass {
     position: relative;
     isolation: isolate;
+    overflow: hidden;
+    z-index: 2;
+    margin-top: -210px;
   }
   .feature-glass::before {
     content: "";
@@ -251,9 +254,27 @@
     backdrop-filter: blur(36px) saturate(108%);
     -webkit-backdrop-filter: blur(36px) saturate(108%);
   }
+  .feature-corner-demo {
+    position: absolute;
+    top: clamp(64px, 13svh, 104px);
+    left: 50vw;
+    z-index: 1;
+    width: 50vw;
+    height: clamp(420px, 50vw, 620px);
+    overflow: hidden;
+    pointer-events: none;
+  }
+  .feature-corner-demo-video {
+    display: block;
+    width: clamp(590px, 51vw, 672px);
+    max-width: none;
+    height: auto;
+    opacity: 1;
+    filter: brightness(1.3) contrast(1.04) saturate(1.02);
+  }
   .feature-glass > section {
     position: relative;
-    z-index: 1;
+    z-index: 2;
   }
   #hero {
     overflow: visible;
@@ -627,6 +648,7 @@
       backdrop-filter: blur(30px) saturate(108%);
       -webkit-backdrop-filter: blur(30px) saturate(108%);
     }
+    .feature-corner-demo { display: none; }
     h1 { font-size: 3.08rem; }
     .hero-subline { font-size: 1.86rem; }
     .hero-description { font-size: 16px; }
@@ -741,6 +763,12 @@
         </div>
       </div>
     </section>
+
+    <div class="feature-corner-demo" aria-hidden="true">
+      <video class="feature-corner-demo-video" autoplay muted loop playsinline preload="metadata">
+        <source src="../demos/sidestream-panel-corner.webm" type="video/webm" media="(min-width: 901px)">
+      </video>
+    </div>
 
     <!-- ===================== FEATURES ===================== -->
     <div id="features"></div>
@@ -910,9 +938,18 @@
       demoVideos.forEach(playDemoVideo);
     }
 
-    const macbookVideos = Array.from(document.querySelectorAll(".macbook-mockup-video"));
+    const macbookVideos = Array.from(document.querySelectorAll(".macbook-mockup-video, .feature-corner-demo-video"));
+    function shouldPlayLoopingVideo(video) {
+      const featureCorner = video.closest(".feature-corner-demo");
+      return !featureCorner || window.getComputedStyle(featureCorner).display !== "none";
+    }
     function playMacbookVideo(video) {
       video.muted = true;
+      if (!shouldPlayLoopingVideo(video)) {
+        video.pause();
+        return;
+      }
+
       const playAttempt = video.play();
       if (playAttempt) playAttempt.catch(() => {});
     }
@@ -926,6 +963,9 @@
     });
     document.addEventListener("visibilitychange", () => {
       if (document.hidden) return;
+      macbookVideos.forEach(playMacbookVideo);
+    });
+    window.addEventListener("resize", () => {
       macbookVideos.forEach(playMacbookVideo);
     });
 

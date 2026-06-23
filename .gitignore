@@ -7,6 +7,13 @@ mockups/**
 demos/*.mp4
 !demos/search demo.mp4
 !demos/preview demo.mp4
+demos/*.mov
+demos/*.aep
+demos/*.prproj
+demos/*.prin
+demos/Adobe After Effects Auto-Save/
+demos/Adobe Premiere Pro Auto-Save/
+demos/Sidestream Downloads/
 demos/**/*.screenstudio/
 .vercel
 .env*.local
