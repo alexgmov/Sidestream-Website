@@ -215,6 +215,120 @@
   .btn-sm { padding: 10px 18px; font-size: 14px; }
   .btn-lg { padding: 15px 28px; font-size: 16px; }
 
+  /* ---------- Download email gate ---------- */
+  body.email-gate-open { overflow: hidden; }
+  .email-gate {
+    position: fixed;
+    inset: 0;
+    z-index: 100;
+    display: grid;
+    place-items: center;
+    padding: 24px;
+  }
+  .email-gate[hidden] { display: none; }
+  .email-gate-backdrop {
+    position: absolute;
+    inset: 0;
+    border: 0;
+    background: rgba(0, 0, 0, 0.68);
+    backdrop-filter: blur(18px) saturate(112%);
+    -webkit-backdrop-filter: blur(18px) saturate(112%);
+    cursor: pointer;
+  }
+  .email-gate-dialog {
+    position: relative;
+    width: min(430px, 100%);
+    padding: 28px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    background: rgba(6, 8, 12, 0.92);
+    box-shadow: 0 28px 90px rgba(0, 0, 0, 0.58);
+  }
+  .email-gate-close {
+    position: absolute;
+    top: 14px;
+    right: 14px;
+    width: 34px;
+    height: 34px;
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.08);
+    color: var(--ink);
+    cursor: pointer;
+  }
+  .email-gate-close::before,
+  .email-gate-close::after {
+    content: "";
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 14px;
+    height: 2px;
+    border-radius: 999px;
+    background: currentColor;
+  }
+  .email-gate-close::before { transform: translate(-50%, -50%) rotate(45deg); }
+  .email-gate-close::after { transform: translate(-50%, -50%) rotate(-45deg); }
+  .email-gate-close:hover {
+    background: rgba(255, 255, 255, 0.14);
+  }
+  .email-gate-eyebrow {
+    margin: 0 0 10px;
+    color: rgba(226, 232, 240, 0.64);
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+  .email-gate-title {
+    margin: 0 42px 10px 0;
+    color: var(--ink);
+    font-size: clamp(28px, 8vw, 38px);
+    line-height: 1;
+    letter-spacing: 0;
+  }
+  .email-gate-copy {
+    margin: 0 0 22px;
+    color: var(--ink-soft);
+    font-size: 15px;
+  }
+  .email-gate-form {
+    display: grid;
+    gap: 12px;
+  }
+  .email-gate-label {
+    color: rgba(226, 232, 240, 0.78);
+    font-size: 13px;
+    font-weight: 600;
+  }
+  .email-gate-input {
+    width: 100%;
+    min-width: 0;
+    height: 50px;
+    padding: 0 15px;
+    border: 1px solid rgba(255, 255, 255, 0.22);
+    border-radius: var(--radius-sm);
+    background: rgba(255, 255, 255, 0.08);
+    color: var(--ink);
+    font: inherit;
+    font-size: 16px;
+    letter-spacing: 0;
+    outline: 0;
+  }
+  .email-gate-input::placeholder {
+    color: rgba(226, 232, 240, 0.42);
+  }
+  .email-gate-input:focus {
+    border-color: rgba(255, 255, 255, 0.58);
+    box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.1);
+  }
+  .email-gate-error {
+    min-height: 18px;
+    margin: -2px 0 0;
+    color: #ff8d8d;
+    font-size: 13px;
+  }
+
   /* ---------- Section rhythm ---------- */
   section { position: relative; }
   .sec-pad { padding: 120px 0; }
@@ -227,14 +341,13 @@
   }
   .feature-start {
     margin-top: 0;
-    padding-top: calc(clamp(96px, 12vh, 136px) + 210px);
+    padding-top: clamp(96px, 12vh, 136px);
   }
   .feature-glass {
     position: relative;
     isolation: isolate;
     overflow: hidden;
     z-index: 2;
-    margin-top: -210px;
   }
   .feature-glass::before {
     content: "";
@@ -256,27 +369,34 @@
   }
   .feature-corner-demo {
     position: absolute;
-    top: clamp(64px, 13svh, 104px);
+    top: 0;
     left: 50vw;
     z-index: 1;
     width: 50vw;
-    height: clamp(420px, 50vw, 620px);
+    height: calc(100vh + 8px);
+    height: calc(100svh + 8px);
     overflow: hidden;
     pointer-events: none;
   }
   .feature-corner-demo-video {
+    position: absolute;
+    left: clamp(-52px, -3vw, -30px);
+    bottom: calc(clamp(-330px, -18.4vw, -230px) - 10vh);
     display: block;
-    width: clamp(590px, 51vw, 672px);
+    width: clamp(820px, 74vw, 1450px);
     max-width: none;
     height: auto;
     opacity: 1;
     filter: brightness(1.3) contrast(1.04) saturate(1.02);
+    transform: scale(0.7);
+    transform-origin: 4.75% 13.7%;
   }
   .feature-glass > section {
     position: relative;
     z-index: 2;
   }
   #hero {
+    z-index: 3;
     overflow: visible;
     isolation: isolate;
   }
@@ -504,8 +624,10 @@
     border: 1px solid var(--line);
     border-radius: 28px;
     padding: 38px 36px;
+    position: relative;
     display: flex;
     flex-direction: column;
+    overflow: hidden;
     background: var(--surface);
     backdrop-filter: blur(20px);
     --pricing-reveal-delay: 0ms;
@@ -514,6 +636,59 @@
     border-color: #fff;
     box-shadow: none;
     --pricing-reveal-delay: 70ms;
+  }
+  .plan-beta-content {
+    display: flex;
+    flex: 1;
+    min-height: 100%;
+    flex-direction: column;
+  }
+  .plan.beta-coming .plan-beta-content {
+    filter: blur(1.2px);
+    opacity: 0.5;
+    pointer-events: none;
+    user-select: none;
+  }
+  .beta-overlay {
+    position: absolute;
+    inset: 0;
+    z-index: 2;
+    display: grid;
+    place-items: center;
+    width: 100%;
+    padding: 32px;
+    border: 0;
+    color: var(--ink);
+    font: inherit;
+    text-align: center;
+    background: rgba(0, 0, 0, 0.36);
+    backdrop-filter: blur(5px) saturate(108%);
+    -webkit-backdrop-filter: blur(5px) saturate(108%);
+    cursor: pointer;
+  }
+  .beta-overlay:focus-visible {
+    outline: 2px solid rgba(255, 255, 255, 0.86);
+    outline-offset: -10px;
+  }
+  .beta-lockup {
+    display: inline-flex;
+    align-items: center;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .beta-status {
+    color: rgba(226, 232, 240, 0.72);
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+  .beta-title {
+    color: var(--ink);
+    font-size: 30px;
+    font-weight: 700;
+    line-height: 1.08;
+    letter-spacing: 0;
   }
   html.pricing-motion-ready #pricing .plan {
     opacity: 0;
@@ -657,6 +832,7 @@
     #pricing { padding-top: 74px; }
     .pricing-head { margin-bottom: 74px; }
     .plans { grid-template-columns: 1fr; }
+    .beta-title { font-size: 28px; }
     .pricing-mockup {
       min-height: clamp(220px, 62vw, 420px);
       margin: 36px auto -28px;
@@ -674,6 +850,7 @@
     .hero-description { font-size: 15.5px; }
     .rotating-copy { min-width: 0; width: 100%; }
     .pricing-line { white-space: normal; }
+    .beta-title { font-size: 26px; }
     .hero-pad { padding-bottom: 64px; }
     .feature-start { padding-top: 72px; }
     .feature-glass::before { inset: 0; }
@@ -722,6 +899,22 @@
   <div id="shader-background-root" aria-hidden="true"></div>
   <script type="module" src="/src/main.tsx"></script>
 
+  <div class="email-gate" id="download-email-gate" hidden>
+    <button class="email-gate-backdrop" type="button" data-email-gate-close aria-label="Close email prompt"></button>
+    <section class="email-gate-dialog" role="dialog" aria-modal="true" aria-labelledby="download-email-title" aria-describedby="download-email-copy">
+      <button class="email-gate-close" type="button" data-email-gate-close aria-label="Close email prompt"></button>
+      <p class="email-gate-eyebrow">Mac download</p>
+      <h2 class="email-gate-title" id="download-email-title">Download Sidestream</h2>
+      <p class="email-gate-copy" id="download-email-copy">Enter your email to start the Mac installer.</p>
+      <form class="email-gate-form" id="download-email-form" novalidate>
+        <label class="email-gate-label" for="download-email-input">Email</label>
+        <input class="email-gate-input" id="download-email-input" name="email" type="email" inputmode="email" autocomplete="email" placeholder="you@email.com" required>
+        <p class="email-gate-error" id="download-email-error" aria-live="polite"></p>
+        <button class="btn btn-primary btn-lg" id="download-email-submit" type="submit">Start download</button>
+      </form>
+    </section>
+  </div>
+
   <!-- ===================== HEADER ===================== -->
   <header id="hdr">
     <div class="wrap nav">
@@ -733,7 +926,7 @@
           <a href="#features">Features</a>
           <a href="#pricing">Pricing</a>
         </nav>
-        <a class="btn btn-primary btn-sm" href="/api/download" data-download aria-label="Free Download for Mac">Free Download</a>
+        <a class="btn btn-primary btn-sm" href="https://sidestream-xi.vercel.app/api/download" data-download aria-label="Free Download for Mac">Free Download</a>
       </div>
     </div>
   </header>
@@ -758,7 +951,7 @@
           <p class="hero-subline">in Premiere Pro</p>
           <p class="hero-description">Search, preview, and download YouTube videos from a panel inside Premiere Pro, so you never leave the app.</p>
           <div class="cta-row">
-            <a class="btn btn-primary btn-lg" href="/api/download" data-download aria-label="Free Download for Mac">Free Download</a>
+            <a class="btn btn-primary btn-lg" href="https://sidestream-xi.vercel.app/api/download" data-download aria-label="Free Download for Mac">Free Download</a>
           </div>
         </div>
       </div>
@@ -813,32 +1006,40 @@
         </div>
         <div class="plans">
           <div class="plan reveal">
-            <p class="plan-name">Free</p>
+            <p class="plan-name">Beta</p>
             <div class="price"><span class="amt">$0</span><span class="per">forever</span></div>
             <ul>
               <li>Full video and audio downloads</li>
               <li>Maximum audio and video quality</li>
-              <li>5 downloads per day</li>
+              <li>Unlimited downloads for beta testers</li>
             </ul>
-            <a class="btn btn-secondary" href="/api/download" data-download aria-label="Free Download for Mac">Free Download</a>
+            <a class="btn btn-secondary" href="https://sidestream-xi.vercel.app/api/download" data-download aria-label="Free Download for Mac">Free Download</a>
           </div>
-          <div class="plan featured reveal">
-            <p class="plan-name">Unlimited <span class="pill">One time</span></p>
-            <div class="price"><span class="amt">$19</span><span class="per">once, no subscription</span></div>
-            <ul>
-              <li>Unlimited downloads</li>
-              <li>Full video and audio downloads</li>
-              <li>Maximum audio and video quality</li>
-              <li>24 hour support</li>
-            </ul>
-            <a class="btn btn-primary" href="#" data-purchase>Get Unlimited $19</a>
+          <div class="plan featured beta-coming reveal" aria-label="Sidestream Unlimited coming soon">
+            <div class="plan-beta-content" aria-hidden="true">
+              <p class="plan-name">Unlimited <span class="pill">One time</span></p>
+              <div class="price"><span class="amt">$19</span><span class="per">once, no subscription</span></div>
+              <ul>
+                <li>Unlimited downloads</li>
+                <li>Full video and audio downloads</li>
+                <li>Maximum audio and video quality</li>
+                <li>24 hour support</li>
+              </ul>
+              <span class="btn btn-primary">Get Unlimited $19</span>
+            </div>
+            <button class="beta-overlay" type="button" data-purchase aria-label="Sidestream Unlimited coming soon">
+              <span class="beta-lockup">
+                <span class="beta-status">Coming soon</span>
+                <strong class="beta-title">Sidestream Unlimited</strong>
+              </span>
+            </button>
           </div>
         </div>
         <div class="final reveal">
-          <h2>Stop leaving Premiere to grab footage.</h2>
-          <p>Download Sidestream, paste a link, and keep editing. Free to start, $19 to go unlimited.</p>
+          <h2>Stop using sketchy websites to download music</h2>
+          <p>Download Sidestream, paste a link, and keep editing. Free to start, with Sidestream Unlimited coming soon.</p>
           <div class="cta-row">
-            <a class="btn btn-primary btn-lg" href="/api/download" data-download aria-label="Free Download for Mac">Free Download</a>
+            <a class="btn btn-primary btn-lg" href="https://sidestream-xi.vercel.app/api/download" data-download aria-label="Free Download for Mac">Free Download</a>
           </div>
         </div>
         <div class="pricing-mockup reveal" aria-label="Rotating MacBook Pro showing Sidestream in Premiere Pro">
@@ -1128,23 +1329,151 @@
     // Download / purchase actions
     const toast = document.getElementById("toast");
     const toastMsg = document.getElementById("toast-msg");
+    const emailGate = document.getElementById("download-email-gate");
+    const emailGateForm = document.getElementById("download-email-form");
+    const emailGateInput = document.getElementById("download-email-input");
+    const emailGateError = document.getElementById("download-email-error");
+    const emailGateSubmit = document.getElementById("download-email-submit");
+    const emailGateCloseControls = Array.from(document.querySelectorAll("[data-email-gate-close]"));
+    const downloadEmailStorageKey = "sidestream.download.email";
+    let pendingDownloadLink = null;
+    let pendingDownloadUrl = "/api/download";
     let toastTimer;
+
     function ping(msg) {
       toastMsg.textContent = msg;
       toast.classList.add("show");
       clearTimeout(toastTimer);
       toastTimer = setTimeout(() => toast.classList.remove("show"), 3200);
     }
-    document.querySelectorAll("[data-download]").forEach((el) =>
-      el.addEventListener("click", () => {
-        ping("Starting your download…");
-      })
+
+    function isValidDownloadEmail(email) {
+      return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+    }
+
+    function getStoredDownloadEmail() {
+      try {
+        return window.localStorage.getItem(downloadEmailStorageKey) || "";
+      } catch (error) {
+        return "";
+      }
+    }
+
+    function setStoredDownloadEmail(email) {
+      try {
+        window.localStorage.setItem(downloadEmailStorageKey, email);
+      } catch (error) {
+        // Email capture should not block a valid download in restricted browsers.
+      }
+    }
+
+    function openEmailGate(link) {
+      pendingDownloadLink = link;
+      pendingDownloadUrl = link.getAttribute("href") || "/api/download";
+      emailGateError.textContent = "";
+      emailGateSubmit.disabled = false;
+      emailGateSubmit.textContent = "Start download";
+      emailGateInput.value = getStoredDownloadEmail();
+      emailGate.hidden = false;
+      document.body.classList.add("email-gate-open");
+      window.setTimeout(() => emailGateInput.focus(), 0);
+    }
+
+    function closeEmailGate(options = {}) {
+      emailGate.hidden = true;
+      document.body.classList.remove("email-gate-open");
+      emailGateError.textContent = "";
+
+      if (!options.keepPending && pendingDownloadLink) {
+        pendingDownloadLink.focus();
+        pendingDownloadLink = null;
+      }
+    }
+
+    function startDownload(url) {
+      ping("Starting your download...");
+      window.location.assign(url || "/api/download");
+    }
+
+    async function recordDownloadEmail(email, source) {
+      const controller = new AbortController();
+      const timeout = window.setTimeout(() => controller.abort(), 2800);
+
+      try {
+        const response = await fetch("/api/download-lead", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            email,
+            source,
+            page: window.location.pathname
+          }),
+          signal: controller.signal
+        });
+
+        if (!response.ok) {
+          throw new Error("Lead capture returned " + response.status);
+        }
+      } catch (error) {
+        console.warn("Sidestream download email capture failed", error);
+      } finally {
+        window.clearTimeout(timeout);
+      }
+    }
+
+    function continuePendingDownload() {
+      const url = pendingDownloadUrl;
+      pendingDownloadLink = null;
+      startDownload(url);
+    }
+
+    function handleDownloadRequest(ev, el) {
+      ev.preventDefault();
+      const storedEmail = getStoredDownloadEmail();
+
+      if (isValidDownloadEmail(storedEmail)) {
+        startDownload(el.getAttribute("href") || "/api/download");
+        return;
+      }
+
+      openEmailGate(el);
+    }
+
+    document.querySelectorAll("[data-download]").forEach((el) => {
+      el.addEventListener("click", (ev) => handleDownloadRequest(ev, el));
+      el.addEventListener("auxclick", (ev) => handleDownloadRequest(ev, el));
+    });
+    emailGateCloseControls.forEach((control) =>
+      control.addEventListener("click", () => closeEmailGate())
     );
+    window.addEventListener("keydown", (ev) => {
+      if (ev.key === "Escape" && emailGate && !emailGate.hidden) {
+        closeEmailGate();
+      }
+    });
+    emailGateForm.addEventListener("submit", async (ev) => {
+      ev.preventDefault();
+      const email = emailGateInput.value.trim().toLowerCase();
+
+      if (!isValidDownloadEmail(email)) {
+        emailGateError.textContent = "Enter a valid email address.";
+        emailGateInput.focus();
+        return;
+      }
+
+      emailGateError.textContent = "";
+      emailGateSubmit.disabled = true;
+      emailGateSubmit.textContent = "Starting...";
+
+      setStoredDownloadEmail(email);
+      await recordDownloadEmail(email, pendingDownloadUrl);
+      closeEmailGate({ keepPending: true });
+      continuePendingDownload();
+    });
     document.querySelectorAll("[data-purchase]").forEach((el) =>
       el.addEventListener("click", (ev) => {
         ev.preventDefault();
-        ping("Opening secure checkout…");
-        // Real build: window.location.href = "/checkout?plan=unlimited";
+        ping("Sidestream Unlimited is coming soon.");
       })
     );
   </script>
