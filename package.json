@@ -13,6 +13,7 @@
     "@paper-design/shaders-react": "^0.0.76",
     "@react-three/fiber": "^9.6.1",
     "@tailwindcss/vite": "^4.1.17",
+    "@vercel/analytics": "^2.0.1",
     "@vercel/blob": "^2.4.1",
     "react": "^19.2.6",
     "react-dom": "^19.2.6",
