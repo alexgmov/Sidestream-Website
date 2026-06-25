@@ -1,0 +1,17 @@
+.DS_Store
+.env*
+.git
+.vercel
+node_modules
+dist
+
+demos/**
+!demos/
+!demos/search demo.mp4
+!demos/preview demo.mp4
+!demos/sidestream-panel-corner.webm
+
+mockups/**
+!mockups/
+!mockups/mockup1.webm
+!mockups/mockup1_2.webm
