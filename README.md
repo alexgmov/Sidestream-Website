@@ -10,7 +10,7 @@ Sidestream is an HTML-first landing page for a Premiere Pro panel that lets edit
 - `index.html` - Root redirect so `http://localhost:5173/` and other local server roots open the canonical page instead of a directory listing.
 - `components/ui/demo.tsx` - Adapted Paper demo component mounted as the page background. The active default effect keeps the original simple `MeshGradient` look with non-black stops darkened 20% to `#151515`, `#292929`, and `#a3a3a3`, with demo install/clipboard overlay text removed and no background mouse interaction.
 - `components/ui/background-paper-shaders.tsx` - Exact pasted React Three Fiber shader primitives from the provided reference. They are kept as optional reference code and are not mounted by default.
-- `api/download.ts` - Vercel Node Function that streams the configured private Vercel Blob installer to the browser through `/api/download`. Supports `GET` and `HEAD` only.
+- `api/download.ts` - Vercel Node Function for installer fulfillment. `HEAD` returns attachment metadata for the configured private Vercel Blob installer, and `GET` validates the Blob then redirects to a short-lived signed private Blob URL. Supports `GET` and `HEAD` only.
 - `api/download-lead.ts` - Vercel Node Function that accepts email-gate submissions from the download modal and stores one private JSON lead record per submission in Vercel Blob.
 - `src/main.tsx` - React entry that mounts `DemoOne` into `#shader-background-root` and renders Vercel Analytics through `@vercel/analytics/react`.
 - `src/paper-shaders-compat.d.ts` - Local TypeScript compatibility declarations for the pasted prop names that the installed Paper package does not type directly.
@@ -36,7 +36,7 @@ Sidestream is an HTML-first landing page for a Premiere Pro panel that lets edit
 - Footer - `footer`, `.wordmark`, `.foot-top`, `.foot-bottom`
 - Hero rotating noun - bottom inline `<script>` with `[data-rotating-word]`
 - Download email gate and coming-soon feedback - `#download-email-gate`, `#download-email-form`, `[data-download]`, `[data-purchase]`, and `#toast`; download CTAs open the email modal until a valid email is captured, then continue to the public `https://sidestream-xi.vercel.app/api/download` URL with the CSS Apple platform mark from `.btn[data-download]::before`, while the Sidestream Unlimited overlay uses `[data-purchase]` for a coming-soon toast
-- Installer fulfillment - `api/download.ts` reads `SIDESTREAM_INSTALLER_BLOB_PATHNAME` and streams the private Blob object with attachment headers
+- Installer fulfillment - `api/download.ts` reads `SIDESTREAM_INSTALLER_BLOB_PATHNAME`; `HEAD` returns attachment headers and `GET` redirects to a 5-minute signed private Blob download URL
 - Download lead capture - `api/download-lead.ts` accepts `POST /api/download-lead` JSON with an email, optional page, and optional source, then writes a private Blob record under `SIDESTREAM_DOWNLOAD_LEADS_BLOB_PREFIX` or `sidestream/download-leads`
 
 ## Routes and Assets
@@ -59,7 +59,7 @@ HEAD /api/download
 POST /api/download-lead
 ```
 
-`/api/download` streams the private Vercel Blob object named by `SIDESTREAM_INSTALLER_BLOB_PATHNAME`. The current configured pathname is:
+`/api/download` serves the private Vercel Blob object named by `SIDESTREAM_INSTALLER_BLOB_PATHNAME`. `HEAD /api/download` returns attachment metadata without exposing the private Blob URL. `GET /api/download` first verifies the Blob metadata, honors a matching `If-None-Match` with `304`, then returns a temporary redirect to a 5-minute signed private Blob URL so the browser downloads from Blob/CDN instead of proxying the full DMG through the serverless function. The current configured pathname is:
 
 ```text
 sidestream/1.0.6/Sidestream-1.0.6-Mac-Installer.dmg
@@ -123,6 +123,7 @@ Then check:
 
 ```bash
 curl -I http://127.0.0.1:3000/api/download
+curl -i http://127.0.0.1:3000/api/download
 curl -i -X POST http://127.0.0.1:3000/api/download-lead \
   -H 'Content-Type: application/json' \
   --data '{"email":"test@example.com","page":"/","source":"/api/download"}'
@@ -176,7 +177,7 @@ Use the narrowest relevant check after edits:
 - Confirm the decorative `.feature-corner-demo-video` starts from the `40vw` desktop wrapper, plays with `screen` blend and `0.9` opacity, renders at 70% scale from the visible Premiere top-left corner, uses real oversized WebM content to avoid right/bottom shader gaps after the down-left placement shift, keeps `.feature-glass` unmoved, and stays hidden and paused on mobile.
 - Confirm the top and bottom `.feature-glass` separator lines leave enough vertical breathing room around the first Search demo video and last Preview demo video.
 - Confirm hovering each feature demo video tilts the frame subtly from its center, with the top-right pointer position pushing the top-right corner away from the camera, no top-left corner-entry jitter, a smooth S-curve reset on exit, and no hover tilt on reduced-motion or coarse-pointer devices.
-- Confirm `/api/download` responds to `HEAD` with `200`, `Content-Disposition: attachment`, `Content-Length`, and a private cache policy after Blob auth is available in the tested environment.
+- Confirm `/api/download` responds to `HEAD` with `200`, `Content-Disposition: attachment`, `Content-Length`, and a private cache policy after Blob auth is available in the tested environment. Confirm `GET /api/download` returns a temporary redirect to a signed private Blob URL; when testing the deployed route, use a ranged follow such as `curl -L -r 0-0` to avoid downloading the full installer.
 - Confirm a first browser click on any download CTA opens the email modal, invalid email shows an inline error, Escape/backdrop/close dismisses without downloading, and a valid email records through `POST /api/download-lead` before the public installer download starts.
 - Confirm the entered email is remembered in `localStorage` as `sidestream.download.email`, so repeat CTA clicks in the same browser start the public installer download without asking again.
 - Scrub or watch the pricing MacBook rotation long enough to confirm hard alpha edges and video-plane edges do not show as dark lines.
@@ -223,6 +224,7 @@ Use the narrowest relevant check after edits:
 - Plain static servers such as `python -m http.server` do not compile `/src/main.tsx`, so the static HTML route can appear to lose the Paper shader background even though the markup is correct. Static servers also cannot serve local Vercel Functions; the visible download CTAs use the public Vercel download URL so static preview clicks still start the installer instead of hitting a local `/api/download` 404. Use Vite on the active preview port when visual-checking the background, and Vercel dev when testing the API routes themselves.
 - Vercel Analytics depends on the compiled React entry in `src/main.tsx`. If analytics stops appearing, confirm the shader root still exists in the canonical HTML, the deployed bundle includes `@vercel/analytics/react`, the page was visited on the deployed Vercel URL, and content blockers are disabled for the check.
 - Vercel CLI versions before the current `54.x` line can report stale Blob auth/token errors. Prefer `npx vercel@latest ...` for Blob store checks.
+- `/api/download` uses the Blob SDK control-plane calls (`head`, `issueSignedToken`, `presignUrl`) and redirects on `GET`. Do not switch it back to SDK `get()` proxy streaming unless you have verified private object fetches in the deployed Vercel runtime; a broken `GET` can still look healthy if only `HEAD` is checked.
 - Without `vercel.json`, `vercel dev` may inherit a Yarn command from the Vercel project settings and hang on machines without Yarn.
 - The private Blob store currently has OIDC/env wired for Preview and Production. Development has `BLOB_STORE_ID` and the installer pathname, but local Blob reads still need Development OIDC enabled in Vercel Blob settings or a `BLOB_READ_WRITE_TOKEN`.
 - Check the Vercel Blob/CDN usage guardrails above before changing the installer artifact, `/api/download`, CTA/email-gate volume, or demo media. The current ~198 MiB installer means the Hobby 10 GB Blob transfer allowance is small enough that a real launch can exhaust it.
@@ -231,6 +233,7 @@ Use the narrowest relevant check after edits:
 
 ## Recent Change Log
 
+- Changed `GET /api/download` from private Blob proxy streaming to a metadata check plus short-lived signed private Blob redirect, fixing deployed GET failures where `HEAD` still succeeded.
 - Added Vercel Analytics through the existing React entry and documented the verification path.
 - Added `.vercelignore` so production Vercel deploys exclude raw local demo/mockup source assets while keeping the small tracked WebM/MP4 media files required by the landing page.
 - Updated the documented Sidestream installer download pathname to the `1.0.6` native/base DMG after the production promotion.

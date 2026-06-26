@@ -1,9 +1,16 @@
-import { BlobError, BlobNotFoundError, get, head } from "@vercel/blob";
+import {
+  BlobError,
+  BlobNotFoundError,
+  getDownloadUrl,
+  head,
+  issueSignedToken,
+  presignUrl,
+} from "@vercel/blob";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { Readable } from "node:stream";
 
 const INSTALLER_PATHNAME_ENV = "SIDESTREAM_INSTALLER_BLOB_PATHNAME";
 const DEFAULT_CONTENT_TYPE = "application/octet-stream";
+const SIGNED_DOWNLOAD_TTL_MS = 5 * 60 * 1000;
 
 type DownloadRequest = IncomingMessage & {
   method?: string;
@@ -28,8 +35,9 @@ export default async function handler(
   }
 
   try {
+    const metadata = await head(pathname);
+
     if (method === "HEAD") {
-      const metadata = await head(pathname);
       setDownloadHeaders(response, {
         contentType: metadata.contentType,
         etag: metadata.etag,
@@ -41,29 +49,17 @@ export default async function handler(
       return;
     }
 
-    const blob = await get(pathname, {
-      access: "private",
-      ifNoneMatch: headerValue(request.headers["if-none-match"]),
-    });
-
-    if (!blob) {
-      return sendText(response, 404, "Installer not found");
-    }
-
-    if (blob.statusCode === 304) {
+    if (headerValue(request.headers["if-none-match"]) === metadata.etag) {
       response.statusCode = 304;
       response.end();
       return;
     }
 
-    setDownloadHeaders(response, {
-      contentType: blob.blob.contentType,
-      etag: blob.blob.etag,
-      filename: filenameFromPathname(pathname),
-      size: blob.blob.size,
-    });
-
-    await pipeBlobStream(blob.stream, response);
+    response.statusCode = 302;
+    response.setHeader("Location", await createSignedDownloadUrl(pathname));
+    response.setHeader("Cache-Control", "no-store");
+    response.setHeader("X-Content-Type-Options", "nosniff");
+    response.end();
   } catch (error) {
     if (error instanceof BlobNotFoundError) {
       return sendText(response, 404, "Installer not found");
@@ -83,6 +79,23 @@ export default async function handler(
 
     throw error;
   }
+}
+
+async function createSignedDownloadUrl(pathname: string) {
+  const validUntil = Date.now() + SIGNED_DOWNLOAD_TTL_MS;
+  const signedToken = await issueSignedToken({
+    pathname,
+    operations: ["get"],
+    validUntil,
+  });
+  const { presignedUrl } = await presignUrl(signedToken, {
+    access: "private",
+    operation: "get",
+    pathname,
+    validUntil,
+  });
+
+  return getDownloadUrl(presignedUrl);
 }
 
 function setDownloadHeaders(
@@ -133,17 +146,4 @@ function sendText(response: ServerResponse, statusCode: number, message: string)
   response.setHeader("Content-Type", "text/plain; charset=utf-8");
   response.setHeader("Cache-Control", "no-store");
   response.end(message);
-}
-
-async function pipeBlobStream(
-  stream: ReadableStream<Uint8Array>,
-  response: ServerResponse,
-) {
-  const nodeStream = Readable.fromWeb(stream);
-
-  await new Promise<void>((resolve, reject) => {
-    nodeStream.once("error", reject);
-    response.once("finish", resolve);
-    nodeStream.pipe(response);
-  });
 }
