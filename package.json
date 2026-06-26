@@ -6,6 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "leads:dump": "node scripts/dump-download-leads.mjs",
+    "leads:migrate": "node scripts/migrate-download-leads-to-supabase.mjs --apply-schema",
     "typecheck": "tsc --noEmit",
     "preview": "vite preview"
   },
@@ -15,6 +17,7 @@
     "@tailwindcss/vite": "^4.1.17",
     "@vercel/analytics": "^2.0.1",
     "@vercel/blob": "^2.4.1",
+    "pg": "^8.22.0",
     "react": "^19.2.6",
     "react-dom": "^19.2.6",
     "tailwindcss": "^4.1.17",
@@ -23,6 +26,7 @@
   },
   "devDependencies": {
     "@types/node": "^24.10.2",
+    "@types/pg": "^8.20.0",
     "@types/react": "^19.2.7",
     "@types/react-dom": "^19.2.3",
     "@types/three": "^0.184.1",

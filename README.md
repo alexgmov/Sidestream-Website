@@ -11,7 +11,10 @@ Sidestream is an HTML-first landing page for a Premiere Pro panel that lets edit
 - `components/ui/demo.tsx` - Adapted Paper demo component mounted as the page background. The active default effect keeps the original simple `MeshGradient` look with non-black stops darkened 20% to `#151515`, `#292929`, and `#a3a3a3`, with demo install/clipboard overlay text removed and no background mouse interaction.
 - `components/ui/background-paper-shaders.tsx` - Exact pasted React Three Fiber shader primitives from the provided reference. They are kept as optional reference code and are not mounted by default.
 - `api/download.ts` - Vercel Node Function for installer fulfillment. `HEAD` returns attachment metadata for the configured private Vercel Blob installer, and `GET` validates the Blob then redirects to a short-lived signed private Blob URL. Supports `GET` and `HEAD` only.
-- `api/download-lead.ts` - Vercel Node Function that accepts email-gate submissions from the download modal and stores one private JSON lead record per submission in Vercel Blob.
+- `api/download-lead.ts` - Vercel Node Function that accepts email-gate submissions from the download modal and stores each lead in Supabase Postgres, with private Vercel Blob fallback if the database env is unavailable.
+- `supabase/migrations/20260626120000_add_sidestream_download_leads.sql` - Supabase schema for the private `public.sidestream_download_leads` table used by the download email gate.
+- `scripts/migrate-download-leads-to-supabase.mjs` - One-shot utility that applies the Supabase schema and migrates existing private Vercel Blob lead JSON records into Postgres.
+- `scripts/dump-download-leads.mjs` - Maintainer utility that dumps captured Sidestream download leads from Supabase for quick audits.
 - `src/main.tsx` - React entry that mounts `DemoOne` into `#shader-background-root` and renders Vercel Analytics through `@vercel/analytics/react`.
 - `src/paper-shaders-compat.d.ts` - Local TypeScript compatibility declarations for the pasted prop names that the installed Paper package does not type directly.
 - `src/index.css` - Tailwind v4 theme/utilities import, `tw-animate-css`, shadcn theme tokens, and source paths for the background component. It avoids Tailwind preflight so the static HTML styles are not reset.
@@ -37,7 +40,7 @@ Sidestream is an HTML-first landing page for a Premiere Pro panel that lets edit
 - Hero rotating noun - bottom inline `<script>` with `[data-rotating-word]`
 - Download email gate and coming-soon feedback - `#download-email-gate`, `#download-email-form`, `[data-download]`, `[data-purchase]`, and `#toast`; download CTAs open the email modal until a valid email is captured, then continue to the public `https://sidestream-xi.vercel.app/api/download` URL with the CSS Apple platform mark from `.btn[data-download]::before`, while the Sidestream Unlimited overlay uses `[data-purchase]` for a coming-soon toast
 - Installer fulfillment - `api/download.ts` reads `SIDESTREAM_INSTALLER_BLOB_PATHNAME`; `HEAD` returns attachment headers and `GET` redirects to a 5-minute signed private Blob download URL
-- Download lead capture - `api/download-lead.ts` accepts `POST /api/download-lead` JSON with an email, optional page, and optional source, then writes a private Blob record under `SIDESTREAM_DOWNLOAD_LEADS_BLOB_PREFIX` or `sidestream/download-leads`
+- Download lead capture - `api/download-lead.ts` accepts `POST /api/download-lead` JSON with an email, optional page, and optional source, then writes to Supabase table `public.sidestream_download_leads` through server-only `POSTGRES_URL`; if Supabase is not configured or the write fails, it falls back to the private Vercel Blob prefix `SIDESTREAM_DOWNLOAD_LEADS_BLOB_PREFIX` or `sidestream/download-leads`
 
 ## Routes and Assets
 
@@ -75,7 +78,7 @@ The current public installer artifact, `Sidestream-1.0.6-Mac-Installer.dmg`, is 
 
 Flag any change that increases installer size, stores multiple release DMGs, uploads raw demo/video assets, makes `/api/download` easier for bots to hit, removes attachment/cache safeguards, proxies the installer through extra functions, or changes the email gate/CTA flow in a way that materially increases downloads. Estimate `artifact bytes * expected downloads` and verify Vercel Usage after publish.
 
-Download CTAs are email-gated in the canonical HTML. Their anchors point at the canonical public Vercel download URL, `https://sidestream-xi.vercel.app/api/download`, so local static previews and adjacent static hosts do not 404 on a relative `/api/download` path. The first click opens `#download-email-gate`; after a valid email is entered, the script POSTs to `/api/download-lead`, stores the email locally under `sidestream.download.email` so repeat clicks do not keep asking in the same browser, closes the modal, and navigates directly to the installer URL with `window.location.assign(...)`. Lead capture writes one private JSON object per submission to Vercel Blob under `SIDESTREAM_DOWNLOAD_LEADS_BLOB_PREFIX` when configured, otherwise `sidestream/download-leads/YYYY-MM-DD/`. Each record includes the normalized email, capture timestamp, page, CTA source, and referrer; it intentionally does not add raw IP capture in route code. If lead capture times out or fails after a syntactically valid email, the browser still starts the installer download so the public download path does not break over lead-storage configuration.
+Download CTAs are email-gated in the canonical HTML. Their anchors point at the canonical public Vercel download URL, `https://sidestream-xi.vercel.app/api/download`, so local static previews and adjacent static hosts do not 404 on a relative `/api/download` path. The first click opens `#download-email-gate`; after a valid email is entered, the script POSTs to `/api/download-lead`, stores the email locally under `sidestream.download.email` so repeat clicks do not keep asking in the same browser, closes the modal, and navigates directly to the installer URL with `window.location.assign(...)`. Lead capture writes to Supabase Postgres table `public.sidestream_download_leads` through server-only `POSTGRES_URL`. The table stores the normalized email, salted email hash, capture timestamp, page, CTA source, referrer, user agent, storage targets, and migration context; RLS is enabled and `anon`/`authenticated` access is revoked. If Supabase is not configured or a write fails, the route falls back to writing one private JSON object per submission to Vercel Blob under `SIDESTREAM_DOWNLOAD_LEADS_BLOB_PREFIX` when configured, otherwise `sidestream/download-leads/YYYY-MM-DD/`. It intentionally does not add raw IP capture in route code. If lead capture times out or fails after a syntactically valid email, the browser still starts the installer download so the public download path does not break over lead-storage configuration.
 
 The MacBook mockup media is a native autoplaying, muted, looping `<video>` that loads `../mockups/mockup1_2.webm` from the canonical HTML file. The generated VP9-alpha WebM keeps the page publishable; source mockup files such as `.mov`, `.aep`, `.exr`, and `.usdz` are ignored so large production assets do not get committed accidentally. The mockup lives below the two pricing panels and the `.final` CTA inside `.pricing-mockup`, with the "Stop using sketchy websites to download music" panel now positioned above the laptop. It remains centered with a wide responsive video width and a soft bottom mask fade. It intentionally has no CSS drop shadow because filtering the alpha video can reveal a rectangular compositing edge during rotation. The bottom inline script keeps `.macbook-mockup-video` muted and calls `play()` on load/visibility return so the laptop continues spinning in normal browser viewing.
 
@@ -129,7 +132,22 @@ curl -i -X POST http://127.0.0.1:3000/api/download-lead \
   --data '{"email":"test@example.com","page":"/","source":"/api/download"}'
 ```
 
-If Vercel Blob OIDC is disabled for the Development environment, local `/api/download` or `/api/download-lead` returns a Blob auth/config error even though Preview and Production have Blob env attached. Fix that in the Vercel Blob store settings, or add a valid `BLOB_READ_WRITE_TOKEN` for local development.
+If Vercel Blob OIDC is disabled for the Development environment, local `/api/download` returns a Blob auth/config error even though Preview and Production have Blob env attached. Fix that in the Vercel Blob store settings, or add a valid `BLOB_READ_WRITE_TOKEN` for local development. `/api/download-lead` prefers Supabase when `POSTGRES_URL` is available and only needs Blob auth for the fallback path.
+
+Apply the Supabase download-lead schema and migrate existing Blob leads:
+
+```bash
+SIDESTREAM_ENV_FILE=.env.local \
+SIDESTREAM_DB_ENV_FILE=/Users/alexgarrett/alexg.mov/website/alexg/.env.local \
+npm run leads:migrate
+```
+
+Dump captured Sidestream download leads from Supabase:
+
+```bash
+SIDESTREAM_DB_ENV_FILE=/Users/alexgarrett/alexg.mov/website/alexg/.env.local \
+npm run leads:dump
+```
 
 Build before publishing or after shader, TypeScript, Tailwind, static HTML, layout, or Vite config changes:
 
@@ -230,9 +248,11 @@ Use the narrowest relevant check after edits:
 - Check the Vercel Blob/CDN usage guardrails above before changing the installer artifact, `/api/download`, CTA/email-gate volume, or demo media. The current ~198 MiB installer means the Hobby 10 GB Blob transfer allowance is small enough that a real launch can exhaust it.
 - Production, Preview, and Development `SIDESTREAM_INSTALLER_BLOB_PATHNAME` should resolve to the uploaded native/base `sidestream/1.0.6/Sidestream-1.0.6-Mac-Installer.dmg` artifact. The `Mac-ZXP-Installer.dmg` path is the retired ZXP-helper handoff and should not be used for the public website download.
 - The email gate is a website CTA gate, not hard security. A direct request to `/api/download` still serves the installer; true server-enforced lead capture would require issuing download tokens or moving `/api/download` behind a verified lead/session check.
+- Supabase lead capture uses the server-only `POSTGRES_URL` pooler connection. Do not expose a Supabase secret, Postgres password, or `POSTGRES_URL` to `Sidestream.html`, React browser code, or the CEP plugin. Keep the table private with RLS enabled and `anon`/`authenticated` revoked.
 
 ## Recent Change Log
 
+- Moved Sidestream download email lead storage to Supabase Postgres table `public.sidestream_download_leads`, added a migration script for existing Vercel Blob lead JSON records, and kept private Blob writes as a temporary fallback when database capture is unavailable.
 - Changed `GET /api/download` from private Blob proxy streaming to a metadata check plus short-lived signed private Blob redirect, fixing deployed GET failures where `HEAD` still succeeded.
 - Added Vercel Analytics through the existing React entry and documented the verification path.
 - Added `.vercelignore` so production Vercel deploys exclude raw local demo/mockup source assets while keeping the small tracked WebM/MP4 media files required by the landing page.
