@@ -16,11 +16,10 @@ try {
     select
       email,
       captured_at,
+      ip_address::text,
       source_page,
       cta_source,
-      referrer,
-      storage_targets,
-      migrated_from_blob_pathname
+      referrer
     from public.sidestream_download_leads
     order by captured_at asc, created_at asc
   `);

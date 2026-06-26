@@ -6,7 +6,10 @@ import path from "node:path";
 import { Pool } from "pg";
 
 const DEFAULT_PREFIX = "sidestream/download-leads";
-const MIGRATION_PATH = path.resolve("supabase/migrations/20260626120000_add_sidestream_download_leads.sql");
+const MIGRATION_PATHS = [
+  "supabase/migrations/20260626120000_add_sidestream_download_leads.sql",
+  "supabase/migrations/20260626123000_add_download_lead_ip_and_drop_storage_targets.sql",
+].map((migrationPath) => path.resolve(migrationPath));
 
 loadEnvFile(process.env.SIDESTREAM_ENV_FILE);
 loadEnvFile(process.env.SIDESTREAM_DB_ENV_FILE);
@@ -25,12 +28,14 @@ const pool = createPool();
 
 try {
   if (applySchema) {
-    const sql = await readFile(MIGRATION_PATH, "utf8");
-    if (dryRun) {
-      console.log(`[dry-run] would apply schema from ${MIGRATION_PATH}`);
-    } else {
-      await pool.query(sql);
-      console.log(`Applied schema from ${MIGRATION_PATH}`);
+    for (const migrationPath of MIGRATION_PATHS) {
+      const sql = await readFile(migrationPath, "utf8");
+      if (dryRun) {
+        console.log(`[dry-run] would apply schema from ${migrationPath}`);
+      } else {
+        await pool.query(sql);
+        console.log(`Applied schema from ${migrationPath}`);
+      }
     }
   }
 
@@ -61,6 +66,7 @@ try {
       source: cleanString(lead.source, 300),
       referrer: cleanString(lead.referrer, 500),
       userAgent: cleanString(lead.userAgent, 500),
+      ipAddress: cleanString(lead.ipAddress, 80),
       blobPathname: blob.pathname,
       context: {
         source: "download_email_gate",
@@ -114,13 +120,13 @@ async function upsertLead(lead) {
         cta_source,
         referrer,
         user_agent,
-        storage_targets,
+        ip_address,
         migrated_from_blob_pathname,
         context,
         created_at,
         updated_at
       )
-      values ($1, $2, $3, $4::timestamptz, $5, $6, $7, $8, $9::text[], $10, $11::jsonb, now(), now())
+      values ($1, $2, $3, $4::timestamptz, $5, $6, $7, $8, $9::inet, $10, $11::jsonb, now(), now())
       on conflict (lead_key) do update set
         email = excluded.email,
         email_hash = excluded.email_hash,
@@ -129,7 +135,7 @@ async function upsertLead(lead) {
         cta_source = excluded.cta_source,
         referrer = excluded.referrer,
         user_agent = excluded.user_agent,
-        storage_targets = excluded.storage_targets,
+        ip_address = excluded.ip_address,
         migrated_from_blob_pathname = excluded.migrated_from_blob_pathname,
         context = public.sidestream_download_leads.context || excluded.context,
         updated_at = now()
@@ -143,7 +149,7 @@ async function upsertLead(lead) {
       lead.source || null,
       lead.referrer || null,
       lead.userAgent || null,
-      ["supabase", "migrated_from_vercel_blob"],
+      lead.ipAddress || null,
       lead.blobPathname,
       JSON.stringify(lead.context),
     ],
@@ -155,11 +161,10 @@ async function fetchRows() {
     select
       email,
       captured_at,
+      ip_address::text,
       source_page,
       cta_source,
-      referrer,
-      storage_targets,
-      migrated_from_blob_pathname
+      referrer
     from public.sidestream_download_leads
     order by captured_at asc, created_at asc
   `);

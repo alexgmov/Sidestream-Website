@@ -1,6 +1,7 @@
 import { BlobError, put } from "@vercel/blob";
 import { createHmac, randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { isIP } from "node:net";
 import { Pool } from "pg";
 
 const LEADS_PREFIX_ENV = "SIDESTREAM_DOWNLOAD_LEADS_BLOB_PREFIX";
@@ -54,32 +55,28 @@ export default async function handler(
     source: cleanOptionalString(payload.source, 300),
     referrer: cleanOptionalString(request.headers.referer, 500),
     userAgent: cleanOptionalString(request.headers["user-agent"], 500),
+    ipAddress: getClientIp(request),
   };
-  const storageTargets: string[] = [];
   let supabaseError = "";
 
   if (isSupabaseConfigured()) {
     try {
-      await recordSupabaseLead(lead, storageTargets.concat("supabase"));
-      storageTargets.push("supabase");
+      await recordSupabaseLead(lead);
+      return sendJson(response, 200, { ok: "true" });
     } catch (error) {
       supabaseError = error instanceof Error ? error.message : "Unknown Supabase error";
       console.error("Sidestream download lead Supabase capture failed", supabaseError);
     }
   }
 
-  if (storageTargets.length) {
-    return sendJson(response, 200, { ok: "true", storage: storageTargets.join(",") });
-  }
-
   const pathname = leadBlobPathname(now, leadKey);
   try {
-    await put(pathname, JSON.stringify({ ...lead, storageTargets: ["vercel_blob"] }, null, 2), {
+    await put(pathname, JSON.stringify(lead, null, 2), {
       access: "private",
       contentType: "application/json; charset=utf-8",
     });
 
-    return sendJson(response, 200, { ok: "true", storage: "vercel_blob" });
+    return sendJson(response, 200, { ok: "true" });
   } catch (error) {
     if (error instanceof BlobError) {
       const body: Record<string, string> = {
@@ -108,8 +105,8 @@ async function recordSupabaseLead(
     source: string;
     referrer: string;
     userAgent: string;
+    ipAddress: string;
   },
-  storageTargets: string[],
 ) {
   const client = await getPool().connect();
 
@@ -125,12 +122,12 @@ async function recordSupabaseLead(
           cta_source,
           referrer,
           user_agent,
-          storage_targets,
+          ip_address,
           context,
           created_at,
           updated_at
         )
-        values ($1, $2, $3, $4::timestamptz, $5, $6, $7, $8, $9::text[], $10::jsonb, now(), now())
+        values ($1, $2, $3, $4::timestamptz, $5, $6, $7, $8, $9::inet, $10::jsonb, now(), now())
         on conflict (lead_key) do update set
           email = excluded.email,
           email_hash = excluded.email_hash,
@@ -139,7 +136,7 @@ async function recordSupabaseLead(
           cta_source = excluded.cta_source,
           referrer = excluded.referrer,
           user_agent = excluded.user_agent,
-          storage_targets = excluded.storage_targets,
+          ip_address = excluded.ip_address,
           context = ${SUPABASE_LEADS_TABLE}.context || excluded.context,
           updated_at = now()
       `,
@@ -152,7 +149,7 @@ async function recordSupabaseLead(
         lead.source || null,
         lead.referrer || null,
         lead.userAgent || null,
-        storageTargets,
+        lead.ipAddress || null,
         JSON.stringify({ source: "download_email_gate" }),
       ],
     );
@@ -206,6 +203,39 @@ function hashEmail(email: string) {
   return createHmac("sha256", secret).update(email).digest("hex");
 }
 
+function getClientIp(request: IncomingMessage) {
+  const candidates = [
+    firstHeaderValue(request.headers["x-forwarded-for"]).split(",")[0],
+    firstHeaderValue(request.headers["x-real-ip"]),
+    firstHeaderValue(request.headers["cf-connecting-ip"]),
+    firstHeaderValue(request.headers["x-vercel-forwarded-for"]).split(",")[0],
+    request.socket?.remoteAddress || "",
+  ];
+
+  for (const candidate of candidates) {
+    const ipAddress = normalizeIpAddress(candidate);
+    if (ipAddress) return ipAddress;
+  }
+
+  return "";
+}
+
+function normalizeIpAddress(value: string) {
+  let candidate = value.trim();
+  if (!candidate || candidate.toLowerCase() === "unknown") return "";
+
+  if (candidate.startsWith("[") && candidate.includes("]")) {
+    candidate = candidate.slice(1, candidate.indexOf("]"));
+  }
+
+  const ipv4WithPort = candidate.match(/^(\d{1,3}(?:\.\d{1,3}){3}):\d+$/);
+  if (ipv4WithPort) {
+    candidate = ipv4WithPort[1];
+  }
+
+  return isIP(candidate) ? candidate : "";
+}
+
 function leadBlobPathname(now: Date, leadKey: string) {
   return [
     getLeadPrefix(),
@@ -232,6 +262,10 @@ function isValidEmail(email: string) {
 function cleanOptionalString(value: unknown, maxLength: number) {
   if (typeof value !== "string") return "";
   return value.trim().slice(0, maxLength).replace(/[\u0000-\u001f\u007f]/g, "");
+}
+
+function firstHeaderValue(value: string | string[] | undefined) {
+  return Array.isArray(value) ? value[0] || "" : value || "";
 }
 
 function readRequestBody(request: IncomingMessage) {
