@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "leads:dump": "node scripts/dump-download-leads.mjs",
-    "leads:migrate": "node scripts/migrate-download-leads-to-supabase.mjs --apply-schema",
+    "leads:migrate": "node scripts/migrate-download-leads-to-postgres.mjs --apply-schema",
     "typecheck": "tsc --noEmit",
     "preview": "vite preview"
   },

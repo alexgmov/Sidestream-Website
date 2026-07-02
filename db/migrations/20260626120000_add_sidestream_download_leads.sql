@@ -26,8 +26,3 @@ create index if not exists sidestream_download_leads_captured_idx
 
 create index if not exists sidestream_download_leads_email_idx
   on public.sidestream_download_leads (email);
-
-alter table public.sidestream_download_leads enable row level security;
-
-revoke all on table public.sidestream_download_leads from anon, authenticated;
-grant select, insert, update, delete on table public.sidestream_download_leads to service_role;

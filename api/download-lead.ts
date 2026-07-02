@@ -6,7 +6,7 @@ import { Pool } from "pg";
 
 const LEADS_PREFIX_ENV = "SIDESTREAM_DOWNLOAD_LEADS_BLOB_PREFIX";
 const DEFAULT_LEADS_PREFIX = "sidestream/download-leads";
-const SUPABASE_LEADS_TABLE = "public.sidestream_download_leads";
+const DOWNLOAD_LEADS_TABLE = "public.sidestream_download_leads";
 const MAX_BODY_BYTES = 8 * 1024;
 
 let pool: Pool | null = null;
@@ -57,15 +57,15 @@ export default async function handler(
     userAgent: cleanOptionalString(request.headers["user-agent"], 500),
     ipAddress: getClientIp(request),
   };
-  let supabaseError = "";
+  let postgresError = "";
 
-  if (isSupabaseConfigured()) {
+  if (isPostgresConfigured()) {
     try {
-      await recordSupabaseLead(lead);
+      await recordPostgresLead(lead);
       return sendJson(response, 200, { ok: "true" });
     } catch (error) {
-      supabaseError = error instanceof Error ? error.message : "Unknown Supabase error";
-      console.error("Sidestream download lead Supabase capture failed", supabaseError);
+      postgresError = error instanceof Error ? error.message : "Unknown Postgres error";
+      console.error("Sidestream download lead Postgres capture failed", postgresError);
     }
   }
 
@@ -85,7 +85,7 @@ export default async function handler(
 
       if (process.env.VERCEL_ENV === "development") {
         body.message = error.message;
-        if (supabaseError) body.supabase = supabaseError;
+        if (postgresError) body.postgres = postgresError;
       }
 
       return sendJson(response, 500, body);
@@ -95,7 +95,7 @@ export default async function handler(
   }
 }
 
-async function recordSupabaseLead(
+async function recordPostgresLead(
   lead: {
     leadKey: string;
     email: string;
@@ -113,7 +113,7 @@ async function recordSupabaseLead(
   try {
     await client.query(
       `
-        insert into ${SUPABASE_LEADS_TABLE} (
+        insert into ${DOWNLOAD_LEADS_TABLE} (
           lead_key,
           email,
           email_hash,
@@ -137,7 +137,7 @@ async function recordSupabaseLead(
           referrer = excluded.referrer,
           user_agent = excluded.user_agent,
           ip_address = excluded.ip_address,
-          context = ${SUPABASE_LEADS_TABLE}.context || excluded.context,
+          context = ${DOWNLOAD_LEADS_TABLE}.context || excluded.context,
           updated_at = now()
       `,
       [
@@ -173,7 +173,7 @@ function getPool() {
   return pool;
 }
 
-function isSupabaseConfigured() {
+function isPostgresConfigured() {
   const url = process.env.POSTGRES_URL || "";
   return Boolean(url && !url.includes("[YOUR-PASSWORD]"));
 }

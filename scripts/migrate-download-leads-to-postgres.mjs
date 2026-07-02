@@ -7,8 +7,8 @@ import { Pool } from "pg";
 
 const DEFAULT_PREFIX = "sidestream/download-leads";
 const MIGRATION_PATHS = [
-  "supabase/migrations/20260626120000_add_sidestream_download_leads.sql",
-  "supabase/migrations/20260626123000_add_download_lead_ip_and_drop_storage_targets.sql",
+  "db/migrations/20260626120000_add_sidestream_download_leads.sql",
+  "db/migrations/20260626123000_add_download_lead_ip_and_drop_storage_targets.sql",
 ].map((migrationPath) => path.resolve(migrationPath));
 
 loadEnvFile(process.env.SIDESTREAM_ENV_FILE);
@@ -21,7 +21,7 @@ const applySchema = process.argv.includes("--apply-schema");
 const dumpRows = process.argv.includes("--dump");
 
 if (!process.env.POSTGRES_URL) {
-  fail("Missing POSTGRES_URL. Load the Supabase pooler URL before running this script.");
+  fail("Missing POSTGRES_URL. Load the Neon/Postgres pooler URL before running this script.");
 }
 
 const pool = createPool();

@@ -6,7 +6,7 @@ loadEnvFile(process.env.SIDESTREAM_ENV_FILE);
 loadEnvFile(process.env.SIDESTREAM_DB_ENV_FILE);
 
 if (!process.env.POSTGRES_URL) {
-  fail("Missing POSTGRES_URL. Load the Supabase pooler URL before running this script.");
+  fail("Missing POSTGRES_URL. Load the Neon/Postgres pooler URL before running this script.");
 }
 
 const pool = createPool();
