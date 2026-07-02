@@ -8,6 +8,10 @@ Sidestream is an HTML-first landing page for a Premiere Pro panel that lets edit
 
 - `Sidestream front end 2/Sidestream.html` - Canonical page implementation. Contains the shader mount root, header, hero, feature sections, pricing, final CTA, footer, styles, rotating-word script, and toast behavior.
 - `index.html` - Root redirect so `http://localhost:5173/` and other local server roots open the canonical page instead of a directory listing.
+- `public/robots.txt` - Public crawler policy copied to `/robots.txt` by Vite. Allows search and AI discovery crawlers while keeping installer and lead-capture API routes out of crawl targets.
+- `public/sitemap.xml` - Public XML sitemap for the current canonical Sidestream landing URL.
+- `public/llms.txt` - Concise AI-readable product summary and canonical-source guide for LLM/search agents. It is additive and does not replace normal SEO metadata or visible page content.
+- `public/sidestream-og.jpg` - Small Open Graph/Twitter preview image copied from the existing hero screenshot so link previews and crawlers have a stable public image asset.
 - `components/ui/demo.tsx` - Adapted Paper demo component mounted as the page background. The active default effect keeps the original simple `MeshGradient` look with non-black stops darkened 20% to `#151515`, `#292929`, and `#a3a3a3`, with demo install/clipboard overlay text removed and no background mouse interaction.
 - `components/ui/background-paper-shaders.tsx` - Exact pasted React Three Fiber shader primitives from the provided reference. They are kept as optional reference code and are not mounted by default.
 - `api/download.ts` - Vercel Node Function for installer fulfillment. `HEAD` returns attachment metadata for the configured private Vercel Blob installer, and `GET` validates the Blob then redirects to a short-lived signed private Blob URL. Supports `GET` and `HEAD` only.
@@ -32,6 +36,7 @@ Sidestream is an HTML-first landing page for a Premiere Pro panel that lets edit
 - Header/nav - `header`, `.nav`, `.brand`, `.nav-links`
 - Shader background - `#shader-background-root`, `src/main.tsx`, `components/ui/demo.tsx`, the active Paper `MeshGradient`, `components/ui/background-paper-shaders.tsx`, and `src/paper-shaders-compat.d.ts`
 - Vercel Analytics - `src/main.tsx` imports `Analytics` from `@vercel/analytics/react` and renders it alongside the shader component
+- SEO/GEO metadata - `<head>` metadata in `Sidestream front end 2/Sidestream.html` and `index.html` provides the title, description, robots directive, absolute canonical URL, Open Graph/Twitter tags, sitemap hint, public OG image, and JSON-LD `Organization`, `WebSite`, `SoftwareApplication`, and `Product` graph for the product surface. Keep this crawler-readable layer aligned with visible product claims.
 - Hero - `#hero`, `.hero-split`, `.hero-copy`, `.hero-title-line`, `.rotating-copy`, `.rotating-word`, `.hero-subline`, `.hero-description`
 - Feature sections - `#features` anchor, `.feature-glass` full-bleed frosted backdrop band, the two `.sec-pad` feature blocks, `.feature-subtext` heading sublines, `.shot` video frames, `.demo-video` MP4 embeds, the bottom inline viewport-playback observer, and the pointer-driven `.shot` 3D tilt handler
 - Pricing - `#pricing`, `.pricing-head`, `.plans`, `.plan`, `.plan.featured`, `.beta-coming`, `.plan-beta-content`, `.beta-overlay`, `.final`, `.pricing-mockup`, `.macbook-mockup-video`, the MacBook playback helper, and the pricing-panel scroll reveal observer
@@ -53,6 +58,25 @@ When using a local preview server, the root URL redirects to the canonical page:
 ```text
 http://localhost:5173/
 ```
+
+The current canonical public landing URL for crawlers is:
+
+```text
+https://sidestream-xi.vercel.app/Sidestream%20front%20end%202/Sidestream.html
+```
+
+The root redirect is kept for compatibility with the existing static/Vite routing. If the site later moves the full landing page to `/`, update the canonical URL, Open Graph URL, sitemap, `llms.txt`, and README together.
+
+Vite copies public crawler assets to the site root:
+
+```text
+GET /robots.txt
+GET /sitemap.xml
+GET /llms.txt
+GET /sidestream-og.jpg
+```
+
+`robots.txt` explicitly allows normal search discovery plus OpenAI `OAI-SearchBot`, `GPTBot`, and `ChatGPT-User` access to content while disallowing `/api/download` and `/api/download-lead` as crawl targets. The sitemap contains the current canonical landing page only. `llms.txt` is an additive AI-readable summary for agents; do not use it as a place for claims that are absent from the landing page.
 
 Vercel serves two serverless API routes:
 
@@ -173,6 +197,7 @@ Use the narrowest relevant check after edits:
 
 - Open the HTML page and check that the first fold intentionally places the hero copy lower than the older `Sidestream front end 2/screenshots/01-scan.png` reference.
 - Run `npm run build` after shader, TypeScript, Tailwind, HTML mount, Vite config, or package changes.
+- After SEO/GEO metadata changes, run `npm run build`, confirm `dist/robots.txt`, `dist/sitemap.xml`, `dist/llms.txt`, and `dist/sidestream-og.jpg` exist, and spot-check the built HTML for the absolute canonical URL, meta description, Open Graph/Twitter image tags, and valid JSON-LD.
 - After publishing analytics changes, visit the deployed site without a content blocker and allow roughly 30 seconds before checking the Vercel Analytics dashboard for page-view data.
 - Confirm the dark Paper shader renders behind the header, hero, cards, pricing, footer, and toast.
 - Confirm the Sidestream wordmark and desktop hero copy share the viewport-left `24px` first-fold gutter, and the Features/Pricing/Free Download header cluster sits at the viewport's top-right with a `15px` top offset and `24px` right gutter.
@@ -249,9 +274,13 @@ Use the narrowest relevant check after edits:
 - Production, Preview, and Development `SIDESTREAM_INSTALLER_BLOB_PATHNAME` should resolve to the uploaded native/base `sidestream/1.0.8/Sidestream-1.0.8-Mac-Installer.dmg` artifact. The `Mac-ZXP-Installer.dmg` path is the retired ZXP-helper handoff and should not be used for the public website download.
 - The email gate is a website CTA gate, not hard security. A direct request to `/api/download` still serves the installer; true server-enforced lead capture would require issuing download tokens or moving `/api/download` behind a verified lead/session check.
 - Supabase lead capture uses the server-only `POSTGRES_URL` pooler connection. Do not expose a Supabase secret, Postgres password, or `POSTGRES_URL` to `Sidestream.html`, React browser code, or the CEP plugin. Keep the table private with RLS enabled and `anon`/`authenticated` revoked.
+- The canonical URL is intentionally the deployed `Sidestream%20front%20end%202/Sidestream.html` path for now because the root document still redirects into the canonical static page. If the full page is served directly at `/`, update every crawler-facing URL in the HTML head, sitemap, `llms.txt`, and README in the same change.
+- Keep structured data conservative and matched to visible page claims. Do not add FAQ, review, rating, or price claims unless the same facts are present in the visible landing page.
+- `llms.txt` is useful as an AI-readable summary, but it is not a substitute for crawlable HTML, normal metadata, structured data, sitemap hygiene, or external citations/backlinks.
 
 ## Recent Change Log
 
+- Added non-visual SEO/GEO metadata, JSON-LD structured data, public `robots.txt`, `sitemap.xml`, `llms.txt`, and a stable public Open Graph image while leaving the visible landing page unchanged.
 - Promoted the public installer pointer to the private Blob `1.0.8` native/base DMG and redeployed production so `/api/download` serves `Sidestream-1.0.8-Mac-Installer.dmg`.
 - Added request IP capture to Sidestream download leads and removed the internal `storage_targets` column/dump field, which was only temporary migration bookkeeping.
 - Moved Sidestream download email lead storage to Supabase Postgres table `public.sidestream_download_leads`, added a migration script for existing Vercel Blob lead JSON records, and kept private Blob writes as a temporary fallback when database capture is unavailable.

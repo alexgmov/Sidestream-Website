@@ -1,0 +1,21 @@
+User-agent: *
+Allow: /
+Disallow: /api/download
+Disallow: /api/download-lead
+
+User-agent: OAI-SearchBot
+Allow: /
+Disallow: /api/download
+Disallow: /api/download-lead
+
+User-agent: GPTBot
+Allow: /
+Disallow: /api/download
+Disallow: /api/download-lead
+
+User-agent: ChatGPT-User
+Allow: /
+Disallow: /api/download
+Disallow: /api/download-lead
+
+Sitemap: https://sidestream-xi.vercel.app/sitemap.xml

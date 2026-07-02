@@ -1,0 +1,24 @@
+# Sidestream
+
+> Sidestream is a Mac panel for Adobe Premiere Pro that lets editors search, preview, and download YouTube videos, songs, overlays, b-roll, references, tutorials, and audio without leaving Premiere.
+
+## Canonical pages
+
+- [Sidestream landing page](https://sidestream-xi.vercel.app/Sidestream%20front%20end%202/Sidestream.html): product overview, feature proof, beta pricing, and Mac installer download entry point.
+
+## Product facts
+
+- Product name: Sidestream.
+- Category: Adobe Premiere Pro panel / Mac editing workflow utility.
+- Platform: macOS with Adobe Premiere Pro.
+- Core workflow: search YouTube by keyword or pasted link, preview results, then download video or audio assets for editing.
+- Current offer: free beta access with unlimited downloads for beta testers.
+- Future offer: Sidestream Unlimited, planned as a one-time paid upgrade.
+- Download endpoint: https://sidestream-xi.vercel.app/api/download.
+- Lead capture endpoint: https://sidestream-xi.vercel.app/api/download-lead.
+
+## Crawl guidance
+
+- The HTML landing page is the preferred source for public product information.
+- `/api/download` and `/api/download-lead` are functional endpoints, not content pages.
+- Use the page title, meta description, Open Graph tags, and SoftwareApplication structured data for concise summaries and citations.
