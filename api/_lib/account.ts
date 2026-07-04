@@ -13,12 +13,12 @@ const ACTIVATION_TTL_MINUTES = 30;
 const LICENSE_TOKEN_TTL_DAYS = 7;
 const MAX_BODY_BYTES = 64 * 1024;
 const STRIPE_MANAGED_PAYMENTS_API_VERSION = "2026-02-25.preview";
-const BASIC_SUBSCRIPTION_RESOURCE_KEY = "basic_subscription";
+const BASIC_SUBSCRIPTION_RESOURCE_KEY_BASE = "basic_subscription";
 const BASIC_SUBSCRIPTION_PRODUCT = {
   name: "Basic subscription",
   description: "A basic subscription to our service",
   taxCode: "txcd_10103100",
-  unitAmount: 1000,
+  unitAmount: 499,
   currency: "usd",
   interval: "month",
 };
@@ -63,6 +63,14 @@ type GoogleProfile = {
   email_verified?: boolean;
   name?: string;
   picture?: string;
+};
+
+type BillingResource = {
+  stripe_product_id: string;
+  stripe_price_id: string;
+  unit_amount: number;
+  currency: string;
+  recurring_interval: string;
 };
 
 export function methodNotAllowed(
@@ -490,7 +498,7 @@ export async function findOrCreateStripeCustomer(session: AccountSession) {
 
 export function getStripe() {
   if (!stripeClient) {
-    stripeClient = new Stripe(requireEnv("STRIPE_SECRET_KEY"));
+    stripeClient = new Stripe(getStripeSecretKey());
   }
   return stripeClient;
 }
@@ -502,95 +510,181 @@ export function getStripePreviewRequestOptions(): Stripe.RequestOptions {
 }
 
 export async function getOrCreateBasicSubscriptionPriceId() {
-  const existing = await findBillingResource(BASIC_SUBSCRIPTION_RESOURCE_KEY);
-  if (existing?.stripe_price_id) return existing.stripe_price_id;
+  const resourceKey = getBasicSubscriptionResourceKey();
+  const existing = await findBillingResource(resourceKey);
+  if (billingResourceMatchesBasicSubscription(existing)) {
+    return existing.stripe_price_id;
+  }
 
   return withPgClient(async (client) => {
     await client.query("begin");
     try {
-      await client.query("select pg_advisory_xact_lock(hashtext($1))", [
-        BASIC_SUBSCRIPTION_RESOURCE_KEY,
-      ]);
+      await client.query("select pg_advisory_xact_lock(hashtext($1))", [resourceKey]);
 
-      const lockedExisting = await findBillingResource(
-        BASIC_SUBSCRIPTION_RESOURCE_KEY,
-        client,
-      );
-      if (lockedExisting?.stripe_price_id) {
+      const lockedExisting = await findBillingResource(resourceKey, client);
+      if (billingResourceMatchesBasicSubscription(lockedExisting)) {
         await client.query("commit");
         return lockedExisting.stripe_price_id;
       }
 
-      const product = await getStripe().products.create(
-        {
-          name: BASIC_SUBSCRIPTION_PRODUCT.name,
-          description: BASIC_SUBSCRIPTION_PRODUCT.description,
-          tax_code: BASIC_SUBSCRIPTION_PRODUCT.taxCode,
-          default_price_data: {
-            unit_amount: BASIC_SUBSCRIPTION_PRODUCT.unitAmount,
-            currency: BASIC_SUBSCRIPTION_PRODUCT.currency,
-            recurring: {
-              interval: BASIC_SUBSCRIPTION_PRODUCT.interval,
-            },
-          },
-          metadata: {
-            sidestream_resource_key: BASIC_SUBSCRIPTION_RESOURCE_KEY,
-          },
-        } as Stripe.ProductCreateParams,
-        getStripePreviewRequestOptions(),
-      );
-      const priceId = normalizeStripeId(product.default_price);
-      if (!priceId) {
-        throw new Error("Stripe product was created without a default price");
-      }
+      const billingResource = lockedExisting
+        ? await createReplacementBasicSubscriptionPrice(lockedExisting, resourceKey)
+        : await createBasicSubscriptionProduct(resourceKey);
 
-      await client.query(
-        `
-          insert into public.sidestream_billing_resources (
-            resource_key,
-            stripe_product_id,
-            stripe_price_id,
-            product_name,
-            product_description,
-            tax_code,
-            unit_amount,
-            currency,
-            recurring_interval,
-            created_at,
-            updated_at
-          )
-          values ($1, $2, $3, $4, $5, $6, $7, $8, $9, now(), now())
-          on conflict (resource_key) do update set
-            stripe_product_id = excluded.stripe_product_id,
-            stripe_price_id = excluded.stripe_price_id,
-            product_name = excluded.product_name,
-            product_description = excluded.product_description,
-            tax_code = excluded.tax_code,
-            unit_amount = excluded.unit_amount,
-            currency = excluded.currency,
-            recurring_interval = excluded.recurring_interval,
-            updated_at = now()
-        `,
-        [
-          BASIC_SUBSCRIPTION_RESOURCE_KEY,
-          product.id,
-          priceId,
-          BASIC_SUBSCRIPTION_PRODUCT.name,
-          BASIC_SUBSCRIPTION_PRODUCT.description,
-          BASIC_SUBSCRIPTION_PRODUCT.taxCode,
-          BASIC_SUBSCRIPTION_PRODUCT.unitAmount,
-          BASIC_SUBSCRIPTION_PRODUCT.currency,
-          BASIC_SUBSCRIPTION_PRODUCT.interval,
-        ],
-      );
+      await upsertBillingResource(client, resourceKey, billingResource);
 
       await client.query("commit");
-      return priceId;
+      return billingResource.priceId;
     } catch (error) {
       await client.query("rollback");
       throw error;
     }
   });
+}
+
+function getStripeSecretKey() {
+  return requireEnv("STRIPE_SECRET_KEY");
+}
+
+function getBasicSubscriptionResourceKey() {
+  const mode = getStripeSecretKey().startsWith("sk_live_") ? "live" : "sandbox";
+  return `${BASIC_SUBSCRIPTION_RESOURCE_KEY_BASE}_${mode}`;
+}
+
+function billingResourceMatchesBasicSubscription(
+  resource: BillingResource | null | undefined,
+) {
+  return Boolean(
+    resource?.stripe_price_id &&
+    resource.unit_amount === BASIC_SUBSCRIPTION_PRODUCT.unitAmount &&
+    resource.currency === BASIC_SUBSCRIPTION_PRODUCT.currency &&
+    resource.recurring_interval === BASIC_SUBSCRIPTION_PRODUCT.interval,
+  );
+}
+
+async function createBasicSubscriptionProduct(resourceKey: string) {
+  const product = await getStripe().products.create(
+    {
+      name: BASIC_SUBSCRIPTION_PRODUCT.name,
+      description: BASIC_SUBSCRIPTION_PRODUCT.description,
+      tax_code: BASIC_SUBSCRIPTION_PRODUCT.taxCode,
+      default_price_data: {
+        unit_amount: BASIC_SUBSCRIPTION_PRODUCT.unitAmount,
+        currency: BASIC_SUBSCRIPTION_PRODUCT.currency,
+        recurring: {
+          interval: BASIC_SUBSCRIPTION_PRODUCT.interval,
+        },
+      },
+      metadata: {
+        sidestream_resource_key: resourceKey,
+      },
+    } as Stripe.ProductCreateParams,
+    getStripePreviewRequestOptions(),
+  );
+  const priceId = normalizeStripeId(product.default_price);
+  if (!priceId) {
+    throw new Error("Stripe product was created without a default price");
+  }
+
+  return { productId: product.id, priceId };
+}
+
+async function createReplacementBasicSubscriptionPrice(
+  resource: BillingResource,
+  resourceKey: string,
+) {
+  try {
+    const price = await getStripe().prices.create(
+      {
+        product: resource.stripe_product_id,
+        unit_amount: BASIC_SUBSCRIPTION_PRODUCT.unitAmount,
+        currency: BASIC_SUBSCRIPTION_PRODUCT.currency,
+        recurring: {
+          interval: BASIC_SUBSCRIPTION_PRODUCT.interval,
+        },
+        metadata: {
+          sidestream_resource_key: resourceKey,
+          sidestream_replaces_price_id: resource.stripe_price_id,
+        },
+      } as Stripe.PriceCreateParams,
+      getStripePreviewRequestOptions(),
+    );
+
+    await getStripe().products.update(
+      resource.stripe_product_id,
+      {
+        name: BASIC_SUBSCRIPTION_PRODUCT.name,
+        description: BASIC_SUBSCRIPTION_PRODUCT.description,
+        tax_code: BASIC_SUBSCRIPTION_PRODUCT.taxCode,
+        default_price: price.id,
+        metadata: {
+          sidestream_resource_key: resourceKey,
+        },
+      } as Stripe.ProductUpdateParams,
+      getStripePreviewRequestOptions(),
+    );
+
+    if (resource.stripe_price_id !== price.id) {
+      await getStripe().prices.update(
+        resource.stripe_price_id,
+        { active: false },
+        getStripePreviewRequestOptions(),
+      );
+    }
+
+    return { productId: resource.stripe_product_id, priceId: price.id };
+  } catch (error) {
+    if (isStripeResourceMissing(error)) {
+      return createBasicSubscriptionProduct(resourceKey);
+    }
+    throw error;
+  }
+}
+
+async function upsertBillingResource(
+  client: PoolClient,
+  resourceKey: string,
+  resource: { productId: string; priceId: string },
+) {
+  await client.query(
+    `
+      insert into public.sidestream_billing_resources (
+        resource_key,
+        stripe_product_id,
+        stripe_price_id,
+        product_name,
+        product_description,
+        tax_code,
+        unit_amount,
+        currency,
+        recurring_interval,
+        created_at,
+        updated_at
+      )
+      values ($1, $2, $3, $4, $5, $6, $7, $8, $9, now(), now())
+      on conflict (resource_key) do update set
+        stripe_product_id = excluded.stripe_product_id,
+        stripe_price_id = excluded.stripe_price_id,
+        product_name = excluded.product_name,
+        product_description = excluded.product_description,
+        tax_code = excluded.tax_code,
+        unit_amount = excluded.unit_amount,
+        currency = excluded.currency,
+        recurring_interval = excluded.recurring_interval,
+        updated_at = now()
+    `,
+    [
+      resourceKey,
+      resource.productId,
+      resource.priceId,
+      BASIC_SUBSCRIPTION_PRODUCT.name,
+      BASIC_SUBSCRIPTION_PRODUCT.description,
+      BASIC_SUBSCRIPTION_PRODUCT.taxCode,
+      BASIC_SUBSCRIPTION_PRODUCT.unitAmount,
+      BASIC_SUBSCRIPTION_PRODUCT.currency,
+      BASIC_SUBSCRIPTION_PRODUCT.interval,
+    ],
+  );
 }
 
 export function getStripeWebhookSecret() {
@@ -1025,12 +1119,9 @@ async function findBillingResource(
   client?: PoolClient,
 ) {
   const runner = client || getPool();
-  const result = await runner.query<{
-    stripe_product_id: string;
-    stripe_price_id: string;
-  }>(
+  const result = await runner.query<BillingResource>(
     `
-      select stripe_product_id, stripe_price_id
+      select stripe_product_id, stripe_price_id, unit_amount, currency, recurring_interval
       from public.sidestream_billing_resources
       where resource_key = $1
       limit 1
@@ -1039,6 +1130,15 @@ async function findBillingResource(
   );
 
   return result.rows[0] || null;
+}
+
+function isStripeResourceMissing(error: unknown) {
+  return Boolean(
+    error &&
+    typeof error === "object" &&
+    "code" in error &&
+    (error as { code?: unknown }).code === "resource_missing",
+  );
 }
 
 function getPool() {
