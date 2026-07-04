@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta name="robots" content="noindex, nofollow" />
+<title>Sidestream Account</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #050506;
+    --panel: rgba(18, 18, 20, 0.82);
+    --line: rgba(226, 232, 240, 0.16);
+    --ink: #e2e8f0;
+    --soft: rgba(226, 232, 240, 0.68);
+    --faint: rgba(226, 232, 240, 0.46);
+    --accent: #ff0033;
+    --good: #46d78a;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    background:
+      radial-gradient(circle at 18% 12%, rgba(255, 0, 51, 0.16), transparent 28rem),
+      linear-gradient(145deg, #050506 0%, #111114 48%, #050506 100%);
+    color: var(--ink);
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", Helvetica, Arial, sans-serif;
+    margin: 0;
+    min-height: 100vh;
+  }
+
+  a { color: inherit; text-decoration: none; }
+  .shell {
+    display: grid;
+    gap: 28px;
+    margin: 0 auto;
+    max-width: 980px;
+    min-height: 100vh;
+    padding: 32px 24px;
+  }
+
+  header {
+    align-items: center;
+    display: flex;
+    justify-content: space-between;
+  }
+
+  .brand { font-size: 1.1rem; font-weight: 800; letter-spacing: 0; }
+  .back { color: var(--soft); font-size: 0.92rem; }
+  main {
+    align-self: center;
+    display: grid;
+    gap: 18px;
+  }
+
+  .eyebrow {
+    color: var(--faint);
+    font-size: 0.78rem;
+    font-weight: 800;
+    letter-spacing: 0.12em;
+    margin: 0;
+    text-transform: uppercase;
+  }
+
+  h1 {
+    font-size: clamp(2.4rem, 8vw, 5.5rem);
+    letter-spacing: 0;
+    line-height: 0.9;
+    margin: 0;
+    max-width: 780px;
+  }
+
+  .lede {
+    color: var(--soft);
+    font-size: clamp(1rem, 2vw, 1.24rem);
+    line-height: 1.55;
+    margin: 0;
+    max-width: 620px;
+  }
+
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    display: grid;
+    gap: 18px;
+    max-width: 680px;
+    padding: 22px;
+  }
+
+  .row {
+    align-items: center;
+    border-top: 1px solid var(--line);
+    display: flex;
+    gap: 14px;
+    justify-content: space-between;
+    padding-top: 16px;
+  }
+
+  .row:first-child {
+    border-top: 0;
+    padding-top: 0;
+  }
+
+  .label { color: var(--faint); font-size: 0.82rem; margin: 0 0 4px; }
+  .value { color: var(--ink); font-size: 1rem; font-weight: 720; margin: 0; }
+  .status { color: var(--good); }
+  .muted { color: var(--soft); }
+  .actions { display: flex; flex-wrap: wrap; gap: 10px; }
+  button, .button {
+    align-items: center;
+    border: 0;
+    border-radius: 999px;
+    cursor: pointer;
+    display: inline-flex;
+    font: inherit;
+    font-size: 0.94rem;
+    font-weight: 780;
+    justify-content: center;
+    min-height: 44px;
+    padding: 0 18px;
+  }
+
+  .primary { background: #fff; color: #050506; }
+  .primary:hover { background: var(--accent); color: #fff; }
+  .secondary {
+    background: rgba(255, 255, 255, 0.08);
+    color: var(--ink);
+  }
+  .secondary:hover { background: rgba(255, 255, 255, 0.14); }
+  [hidden] { display: none !important; }
+
+  @media (max-width: 680px) {
+    .row { align-items: flex-start; flex-direction: column; }
+    .actions { width: 100%; }
+    button, .button { width: 100%; }
+  }
+</style>
+</head>
+<body>
+  <div class="shell">
+    <header>
+      <a class="brand" href="/Sidestream%20front%20end%202/Sidestream.html">Sidestream</a>
+      <a class="back" href="/Sidestream%20front%20end%202/Sidestream.html">Back to site</a>
+    </header>
+
+    <main>
+      <p class="eyebrow">Account</p>
+      <h1>Your Sidestream account.</h1>
+      <p class="lede">Manage access, billing, invoices, and the latest installer from one quiet little page.</p>
+
+      <section class="panel" id="signed-out" hidden>
+        <div>
+          <p class="label">Sign in</p>
+          <p class="value">Use Google to manage your subscription and reconnect Sidestream.</p>
+        </div>
+        <div class="actions">
+          <a class="button primary" id="sign-in-link" href="/api/auth/google/start?next=/account.html">Continue with Google</a>
+        </div>
+      </section>
+
+      <section class="panel" id="signed-in" hidden>
+        <div class="row">
+          <div>
+            <p class="label">Signed in as</p>
+            <p class="value" id="account-email">Loading...</p>
+          </div>
+          <button class="secondary" id="sign-out-button" type="button">Sign out</button>
+        </div>
+        <div class="row">
+          <div>
+            <p class="label">Plan</p>
+            <p class="value" id="account-plan">Checking...</p>
+          </div>
+          <div class="actions">
+            <a class="button primary" id="upgrade-link" href="/upgrade.html">Upgrade</a>
+            <button class="secondary" id="billing-button" type="button">Manage billing</button>
+          </div>
+        </div>
+        <div class="row">
+          <div>
+            <p class="label">Installer</p>
+            <p class="value muted">Need to reinstall or update?</p>
+          </div>
+          <a class="button secondary" href="/api/download">Download latest</a>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script>
+    const signedOut = document.getElementById("signed-out");
+    const signedIn = document.getElementById("signed-in");
+    const signInLink = document.getElementById("sign-in-link");
+    const accountEmail = document.getElementById("account-email");
+    const accountPlan = document.getElementById("account-plan");
+    const upgradeLink = document.getElementById("upgrade-link");
+    const billingButton = document.getElementById("billing-button");
+    const signOutButton = document.getElementById("sign-out-button");
+
+    function nextPath() {
+      return window.location.pathname + window.location.search;
+    }
+
+    function describePlan(license) {
+      if (!license || !license.active) return "Free";
+      if (license.cancelAtPeriodEnd && license.currentPeriodEnd) {
+        return "Unlimited - cancels " + new Date(license.currentPeriodEnd).toLocaleDateString();
+      }
+      return "Unlimited";
+    }
+
+    async function apiPost(url, body = {}) {
+      const response = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body)
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.error || "Request failed");
+      return payload;
+    }
+
+    async function loadAccount() {
+      signInLink.href = "/api/auth/google/start?next=" + encodeURIComponent(nextPath());
+      const response = await fetch("/api/auth/session", { cache: "no-store" });
+      const session = await response.json();
+
+      if (!session.authenticated) {
+        signedOut.hidden = false;
+        signedIn.hidden = true;
+        return;
+      }
+
+      signedOut.hidden = true;
+      signedIn.hidden = false;
+      accountEmail.textContent = session.user.email;
+      accountPlan.textContent = describePlan(session.license);
+      accountPlan.classList.toggle("status", Boolean(session.license && session.license.active));
+      upgradeLink.hidden = Boolean(session.license && session.license.active);
+      billingButton.hidden = !session.billing.hasCustomer;
+    }
+
+    billingButton.addEventListener("click", async () => {
+      billingButton.disabled = true;
+      billingButton.textContent = "Opening...";
+      try {
+        const payload = await apiPost("/api/billing/portal");
+        window.location.assign(payload.url);
+      } catch (error) {
+        alert(error.message);
+        billingButton.disabled = false;
+        billingButton.textContent = "Manage billing";
+      }
+    });
+
+    signOutButton.addEventListener("click", async () => {
+      await apiPost("/api/auth/logout");
+      window.location.reload();
+    });
+
+    loadAccount().catch((error) => {
+      signedOut.hidden = false;
+      accountEmail.textContent = error.message;
+    });
+  </script>
+</body>
+</html>

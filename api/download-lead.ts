@@ -8,6 +8,14 @@ const LEADS_PREFIX_ENV = "SIDESTREAM_DOWNLOAD_LEADS_BLOB_PREFIX";
 const DEFAULT_LEADS_PREFIX = "sidestream/download-leads";
 const DOWNLOAD_LEADS_TABLE = "public.sidestream_download_leads";
 const MAX_BODY_BYTES = 8 * 1024;
+const POSTGRES_URL_ENV_NAMES = [
+  "SIDESTREAM_POSTGRES_URL",
+  "SIDESTREAM_POSTGRES_PRISMA_URL",
+  "SIDESTREAM_POSTGRES_URL_NON_POOLING",
+  "POSTGRES_URL",
+  "POSTGRES_PRISMA_URL",
+  "POSTGRES_URL_NON_POOLING",
+];
 
 let pool: Pool | null = null;
 
@@ -160,7 +168,7 @@ async function recordPostgresLead(
 
 function getPool() {
   if (!pool) {
-    const connectionString = normalizeConnectionString(process.env.POSTGRES_URL || "");
+    const connectionString = normalizeConnectionString(getPostgresConnectionString());
     pool = new Pool({
       connectionString,
       max: Number(process.env.POSTGRES_POOL_MAX || 1),
@@ -174,8 +182,18 @@ function getPool() {
 }
 
 function isPostgresConfigured() {
-  const url = process.env.POSTGRES_URL || "";
-  return Boolean(url && !url.includes("[YOUR-PASSWORD]"));
+  return Boolean(getPostgresConnectionString());
+}
+
+function getPostgresConnectionString() {
+  for (const name of POSTGRES_URL_ENV_NAMES) {
+    const value = process.env[name]?.trim();
+    if (value && !value.includes("[YOUR-") && value !== "changeme") {
+      return value;
+    }
+  }
+
+  return "";
 }
 
 function normalizeConnectionString(connectionString: string) {
@@ -199,7 +217,9 @@ function shouldUseSsl(connectionString: string) {
 }
 
 function hashEmail(email: string) {
-  const secret = process.env.SIDESTREAM_LEAD_HASH_SECRET || process.env.POSTGRES_URL || "sidestream-download-leads-dev-salt";
+  const secret = process.env.SIDESTREAM_LEAD_HASH_SECRET ||
+    getPostgresConnectionString() ||
+    "sidestream-download-leads-dev-salt";
   return createHmac("sha256", secret).update(email).digest("hex");
 }
 

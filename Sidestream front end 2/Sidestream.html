@@ -1024,6 +1024,7 @@
         <nav>
           <a href="#features">Features</a>
           <a href="#pricing">Pricing</a>
+          <a href="/account.html">Account</a>
         </nav>
         <a class="btn btn-primary btn-sm" href="https://sidestream-xi.vercel.app/api/download" data-download aria-label="Free Download for Mac">Free Download</a>
       </div>
@@ -1114,31 +1115,23 @@
             </ul>
             <a class="btn btn-secondary" href="https://sidestream-xi.vercel.app/api/download" data-download aria-label="Free Download for Mac">Free Download</a>
           </div>
-          <div class="plan featured beta-coming reveal" aria-label="Sidestream Unlimited coming soon">
-            <div class="plan-beta-content" aria-hidden="true">
-              <!--
-              <p class="plan-name">Unlimited <span class="pill">One time</span></p>
-              <div class="price"><span class="amt">$19</span><span class="per">once, no subscription</span></div>
+          <div class="plan featured reveal" aria-label="Sidestream Unlimited subscription">
+            <div class="plan-beta-content">
+              <p class="plan-name">Unlimited <span class="pill">Subscription</span></p>
+              <div class="price"><span class="amt">Pro</span><span class="per">managed in Stripe</span></div>
               <ul>
                 <li>Unlimited downloads</li>
                 <li>Full video and audio downloads</li>
                 <li>Maximum audio and video quality</li>
-                <li>24 hour support</li>
+                <li>Cancel anytime, invoices included</li>
               </ul>
-              <span class="btn btn-primary">Get Unlimited $19</span>
-              -->
+              <a class="btn btn-primary" href="/upgrade.html">Upgrade to Unlimited</a>
             </div>
-            <button class="beta-overlay" type="button" data-purchase aria-label="Sidestream Unlimited coming soon">
-              <span class="beta-lockup">
-                <span class="beta-status">Coming soon</span>
-                <strong class="beta-title">Sidestream Unlimited</strong>
-              </span>
-            </button>
           </div>
         </div>
         <div class="final reveal">
           <h2>Stop using sketchy websites to download music</h2>
-          <p>Download Sidestream, paste a link, and keep editing. Free to start, with Sidestream Unlimited coming soon.</p>
+          <p>Download Sidestream, paste a link, and keep editing. Free to start, with Sidestream Unlimited available from inside the app.</p>
           <div class="cta-row">
             <a class="btn btn-primary btn-lg" href="https://sidestream-xi.vercel.app/api/download" data-download aria-label="Free Download for Mac">Free Download</a>
           </div>
@@ -1529,15 +1522,10 @@
     }
 
     function handleDownloadRequest(ev, el) {
-      ev.preventDefault();
-      const storedEmail = getStoredDownloadEmail();
-
-      if (isValidDownloadEmail(storedEmail)) {
-        startDownload(el.getAttribute("href") || "/api/download");
+      if (ev.type === "auxclick") {
         return;
       }
-
-      openEmailGate(el);
+      ping("Starting your download...");
     }
 
     document.querySelectorAll("[data-download]").forEach((el) => {
@@ -1574,7 +1562,7 @@
     document.querySelectorAll("[data-purchase]").forEach((el) =>
       el.addEventListener("click", (ev) => {
         ev.preventDefault();
-        ping("Sidestream Unlimited is coming soon.");
+        window.location.assign("/upgrade.html");
       })
     );
   </script>

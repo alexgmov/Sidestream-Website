@@ -18,6 +18,8 @@ export default defineConfig({
     rollupOptions: {
       input: {
         index: path.resolve(__dirname, "index.html"),
+        account: path.resolve(__dirname, "account.html"),
+        upgrade: path.resolve(__dirname, "upgrade.html"),
         sidestream: path.resolve(
           __dirname,
           "Sidestream front end 2/Sidestream.html",

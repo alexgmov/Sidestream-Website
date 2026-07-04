@@ -19,9 +19,17 @@ const prefix = (process.env.SIDESTREAM_DOWNLOAD_LEADS_BLOB_PREFIX || DEFAULT_PRE
 const dryRun = process.argv.includes("--dry-run");
 const applySchema = process.argv.includes("--apply-schema");
 const dumpRows = process.argv.includes("--dump");
+const POSTGRES_URL_ENV_NAMES = [
+  "SIDESTREAM_POSTGRES_URL",
+  "SIDESTREAM_POSTGRES_PRISMA_URL",
+  "SIDESTREAM_POSTGRES_URL_NON_POOLING",
+  "POSTGRES_URL",
+  "POSTGRES_PRISMA_URL",
+  "POSTGRES_URL_NON_POOLING",
+];
 
-if (!process.env.POSTGRES_URL) {
-  fail("Missing POSTGRES_URL. Load the Neon/Postgres pooler URL before running this script.");
+if (!getPostgresConnectionString()) {
+  fail(`Missing Postgres connection string. Set one of: ${POSTGRES_URL_ENV_NAMES.join(", ")}`);
 }
 
 const pool = createPool();
@@ -172,7 +180,7 @@ async function fetchRows() {
 }
 
 function createPool() {
-  const connectionString = normalizeConnectionString(process.env.POSTGRES_URL);
+  const connectionString = normalizeConnectionString(getPostgresConnectionString());
   return new Pool({
     connectionString,
     max: Number(process.env.POSTGRES_POOL_MAX || 1),
@@ -180,6 +188,17 @@ function createPool() {
     connectionTimeoutMillis: 5_000,
     ssl: shouldUseSsl(connectionString) ? { rejectUnauthorized: false } : false,
   });
+}
+
+function getPostgresConnectionString() {
+  for (const name of POSTGRES_URL_ENV_NAMES) {
+    const value = process.env[name]?.trim();
+    if (value && !value.includes("[YOUR-") && value !== "changeme") {
+      return value;
+    }
+  }
+
+  return "";
 }
 
 function normalizeConnectionString(connectionString) {
@@ -215,7 +234,9 @@ function cleanString(value, maxLength) {
 }
 
 function hashEmail(email) {
-  const secret = process.env.SIDESTREAM_LEAD_HASH_SECRET || process.env.POSTGRES_URL || "sidestream-download-leads-dev-salt";
+  const secret = process.env.SIDESTREAM_LEAD_HASH_SECRET ||
+    getPostgresConnectionString() ||
+    "sidestream-download-leads-dev-salt";
   return crypto.createHmac("sha256", secret).update(email).digest("hex");
 }
 

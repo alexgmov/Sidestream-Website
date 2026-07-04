@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { Pool } from "pg";
 
@@ -18,22 +19,26 @@ if (!getPostgresConnectionString()) {
   fail(`Missing Postgres connection string. Set one of: ${POSTGRES_URL_ENV_NAMES.join(", ")}`);
 }
 
+const migrationsDir = path.resolve("db/migrations");
+const dryRun = process.argv.includes("--dry-run");
 const pool = createPool();
 
 try {
-  const result = await pool.query(`
-    select
-      email,
-      captured_at,
-      ip_address::text,
-      source_page,
-      cta_source,
-      referrer
-    from public.sidestream_download_leads
-    order by captured_at asc, created_at asc
-  `);
+  const migrationNames = (await readdir(migrationsDir))
+    .filter((filename) => filename.endsWith(".sql"))
+    .sort();
 
-  console.log(JSON.stringify(result.rows, null, 2));
+  for (const migrationName of migrationNames) {
+    const migrationPath = path.join(migrationsDir, migrationName);
+    const sql = await readFile(migrationPath, "utf8");
+    if (dryRun) {
+      console.log(`[dry-run] would apply ${migrationName}`);
+      continue;
+    }
+
+    await pool.query(sql);
+    console.log(`Applied ${migrationName}`);
+  }
 } finally {
   await pool.end();
 }
