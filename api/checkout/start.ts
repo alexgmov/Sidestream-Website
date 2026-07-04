@@ -6,18 +6,14 @@ import {
   findOrCreateStripeCustomer,
   getBaseUrl,
   getOrCreateBasicSubscriptionPriceId,
+  getSession,
   getStripe,
   getStripePreviewRequestOptions,
   methodNotAllowed,
-  readJsonBody,
-  requireSession,
+  redirect,
   sendJson,
   type AccountRequest,
 } from "../_lib/account.js";
-
-type CheckoutPayload = {
-  activationKey?: unknown;
-};
 
 type ManagedPaymentsCheckoutParams = Stripe.Checkout.SessionCreateParams & {
   managed_payments: {
@@ -32,36 +28,41 @@ export default async function handler(
   request: AccountRequest,
   response: ServerResponse,
 ) {
-  const method = (request.method || "POST").toUpperCase();
-  if (method !== "POST") return methodNotAllowed(response, "POST");
+  const method = (request.method || "GET").toUpperCase();
+  if (method !== "GET") return methodNotAllowed(response, "GET");
 
-  const session = await requireSession(request, response);
-  if (!session) return;
-
-  const payload = await readJsonBody<CheckoutPayload>(request);
-  const activationKey = cleanString(payload.activationKey, 160);
-  if (activationKey) {
-    await bindActivationToAccount(activationKey, session.accountId);
-  }
-
-  const stripe = getStripe();
   const baseUrl = getBaseUrl(request);
-  const stripeCustomerId = await findOrCreateStripeCustomer(session);
+  const requestUrl = new URL(request.url || "/api/checkout/start", baseUrl);
+  const activationKey = cleanString(requestUrl.searchParams.get("activation"), 160);
+  const session = await getSession(request);
+  const stripe = getStripe();
   const stripePriceId = await getOrCreateBasicSubscriptionPriceId();
   const successUrl = new URL("/upgrade.html", baseUrl);
   const cancelUrl = new URL("/upgrade.html", baseUrl);
+  const metadata: Record<string, string> = {};
 
   successUrl.searchParams.set("checkout", "success");
   cancelUrl.searchParams.set("checkout", "cancelled");
+  successUrl.searchParams.set("session_id", "{CHECKOUT_SESSION_ID}");
+
   if (activationKey) {
     successUrl.searchParams.set("activation", activationKey);
     cancelUrl.searchParams.set("activation", activationKey);
+    metadata.sidestream_activation_key = activationKey;
   }
-  successUrl.searchParams.set("session_id", "{CHECKOUT_SESSION_ID}");
+
+  let stripeCustomerId = "";
+  if (session) {
+    stripeCustomerId = await findOrCreateStripeCustomer(session);
+    metadata.sidestream_account_id = session.accountId;
+    if (activationKey) {
+      await bindActivationToAccount(activationKey, session.accountId);
+    }
+  }
 
   const checkoutParams: ManagedPaymentsCheckoutParams = {
     mode: "subscription",
-    customer: stripeCustomerId,
+    ...(stripeCustomerId ? { customer: stripeCustomerId } : {}),
     line_items: [{ price: stripePriceId, quantity: 1 }],
     managed_payments: {
       enabled: true,
@@ -70,21 +71,15 @@ export default async function handler(
     billing_address_collection: "auto",
     success_url: successUrl.toString(),
     cancel_url: cancelUrl.toString(),
-    client_reference_id: session.accountId,
+    client_reference_id: session?.accountId || activationKey || undefined,
     custom_text: {
       submit: {
         message: CHECKOUT_PROMISE_TEXT,
       },
     },
-    metadata: {
-      sidestream_account_id: session.accountId,
-      sidestream_activation_key: activationKey,
-    },
+    metadata,
     subscription_data: {
-      metadata: {
-        sidestream_account_id: session.accountId,
-        sidestream_activation_key: activationKey,
-      },
+      metadata,
     },
   };
 
@@ -93,5 +88,9 @@ export default async function handler(
     getStripePreviewRequestOptions(),
   );
 
-  return sendJson(response, 200, { url: checkoutSession.url });
+  if (!checkoutSession.url) {
+    return sendJson(response, 502, { error: "Stripe did not return a Checkout URL" });
+  }
+
+  return redirect(response, checkoutSession.url);
 }

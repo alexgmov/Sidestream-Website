@@ -280,32 +280,69 @@ export async function upsertGoogleAccount(profile: {
   name: string;
   avatarUrl: string;
 }) {
-  const result = await query<{
-    id: string;
-  }>(
-    `
-      insert into public.sidestream_accounts (
-        google_sub,
-        email,
-        display_name,
-        avatar_url,
-        last_login_at,
-        created_at,
-        updated_at
-      )
-      values ($1, $2, $3, $4, now(), now(), now())
-      on conflict (google_sub) do update set
-        email = excluded.email,
-        display_name = excluded.display_name,
-        avatar_url = excluded.avatar_url,
-        last_login_at = now(),
-        updated_at = now()
-      returning id
-    `,
-    [profile.googleSub, profile.email, profile.name || null, profile.avatarUrl || null],
-  );
+  return withPgClient(async (client) => {
+    await client.query("begin");
+    try {
+      await client.query("select pg_advisory_xact_lock(hashtext($1))", [
+        `sidestream_account:${profile.email}`,
+      ]);
 
-  return result.rows[0].id;
+      const linked = await client.query<{ id: string }>(
+        `
+          update public.sidestream_accounts
+          set google_sub = $2,
+              display_name = $3,
+              avatar_url = $4,
+              last_login_at = now(),
+              updated_at = now()
+          where id = (
+            select id
+            from public.sidestream_accounts
+            where email = $1
+              and google_sub is null
+            order by updated_at desc
+            limit 1
+          )
+          returning id
+        `,
+        [profile.email, profile.googleSub, profile.name || null, profile.avatarUrl || null],
+      );
+
+      if (linked.rows[0]?.id) {
+        await client.query("commit");
+        return linked.rows[0].id;
+      }
+
+      const inserted = await client.query<{ id: string }>(
+        `
+          insert into public.sidestream_accounts (
+            google_sub,
+            email,
+            display_name,
+            avatar_url,
+            last_login_at,
+            created_at,
+            updated_at
+          )
+          values ($1, $2, $3, $4, now(), now(), now())
+          on conflict (google_sub) do update set
+            email = excluded.email,
+            display_name = excluded.display_name,
+            avatar_url = excluded.avatar_url,
+            last_login_at = now(),
+            updated_at = now()
+          returning id
+        `,
+        [profile.googleSub, profile.email, profile.name || null, profile.avatarUrl || null],
+      );
+
+      await client.query("commit");
+      return inserted.rows[0].id;
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    }
+  });
 }
 
 export async function createWebSession(
@@ -736,7 +773,7 @@ export async function createActivationSession(
   return {
     activationKey,
     expiresAt: expiresAt.toISOString(),
-    upgradeUrl: `${getBaseUrl(request)}/upgrade.html?activation=${encodeURIComponent(activationKey)}`,
+    upgradeUrl: `${getBaseUrl(request)}/api/checkout/start?activation=${encodeURIComponent(activationKey)}`,
   };
 }
 
@@ -982,7 +1019,7 @@ export async function upsertLicenseFromSubscription(
   const subscriptionId = normalizeStripeId(subscription.id);
   if (!customerId || !subscriptionId) return;
 
-  const accountId = accountIdHint || await findAccountIdByStripeCustomer(customerId);
+  const accountId = accountIdHint || await findOrCreateAccountForStripeCustomer(customerId);
   if (!accountId) return;
 
   await query(
@@ -1055,10 +1092,22 @@ export async function upsertLicenseFromCheckoutSession(
   sessionPayload: unknown,
 ) {
   const checkoutSession = sessionPayload as Record<string, any>;
-  const accountId = cleanString(checkoutSession.metadata?.sidestream_account_id, 80);
+  const metadataAccountId = cleanString(checkoutSession.metadata?.sidestream_account_id, 80);
   const activationKey = cleanString(checkoutSession.metadata?.sidestream_activation_key, 120);
   const subscriptionId = normalizeStripeId(checkoutSession.subscription);
   const customerId = normalizeStripeId(checkoutSession.customer);
+  const checkoutEmail = checkoutSession.customer_details?.email ||
+    checkoutSession.customer_email;
+  const checkoutName = checkoutSession.customer_details?.name;
+  let accountId = metadataAccountId;
+
+  if (customerId) {
+    const stripeAccountId = await findOrCreateAccountForStripeCustomer(customerId, {
+      email: checkoutEmail,
+      name: checkoutName,
+    });
+    accountId = stripeAccountId || accountId;
+  }
 
   if (accountId && customerId) {
     await query(
@@ -1281,6 +1330,131 @@ async function findAccountIdByStripeCustomer(customerId: string) {
   );
 
   return result.rows[0]?.id || "";
+}
+
+async function findOrCreateAccountForStripeCustomer(
+  customerId: string,
+  profile: { email?: unknown; name?: unknown } = {},
+) {
+  if (!customerId) return "";
+
+  let email = normalizeEmail(profile.email);
+  let name = cleanString(profile.name, 180);
+
+  if (!email || !name) {
+    const customerProfile = await getStripeCustomerProfile(customerId);
+    email ||= customerProfile.email;
+    name ||= customerProfile.name;
+  }
+
+  return withPgClient(async (client) => {
+    await client.query("begin");
+    try {
+      await client.query("select pg_advisory_xact_lock(hashtext($1))", [
+        `stripe_customer:${customerId}`,
+      ]);
+      if (email) {
+        await client.query("select pg_advisory_xact_lock(hashtext($1))", [
+          `sidestream_account:${email}`,
+        ]);
+      }
+
+      const byCustomer = await client.query<{ id: string }>(
+        `
+          select id
+          from public.sidestream_accounts
+          where stripe_customer_id = $1
+          limit 1
+        `,
+        [customerId],
+      );
+
+      if (byCustomer.rows[0]?.id) {
+        if (email || name) {
+          await client.query(
+            `
+              update public.sidestream_accounts
+              set email = coalesce($2, email),
+                  display_name = coalesce($3, display_name),
+                  updated_at = now()
+              where id = $1
+            `,
+            [byCustomer.rows[0].id, email || null, name || null],
+          );
+        }
+        await client.query("commit");
+        return byCustomer.rows[0].id;
+      }
+
+      if (!email) {
+        await client.query("commit");
+        return "";
+      }
+
+      const byEmail = await client.query<{ id: string }>(
+        `
+          update public.sidestream_accounts
+          set stripe_customer_id = $2,
+              display_name = coalesce($3, display_name),
+              updated_at = now()
+          where id = (
+            select id
+            from public.sidestream_accounts
+            where email = $1
+            order by
+              case
+                when stripe_customer_id = $2 then 0
+                when stripe_customer_id is null then 1
+                else 2
+              end,
+              updated_at desc
+            limit 1
+          )
+          returning id
+        `,
+        [email, customerId, name || null],
+      );
+
+      if (byEmail.rows[0]?.id) {
+        await client.query("commit");
+        return byEmail.rows[0].id;
+      }
+
+      const inserted = await client.query<{ id: string }>(
+        `
+          insert into public.sidestream_accounts (
+            google_sub,
+            email,
+            display_name,
+            stripe_customer_id,
+            created_at,
+            updated_at
+          )
+          values (null, $1, $2, $3, now(), now())
+          returning id
+        `,
+        [email, name || null, customerId],
+      );
+
+      await client.query("commit");
+      return inserted.rows[0].id;
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    }
+  });
+}
+
+async function getStripeCustomerProfile(customerId: string) {
+  const customer = await getStripe().customers.retrieve(customerId);
+  if ("deleted" in customer && customer.deleted) {
+    return { email: "", name: "" };
+  }
+
+  return {
+    email: normalizeEmail(customer.email),
+    name: cleanString(customer.name, 180),
+  };
 }
 
 function normalizeStripeId(value: unknown) {

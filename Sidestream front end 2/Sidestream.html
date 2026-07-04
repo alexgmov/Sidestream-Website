@@ -1123,9 +1123,9 @@
                 <li>Unlimited downloads</li>
                 <li>Full video and audio downloads</li>
                 <li>Maximum audio and video quality</li>
-                <li>Cancel anytime, invoices included</li>
+                <li>Cancel anytime. Refund your last month at any time.</li>
               </ul>
-              <a class="btn btn-primary" href="/upgrade.html">Upgrade to Unlimited</a>
+              <a class="btn btn-primary" href="/api/checkout/start">Upgrade to Unlimited</a>
             </div>
           </div>
         </div>
@@ -1562,7 +1562,7 @@
     document.querySelectorAll("[data-purchase]").forEach((el) =>
       el.addEventListener("click", (ev) => {
         ev.preventDefault();
-        window.location.assign("/upgrade.html");
+        window.location.assign("/api/checkout/start");
       })
     );
   </script>

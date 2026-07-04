@@ -132,14 +132,14 @@
   <div class="shell">
     <header>
       <a class="brand" href="/Sidestream%20front%20end%202/Sidestream.html">Sidestream</a>
-      <a class="back" href="/account.html">Account</a>
+      <a class="back" href="/Sidestream%20front%20end%202/Sidestream.html">Back to site</a>
     </header>
 
     <main>
       <section>
         <p class="eyebrow">Sidestream Unlimited</p>
         <h1>Unlock downloads when you need them.</h1>
-        <p class="lede">Sign in with Google, complete secure checkout through Stripe, then return to Premiere. No surprise payment wall; just a clear upgrade when the download workflow becomes worth it.</p>
+        <p class="lede">Checkout is handled directly by Stripe. Use the same email in Stripe when you return to manage billing or reconnect Sidestream.</p>
       </section>
 
       <section class="card">
@@ -149,13 +149,11 @@
           <li>Unlimited video and audio downloads</li>
           <li>Maximum available source quality</li>
           <li>Self-serve cancellation and invoices</li>
-          <li>Reconnect the app from your account page</li>
+          <li>Cancel anytime. Refund your last month at any time.</li>
         </ul>
-        <p class="status" id="upgrade-status">Checking your account...</p>
-        <a class="button primary" id="sign-in-link" href="/api/auth/google/start?next=/upgrade.html" hidden>Continue with Google</a>
-        <button class="primary" id="checkout-button" type="button" hidden>Continue to secure checkout</button>
+        <p class="status" id="upgrade-status">Ready for secure checkout.</p>
+        <a class="button primary" id="checkout-link" href="/api/checkout/start">Continue to secure checkout</a>
         <a class="button secondary" id="account-link" href="/account.html" hidden>Open account</a>
-        <button class="secondary" id="billing-button" type="button" hidden>Manage billing</button>
         <p class="note">Billing, cancellation, payment history, and invoices are handled in Stripe's secure portal.</p>
       </section>
     </main>
@@ -166,87 +164,28 @@
     const activationKey = params.get("activation") || "";
     const checkoutState = params.get("checkout") || "";
     const statusEl = document.getElementById("upgrade-status");
-    const signInLink = document.getElementById("sign-in-link");
-    const checkoutButton = document.getElementById("checkout-button");
+    const checkoutLink = document.getElementById("checkout-link");
     const accountLink = document.getElementById("account-link");
-    const billingButton = document.getElementById("billing-button");
 
-    function nextPath() {
-      return window.location.pathname + window.location.search;
+    function checkoutUrl() {
+      const url = new URL("/api/checkout/start", window.location.origin);
+      if (activationKey) url.searchParams.set("activation", activationKey);
+      return url.pathname + url.search;
     }
 
-    async function apiPost(url, body = {}) {
-      const response = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body)
-      });
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(payload.error || "Request failed");
-      return payload;
-    }
-
-    async function loadUpgrade() {
-      signInLink.href = "/api/auth/google/start?next=" + encodeURIComponent(nextPath());
-
-      const response = await fetch("/api/auth/session", { cache: "no-store" });
-      const session = await response.json();
-
-      if (!session.authenticated) {
-        statusEl.textContent = "Sign in first so Sidestream can attach the subscription to your account.";
-        signInLink.hidden = false;
-        return;
-      }
-
-      if (session.license && session.license.active) {
-        statusEl.textContent = "You're already on Sidestream Unlimited.";
-        statusEl.classList.add("good");
-        accountLink.hidden = false;
-        billingButton.hidden = !session.billing.hasCustomer;
-        return;
-      }
-
+    function loadUpgrade() {
+      checkoutLink.href = checkoutUrl();
       if (checkoutState === "success") {
         statusEl.textContent = "Checkout finished. Sidestream will activate as soon as Stripe confirms the subscription.";
+        statusEl.classList.add("good");
+        checkoutLink.hidden = true;
+        accountLink.hidden = false;
       } else if (checkoutState === "cancelled") {
         statusEl.textContent = "Checkout was cancelled. You can continue whenever you're ready.";
-      } else {
-        statusEl.textContent = "Signed in as " + session.user.email + ".";
       }
-
-      checkoutButton.hidden = false;
-      accountLink.hidden = false;
     }
 
-    checkoutButton.addEventListener("click", async () => {
-      checkoutButton.disabled = true;
-      checkoutButton.textContent = "Opening Stripe...";
-      try {
-        const payload = await apiPost("/api/checkout/create", { activationKey });
-        window.location.assign(payload.url);
-      } catch (error) {
-        statusEl.textContent = error.message;
-        checkoutButton.disabled = false;
-        checkoutButton.textContent = "Continue to secure checkout";
-      }
-    });
-
-    billingButton.addEventListener("click", async () => {
-      billingButton.disabled = true;
-      billingButton.textContent = "Opening...";
-      try {
-        const payload = await apiPost("/api/billing/portal");
-        window.location.assign(payload.url);
-      } catch (error) {
-        statusEl.textContent = error.message;
-        billingButton.disabled = false;
-        billingButton.textContent = "Manage billing";
-      }
-    });
-
-    loadUpgrade().catch((error) => {
-      statusEl.textContent = error.message;
-    });
+    loadUpgrade();
   </script>
 </body>
 </html>
