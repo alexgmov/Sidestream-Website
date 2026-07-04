@@ -15,12 +15,6 @@ import {
   type AccountRequest,
 } from "../_lib/account.js";
 
-type ManagedPaymentsCheckoutParams = Stripe.Checkout.SessionCreateParams & {
-  managed_payments: {
-    enabled: boolean;
-  };
-};
-
 const CHECKOUT_PROMISE_TEXT =
   "Cancel anytime. Refund your last month at any time.";
 
@@ -60,13 +54,10 @@ export default async function handler(
     }
   }
 
-  const checkoutParams: ManagedPaymentsCheckoutParams = {
+  const checkoutParams: Stripe.Checkout.SessionCreateParams = {
     mode: "subscription",
     ...(stripeCustomerId ? { customer: stripeCustomerId } : {}),
     line_items: [{ price: stripePriceId, quantity: 1 }],
-    managed_payments: {
-      enabled: true,
-    },
     allow_promotion_codes: true,
     billing_address_collection: "auto",
     success_url: successUrl.toString(),
@@ -84,7 +75,7 @@ export default async function handler(
   };
 
   const checkoutSession = await stripe.checkout.sessions.create(
-    checkoutParams as Stripe.Checkout.SessionCreateParams,
+    checkoutParams,
     getStripePreviewRequestOptions(),
   );
 
