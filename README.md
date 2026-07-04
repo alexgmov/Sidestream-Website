@@ -32,6 +32,7 @@ Sidestream is an HTML-first landing page for a Premiere Pro panel that lets edit
 - `db/migrations/20260704130000_allow_stripe_first_accounts.sql` - Postgres schema adjustment that allows Stripe-first account rows without a Google subject so Checkout can create/link Sidestream entitlements from webhook customer data.
 - `db/migrations/20260704150000_allow_one_time_checkout_licenses.sql` - Postgres schema adjustment that lets `sidestream_licenses` store one-time Checkout Session and PaymentIntent IDs instead of requiring a Stripe subscription ID.
 - `scripts/apply-postgres-migrations.mjs` - Generic Postgres migration runner for all SQL files under `db/migrations/`.
+- `scripts/ensure-freedev-promo.mjs` - Maintainer utility that creates or verifies the sandbox-only Stripe `FREEDEV` 100% off promotion code used to test no-cost Sidestream Unlimited Checkout.
 - `scripts/migrate-download-leads-to-postgres.mjs` - One-shot utility that applies the Postgres schema and migrates existing private Vercel Blob lead JSON records into Postgres.
 - `scripts/dump-download-leads.mjs` - Maintainer utility that dumps captured Sidestream download leads from Postgres for quick audits.
 - `src/main.tsx` - React entry that mounts `DemoOne` into `#shader-background-root` and renders Vercel Analytics through `@vercel/analytics/react`.
@@ -201,6 +202,18 @@ Apply all Postgres migrations, including account/billing tables:
 SIDESTREAM_ENV_FILE=.env.local npm run db:migrate
 ```
 
+Create or verify the sandbox-only `FREEDEV` Stripe promotion code for no-cost checkout testing:
+
+```bash
+SIDESTREAM_ENV_FILE=.env.local npm run billing:ensure-freedev
+```
+
+If Vercel protects the Stripe secret from local pulls, put the sandbox `STRIPE_SECRET_KEY` in a separate ignored env file and run:
+
+```bash
+SIDESTREAM_STRIPE_ENV_FILE=/path/to/stripe-sandbox.env npm run billing:ensure-freedev
+```
+
 Dump captured Sidestream download leads from Postgres:
 
 ```bash
@@ -302,6 +315,7 @@ Use the narrowest relevant check after edits:
 - Plain `npm run dev`/Vite does not run Vercel Functions. Use `npx vercel@latest dev` when testing `/api/download` or `/api/download-lead`.
 - Vercel compiles TypeScript API routes to Node ESM. Keep relative imports between API route files extension-explicit, such as `../_lib/account.js`; extensionless helper imports can pass local typecheck but fail in production with `ERR_MODULE_NOT_FOUND`.
 - Local account/billing testing also requires Vercel dev plus env vars: a server-only Postgres connection string (`SIDESTREAM_POSTGRES_URL` preferred, `POSTGRES_URL` fallback), `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, and `SIDESTREAM_BASE_URL`. `SIDESTREAM_UNLIMITED_PRICE_ID` is optional; if omitted or missing in the active Stripe mode, the server manages the `$9.99` one-time Price through lookup key `sidestream_unlimited_once`. `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` are only needed when testing the optional account/Customer Portal sign-in path. Use environment placeholders for Stripe keys and obtain real values from the Stripe Dashboard; rotate any secret key that has been pasted into chat before using live mode.
+- Hosted Checkout only accepts promotion codes that already exist in the same Stripe account and mode as `STRIPE_SECRET_KEY`. The repo utility `npm run billing:ensure-freedev` creates or verifies the sandbox `FREEDEV` 100% off promotion code and refuses live keys unless `--allow-live` is passed intentionally. If Stripe Checkout says `FREEDEV` is invalid, first confirm the Checkout page is in sandbox mode, then run the utility with the same env file that powers that deployment. Vercel protected env pulls can return `STRIPE_SECRET_KEY=""`; in that case, use an ignored local env file through `SIDESTREAM_STRIPE_ENV_FILE`.
 - Plain static servers such as `python -m http.server` do not compile `/src/main.tsx`, so the static HTML route can appear to lose the Paper shader background even though the markup is correct. Static servers also cannot serve local Vercel Functions; the visible download CTAs use the public Vercel download URL so static preview clicks still start the installer instead of hitting a local `/api/download` 404. Use Vite on the active preview port when visual-checking the background, and Vercel dev when testing the API routes themselves.
 - Vercel Analytics depends on the compiled React entry in `src/main.tsx`. If analytics stops appearing, confirm the shader root still exists in the canonical HTML, the deployed bundle includes `@vercel/analytics/react`, the page was visited on the deployed Vercel URL, and content blockers are disabled for the check.
 - Vercel CLI versions before the current `54.x` line can report stale Blob auth/token errors. Prefer `npx vercel@latest ...` for Blob store checks.
@@ -318,6 +332,7 @@ Use the narrowest relevant check after edits:
 
 ## Recent Change Log
 
+- Added a sandbox-guarded Stripe maintainer utility for creating/verifying the `FREEDEV` 100% off promotion code used to test no-cost Sidestream Unlimited Checkout.
 - Fixed `/api/checkout/start` and `/api/checkout/create` so one-time Checkout no longer depends on a stale hardcoded Stripe Price ID; the server now validates `SIDESTREAM_UNLIMITED_PRICE_ID` or creates/reuses the `$9.99` lookup-key Price before redirecting to Stripe.
 - Changed Sidestream Unlimited from a monthly subscription path to a `$9.99` one-time Stripe Checkout payment with webhook fulfillment for one-time Checkout Session IDs and no Google sign-in requirement before purchase.
 - Moved the canonical landing page to the clean root URL, `https://sidestream-xi.vercel.app/`, and changed the old exported `Sidestream%20front%20end%202/Sidestream.html` path into a noindex compatibility redirect.
