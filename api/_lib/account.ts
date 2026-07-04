@@ -12,7 +12,8 @@ const OAUTH_MAX_AGE_SECONDS = 60 * 10;
 const ACTIVATION_TTL_MINUTES = 30;
 const LICENSE_TOKEN_TTL_DAYS = 7;
 const MAX_BODY_BYTES = 64 * 1024;
-const STRIPE_MANAGED_PAYMENTS_API_VERSION = "2026-02-25.preview";
+const SIDESTREAM_UNLIMITED_PRICE_ID = "price_1TpLqMDFKjeGlioXZGz3Ok75";
+const SIDESTREAM_UNLIMITED_PLAN_KEY = "sidestream_unlimited";
 const BASIC_SUBSCRIPTION_RESOURCE_KEY_BASE = "basic_subscription";
 const BASIC_SUBSCRIPTION_PRODUCT = {
   name: "Basic subscription",
@@ -540,10 +541,15 @@ export function getStripe() {
   return stripeClient;
 }
 
-export function getStripePreviewRequestOptions(): Stripe.RequestOptions {
+export function getStripeRequestOptions(): Stripe.RequestOptions {
   return {
-    apiVersion: STRIPE_MANAGED_PAYMENTS_API_VERSION,
+    apiVersion: Stripe.API_VERSION,
   } as Stripe.RequestOptions;
+}
+
+export function getSidestreamUnlimitedPriceId() {
+  return getValidEnvValue("SIDESTREAM_UNLIMITED_PRICE_ID") ||
+    SIDESTREAM_UNLIMITED_PRICE_ID;
 }
 
 export async function getOrCreateBasicSubscriptionPriceId() {
@@ -616,7 +622,7 @@ async function createBasicSubscriptionProduct(resourceKey: string) {
         sidestream_resource_key: resourceKey,
       },
     } as Stripe.ProductCreateParams,
-    getStripePreviewRequestOptions(),
+    getStripeRequestOptions(),
   );
   const priceId = normalizeStripeId(product.default_price);
   if (!priceId) {
@@ -644,7 +650,7 @@ async function createReplacementBasicSubscriptionPrice(
           sidestream_replaces_price_id: resource.stripe_price_id,
         },
       } as Stripe.PriceCreateParams,
-      getStripePreviewRequestOptions(),
+      getStripeRequestOptions(),
     );
 
     await getStripe().products.update(
@@ -658,14 +664,14 @@ async function createReplacementBasicSubscriptionPrice(
           sidestream_resource_key: resourceKey,
         },
       } as Stripe.ProductUpdateParams,
-      getStripePreviewRequestOptions(),
+      getStripeRequestOptions(),
     );
 
     if (resource.stripe_price_id !== price.id) {
       await getStripe().prices.update(
         resource.stripe_price_id,
         { active: false },
-        getStripePreviewRequestOptions(),
+        getStripeRequestOptions(),
       );
     }
 
@@ -1092,6 +1098,11 @@ export async function upsertLicenseFromCheckoutSession(
   sessionPayload: unknown,
 ) {
   const checkoutSession = sessionPayload as Record<string, any>;
+  const mode = cleanString(checkoutSession.mode, 40);
+  const checkoutSessionId = normalizeStripeId(checkoutSession.id);
+  const paymentIntentId = normalizeStripeId(checkoutSession.payment_intent);
+  const paymentStatus = cleanString(checkoutSession.payment_status, 80);
+  const planKey = cleanString(checkoutSession.metadata?.sidestream_plan, 120);
   const metadataAccountId = cleanString(checkoutSession.metadata?.sidestream_account_id, 80);
   const activationKey = cleanString(checkoutSession.metadata?.sidestream_activation_key, 120);
   const subscriptionId = normalizeStripeId(checkoutSession.subscription);
@@ -1127,7 +1138,76 @@ export async function upsertLicenseFromCheckoutSession(
   if (subscriptionId) {
     const subscription = await getStripe().subscriptions.retrieve(subscriptionId);
     await upsertLicenseFromSubscription(subscription, accountId || undefined);
+    return;
   }
+
+  if (
+    mode === "payment" &&
+    checkoutSessionId &&
+    customerId &&
+    planKey === SIDESTREAM_UNLIMITED_PLAN_KEY &&
+    (paymentStatus === "paid" || paymentStatus === "no_payment_required")
+  ) {
+    await upsertLicenseFromOneTimeCheckoutSession({
+      accountId,
+      customerId,
+      checkoutSessionId,
+      paymentIntentId,
+    });
+  }
+}
+
+async function upsertLicenseFromOneTimeCheckoutSession(options: {
+  accountId: string;
+  customerId: string;
+  checkoutSessionId: string;
+  paymentIntentId: string;
+}) {
+  if (!options.accountId) return;
+
+  await query(
+    `
+      insert into public.sidestream_licenses (
+        account_id,
+        stripe_customer_id,
+        stripe_subscription_id,
+        stripe_checkout_session_id,
+        stripe_payment_intent_id,
+        plan_key,
+        status,
+        current_period_end,
+        cancel_at_period_end,
+        grace_until,
+        features,
+        created_at,
+        updated_at
+      )
+      values ($1, $2, null, $3, $4, $5, 'active', null, false, null, $6::jsonb, now(), now())
+      on conflict (stripe_checkout_session_id) do update set
+        account_id = excluded.account_id,
+        stripe_customer_id = excluded.stripe_customer_id,
+        stripe_payment_intent_id = excluded.stripe_payment_intent_id,
+        plan_key = excluded.plan_key,
+        status = excluded.status,
+        current_period_end = excluded.current_period_end,
+        cancel_at_period_end = excluded.cancel_at_period_end,
+        grace_until = excluded.grace_until,
+        features = excluded.features,
+        updated_at = now()
+    `,
+    [
+      options.accountId,
+      options.customerId,
+      options.checkoutSessionId,
+      options.paymentIntentId || null,
+      SIDESTREAM_UNLIMITED_PLAN_KEY,
+      JSON.stringify({
+        unlimited_downloads: true,
+        customer_portal: true,
+        one_time_purchase: true,
+      }),
+    ],
+  );
 }
 
 export function sanitizeNextPath(value: unknown) {

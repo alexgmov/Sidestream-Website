@@ -5,10 +5,10 @@ import {
   cleanString,
   findOrCreateStripeCustomer,
   getBaseUrl,
-  getOrCreateBasicSubscriptionPriceId,
+  getSidestreamUnlimitedPriceId,
   getSession,
   getStripe,
-  getStripePreviewRequestOptions,
+  getStripeRequestOptions,
   methodNotAllowed,
   redirect,
   sendJson,
@@ -16,7 +16,8 @@ import {
 } from "../_lib/account.js";
 
 const CHECKOUT_PROMISE_TEXT =
-  "Cancel anytime. Refund your last month at any time.";
+  "One-time payment. No subscription.";
+const PLAN_KEY = "sidestream_unlimited";
 
 export default async function handler(
   request: AccountRequest,
@@ -30,10 +31,13 @@ export default async function handler(
   const activationKey = cleanString(requestUrl.searchParams.get("activation"), 160);
   const session = await getSession(request);
   const stripe = getStripe();
-  const stripePriceId = await getOrCreateBasicSubscriptionPriceId();
+  const stripePriceId = getSidestreamUnlimitedPriceId();
   const successUrl = new URL("/upgrade.html", baseUrl);
   const cancelUrl = new URL("/upgrade.html", baseUrl);
-  const metadata: Record<string, string> = {};
+  const metadata: Record<string, string> = {
+    sidestream_plan: PLAN_KEY,
+    sidestream_price_id: stripePriceId,
+  };
 
   successUrl.searchParams.set("checkout", "success");
   cancelUrl.searchParams.set("checkout", "cancelled");
@@ -55,8 +59,9 @@ export default async function handler(
   }
 
   const checkoutParams: Stripe.Checkout.SessionCreateParams = {
-    mode: "subscription",
+    mode: "payment",
     ...(stripeCustomerId ? { customer: stripeCustomerId } : {}),
+    ...(!stripeCustomerId ? { customer_creation: "always" as const } : {}),
     line_items: [{ price: stripePriceId, quantity: 1 }],
     allow_promotion_codes: true,
     billing_address_collection: "auto",
@@ -69,14 +74,14 @@ export default async function handler(
       },
     },
     metadata,
-    subscription_data: {
+    payment_intent_data: {
       metadata,
     },
   };
 
   const checkoutSession = await stripe.checkout.sessions.create(
     checkoutParams,
-    getStripePreviewRequestOptions(),
+    getStripeRequestOptions(),
   );
 
   if (!checkoutSession.url) {

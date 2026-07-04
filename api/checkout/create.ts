@@ -5,9 +5,9 @@ import {
   cleanString,
   findOrCreateStripeCustomer,
   getBaseUrl,
-  getOrCreateBasicSubscriptionPriceId,
+  getSidestreamUnlimitedPriceId,
   getStripe,
-  getStripePreviewRequestOptions,
+  getStripeRequestOptions,
   methodNotAllowed,
   readJsonBody,
   requireSession,
@@ -20,7 +20,8 @@ type CheckoutPayload = {
 };
 
 const CHECKOUT_PROMISE_TEXT =
-  "Cancel anytime. Refund your last month at any time.";
+  "One-time payment. No subscription.";
+const PLAN_KEY = "sidestream_unlimited";
 
 export default async function handler(
   request: AccountRequest,
@@ -41,20 +42,26 @@ export default async function handler(
   const stripe = getStripe();
   const baseUrl = getBaseUrl(request);
   const stripeCustomerId = await findOrCreateStripeCustomer(session);
-  const stripePriceId = await getOrCreateBasicSubscriptionPriceId();
+  const stripePriceId = getSidestreamUnlimitedPriceId();
   const successUrl = new URL("/upgrade.html", baseUrl);
   const cancelUrl = new URL("/upgrade.html", baseUrl);
+  const metadata: Record<string, string> = {
+    sidestream_account_id: session.accountId,
+    sidestream_plan: PLAN_KEY,
+    sidestream_price_id: stripePriceId,
+  };
 
   successUrl.searchParams.set("checkout", "success");
   cancelUrl.searchParams.set("checkout", "cancelled");
   if (activationKey) {
     successUrl.searchParams.set("activation", activationKey);
     cancelUrl.searchParams.set("activation", activationKey);
+    metadata.sidestream_activation_key = activationKey;
   }
   successUrl.searchParams.set("session_id", "{CHECKOUT_SESSION_ID}");
 
   const checkoutParams: Stripe.Checkout.SessionCreateParams = {
-    mode: "subscription",
+    mode: "payment",
     customer: stripeCustomerId,
     line_items: [{ price: stripePriceId, quantity: 1 }],
     allow_promotion_codes: true,
@@ -67,21 +74,15 @@ export default async function handler(
         message: CHECKOUT_PROMISE_TEXT,
       },
     },
-    metadata: {
-      sidestream_account_id: session.accountId,
-      sidestream_activation_key: activationKey,
-    },
-    subscription_data: {
-      metadata: {
-        sidestream_account_id: session.accountId,
-        sidestream_activation_key: activationKey,
-      },
+    metadata,
+    payment_intent_data: {
+      metadata,
     },
   };
 
   const checkoutSession = await stripe.checkout.sessions.create(
     checkoutParams,
-    getStripePreviewRequestOptions(),
+    getStripeRequestOptions(),
   );
 
   return sendJson(response, 200, { url: checkoutSession.url });
