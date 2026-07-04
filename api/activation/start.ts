@@ -5,7 +5,7 @@ import {
   readJsonBody,
   sendJson,
   type AccountRequest,
-} from "../_lib/account";
+} from "../_lib/account.js";
 
 type ActivationStartPayload = {
   deviceId?: unknown;

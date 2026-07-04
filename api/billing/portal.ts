@@ -6,7 +6,7 @@ import {
   requireSession,
   sendJson,
   type AccountRequest,
-} from "../_lib/account";
+} from "../_lib/account.js";
 
 export default async function handler(
   request: AccountRequest,

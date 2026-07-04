@@ -6,7 +6,7 @@ import {
   sendJson,
   type AccountRequest,
   verifyLicenseToken,
-} from "../_lib/account";
+} from "../_lib/account.js";
 
 type LicenseVerifyPayload = {
   licenseToken?: unknown;

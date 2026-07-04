@@ -13,7 +13,7 @@ import {
   requireSession,
   sendJson,
   type AccountRequest,
-} from "../_lib/account";
+} from "../_lib/account.js";
 
 type CheckoutPayload = {
   activationKey?: unknown;

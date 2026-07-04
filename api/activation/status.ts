@@ -6,7 +6,7 @@ import {
   readJsonBody,
   sendJson,
   type AccountRequest,
-} from "../_lib/account";
+} from "../_lib/account.js";
 
 type ActivationStatusPayload = {
   activationKey?: unknown;
