@@ -64,6 +64,7 @@ export default async function handler(
     mode: "payment",
     customer: stripeCustomerId,
     line_items: [{ price: stripePriceId, quantity: 1 }],
+    payment_method_types: ["card"],
     allow_promotion_codes: true,
     billing_address_collection: "auto",
     success_url: successUrl.toString(),

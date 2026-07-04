@@ -63,6 +63,7 @@ export default async function handler(
     ...(stripeCustomerId ? { customer: stripeCustomerId } : {}),
     ...(!stripeCustomerId ? { customer_creation: "always" as const } : {}),
     line_items: [{ price: stripePriceId, quantity: 1 }],
+    payment_method_types: ["card"],
     allow_promotion_codes: true,
     billing_address_collection: "auto",
     success_url: successUrl.toString(),
