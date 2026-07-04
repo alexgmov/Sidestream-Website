@@ -517,8 +517,25 @@ export function publicSessionPayload(session: AccountSession | null) {
 }
 
 export async function findOrCreateStripeCustomer(session: AccountSession) {
-  if (session.stripeCustomerId) return session.stripeCustomerId;
+  if (session.stripeCustomerId) {
+    try {
+      const customer = await getStripe().customers.retrieve(
+        session.stripeCustomerId,
+        {},
+        getStripeRequestOptions(),
+      );
+      if (!("deleted" in customer && customer.deleted)) {
+        return customer.id;
+      }
+    } catch (error) {
+      if (!isStripeResourceMissing(error)) throw error;
+    }
+  }
 
+  return createStripeCustomerForSession(session);
+}
+
+async function createStripeCustomerForSession(session: AccountSession) {
   const stripe = getStripe();
   const customer = await stripe.customers.create({
     email: session.email,
