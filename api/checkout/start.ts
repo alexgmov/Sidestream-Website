@@ -31,7 +31,7 @@ export default async function handler(
   const activationKey = cleanString(requestUrl.searchParams.get("activation"), 160);
   const session = await getSession(request);
   const stripe = getStripe();
-  const stripePriceId = getSidestreamUnlimitedPriceId();
+  const stripePriceId = await getSidestreamUnlimitedPriceId();
   const successUrl = new URL("/upgrade.html", baseUrl);
   const cancelUrl = new URL("/upgrade.html", baseUrl);
   const metadata: Record<string, string> = {

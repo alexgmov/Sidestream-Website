@@ -12,8 +12,14 @@ const OAUTH_MAX_AGE_SECONDS = 60 * 10;
 const ACTIVATION_TTL_MINUTES = 30;
 const LICENSE_TOKEN_TTL_DAYS = 7;
 const MAX_BODY_BYTES = 64 * 1024;
-const SIDESTREAM_UNLIMITED_PRICE_ID = "price_1TpLqMDFKjeGlioXZGz3Ok75";
 const SIDESTREAM_UNLIMITED_PLAN_KEY = "sidestream_unlimited";
+const SIDESTREAM_UNLIMITED_PRICE = {
+  lookupKey: "sidestream_unlimited_once",
+  name: "Sidestream Unlimited",
+  description: "Lifetime Sidestream Unlimited access for one Mac editor.",
+  unitAmount: 999,
+  currency: "usd",
+};
 const BASIC_SUBSCRIPTION_RESOURCE_KEY_BASE = "basic_subscription";
 const BASIC_SUBSCRIPTION_PRODUCT = {
   name: "Basic subscription",
@@ -547,9 +553,100 @@ export function getStripeRequestOptions(): Stripe.RequestOptions {
   } as Stripe.RequestOptions;
 }
 
-export function getSidestreamUnlimitedPriceId() {
-  return getValidEnvValue("SIDESTREAM_UNLIMITED_PRICE_ID") ||
-    SIDESTREAM_UNLIMITED_PRICE_ID;
+export async function getSidestreamUnlimitedPriceId() {
+  const configuredPriceId = getValidEnvValue("SIDESTREAM_UNLIMITED_PRICE_ID");
+  if (configuredPriceId) {
+    try {
+      const price = await getStripe().prices.retrieve(
+        configuredPriceId,
+        {},
+        getStripeRequestOptions(),
+      );
+      if (isSidestreamUnlimitedPriceShape(price)) return price.id;
+
+      throw new Error(
+        `Configured SIDESTREAM_UNLIMITED_PRICE_ID ${configuredPriceId} is not the active $9.99 one-time Sidestream Unlimited price`,
+      );
+    } catch (error) {
+      if (!isStripeResourceMissing(error)) throw error;
+    }
+  }
+
+  const existingPriceId = await findSidestreamUnlimitedLookupPriceId();
+  if (existingPriceId) return existingPriceId;
+
+  return createSidestreamUnlimitedPriceId();
+}
+
+async function findSidestreamUnlimitedLookupPriceId() {
+  const prices = await getStripe().prices.list(
+    {
+      active: true,
+      lookup_keys: [SIDESTREAM_UNLIMITED_PRICE.lookupKey],
+      limit: 10,
+    },
+    getStripeRequestOptions(),
+  );
+
+  const matchingPrice = prices.data.find(isSidestreamUnlimitedLookupPrice);
+  if (matchingPrice) return matchingPrice.id;
+
+  const conflictingPrice = prices.data[0];
+  if (conflictingPrice) {
+    throw new Error(
+      `Stripe lookup key ${SIDESTREAM_UNLIMITED_PRICE.lookupKey} points to a price that is not the active $9.99 one-time Sidestream Unlimited price`,
+    );
+  }
+
+  return "";
+}
+
+async function createSidestreamUnlimitedPriceId() {
+  const product = await getStripe().products.create(
+    {
+      name: SIDESTREAM_UNLIMITED_PRICE.name,
+      description: SIDESTREAM_UNLIMITED_PRICE.description,
+      metadata: {
+        sidestream_plan: SIDESTREAM_UNLIMITED_PLAN_KEY,
+      },
+    },
+    getStripeRequestOptions(),
+  );
+
+  try {
+    const price = await getStripe().prices.create(
+      {
+        product: product.id,
+        unit_amount: SIDESTREAM_UNLIMITED_PRICE.unitAmount,
+        currency: SIDESTREAM_UNLIMITED_PRICE.currency,
+        lookup_key: SIDESTREAM_UNLIMITED_PRICE.lookupKey,
+        metadata: {
+          sidestream_plan: SIDESTREAM_UNLIMITED_PLAN_KEY,
+        },
+      },
+      getStripeRequestOptions(),
+    );
+
+    return price.id;
+  } catch (error) {
+    const existingPriceId = await findSidestreamUnlimitedLookupPriceId();
+    if (existingPriceId) return existingPriceId;
+    throw error;
+  }
+}
+
+function isSidestreamUnlimitedLookupPrice(price: Stripe.Price) {
+  return price.lookup_key === SIDESTREAM_UNLIMITED_PRICE.lookupKey &&
+    isSidestreamUnlimitedPriceShape(price);
+}
+
+function isSidestreamUnlimitedPriceShape(price: Stripe.Price) {
+  return Boolean(
+    price.active &&
+    price.unit_amount === SIDESTREAM_UNLIMITED_PRICE.unitAmount &&
+    price.currency === SIDESTREAM_UNLIMITED_PRICE.currency &&
+    !price.recurring,
+  );
 }
 
 export async function getOrCreateBasicSubscriptionPriceId() {
@@ -1527,7 +1624,7 @@ async function findOrCreateAccountForStripeCustomer(
 
 async function getStripeCustomerProfile(customerId: string) {
   const customer = await getStripe().customers.retrieve(customerId);
-  if ("deleted" in customer && customer.deleted) {
+  if (isDeletedStripeCustomer(customer)) {
     return { email: "", name: "" };
   }
 
@@ -1535,6 +1632,12 @@ async function getStripeCustomerProfile(customerId: string) {
     email: normalizeEmail(customer.email),
     name: cleanString(customer.name, 180),
   };
+}
+
+function isDeletedStripeCustomer(
+  customer: Stripe.Customer | Stripe.DeletedCustomer,
+): customer is Stripe.DeletedCustomer {
+  return "deleted" in customer && customer.deleted === true;
 }
 
 function normalizeStripeId(value: unknown) {

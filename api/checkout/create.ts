@@ -42,7 +42,7 @@ export default async function handler(
   const stripe = getStripe();
   const baseUrl = getBaseUrl(request);
   const stripeCustomerId = await findOrCreateStripeCustomer(session);
-  const stripePriceId = getSidestreamUnlimitedPriceId();
+  const stripePriceId = await getSidestreamUnlimitedPriceId();
   const successUrl = new URL("/upgrade.html", baseUrl);
   const cancelUrl = new URL("/upgrade.html", baseUrl);
   const metadata: Record<string, string> = {
