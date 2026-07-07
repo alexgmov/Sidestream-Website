@@ -12,12 +12,15 @@ const OAUTH_MAX_AGE_SECONDS = 60 * 10;
 const ACTIVATION_TTL_MINUTES = 30;
 const LICENSE_TOKEN_TTL_DAYS = 7;
 const MAX_BODY_BYTES = 64 * 1024;
-const SIDESTREAM_UNLIMITED_PLAN_KEY = "sidestream_unlimited";
-const SIDESTREAM_UNLIMITED_PRICE = {
-  lookupKey: "sidestream_unlimited_once",
-  name: "Sidestream Unlimited",
-  description: "Lifetime Sidestream Unlimited access for one Mac editor.",
-  unitAmount: 999,
+export const SIDESTREAM_PRO_PLAN_KEY = "sidestream_pro";
+const SIDESTREAM_LEGACY_UNLIMITED_PLAN_KEY = "sidestream_unlimited";
+const SIDESTREAM_PRO_DEFAULT_PRODUCT_ID = "prod_UpwXh6oO1OmPyQ";
+const SIDESTREAM_PRO_DEFAULT_PRICE_ID = "price_1TqGeBDFKjeGlioXlV8fBGK8";
+const SIDESTREAM_PRO_PRICE = {
+  lookupKey: "sidestream_pro_once",
+  name: "Sidestream Pro",
+  description: "Lifetime Sidestream Pro access for one Mac editor.",
+  unitAmount: 499,
   currency: "usd",
 };
 const BASIC_SUBSCRIPTION_RESOURCE_KEY_BASE = "basic_subscription";
@@ -427,6 +430,8 @@ export async function getSession(
   const token = getCookie(request, SESSION_COOKIE);
   if (!token) return null;
 
+  await processUnprocessedStripeEvents();
+
   const result = await query<{
     account_id: string;
     email: string;
@@ -570,75 +575,177 @@ export function getStripeRequestOptions(): Stripe.RequestOptions {
   } as Stripe.RequestOptions;
 }
 
-export async function getSidestreamUnlimitedPriceId() {
-  const configuredPriceId = getValidEnvValue("SIDESTREAM_UNLIMITED_PRICE_ID");
-  if (configuredPriceId) {
-    try {
-      const price = await getStripe().prices.retrieve(
-        configuredPriceId,
-        {},
-        getStripeRequestOptions(),
-      );
-      if (isSidestreamUnlimitedPriceShape(price)) return price.id;
+export async function getSidestreamProPriceId() {
+  const productId = getSidestreamProProductId();
+  const configuredPriceId = await getConfiguredSidestreamProPriceId(productId);
+  if (configuredPriceId) return configuredPriceId;
 
-      throw new Error(
-        `Configured SIDESTREAM_UNLIMITED_PRICE_ID ${configuredPriceId} is not the active $9.99 one-time Sidestream Unlimited price`,
-      );
-    } catch (error) {
-      if (!isStripeResourceMissing(error)) throw error;
-    }
-  }
+  const product = await retrieveSidestreamProProduct(productId);
+  const defaultPriceId = await getValidDefaultSidestreamProPriceId(product, productId);
+  if (defaultPriceId) return defaultPriceId;
 
-  const existingPriceId = await findSidestreamUnlimitedLookupPriceId();
-  if (existingPriceId) return existingPriceId;
+  const lookupPriceId = await findSidestreamProLookupPriceId(productId);
+  if (lookupPriceId) return lookupPriceId;
 
-  return createSidestreamUnlimitedPriceId();
+  const activeProductPriceId = await findSidestreamProProductPriceId(productId);
+  if (activeProductPriceId) return activeProductPriceId;
+
+  return createSidestreamProPriceId(productId);
 }
 
-async function findSidestreamUnlimitedLookupPriceId() {
+export async function getSidestreamUnlimitedPriceId() {
+  return getSidestreamProPriceId();
+}
+
+function getSidestreamProProductId() {
+  return getValidEnvValue("SIDESTREAM_PRO_PRODUCT_ID") ||
+    SIDESTREAM_PRO_DEFAULT_PRODUCT_ID;
+}
+
+async function getConfiguredSidestreamProPriceId(productId: string) {
+  const configuredPriceId = getValidEnvValue("SIDESTREAM_PRO_PRICE_ID");
+  if (configuredPriceId) {
+    const price = await getStripe().prices.retrieve(
+      configuredPriceId,
+      {},
+      getStripeRequestOptions(),
+    );
+    if (isSidestreamProPriceShape(price, productId)) return price.id;
+
+    throw new Error(
+      `Configured SIDESTREAM_PRO_PRICE_ID ${configuredPriceId} is not the active $4.99 one-time Sidestream Pro price for product ${productId}`,
+    );
+  }
+
+  const defaultPriceId = await getDefaultSidestreamProPriceId(productId);
+  if (defaultPriceId) return defaultPriceId;
+
+  const legacyPriceId = getValidEnvValue("SIDESTREAM_UNLIMITED_PRICE_ID");
+  if (!legacyPriceId) return "";
+
+  try {
+    const price = await getStripe().prices.retrieve(
+      legacyPriceId,
+      {},
+      getStripeRequestOptions(),
+    );
+    if (isSidestreamProPriceShape(price, productId)) return price.id;
+  } catch (error) {
+    if (!isStripeResourceMissing(error)) throw error;
+  }
+
+  return "";
+}
+
+async function getDefaultSidestreamProPriceId(productId: string) {
+  try {
+    const price = await getStripe().prices.retrieve(
+      SIDESTREAM_PRO_DEFAULT_PRICE_ID,
+      {},
+      getStripeRequestOptions(),
+    );
+    if (isSidestreamProPriceShape(price, productId)) return price.id;
+
+    throw new Error(
+      `Default Sidestream Pro price ${SIDESTREAM_PRO_DEFAULT_PRICE_ID} is not the active $4.99 one-time price for product ${productId}`,
+    );
+  } catch (error) {
+    if (isStripeResourceMissing(error) && !isLiveStripeMode()) return "";
+    throw error;
+  }
+}
+
+async function retrieveSidestreamProProduct(productId: string) {
+  const product = await getStripe().products.retrieve(
+    productId,
+    { expand: ["default_price"] },
+    getStripeRequestOptions(),
+  );
+
+  if ("deleted" in product) {
+    throw new Error(`Configured Sidestream Pro product ${productId} was deleted in Stripe`);
+  }
+
+  if (!product.active) {
+    throw new Error(`Configured Sidestream Pro product ${productId} is not active in Stripe`);
+  }
+
+  return product;
+}
+
+async function getValidDefaultSidestreamProPriceId(
+  product: Stripe.Product,
+  productId: string,
+) {
+  const defaultPrice = product.default_price;
+  if (!defaultPrice) return "";
+
+  if (typeof defaultPrice !== "string") {
+    return isSidestreamProPriceShape(defaultPrice, productId) ? defaultPrice.id : "";
+  }
+
+  try {
+    const price = await getStripe().prices.retrieve(
+      defaultPrice,
+      {},
+      getStripeRequestOptions(),
+    );
+    return isSidestreamProPriceShape(price, productId) ? price.id : "";
+  } catch (error) {
+    if (isStripeResourceMissing(error)) return "";
+    throw error;
+  }
+}
+
+async function findSidestreamProLookupPriceId(productId: string) {
   const prices = await getStripe().prices.list(
     {
       active: true,
-      lookup_keys: [SIDESTREAM_UNLIMITED_PRICE.lookupKey],
+      lookup_keys: [SIDESTREAM_PRO_PRICE.lookupKey],
+      product: productId,
       limit: 10,
     },
     getStripeRequestOptions(),
   );
 
-  const matchingPrice = prices.data.find(isSidestreamUnlimitedLookupPrice);
+  const matchingPrice = prices.data.find((price) =>
+    isSidestreamProLookupPrice(price, productId),
+  );
   if (matchingPrice) return matchingPrice.id;
 
   const conflictingPrice = prices.data[0];
   if (conflictingPrice) {
     throw new Error(
-      `Stripe lookup key ${SIDESTREAM_UNLIMITED_PRICE.lookupKey} points to a price that is not the active $9.99 one-time Sidestream Unlimited price`,
+      `Stripe lookup key ${SIDESTREAM_PRO_PRICE.lookupKey} points to a price that is not the active $4.99 one-time Sidestream Pro price for product ${productId}`,
     );
   }
 
   return "";
 }
 
-async function createSidestreamUnlimitedPriceId() {
-  const product = await getStripe().products.create(
+async function findSidestreamProProductPriceId(productId: string) {
+  const prices = await getStripe().prices.list(
     {
-      name: SIDESTREAM_UNLIMITED_PRICE.name,
-      description: SIDESTREAM_UNLIMITED_PRICE.description,
-      metadata: {
-        sidestream_plan: SIDESTREAM_UNLIMITED_PLAN_KEY,
-      },
+      active: true,
+      product: productId,
+      limit: 100,
     },
     getStripeRequestOptions(),
   );
 
+  return prices.data.find((price) => isSidestreamProPriceShape(price, productId))?.id || "";
+}
+
+async function createSidestreamProPriceId(productId: string) {
   try {
     const price = await getStripe().prices.create(
       {
-        product: product.id,
-        unit_amount: SIDESTREAM_UNLIMITED_PRICE.unitAmount,
-        currency: SIDESTREAM_UNLIMITED_PRICE.currency,
-        lookup_key: SIDESTREAM_UNLIMITED_PRICE.lookupKey,
+        product: productId,
+        unit_amount: SIDESTREAM_PRO_PRICE.unitAmount,
+        currency: SIDESTREAM_PRO_PRICE.currency,
+        lookup_key: SIDESTREAM_PRO_PRICE.lookupKey,
         metadata: {
-          sidestream_plan: SIDESTREAM_UNLIMITED_PLAN_KEY,
+          sidestream_plan: SIDESTREAM_PRO_PLAN_KEY,
         },
       },
       getStripeRequestOptions(),
@@ -646,22 +753,23 @@ async function createSidestreamUnlimitedPriceId() {
 
     return price.id;
   } catch (error) {
-    const existingPriceId = await findSidestreamUnlimitedLookupPriceId();
+    const existingPriceId = await findSidestreamProLookupPriceId(productId);
     if (existingPriceId) return existingPriceId;
     throw error;
   }
 }
 
-function isSidestreamUnlimitedLookupPrice(price: Stripe.Price) {
-  return price.lookup_key === SIDESTREAM_UNLIMITED_PRICE.lookupKey &&
-    isSidestreamUnlimitedPriceShape(price);
+function isSidestreamProLookupPrice(price: Stripe.Price, productId: string) {
+  return price.lookup_key === SIDESTREAM_PRO_PRICE.lookupKey &&
+    isSidestreamProPriceShape(price, productId);
 }
 
-function isSidestreamUnlimitedPriceShape(price: Stripe.Price) {
+function isSidestreamProPriceShape(price: Stripe.Price, productId: string) {
   return Boolean(
     price.active &&
-    price.unit_amount === SIDESTREAM_UNLIMITED_PRICE.unitAmount &&
-    price.currency === SIDESTREAM_UNLIMITED_PRICE.currency &&
+    normalizeStripeId(price.product) === productId &&
+    price.unit_amount === SIDESTREAM_PRO_PRICE.unitAmount &&
+    price.currency === SIDESTREAM_PRO_PRICE.currency &&
     !price.recurring,
   );
 }
@@ -703,8 +811,12 @@ function getStripeSecretKey() {
   return requireEnv("STRIPE_SECRET_KEY");
 }
 
+function isLiveStripeMode() {
+  return getStripeSecretKey().startsWith("sk_live_");
+}
+
 function getBasicSubscriptionResourceKey() {
-  const mode = getStripeSecretKey().startsWith("sk_live_") ? "live" : "sandbox";
+  const mode = isLiveStripeMode() ? "live" : "sandbox";
   return `${BASIC_SUBSCRIPTION_RESOURCE_KEY_BASE}_${mode}`;
 }
 
@@ -921,6 +1033,8 @@ export async function getActivationStatus(
   activationKey: string,
   deviceId: string,
 ) {
+  await processUnprocessedStripeEvents();
+
   const result = await query<{
     activation_id: string;
     account_id: string | null;
@@ -1104,7 +1218,12 @@ export async function recordStripeEvent(
         updated_at
       )
       values ($1, $2, to_timestamp($3), $4::jsonb, $5, now(), now(), now())
-      on conflict (event_id) do nothing
+      on conflict (event_id) do update set
+        payload = excluded.payload,
+        raw_payload = excluded.raw_payload,
+        received_at = now(),
+        updated_at = now()
+      where public.sidestream_stripe_events.processed_at is null
       returning event_id
     `,
     [
@@ -1128,6 +1247,39 @@ export async function markStripeEventProcessed(eventId: string) {
     `,
     [eventId],
   );
+}
+
+export async function processUnprocessedStripeEvents(limit = 10) {
+  const result = await query<{
+    event_id: string;
+    event_type: string;
+    payload: Stripe.Event;
+  }>(
+    `
+      select event_id, event_type, payload
+      from public.sidestream_stripe_events
+      where processed_at is null
+      order by created_at asc
+      limit $1
+    `,
+    [limit],
+  );
+
+  for (const row of result.rows) {
+    switch (row.event_type) {
+      case "checkout.session.completed":
+        await upsertLicenseFromCheckoutSession(row.payload.data.object);
+        break;
+      case "customer.subscription.created":
+      case "customer.subscription.updated":
+      case "customer.subscription.deleted":
+        await upsertLicenseFromSubscription(row.payload.data.object);
+        break;
+      default:
+        break;
+    }
+    await markStripeEventProcessed(row.event_id);
+  }
 }
 
 export async function upsertLicenseFromSubscription(
@@ -1156,9 +1308,9 @@ export async function upsertLicenseFromSubscription(
   const currentPeriodEnd = timestampToIso(subscription.current_period_end);
   const cancelAtPeriodEnd = Boolean(subscription.cancel_at_period_end || subscription.cancel_at);
   const planKey = cleanString(
-    price?.lookup_key || price?.nickname || price?.id || "sidestream_unlimited",
+    price?.lookup_key || price?.nickname || price?.id || SIDESTREAM_LEGACY_UNLIMITED_PLAN_KEY,
     120,
-  ) || "sidestream_unlimited";
+  ) || SIDESTREAM_LEGACY_UNLIMITED_PLAN_KEY;
   const graceUntil = shouldGrantGrace(status)
     ? addDays(new Date(), LICENSE_TOKEN_TTL_DAYS).toISOString()
     : null;
@@ -1259,7 +1411,7 @@ export async function upsertLicenseFromCheckoutSession(
     mode === "payment" &&
     checkoutSessionId &&
     customerId &&
-    planKey === SIDESTREAM_UNLIMITED_PLAN_KEY &&
+    isSidestreamPaidPlanKey(planKey) &&
     (paymentStatus === "paid" || paymentStatus === "no_payment_required")
   ) {
     await upsertLicenseFromOneTimeCheckoutSession({
@@ -1278,6 +1430,8 @@ async function upsertLicenseFromOneTimeCheckoutSession(options: {
   paymentIntentId: string;
 }) {
   if (!options.accountId) return;
+
+  await ensureOneTimeCheckoutLicenseSchema();
 
   await query(
     `
@@ -1314,13 +1468,58 @@ async function upsertLicenseFromOneTimeCheckoutSession(options: {
       options.customerId,
       options.checkoutSessionId,
       options.paymentIntentId || null,
-      SIDESTREAM_UNLIMITED_PLAN_KEY,
+      SIDESTREAM_PRO_PLAN_KEY,
       JSON.stringify({
         unlimited_downloads: true,
         customer_portal: true,
         one_time_purchase: true,
       }),
     ],
+  );
+}
+
+async function ensureOneTimeCheckoutLicenseSchema() {
+  await query(
+    `
+      alter table public.sidestream_licenses
+        add column if not exists stripe_checkout_session_id text,
+        add column if not exists stripe_payment_intent_id text,
+        alter column stripe_subscription_id drop not null
+    `,
+  );
+
+  await query(
+    `
+      do $$
+      begin
+        alter table public.sidestream_licenses
+          add constraint sidestream_licenses_checkout_session_unique unique (stripe_checkout_session_id);
+      exception
+        when duplicate_object or duplicate_table then null;
+      end $$
+    `,
+  );
+
+  await query(
+    `
+      do $$
+      begin
+        alter table public.sidestream_licenses
+          add constraint sidestream_licenses_payment_intent_unique unique (stripe_payment_intent_id);
+      exception
+        when duplicate_object or duplicate_table then null;
+      end $$
+    `,
+  );
+}
+
+async function ensureStripeFirstAccountSchema(client?: PoolClient) {
+  const runner = client || getPool();
+  await runner.query(
+    `
+      alter table public.sidestream_accounts
+        alter column google_sub drop not null
+    `,
   );
 }
 
@@ -1457,7 +1656,7 @@ function buildLicenseSummary(options: {
 
   return {
     active,
-    plan: active ? (cleanString(options.planKey, 120) || "sidestream_unlimited") : "free",
+    plan: active ? (cleanString(options.planKey, 120) || SIDESTREAM_PRO_PLAN_KEY) : "free",
     status,
     currentPeriodEnd: toIsoString(options.currentPeriodEnd),
     cancelAtPeriodEnd: Boolean(options.cancelAtPeriodEnd),
@@ -1470,6 +1669,11 @@ function buildLicenseSummary(options: {
 
 function isLicenseStatusUsable(status: string) {
   return status === "active" || status === "trialing";
+}
+
+function isSidestreamPaidPlanKey(planKey: string) {
+  return planKey === SIDESTREAM_PRO_PLAN_KEY ||
+    planKey === SIDESTREAM_LEGACY_UNLIMITED_PLAN_KEY;
 }
 
 function shouldGrantGrace(status: string) {
@@ -1613,6 +1817,8 @@ async function findOrCreateAccountForStripeCustomer(
         await client.query("commit");
         return byEmail.rows[0].id;
       }
+
+      await ensureStripeFirstAccountSchema(client);
 
       const inserted = await client.query<{ id: string }>(
         `

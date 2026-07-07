@@ -70,14 +70,6 @@
     max-width: 780px;
   }
 
-  .lede {
-    color: var(--soft);
-    font-size: clamp(1rem, 2vw, 1.24rem);
-    line-height: 1.55;
-    margin: 0;
-    max-width: 620px;
-  }
-
   .panel {
     background: var(--panel);
     border: 1px solid var(--line);
@@ -106,6 +98,13 @@
   .value { color: var(--ink); font-size: 1rem; font-weight: 720; margin: 0; }
   .status { color: var(--good); }
   .muted { color: var(--soft); }
+  .note {
+    color: var(--soft);
+    font-size: 0.9rem;
+    line-height: 1.35;
+    margin: 6px 0 0;
+    max-width: 420px;
+  }
   .actions { display: flex; flex-wrap: wrap; gap: 10px; }
   button, .button {
     align-items: center;
@@ -147,7 +146,6 @@
     <main>
       <p class="eyebrow">Account</p>
       <h1>Your Sidestream account.</h1>
-      <p class="lede">Manage access, billing, invoices, and the latest installer from one quiet little page.</p>
 
       <section class="panel" id="signed-out" hidden>
         <div>
@@ -174,7 +172,18 @@
           </div>
           <div class="actions">
             <a class="button primary" id="upgrade-link" href="/api/checkout/start">Upgrade</a>
-            <button class="secondary" id="billing-button" type="button">Manage billing</button>
+            <button class="secondary" id="billing-button" type="button">Open Stripe portal</button>
+          </div>
+        </div>
+        <div class="row" id="purchase-row" hidden>
+          <div>
+            <p class="label">Purchase</p>
+            <p class="value muted">One-time payment receipts and refunds are separate from subscriptions.</p>
+            <p class="note">Future purchases create Stripe invoices. Older one-time purchases may only have a Stripe receipt.</p>
+          </div>
+          <div class="actions">
+            <button class="secondary" id="receipt-button" type="button">View receipt</button>
+            <button class="secondary" id="refund-button" type="button">Request refund</button>
           </div>
         </div>
         <div class="row">
@@ -196,7 +205,12 @@
     const accountPlan = document.getElementById("account-plan");
     const upgradeLink = document.getElementById("upgrade-link");
     const billingButton = document.getElementById("billing-button");
+    const purchaseRow = document.getElementById("purchase-row");
+    const receiptButton = document.getElementById("receipt-button");
+    const refundButton = document.getElementById("refund-button");
     const signOutButton = document.getElementById("sign-out-button");
+    const refundEmail = "alex@alexg.mov";
+    let signedInEmail = "";
 
     function nextPath() {
       return window.location.pathname + window.location.search;
@@ -205,9 +219,9 @@
     function describePlan(license) {
       if (!license || !license.active) return "Free";
       if (license.cancelAtPeriodEnd && license.currentPeriodEnd) {
-        return "Unlimited - cancels " + new Date(license.currentPeriodEnd).toLocaleDateString();
+        return "Pro - cancels " + new Date(license.currentPeriodEnd).toLocaleDateString();
       }
-      return "Unlimited";
+      return "Pro";
     }
 
     async function apiPost(url, body = {}) {
@@ -234,11 +248,13 @@
 
       signedOut.hidden = true;
       signedIn.hidden = false;
+      signedInEmail = session.user.email || "";
       accountEmail.textContent = session.user.email;
       accountPlan.textContent = describePlan(session.license);
       accountPlan.classList.toggle("status", Boolean(session.license && session.license.active));
       upgradeLink.hidden = Boolean(session.license && session.license.active);
       billingButton.hidden = !session.billing.hasCustomer;
+      purchaseRow.hidden = !session.billing.hasCustomer;
     }
 
     billingButton.addEventListener("click", async () => {
@@ -250,8 +266,37 @@
       } catch (error) {
         alert(error.message);
         billingButton.disabled = false;
-        billingButton.textContent = "Manage billing";
+        billingButton.textContent = "Open Stripe portal";
       }
+    });
+
+    receiptButton.addEventListener("click", async () => {
+      receiptButton.disabled = true;
+      receiptButton.textContent = "Opening...";
+      try {
+        const payload = await apiPost("/api/billing/receipt");
+        window.location.assign(payload.url);
+      } catch (error) {
+        alert(error.message);
+        receiptButton.disabled = false;
+        receiptButton.textContent = "View receipt";
+      }
+    });
+
+    refundButton.addEventListener("click", () => {
+      const subject = "Sidestream refund request";
+      const body = [
+        "Hi Sidestream,",
+        "",
+        "I'd like to request a refund for my Sidestream Pro purchase.",
+        "",
+        "Account email: " + (signedInEmail || ""),
+        "",
+        "Thanks."
+      ].join("\n");
+      window.location.href = "mailto:" + refundEmail +
+        "?subject=" + encodeURIComponent(subject) +
+        "&body=" + encodeURIComponent(body);
     });
 
     signOutButton.addEventListener("click", async () => {

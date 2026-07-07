@@ -137,14 +137,14 @@
 
     <main>
       <section>
-        <p class="eyebrow">Sidestream Unlimited</p>
+        <p class="eyebrow">Sidestream Pro</p>
         <h1>Unlock downloads when you need them.</h1>
         <p class="lede">Checkout is handled directly by Stripe as a one-time payment. No account setup or subscription detour.</p>
       </section>
 
       <section class="card">
-        <p class="plan-name">Unlimited</p>
-        <p class="price">$9.99 <span>one-time</span></p>
+        <p class="plan-name">Pro</p>
+        <p class="price">$4.99 <span>one-time</span></p>
         <ul>
           <li>Unlimited video and audio downloads</li>
           <li>Maximum available source quality</li>
@@ -174,13 +174,17 @@
     }
 
     function loadUpgrade() {
-      checkoutLink.href = checkoutUrl();
       if (checkoutState === "success") {
-        statusEl.textContent = "Checkout finished. Sidestream will activate as soon as Stripe confirms the payment.";
-        statusEl.classList.add("good");
-        checkoutLink.hidden = true;
-        accountLink.hidden = false;
-      } else if (checkoutState === "cancelled") {
+        const thankYouUrl = new URL("/thank-you.html", window.location.origin);
+        const sessionId = params.get("session_id") || "";
+        if (sessionId) thankYouUrl.searchParams.set("session_id", sessionId);
+        if (activationKey) thankYouUrl.searchParams.set("activation", activationKey);
+        window.location.replace(thankYouUrl.pathname + thankYouUrl.search);
+        return;
+      }
+
+      checkoutLink.href = checkoutUrl();
+      if (checkoutState === "cancelled") {
         statusEl.textContent = "Checkout was cancelled. You can continue whenever you're ready.";
       }
     }

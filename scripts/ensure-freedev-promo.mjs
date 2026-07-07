@@ -10,7 +10,8 @@ const PROMO_CODE = normalizePromotionCode(
 );
 const COUPON_ID = process.env.SIDESTREAM_FREEDEV_COUPON_ID ||
   "sidestream_freedev_100";
-const PRICE_LOOKUP_KEY = "sidestream_unlimited_once";
+const PRICE_LOOKUP_KEY = "sidestream_pro_once";
+const SIDESTREAM_PRO_DEFAULT_PRODUCT_ID = "prod_UpwXh6oO1OmPyQ";
 const allowLive = process.argv.includes("--allow-live");
 const replace = process.argv.includes("--replace");
 const skipLive = process.argv.includes("--skip-live");
@@ -69,7 +70,7 @@ async function getOrCreateFreedevCoupon() {
     return existingCoupon;
   }
 
-  const productId = await findSidestreamUnlimitedProductId();
+  const productId = await findSidestreamProProductId();
   const couponParams = {
     id: COUPON_ID,
     name: process.env.SIDESTREAM_FREEDEV_COUPON_NAME ||
@@ -93,12 +94,19 @@ async function getOrCreateFreedevCoupon() {
   return stripe.coupons.create(couponParams);
 }
 
-async function findSidestreamUnlimitedProductId() {
-  const configuredPriceId = getValidEnvValue("SIDESTREAM_UNLIMITED_PRICE_ID");
+async function findSidestreamProProductId() {
+  const configuredPriceId = getValidEnvValue("SIDESTREAM_PRO_PRICE_ID") ||
+    getValidEnvValue("SIDESTREAM_UNLIMITED_PRICE_ID");
   if (configuredPriceId) {
     const price = await stripe.prices.retrieve(configuredPriceId);
-    return normalizeStripeId(price.product);
+    const productId = normalizeStripeId(price.product);
+    if (productId) return productId;
   }
+
+  const configuredProductId = getValidEnvValue("SIDESTREAM_PRO_PRODUCT_ID") ||
+    SIDESTREAM_PRO_DEFAULT_PRODUCT_ID;
+  const product = await retrieveProduct(configuredProductId);
+  if (product?.active) return product.id;
 
   const prices = await stripe.prices.list({
     active: true,
@@ -107,6 +115,16 @@ async function findSidestreamUnlimitedProductId() {
   });
   const price = prices.data.find((item) => item.lookup_key === PRICE_LOOKUP_KEY);
   return price ? normalizeStripeId(price.product) : "";
+}
+
+async function retrieveProduct(productId) {
+  try {
+    const product = await stripe.products.retrieve(productId);
+    return product && !product.deleted ? product : null;
+  } catch (error) {
+    if (isStripeMissingResource(error)) return null;
+    throw error;
+  }
 }
 
 async function findPromotionCode(active) {

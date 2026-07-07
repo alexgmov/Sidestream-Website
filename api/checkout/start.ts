@@ -5,19 +5,19 @@ import {
   cleanString,
   findOrCreateStripeCustomer,
   getBaseUrl,
-  getSidestreamUnlimitedPriceId,
+  getSidestreamProPriceId,
   getSession,
   getStripe,
   getStripeRequestOptions,
   methodNotAllowed,
   redirect,
   sendJson,
+  SIDESTREAM_PRO_PLAN_KEY,
   type AccountRequest,
 } from "../_lib/account.js";
 
 const CHECKOUT_PROMISE_TEXT =
   "One-time payment. No subscription.";
-const PLAN_KEY = "sidestream_unlimited";
 
 export default async function handler(
   request: AccountRequest,
@@ -31,11 +31,11 @@ export default async function handler(
   const activationKey = cleanString(requestUrl.searchParams.get("activation"), 160);
   const session = await getSession(request);
   const stripe = getStripe();
-  const stripePriceId = await getSidestreamUnlimitedPriceId();
-  const successUrl = new URL("/upgrade.html", baseUrl);
+  const stripePriceId = await getSidestreamProPriceId();
+  const successUrl = new URL("/thank-you.html", baseUrl);
   const cancelUrl = new URL("/upgrade.html", baseUrl);
   const metadata: Record<string, string> = {
-    sidestream_plan: PLAN_KEY,
+    sidestream_plan: SIDESTREAM_PRO_PLAN_KEY,
     sidestream_price_id: stripePriceId,
   };
 
@@ -72,6 +72,12 @@ export default async function handler(
     custom_text: {
       submit: {
         message: CHECKOUT_PROMISE_TEXT,
+      },
+    },
+    invoice_creation: {
+      enabled: true,
+      invoice_data: {
+        metadata,
       },
     },
     metadata,
