@@ -148,7 +148,7 @@ The header is a fixed transparent overlay with no scroll divider so the shader r
 
 On desktop, `.feature-start` keeps the Search demo group below the hero with positive top padding, creating a clear margin between the hero Free Download button and the "Search for YouTube videos." heading without changing the shared lower-page `.sec-pad` rhythm.
 
-The pricing headline intentionally sits halfway between the bottom of the `.feature-glass` band and the pricing cards: `#pricing` overrides the shared section top padding to `92px`, while `.pricing-head` uses a matching `92px` bottom margin so the cards stay in place. The mobile override uses a matching `74px` top padding and bottom margin. `.pricing-line` keeps "Unlock when you need more." on its own lighter-weight line. The two pricing cards use a larger `28px` corner radius and a pricing-only `IntersectionObserver` that adds `html.pricing-motion-ready` plus `.is-visible` so the cards glide up once before they fully enter the viewport; no global `.reveal` behavior is restored. The $0 card is labeled "Free" and says "Unlimited downloads for your first week." The Pro plan is a visible `$4.99 once` one-time upgrade that links straight to `/api/checkout/start` with no account requirement before Stripe Checkout.
+The pricing headline intentionally sits halfway between the bottom of the `.feature-glass` band and the pricing cards: `#pricing` overrides the shared section top padding to `92px`, while `.pricing-head` uses a matching `92px` bottom margin so the cards stay in place. The mobile override uses a matching `74px` top padding and bottom margin. `.pricing-line` keeps "Unlock when you need more." on its own lighter-weight line. The two pricing cards use a larger `28px` corner radius and a pricing-only `IntersectionObserver` that adds `html.pricing-motion-ready` plus `.is-visible` so the cards glide up once before they fully enter the viewport; no global `.reveal` behavior is restored. The $0 card is labeled "Free" and says "5 free downloads every day." The Pro plan is a visible `$4.99 once` one-time upgrade that links straight to `/api/checkout/start` with no account requirement before Stripe Checkout.
 
 The hero rotating-word effect is also static-page native: `.rotating-copy` provides the stable text slot, `.rotating-word` animates the current noun, and the bottom inline script cycles `[data-rotating-word]` per `.rotating-copy` group. Incoming and outgoing words use paired, monotonic `translate3d` keyframes on the compositor path so the text stays smooth without bounce or transition/keyframe handoff. The active noun also uses a clipped red/white text gradient that drifts by animating `background-position` only. Do not add React or animation dependencies for this effect.
 
@@ -268,7 +268,7 @@ Use the narrowest relevant check after edits:
 - Confirm the "Start free. Unlock when you need more." headline sits centered in the vertical space between the bottom of the `.feature-glass` band and the pricing cards.
 - Confirm "Unlock when you need more." renders as the lighter-weight `.pricing-line`, while "Start free." stays heavier.
 - Scroll down to pricing and confirm both pricing cards begin animating before the section feels empty, with the Pro card following the Free card by a slight stagger, both cards using visibly rounder 28px corners, and the Pro card using a white outline with no drop shadow.
-- Confirm the Free card says "Unlimited downloads for your first week."
+- Confirm the Free card says "5 free downloads every day."
 - Confirm the Pro card says `$4.99 once`, links directly to `/api/checkout/start`, and does not route users through the old Google-first upgrade interstitial.
 - Confirm the feature demo videos are paused before they enter the viewport, start playing when scrolled into view, and pause again after leaving view.
 - Confirm the Search and Preview feature sections have no inline download buttons, while the heading and subtext blocks stay vertically centered beside their demo videos on desktop and mobile.
@@ -345,6 +345,7 @@ Use the narrowest relevant check after edits:
 
 ## Recent Change Log
 
+- Retired the first-week-unlimited free-trial offer, which was never implemented in the entitlement backend: the Free pricing card and `llms.txt` now say "5 free downloads every day," matching the plugin's actual free-tier daily cap. Only backend-issued Sidestream Pro license tokens bypass the cap.
 - Replaced the inline hero Windows email box with a matching Windows platform pill that opens a centered waitlist modal.
 - Added a hero Windows waitlist capture that posts emails to `/api/download-lead` with `source: "windows-waitlist"` while leaving Mac download CTAs unblocked.
 - Promoted the public installer pointer to the private Blob `1.0.11` native/base DMG and redeployed production so `/api/download` serves `Sidestream-1.0.11-Mac-Installer.dmg`.
