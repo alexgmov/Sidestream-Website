@@ -266,6 +266,8 @@
 
   /* ---------- Buttons ---------- */
   .btn {
+    appearance: none;
+    -webkit-appearance: none;
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -273,6 +275,7 @@
     font-family: var(--sans);
     font-size: 15px;
     font-weight: 600;
+    line-height: 1.5;
     letter-spacing: -0.02em;
     border-radius: var(--radius-sm);
     padding: 12px 22px;
@@ -291,7 +294,8 @@
     transform: translateY(-1px);
   }
   .btn-primary:active { transform: translateY(0); }
-  .btn[data-download] {
+  .btn[data-download],
+  .btn[data-windows-waitlist-open] {
     --download-platform-mark: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M18.71 19.5c-.83 1.24-1.71 2.45-3.05 2.47-1.34.03-1.77-.79-3.29-.79-1.53 0-2 .77-3.27.82-1.31.05-2.3-1.32-3.14-2.53C4.25 17 2.94 12.45 4.7 9.39c.87-1.52 2.43-2.48 4.12-2.51 1.28-.02 2.5.87 3.29.87.78 0 2.26-1.07 3.81-.91.65.03 2.47.26 3.64 1.98-.09.06-2.17 1.26-2.15 3.81.03 3.05 2.68 4.07 2.71 4.08-.03.07-.42 1.44-1.41 2.83M13 3.5c.73-.83 1.94-1.46 2.94-1.5.13 1.17-.34 2.35-1.04 3.19-.69.85-1.83 1.51-2.95 1.42-.15-1.15.41-2.35 1.05-3.11z'/%3E%3C/svg%3E");
     border-radius: 999px;
     background: #fff;
@@ -299,16 +303,24 @@
     border-color: #fff;
     backdrop-filter: none;
   }
-  .btn[data-download]::before {
+  .btn[data-windows-waitlist-open] {
+    --download-platform-mark: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M3 5.3l8-1.1v7.4H3V5.3zm9-1.3l9-1.3v8.9h-9V4zm0 8.9h9v8.8l-9-1.3v-7.5zM3 12.9h8v7.3l-8-1.1v-6.2z'/%3E%3C/svg%3E");
+  }
+  .btn[data-download]::before,
+  .btn[data-windows-waitlist-open]::before {
     content: "";
     flex: none;
-    width: 13px;
+    width: 15px;
     height: 15px;
     background: currentColor;
     -webkit-mask: var(--download-platform-mark) center / contain no-repeat;
     mask: var(--download-platform-mark) center / contain no-repeat;
   }
-  .btn[data-download]:hover {
+  .btn[data-download]::before {
+    width: 13px;
+  }
+  .btn[data-download]:hover,
+  .btn[data-windows-waitlist-open]:hover {
     background: var(--blue);
     color: #fff;
     border-color: var(--blue);
@@ -442,6 +454,18 @@
     margin: -2px 0 0;
     color: #ff8d8d;
     font-size: 13px;
+  }
+  .email-gate-message {
+    min-height: 18px;
+    margin: -2px 0 0;
+    color: rgba(226, 232, 240, 0.66);
+    font-size: 13px;
+  }
+  .email-gate-message.is-error {
+    color: #ff8d8d;
+  }
+  .email-gate-message.is-success {
+    color: rgba(226, 232, 240, 0.82);
   }
 
   /* ---------- Section rhythm ---------- */
@@ -651,74 +675,6 @@
   #hero .btn-lg {
     padding: 11px 20px;
     font-size: 14px;
-  }
-  .windows-waitlist {
-    width: min(100%, 560px);
-    margin-top: 18px;
-    padding: 16px;
-    border: 1px solid rgba(255, 255, 255, 0.16);
-    border-radius: var(--radius);
-    background: rgba(0, 0, 0, 0.36);
-    backdrop-filter: blur(18px) saturate(110%);
-    -webkit-backdrop-filter: blur(18px) saturate(110%);
-  }
-  .windows-waitlist-title {
-    margin: 0 0 4px;
-    color: var(--ink);
-    font-size: 15px;
-    font-weight: 700;
-    letter-spacing: 0;
-  }
-  .windows-waitlist-sub {
-    margin: 0;
-    color: rgba(226, 232, 240, 0.62);
-    font-size: 13.5px;
-    line-height: 1.45;
-    letter-spacing: 0;
-  }
-  .windows-waitlist-form {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    gap: 10px;
-    align-items: start;
-    margin-top: 13px;
-  }
-  .windows-waitlist-input {
-    width: 100%;
-    min-width: 0;
-    height: 46px;
-    padding: 0 14px;
-    border: 1px solid rgba(255, 255, 255, 0.2);
-    border-radius: var(--radius-sm);
-    background: rgba(255, 255, 255, 0.08);
-    color: var(--ink);
-    font: inherit;
-    font-size: 15px;
-    letter-spacing: 0;
-    outline: 0;
-  }
-  .windows-waitlist-input::placeholder {
-    color: rgba(226, 232, 240, 0.4);
-  }
-  .windows-waitlist-input:focus {
-    border-color: rgba(255, 255, 255, 0.58);
-    box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.1);
-  }
-  .windows-waitlist-form .btn {
-    min-height: 46px;
-    padding: 0 18px;
-    white-space: nowrap;
-  }
-  .windows-waitlist-status {
-    grid-column: 1 / -1;
-    min-height: 18px;
-    margin: -2px 0 0;
-    color: rgba(226, 232, 240, 0.66);
-    font-size: 13px;
-    letter-spacing: 0;
-  }
-  .windows-waitlist-status.is-error {
-    color: #ff8d8d;
   }
   .pricing-mockup {
     display: flex;
@@ -1035,16 +991,6 @@
     h1 { font-size: 2.58rem; }
     .hero-subline { font-size: 1.48rem; }
     .hero-description { font-size: 15.5px; }
-    .windows-waitlist {
-      margin-top: 16px;
-      padding: 14px;
-    }
-    .windows-waitlist-form {
-      grid-template-columns: 1fr;
-    }
-    .windows-waitlist-form .btn {
-      width: 100%;
-    }
     .rotating-copy { min-width: 0; width: 100%; }
     .pricing-line { white-space: normal; }
     .beta-title { font-size: 26px; }
@@ -1112,6 +1058,22 @@
     </section>
   </div>
 
+  <div class="email-gate" id="windows-waitlist-gate" hidden>
+    <button class="email-gate-backdrop" type="button" data-windows-waitlist-close aria-label="Close Windows waitlist prompt"></button>
+    <section class="email-gate-dialog" role="dialog" aria-modal="true" aria-labelledby="windows-waitlist-title" aria-describedby="windows-waitlist-copy">
+      <button class="email-gate-close" type="button" data-windows-waitlist-close aria-label="Close Windows waitlist prompt"></button>
+      <p class="email-gate-eyebrow">Windows waitlist</p>
+      <h2 class="email-gate-title" id="windows-waitlist-title">Join the Windows waitlist</h2>
+      <p class="email-gate-copy" id="windows-waitlist-copy">Drop your email and we will notify you when the Windows build is ready.</p>
+      <form class="email-gate-form" id="windows-waitlist-form" novalidate>
+        <label class="email-gate-label" for="windows-waitlist-input">Email</label>
+        <input class="email-gate-input" id="windows-waitlist-input" name="email" type="email" inputmode="email" autocomplete="email" placeholder="you@email.com" required>
+        <p class="email-gate-message" id="windows-waitlist-status" aria-live="polite"></p>
+        <button class="btn btn-primary btn-lg" id="windows-waitlist-submit" type="submit">Join waitlist</button>
+      </form>
+    </section>
+  </div>
+
   <!-- ===================== HEADER ===================== -->
   <header id="hdr">
     <div class="wrap nav">
@@ -1150,16 +1112,8 @@
           <p class="hero-description">Search, preview, and download YouTube videos from a panel inside Premiere Pro, so you never leave the app.</p>
           <div class="cta-row">
             <a class="btn btn-primary btn-lg" href="https://sidestream-xi.vercel.app/api/download" data-download aria-label="Free Download for Mac">Free Download</a>
+            <button class="btn btn-primary btn-lg" type="button" data-windows-waitlist-open aria-label="Join the Windows waitlist">Windows Waitlist</button>
           </div>
-          <form class="windows-waitlist" data-windows-waitlist-form novalidate>
-            <p class="windows-waitlist-title">Windows — coming soon</p>
-            <p class="windows-waitlist-sub">Drop your email and get the Windows build first.</p>
-            <div class="windows-waitlist-form">
-              <input class="windows-waitlist-input" data-windows-waitlist-email name="email" type="email" inputmode="email" autocomplete="email" placeholder="you@email.com" aria-label="Email for Windows waitlist" required>
-              <button class="btn btn-ghost-light" data-windows-waitlist-submit type="submit">Notify me</button>
-              <p class="windows-waitlist-status" data-windows-waitlist-status aria-live="polite"></p>
-            </div>
-          </form>
         </div>
       </div>
     </section>
@@ -1535,10 +1489,13 @@
     const emailGateError = document.getElementById("download-email-error");
     const emailGateSubmit = document.getElementById("download-email-submit");
     const emailGateCloseControls = Array.from(document.querySelectorAll("[data-email-gate-close]"));
-    const windowsWaitlistForm = document.querySelector("[data-windows-waitlist-form]");
-    const windowsWaitlistEmail = document.querySelector("[data-windows-waitlist-email]");
-    const windowsWaitlistSubmit = document.querySelector("[data-windows-waitlist-submit]");
-    const windowsWaitlistStatus = document.querySelector("[data-windows-waitlist-status]");
+    const windowsWaitlistGate = document.getElementById("windows-waitlist-gate");
+    const windowsWaitlistForm = document.getElementById("windows-waitlist-form");
+    const windowsWaitlistInput = document.getElementById("windows-waitlist-input");
+    const windowsWaitlistSubmit = document.getElementById("windows-waitlist-submit");
+    const windowsWaitlistStatus = document.getElementById("windows-waitlist-status");
+    const windowsWaitlistOpenControls = Array.from(document.querySelectorAll("[data-windows-waitlist-open]"));
+    const windowsWaitlistCloseControls = Array.from(document.querySelectorAll("[data-windows-waitlist-close]"));
     const downloadEmailStorageKey = "sidestream.download.email";
     const windowsWaitlistStorageKey = "sidestream.windows.email";
     let pendingDownloadLink = null;
@@ -1600,6 +1557,19 @@
       window.setTimeout(() => emailGateInput.focus(), 0);
     }
 
+    function openWindowsWaitlist() {
+      if (!windowsWaitlistGate || !windowsWaitlistInput || !windowsWaitlistSubmit || !windowsWaitlistStatus) return;
+
+      windowsWaitlistStatus.textContent = "";
+      windowsWaitlistStatus.classList.remove("is-error", "is-success");
+      windowsWaitlistSubmit.disabled = false;
+      windowsWaitlistSubmit.textContent = "Join waitlist";
+      windowsWaitlistInput.value = getStoredWindowsWaitlistEmail();
+      windowsWaitlistGate.hidden = false;
+      document.body.classList.add("email-gate-open");
+      window.setTimeout(() => windowsWaitlistInput.focus(), 0);
+    }
+
     function closeEmailGate(options = {}) {
       emailGate.hidden = true;
       document.body.classList.remove("email-gate-open");
@@ -1609,6 +1579,15 @@
         pendingDownloadLink.focus();
         pendingDownloadLink = null;
       }
+    }
+
+    function closeWindowsWaitlist() {
+      if (!windowsWaitlistGate || !windowsWaitlistStatus) return;
+
+      windowsWaitlistGate.hidden = true;
+      document.body.classList.remove("email-gate-open");
+      windowsWaitlistStatus.textContent = "";
+      windowsWaitlistStatus.classList.remove("is-error", "is-success");
     }
 
     function startDownload(url) {
@@ -1665,9 +1644,18 @@
     emailGateCloseControls.forEach((control) =>
       control.addEventListener("click", () => closeEmailGate())
     );
+    windowsWaitlistOpenControls.forEach((control) =>
+      control.addEventListener("click", openWindowsWaitlist)
+    );
+    windowsWaitlistCloseControls.forEach((control) =>
+      control.addEventListener("click", closeWindowsWaitlist)
+    );
     window.addEventListener("keydown", (ev) => {
       if (ev.key === "Escape" && emailGate && !emailGate.hidden) {
         closeEmailGate();
+      }
+      if (ev.key === "Escape" && windowsWaitlistGate && !windowsWaitlistGate.hidden) {
+        closeWindowsWaitlist();
       }
     });
     emailGateForm.addEventListener("submit", async (ev) => {
@@ -1689,18 +1677,16 @@
       closeEmailGate({ keepPending: true });
       continuePendingDownload();
     });
-    if (windowsWaitlistForm && windowsWaitlistEmail && windowsWaitlistSubmit && windowsWaitlistStatus) {
-      windowsWaitlistEmail.value = getStoredWindowsWaitlistEmail();
-
+    if (windowsWaitlistForm && windowsWaitlistInput && windowsWaitlistSubmit && windowsWaitlistStatus) {
       windowsWaitlistForm.addEventListener("submit", async (ev) => {
         ev.preventDefault();
-        const email = windowsWaitlistEmail.value.trim().toLowerCase();
+        const email = windowsWaitlistInput.value.trim().toLowerCase();
 
-        windowsWaitlistStatus.classList.remove("is-error");
+        windowsWaitlistStatus.classList.remove("is-error", "is-success");
         if (!isValidDownloadEmail(email)) {
           windowsWaitlistStatus.textContent = "Enter a valid email address.";
           windowsWaitlistStatus.classList.add("is-error");
-          windowsWaitlistEmail.focus();
+          windowsWaitlistInput.focus();
           return;
         }
 
@@ -1718,7 +1704,8 @@
         }
 
         setStoredWindowsWaitlistEmail(email);
-        windowsWaitlistStatus.textContent = "You're on the Windows list.";
+        windowsWaitlistStatus.textContent = "You're on the Windows list. We will notify you when it is ready.";
+        windowsWaitlistStatus.classList.add("is-success");
         windowsWaitlistSubmit.textContent = "Joined";
       });
     }
