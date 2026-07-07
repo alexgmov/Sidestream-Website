@@ -652,6 +652,74 @@
     padding: 11px 20px;
     font-size: 14px;
   }
+  .windows-waitlist {
+    width: min(100%, 560px);
+    margin-top: 18px;
+    padding: 16px;
+    border: 1px solid rgba(255, 255, 255, 0.16);
+    border-radius: var(--radius);
+    background: rgba(0, 0, 0, 0.36);
+    backdrop-filter: blur(18px) saturate(110%);
+    -webkit-backdrop-filter: blur(18px) saturate(110%);
+  }
+  .windows-waitlist-title {
+    margin: 0 0 4px;
+    color: var(--ink);
+    font-size: 15px;
+    font-weight: 700;
+    letter-spacing: 0;
+  }
+  .windows-waitlist-sub {
+    margin: 0;
+    color: rgba(226, 232, 240, 0.62);
+    font-size: 13.5px;
+    line-height: 1.45;
+    letter-spacing: 0;
+  }
+  .windows-waitlist-form {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 10px;
+    align-items: start;
+    margin-top: 13px;
+  }
+  .windows-waitlist-input {
+    width: 100%;
+    min-width: 0;
+    height: 46px;
+    padding: 0 14px;
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    border-radius: var(--radius-sm);
+    background: rgba(255, 255, 255, 0.08);
+    color: var(--ink);
+    font: inherit;
+    font-size: 15px;
+    letter-spacing: 0;
+    outline: 0;
+  }
+  .windows-waitlist-input::placeholder {
+    color: rgba(226, 232, 240, 0.4);
+  }
+  .windows-waitlist-input:focus {
+    border-color: rgba(255, 255, 255, 0.58);
+    box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.1);
+  }
+  .windows-waitlist-form .btn {
+    min-height: 46px;
+    padding: 0 18px;
+    white-space: nowrap;
+  }
+  .windows-waitlist-status {
+    grid-column: 1 / -1;
+    min-height: 18px;
+    margin: -2px 0 0;
+    color: rgba(226, 232, 240, 0.66);
+    font-size: 13px;
+    letter-spacing: 0;
+  }
+  .windows-waitlist-status.is-error {
+    color: #ff8d8d;
+  }
   .pricing-mockup {
     display: flex;
     align-items: center;
@@ -967,6 +1035,16 @@
     h1 { font-size: 2.58rem; }
     .hero-subline { font-size: 1.48rem; }
     .hero-description { font-size: 15.5px; }
+    .windows-waitlist {
+      margin-top: 16px;
+      padding: 14px;
+    }
+    .windows-waitlist-form {
+      grid-template-columns: 1fr;
+    }
+    .windows-waitlist-form .btn {
+      width: 100%;
+    }
     .rotating-copy { min-width: 0; width: 100%; }
     .pricing-line { white-space: normal; }
     .beta-title { font-size: 26px; }
@@ -1073,6 +1151,15 @@
           <div class="cta-row">
             <a class="btn btn-primary btn-lg" href="https://sidestream-xi.vercel.app/api/download" data-download aria-label="Free Download for Mac">Free Download</a>
           </div>
+          <form class="windows-waitlist" data-windows-waitlist-form novalidate>
+            <p class="windows-waitlist-title">Windows — coming soon</p>
+            <p class="windows-waitlist-sub">Drop your email and get the Windows build first.</p>
+            <div class="windows-waitlist-form">
+              <input class="windows-waitlist-input" data-windows-waitlist-email name="email" type="email" inputmode="email" autocomplete="email" placeholder="you@email.com" aria-label="Email for Windows waitlist" required>
+              <button class="btn btn-ghost-light" data-windows-waitlist-submit type="submit">Notify me</button>
+              <p class="windows-waitlist-status" data-windows-waitlist-status aria-live="polite"></p>
+            </div>
+          </form>
         </div>
       </div>
     </section>
@@ -1448,7 +1535,12 @@
     const emailGateError = document.getElementById("download-email-error");
     const emailGateSubmit = document.getElementById("download-email-submit");
     const emailGateCloseControls = Array.from(document.querySelectorAll("[data-email-gate-close]"));
+    const windowsWaitlistForm = document.querySelector("[data-windows-waitlist-form]");
+    const windowsWaitlistEmail = document.querySelector("[data-windows-waitlist-email]");
+    const windowsWaitlistSubmit = document.querySelector("[data-windows-waitlist-submit]");
+    const windowsWaitlistStatus = document.querySelector("[data-windows-waitlist-status]");
     const downloadEmailStorageKey = "sidestream.download.email";
+    const windowsWaitlistStorageKey = "sidestream.windows.email";
     let pendingDownloadLink = null;
     let pendingDownloadUrl = "/api/download";
     let toastTimer;
@@ -1477,6 +1569,22 @@
         window.localStorage.setItem(downloadEmailStorageKey, email);
       } catch (error) {
         // Email capture should not block a valid download in restricted browsers.
+      }
+    }
+
+    function getStoredWindowsWaitlistEmail() {
+      try {
+        return window.localStorage.getItem(windowsWaitlistStorageKey) || "";
+      } catch (error) {
+        return "";
+      }
+    }
+
+    function setStoredWindowsWaitlistEmail(email) {
+      try {
+        window.localStorage.setItem(windowsWaitlistStorageKey, email);
+      } catch (error) {
+        // Email capture should still work when localStorage is unavailable.
       }
     }
 
@@ -1527,8 +1635,11 @@
         if (!response.ok) {
           throw new Error("Lead capture returned " + response.status);
         }
+
+        return true;
       } catch (error) {
         console.warn("Sidestream download email capture failed", error);
+        return false;
       } finally {
         window.clearTimeout(timeout);
       }
@@ -1578,6 +1689,39 @@
       closeEmailGate({ keepPending: true });
       continuePendingDownload();
     });
+    if (windowsWaitlistForm && windowsWaitlistEmail && windowsWaitlistSubmit && windowsWaitlistStatus) {
+      windowsWaitlistEmail.value = getStoredWindowsWaitlistEmail();
+
+      windowsWaitlistForm.addEventListener("submit", async (ev) => {
+        ev.preventDefault();
+        const email = windowsWaitlistEmail.value.trim().toLowerCase();
+
+        windowsWaitlistStatus.classList.remove("is-error");
+        if (!isValidDownloadEmail(email)) {
+          windowsWaitlistStatus.textContent = "Enter a valid email address.";
+          windowsWaitlistStatus.classList.add("is-error");
+          windowsWaitlistEmail.focus();
+          return;
+        }
+
+        windowsWaitlistStatus.textContent = "";
+        windowsWaitlistSubmit.disabled = true;
+        windowsWaitlistSubmit.textContent = "Joining...";
+
+        const captured = await recordDownloadEmail(email, "windows-waitlist");
+        if (!captured) {
+          windowsWaitlistStatus.textContent = "Could not save that email. Try again.";
+          windowsWaitlistStatus.classList.add("is-error");
+          windowsWaitlistSubmit.disabled = false;
+          windowsWaitlistSubmit.textContent = "Notify me";
+          return;
+        }
+
+        setStoredWindowsWaitlistEmail(email);
+        windowsWaitlistStatus.textContent = "You're on the Windows list.";
+        windowsWaitlistSubmit.textContent = "Joined";
+      });
+    }
     document.querySelectorAll("[data-purchase]").forEach((el) =>
       el.addEventListener("click", (ev) => {
         ev.preventDefault();
