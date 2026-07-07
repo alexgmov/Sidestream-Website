@@ -33,6 +33,7 @@ Sidestream is an HTML-first landing page for a Premiere Pro panel that lets edit
 - `db/migrations/20260704120000_add_sidestream_billing_resources.sql` - Legacy Postgres schema for persisted Stripe subscription billing resources from the retired monthly-price flow.
 - `db/migrations/20260704130000_allow_stripe_first_accounts.sql` - Postgres schema adjustment that allows Stripe-first account rows without a Google subject so Checkout can create/link Sidestream entitlements from webhook customer data.
 - `db/migrations/20260704150000_allow_one_time_checkout_licenses.sql` - Postgres schema adjustment that lets `sidestream_licenses` store one-time Checkout Session and PaymentIntent IDs instead of requiring a Stripe subscription ID.
+- `db/migrations/20260707120000_enable_sidestream_server_table_rls.sql` - Supabase hardening migration that enables RLS on server-owned Sidestream public tables and revokes direct `anon` / `authenticated` Data API access. The Vercel API routes continue to use the server-only Postgres connection.
 - `scripts/apply-postgres-migrations.mjs` - Generic Postgres migration runner for all SQL files under `db/migrations/`.
 - `scripts/ensure-freedev-promo.mjs` - Maintainer utility that creates or verifies the sandbox-only Stripe `FREEDEV` 100% off promotion code used to test no-cost Sidestream Pro Checkout.
 - `scripts/migrate-download-leads-to-postgres.mjs` - One-shot utility that applies the Postgres schema and migrates existing private Vercel Blob lead JSON records into Postgres.
@@ -209,6 +210,8 @@ Apply all Postgres migrations, including account/billing tables:
 SIDESTREAM_ENV_FILE=.env.local npm run db:migrate
 ```
 
+The `20260707120000_enable_sidestream_server_table_rls.sql` migration is required for Supabase-hosted copies of the Sidestream SaaS tables. It locks down direct Supabase Data API access to leads, accounts, sessions, activation rows, license rows, license-token hashes, Stripe event payloads, and billing resource rows. Re-run the Supabase Security Advisor after applying it and smoke-test the Vercel API routes, because the app should keep using the server-only Postgres connection rather than browser-side Supabase policies.
+
 Create or verify the sandbox-only `FREEDEV` Stripe promotion code for no-cost checkout testing:
 
 ```bash
@@ -339,12 +342,14 @@ Use the narrowest relevant check after edits:
 - The email gate is a website CTA gate, not hard security. A direct request to `/api/download` still serves the installer; true server-enforced lead capture would require issuing download tokens or moving `/api/download` behind a verified lead/session check.
 - The Windows waitlist reuses `/api/download-lead` and stores its segment in `cta_source`; do not create a separate client-only endpoint or table unless the lead product needs a different data model. Keep the visible waitlist entry as the matching hero platform pill plus centered modal, not as a large inline email box.
 - Download-lead capture and SaaS entitlement storage use a server-only Postgres pooler connection. Prefer `SIDESTREAM_POSTGRES_URL`; the code also accepts `SIDESTREAM_POSTGRES_PRISMA_URL`, `SIDESTREAM_POSTGRES_URL_NON_POOLING`, and generic Postgres variants as fallbacks. Do not expose a Postgres password, service-role key, or any private database URL to `Sidestream.html`, React browser code, or the CEP plugin.
+- Supabase-hosted Sidestream SaaS tables must keep RLS enabled with no direct `anon` or `authenticated` table access. If a future feature needs browser-side Supabase reads or writes, add the narrow policy for that feature intentionally and document the public data shape; do not make the private account, session, activation, license, license-token, Stripe event, or lead tables broadly API-readable.
 - The canonical URL is the deployed root, `https://sidestream-xi.vercel.app/`. Keep every crawler-facing URL in the HTML head, sitemap, `llms.txt`, and README pointed at `/`; the old `Sidestream%20front%20end%202/Sidestream.html` path should stay a noindex compatibility redirect.
 - Keep structured data conservative and matched to visible page claims. Do not add FAQ, review, rating, or price claims unless the same facts are present in the visible landing page.
 - `llms.txt` is useful as an AI-readable summary, but it is not a substitute for crawlable HTML, normal metadata, structured data, sitemap hygiene, or external citations/backlinks.
 
 ## Recent Change Log
 
+- Added a Supabase RLS hardening migration for server-owned Sidestream public tables, revoking direct `anon` and `authenticated` Data API table access while preserving the server-only Postgres route contract.
 - Retired the first-week-unlimited free-trial offer, which was never implemented in the entitlement backend: the Free pricing card and `llms.txt` now say "5 free downloads every day," matching the plugin's actual free-tier daily cap. Only backend-issued Sidestream Pro license tokens bypass the cap.
 - Replaced the inline hero Windows email box with a matching Windows platform pill that opens a centered waitlist modal.
 - Added a hero Windows waitlist capture that posts emails to `/api/download-lead` with `source: "windows-waitlist"` while leaving Mac download CTAs unblocked.
