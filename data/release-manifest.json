@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "product": "sidestream",
+  "channel": "stable",
+  "version": "1.0.12",
+  "minSupportedVersion": "1.0.0",
+  "critical": false,
+  "rolloutPercent": 100,
+  "publishedAt": "2026-07-11T23:11:21.000Z",
+  "releaseNotesUrl": "https://sidestream.tv/",
+  "artifact": {
+    "type": "dmg",
+    "url": "https://sidestream.tv/api/download",
+    "pathname": "sidestream/1.0.12/Sidestream-1.0.12-Mac-Installer.dmg",
+    "sha256": "0592518425169628bf933bb6b568802f0916967b4e5d5f1a3a5c4fa04ed39c7a",
+    "sizeBytes": 226402945
+  }
+}
