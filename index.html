@@ -265,14 +265,36 @@
   }
   .nav-links nav {
     display: flex;
-    gap: 30px;
+    gap: 10px;
   }
   .nav-links nav a {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 36px;
+    padding: 7px 14px;
     font-size: 15px;
-    color: var(--ink-soft);
-    transition: color 160ms var(--ease);
+    color: var(--ink);
+    border: 1px solid rgba(226, 232, 240, 0.38);
+    border-radius: 999px;
+    background: rgba(0, 0, 0, 0.26);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+    backdrop-filter: blur(10px) saturate(110%);
+    -webkit-backdrop-filter: blur(10px) saturate(110%);
+    transition: background 160ms var(--ease), color 160ms var(--ease),
+      border-color 160ms var(--ease), transform 160ms var(--ease);
   }
-  .nav-links nav a:hover { color: var(--ink); }
+  .nav-links nav a:hover {
+    color: #000;
+    border-color: #fff;
+    background: #fff;
+    transform: translateY(-1px);
+  }
+  .nav-links nav a:active { transform: translateY(0); }
+  .nav-links nav a:focus-visible {
+    outline: 2px solid #fff;
+    outline-offset: 3px;
+  }
 
   /* ---------- Buttons ---------- */
   .btn {
@@ -529,8 +551,8 @@
   }
   .feature-corner-demo-video {
     position: absolute;
-    left: clamp(-52px, -3vw, -30px);
-    bottom: calc(clamp(-330px, -18.4vw, -230px) - 36vh);
+    left: 10vw;
+    top: 50vh;
     display: block;
     width: max(1000px, 90vw);
     max-width: none;
@@ -538,7 +560,7 @@
     opacity: 0.9;
     mix-blend-mode: screen;
     filter: brightness(1.3) contrast(1.04) saturate(1.02);
-    transform: scale(0.7);
+    transform: translate(-4.75%, -13.7%) scale(0.7);
     transform-origin: 4.75% 13.7%;
   }
   .feature-glass > section {
@@ -663,23 +685,13 @@
     white-space: nowrap;
   }
   .hero-subline {
-    margin: 0 0 8px;
+    margin: 0 0 24px;
     color: var(--ink);
     font-family: var(--sans);
     font-style: italic;
     font-size: 2.12rem;
     font-weight: 500;
     line-height: 1.05;
-    letter-spacing: 0;
-  }
-  .hero-description {
-    max-width: 48ch;
-    margin: 0 0 24px;
-    color: rgba(226, 232, 240, 0.62);
-    font-family: var(--sans);
-    font-size: 17px;
-    font-weight: 300;
-    line-height: 1.48;
     letter-spacing: 0;
   }
   #hero .btn-lg {
@@ -979,7 +991,6 @@
     .feature-corner-demo { display: none; }
     h1 { font-size: 3.08rem; }
     .hero-subline { font-size: 1.86rem; }
-    .hero-description { font-size: 16px; }
     .hero-copy.reveal { transform: none; }
     .feat-copy p { max-width: none; }
     #pricing { padding-top: 74px; }
@@ -1000,7 +1011,6 @@
   @media (max-width: 520px) {
     h1 { font-size: 2.58rem; }
     .hero-subline { font-size: 1.48rem; }
-    .hero-description { font-size: 15.5px; }
     #hero .cta-row { align-items: stretch; width: 100%; }
     #hero .cta-row .btn { width: 100%; }
     .rotating-copy { min-width: 0; width: 100%; }
@@ -1120,7 +1130,6 @@
             </span>
           </h1>
           <p class="hero-subline">in Premiere Pro</p>
-          <p class="hero-description">Search, preview, and download YouTube videos from a panel inside Premiere Pro, so you never leave the app.</p>
           <div class="cta-row">
             <a class="btn btn-primary btn-lg" href="https://sidestream.tv/api/download" data-download aria-label="Download Sidestream for Mac">Download for Mac</a>
             <a class="btn btn-primary btn-lg" href="https://sidestream.tv/api/download?platform=win32-x64" data-windows-download aria-label="Download Sidestream for Windows">Download for Windows</a>
