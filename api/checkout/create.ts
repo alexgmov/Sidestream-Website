@@ -12,7 +12,8 @@ import {
   getStripe,
   getStripeRequestOptions,
   methodNotAllowed,
-  readJsonBody,
+  readRequestBody,
+  redirect,
   requireSession,
   sendJson,
   SIDESTREAM_PRO_PLAN_KEY,
@@ -25,6 +26,7 @@ import {
 
 type CheckoutPayload = {
   activationKey?: unknown;
+  intent?: unknown;
 };
 
 const CHECKOUT_PROMISE_TEXT =
@@ -40,8 +42,20 @@ export default async function handler(
   const session = await requireSession(request, response);
   if (!session) return;
 
-  const payload = await readJsonBody<CheckoutPayload>(request);
+  let checkoutRequest: Awaited<ReturnType<typeof readCheckoutRequest>>;
+  try {
+    checkoutRequest = await readCheckoutRequest(request);
+  } catch {
+    return sendJson(response, 400, { error: "Invalid Checkout request" });
+  }
+  const { payload, browserForm } = checkoutRequest;
   const activationKey = cleanString(payload.activationKey, 160);
+  if (
+    browserForm &&
+    (!activationKey || cleanString(payload.intent, 32) !== "purchase")
+  ) {
+    return sendJson(response, 400, { error: "Invalid purchase confirmation" });
+  }
   const activation = activationKey
     ? await getActivationCheckoutContext(activationKey)
     : null;
@@ -52,7 +66,7 @@ export default async function handler(
   if (activationKey && session.license.active) {
     const restoreUrl = new URL("/api/activation/claim", getBaseUrl(request));
     restoreUrl.searchParams.set("activation", activationKey);
-    return sendJson(response, 200, { url: restoreUrl.toString() });
+    return sendCheckoutDestination(response, browserForm, restoreUrl.toString());
   }
 
   const stripe = getStripe();
@@ -65,12 +79,14 @@ export default async function handler(
     );
     if (attachedSession.status === "complete") {
       await fulfillCheckoutSession(attachedSession.id, activationKey);
-      return sendJson(response, 200, {
-        url: `${baseUrl}/thank-you.html?checkout=success&activation=${encodeURIComponent(activationKey)}`,
-      });
+      return sendCheckoutDestination(
+        response,
+        browserForm,
+        `${baseUrl}/thank-you.html?checkout=success&activation=${encodeURIComponent(activationKey)}`,
+      );
     }
     if (attachedSession.status === "open" && attachedSession.url) {
-      return sendJson(response, 200, { url: attachedSession.url });
+      return sendCheckoutDestination(response, browserForm, attachedSession.url);
     }
     return sendJson(response, 409, { error: "Attached Checkout Session is unavailable" });
   }
@@ -149,7 +165,7 @@ export default async function handler(
           getStripeRequestOptions(),
         );
         if (winnerSession.status === "open" && winnerSession.url) {
-          return sendJson(response, 200, { url: winnerSession.url });
+          return sendCheckoutDestination(response, browserForm, winnerSession.url);
         }
       }
       if (checkoutSession.status === "open") {
@@ -159,5 +175,41 @@ export default async function handler(
     }
   }
 
-  return sendJson(response, 200, { url: checkoutSession.url });
+  if (!checkoutSession.url) {
+    return sendJson(response, 502, { error: "Stripe did not return a Checkout URL" });
+  }
+  return sendCheckoutDestination(response, browserForm, checkoutSession.url);
+}
+
+async function readCheckoutRequest(request: AccountRequest) {
+  const rawContentType = request.headers["content-type"];
+  const contentType = (Array.isArray(rawContentType)
+    ? rawContentType[0]
+    : rawContentType || "").toLowerCase();
+  const body = await readRequestBody(request);
+  if (contentType.startsWith("application/x-www-form-urlencoded")) {
+    const form = new URLSearchParams(body);
+    return {
+      browserForm: true,
+      payload: {
+        activationKey: form.get("activationKey"),
+        intent: form.get("intent"),
+      } satisfies CheckoutPayload,
+    };
+  }
+
+  return {
+    browserForm: false,
+    payload: (body.trim() ? JSON.parse(body) : {}) as CheckoutPayload,
+  };
+}
+
+function sendCheckoutDestination(
+  response: ServerResponse,
+  browserForm: boolean,
+  url: string,
+) {
+  return browserForm
+    ? redirect(response, url)
+    : sendJson(response, 200, { url });
 }

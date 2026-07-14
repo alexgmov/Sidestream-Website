@@ -5,10 +5,12 @@ import { Pool, type PoolClient } from "pg";
 import Stripe from "stripe";
 import {
   canBindActivationAccount,
+  type CredentialDeviceScope,
   createClaimCsrfToken,
   deriveActivationTokenPair,
   deriveRefreshRotationTokens,
   getStripeCheckoutWindow,
+  isActivationClaimReplay,
   needsLegacyLicenseCompatibility,
   isActivationTokenReplayAllowed,
   REFRESH_RETRY_GRACE_SECONDS,
@@ -19,6 +21,27 @@ import {
   validateClaimCsrfToken,
   verifyPaidCheckoutSession,
 } from "./entitlement.js";
+import {
+  DEVICE_POLICY_ERROR_CODES,
+  applyDevicePolicyMode,
+  decideDeviceActivation,
+  evaluateDeviceCredentialBinding,
+  evaluateDeviceTransferLimit,
+  getConfirmedDeviceMoveTimestamps,
+  getDeviceRevocationErrorCode,
+  getDeviceTransferLimitOverride,
+  normalizeDevicePlatform,
+  resolveDevicePolicyMode,
+  type DeviceNamespace,
+  type DevicePlatform,
+  type DevicePolicyErrorCode,
+  type DeviceRevocationReason,
+} from "./device-policy.js";
+import {
+  getLicenseDiagnosticMetadata,
+  resolveLicenseEnvironment,
+  type ResolvedLicenseEnvironment,
+} from "./license-environment.js";
 
 const SESSION_COOKIE = "sidestream_session";
 const OAUTH_STATE_COOKIE = "sidestream_oauth_state";
@@ -34,6 +57,9 @@ const ACTIVATION_RECONCILIATION_COOLDOWN_SECONDS = 5;
 const ACTIVATION_CLAIM_CSRF_TTL_SECONDS = 10 * 60;
 const ACTIVATION_TOKEN_REPLAY_SECONDS = 10 * 60;
 const MAX_BODY_BYTES = 64 * 1024;
+const DEVICE_POLICY_MODE_ENV = "SIDESTREAM_DEVICE_POLICY_MODE";
+const ACCOUNT_DEVICE_LOCK_PREFIX = "sidestream:device-support";
+export const DEVICE_DEACTIVATION_INTENT = "deactivate_active_device";
 export const SIDESTREAM_PRO_PLAN_KEY = "sidestream_pro";
 const SIDESTREAM_LEGACY_UNLIMITED_PLAN_KEY = "sidestream_unlimited";
 const SIDESTREAM_PAID_PLAN_KEYS = [
@@ -93,6 +119,19 @@ export type LicenseSummary = {
   cancelAtPeriodEnd: boolean;
   graceUntil: string;
   features: Record<string, unknown>;
+};
+
+export type ConfirmAccountDeviceTransferOptions = {
+  accountId: string;
+  environment: ResolvedLicenseEnvironment;
+  expectedPriorDeviceId: string;
+  expectedPriorDeviceIdHash: string;
+  newDeviceIdHash: string;
+  platform?: unknown;
+  appVersion?: unknown;
+  buildChannel?: unknown;
+  initiatedBy: "account" | "support" | "system";
+  transferReason: "device_change" | "lost_device" | "support_override";
 };
 
 type GoogleProfile = {
@@ -176,6 +215,32 @@ export function getBaseUrl(request: IncomingMessage) {
   const host = firstHeaderValue(request.headers.host) || "127.0.0.1:3000";
   const proto = firstHeaderValue(request.headers["x-forwarded-proto"]) || "http";
   return `${proto}://${host}`.replace(/\/+$/g, "");
+}
+
+export function validateSameOriginJsonMutation(request: IncomingMessage) {
+  const contentType = firstHeaderValue(request.headers["content-type"])
+    .trim()
+    .toLowerCase();
+  if (!contentType.startsWith("application/json")) return false;
+
+  try {
+    const requestOrigin = new URL(
+      firstHeaderValue(request.headers.origin),
+    ).origin;
+    const expectedOrigin = new URL(getBaseUrl(request)).origin;
+    return requestOrigin === expectedOrigin;
+  } catch {
+    return false;
+  }
+}
+
+export function resolveRequestLicenseEnvironment(request: IncomingMessage) {
+  // `Host` is the platform routing authority here. Client JSON and diagnostic
+  // build metadata never participate in namespace selection.
+  return resolveLicenseEnvironment({
+    serverEnv: process.env,
+    trustedRequestHost: firstHeaderValue(request.headers.host),
+  });
 }
 
 export function getGoogleRedirectUri(request: IncomingMessage) {
@@ -454,11 +519,14 @@ export async function clearWebSession(
 
 export async function getSession(
   request: IncomingMessage,
+  options: { reconcileStripeEvents?: boolean } = {},
 ): Promise<AccountSession | null> {
   const token = getCookie(request, SESSION_COOKIE);
   if (!token) return null;
 
-  await processUnprocessedStripeEvents();
+  if (options.reconcileStripeEvents !== false) {
+    await processUnprocessedStripeEvents();
+  }
 
   const result = await query<{
     account_id: string;
@@ -1201,7 +1269,20 @@ export async function claimActivationToAccount(
         [activationKey],
       );
       const row = selected.rows[0];
-      if (!row || row.expired || row.completed_at || row.status !== "pending") {
+      if (!row) {
+        await client.query("rollback");
+        return { claimed: false as const, reason: "unavailable" as const };
+      }
+      if (isActivationClaimReplay({
+        existingAccountId: row.account_id,
+        requestedAccountId: accountId,
+        status: row.status,
+        expired: row.expired,
+      })) {
+        await client.query("commit");
+        return { claimed: true as const };
+      }
+      if (row.expired || row.completed_at || row.status !== "pending") {
         await client.query("rollback");
         return { claimed: false as const, reason: "unavailable" as const };
       }
@@ -1274,11 +1355,17 @@ export function validateActivationClaimRequest(
 export async function getActivationStatus(
   activationKey: string,
   deviceId: string,
-  options: { skipReconciliation?: boolean } = {},
+  options: {
+    skipReconciliation?: boolean;
+    environment?: ResolvedLicenseEnvironment;
+    platform?: unknown;
+  } = {},
 ) {
+  const environment = requireMatchingLicenseEnvironment(options.environment);
   const result = await query<{
     activation_id: string;
     app_version: string | null;
+    build_channel: string | null;
     account_id: string | null;
     license_id: string | null;
     status: string;
@@ -1297,6 +1384,7 @@ export async function getActivationStatus(
       select
         a.id as activation_id,
         a.app_version,
+        a.build_channel,
         a.account_id,
         l.id as license_id,
         a.status,
@@ -1352,7 +1440,11 @@ export async function getActivationStatus(
     );
     if (cooldown.rows[0]) {
       await fulfillCheckoutSession(row.stripe_checkout_session_id, activationKey);
-      return getActivationStatus(activationKey, deviceId, { skipReconciliation: true });
+      return getActivationStatus(activationKey, deviceId, {
+        ...options,
+        skipReconciliation: true,
+        environment,
+      });
     }
   }
 
@@ -1385,6 +1477,24 @@ export async function getActivationStatus(
     return { status: "pending_payment" as const, license };
   }
 
+  const activationBinding = await checkActivationDeviceBinding({
+    accountId: row.account_id,
+    environment,
+    deviceIdHash,
+    platform: options.platform,
+    appVersion: row.app_version,
+    buildChannel: row.build_channel,
+    previouslyIssuedAt: row.completed_at,
+    licenseFeatures: row.features,
+  });
+  if (!activationBinding.allowed) {
+    return {
+      status: activationBinding.code,
+      code: activationBinding.code,
+      license,
+    };
+  }
+
   const legacyClient = needsLegacyLicenseCompatibility(row.app_version);
 
   if (
@@ -1404,71 +1514,66 @@ export async function getActivationStatus(
     accountId: row.account_id,
     licenseId: row.license_id,
     deviceId,
+    environment,
+    platform: options.platform,
+    appVersion: row.app_version,
+    buildChannel: row.build_channel,
+    previouslyIssuedAt: row.completed_at,
     accessTokenTtlDays: legacyClient
       ? LEGACY_LICENSE_TOKEN_TTL_DAYS
       : LICENSE_TOKEN_TTL_DAYS,
   });
 
-  await query(
-    `
-      update public.sidestream_activation_sessions
-      set license_id = $2,
-          completed_at = coalesce(completed_at, now()),
-          status = 'linked',
-          updated_at = now()
-      where id = $1
-    `,
-    [row.activation_id, row.license_id],
-  );
+  if (!issued.issued && issued.code) {
+    return {
+      status: issued.code,
+      code: issued.code,
+      license,
+    };
+  }
+
+  if (issued.issued) {
+    await query(
+      `
+        update public.sidestream_activation_sessions
+        set license_id = $2,
+            completed_at = coalesce(completed_at, now()),
+            status = 'linked',
+            updated_at = now()
+        where id = $1
+      `,
+      [row.activation_id, row.license_id],
+    );
+  }
 
   return {
     status: "active" as const,
     license,
-    ...(issued || {}),
+    ...(issued.issued
+      ? {
+          licenseToken: issued.licenseToken,
+          refreshToken: issued.refreshToken,
+          tokenExpiresAt: issued.tokenExpiresAt,
+          refreshExpiresAt: issued.refreshExpiresAt,
+        }
+      : {}),
   };
 }
 
 export async function verifyLicenseToken(
   licenseToken: string,
   deviceId: string,
+  environmentInput?: ResolvedLicenseEnvironment,
 ) {
-  const result = await query<{
-    token_id: string;
-    expires_at: Date | string;
-    revoked_at: Date | string | null;
-    device_id_hash: string | null;
-    activation_app_version: string | null;
-    status: string | null;
-    plan_key: string | null;
-    current_period_end: Date | string | null;
-    cancel_at_period_end: boolean | null;
-    grace_until: Date | string | null;
-    features: Record<string, unknown> | null;
-  }>(
-    `
-      select
-        t.id as token_id,
-        t.expires_at,
-        t.revoked_at,
-        t.device_id_hash,
-        a.app_version as activation_app_version,
-        l.status,
-        l.plan_key,
-        l.current_period_end,
-        l.cancel_at_period_end,
-        l.grace_until,
-        l.features
-      from public.sidestream_license_tokens t
-      join public.sidestream_licenses l on l.id = t.license_id
-      left join public.sidestream_activation_sessions a on a.id = t.activation_session_id
-      where t.token_hash = $1
-      limit 1
-    `,
-    [hashToken(licenseToken)],
+  const environment = requireMatchingLicenseEnvironment(environmentInput);
+  const tokenHash = hashToken(licenseToken);
+  const deviceIdHash = deviceId ? hashPrivateIdentifier(deviceId) : "";
+  const accountLookup = await query<{ account_id: string }>(
+    `select account_id from public.sidestream_license_tokens where token_hash = $1 limit 1`,
+    [tokenHash],
   );
-
-  const row = result.rows[0];
-  if (!row) {
+  const accountId = accountLookup.rows[0]?.account_id;
+  if (!accountId) {
     return {
       active: false as const,
       status: "invalid",
@@ -1476,53 +1581,140 @@ export async function verifyLicenseToken(
     };
   }
 
-  const deviceIdHash = deviceId ? hashPrivateIdentifier(deviceId) : "";
-  if (!matchesDeviceHash(row.device_id_hash, deviceIdHash)) {
-    return { active: false as const, status: "invalid", code: "device_mismatch" as const };
-  }
-  if (row.revoked_at) {
-    return { active: false as const, status: "invalid", code: "revoked" as const };
-  }
-  if (new Date(row.expires_at).getTime() <= Date.now()) {
-    return { active: false as const, status: "invalid", code: "invalid_token" as const };
-  }
+  return withPgClient(async (client) => {
+    await client.query("begin");
+    try {
+      await client.query("select pg_advisory_xact_lock(hashtext($1))", [
+        getAccountDeviceLockKey(accountId, environment.namespace),
+      ]);
+      const selected = await client.query<{
+        token_id: string;
+        account_id: string;
+        expires_at: Date | string;
+        revoked_at: Date | string | null;
+        created_at: Date | string;
+        device_id_hash: string | null;
+        activation_app_version: string | null;
+        activation_build_channel: string | null;
+        status: string | null;
+        plan_key: string | null;
+        current_period_end: Date | string | null;
+        cancel_at_period_end: boolean | null;
+        grace_until: Date | string | null;
+        features: Record<string, unknown> | null;
+      }>(
+        `
+          select
+            t.id as token_id,
+            t.account_id,
+            t.expires_at,
+            t.revoked_at,
+            t.created_at,
+            t.device_id_hash,
+            a.app_version as activation_app_version,
+            a.build_channel as activation_build_channel,
+            l.status,
+            l.plan_key,
+            l.current_period_end,
+            l.cancel_at_period_end,
+            l.grace_until,
+            l.features
+          from public.sidestream_license_tokens t
+          join public.sidestream_licenses l on l.id = t.license_id
+          left join public.sidestream_activation_sessions a on a.id = t.activation_session_id
+          where t.token_hash = $1
+            and t.account_id = $2
+          limit 1
+          for update of t
+        `,
+        [tokenHash, accountId],
+      );
+      const row = selected.rows[0];
+      if (!row) {
+        await client.query("rollback");
+        return { active: false as const, status: "invalid", code: "invalid_token" as const };
+      }
+      if (!matchesDeviceHash(row.device_id_hash, deviceIdHash)) {
+        await client.query("rollback");
+        return { active: false as const, status: "invalid", code: "device_mismatch" as const };
+      }
+      if (new Date(row.expires_at).getTime() <= Date.now()) {
+        await client.query("rollback");
+        return { active: false as const, status: "invalid", code: "invalid_token" as const };
+      }
 
-  const license = buildLicenseSummary({
-    status: row.status,
-    planKey: row.plan_key,
-    currentPeriodEnd: row.current_period_end,
-    cancelAtPeriodEnd: row.cancel_at_period_end,
-    graceUntil: row.grace_until,
-    features: row.features,
+      const license = buildLicenseSummary({
+        status: row.status,
+        planKey: row.plan_key,
+        currentPeriodEnd: row.current_period_end,
+        cancelAtPeriodEnd: row.cancel_at_period_end,
+        graceUntil: row.grace_until,
+        features: row.features,
+      });
+      if (!license.active) {
+        await client.query("rollback");
+        return {
+          active: false as const,
+          status: license.status,
+          code: "license_inactive" as const,
+          license,
+        };
+      }
+
+      const binding = await lockAccountDeviceBinding(client, {
+        accountId: row.account_id,
+        namespace: environment.namespace,
+        requestedDeviceIdHash: deviceIdHash,
+        purpose: "credential",
+        claimEmpty: !row.revoked_at,
+        credentialCreatedAt: row.created_at,
+        appVersion: row.activation_app_version,
+        buildChannel: row.activation_build_channel,
+      });
+      if (!binding.allowed) {
+        await client.query("commit");
+        return { active: false as const, status: "invalid", code: binding.code };
+      }
+      if (row.revoked_at) {
+        await client.query("commit");
+        return { active: false as const, status: "invalid", code: "revoked" as const };
+      }
+
+      const legacyTokenExpiresAt = needsLegacyLicenseCompatibility(row.activation_app_version)
+        ? addDays(new Date(), LEGACY_LICENSE_TOKEN_TTL_DAYS).toISOString()
+        : "";
+      const updated = await client.query<{ expires_at: Date | string }>(
+        `
+          update public.sidestream_license_tokens
+          set last_seen_at = now(),
+              expires_at = case
+                when $2::timestamptz is not null then greatest(expires_at, $2::timestamptz)
+                else expires_at
+              end,
+              updated_at = now()
+          where id = $1
+            and revoked_at is null
+          returning expires_at
+        `,
+        [row.token_id, legacyTokenExpiresAt || null],
+      );
+      if (!updated.rows[0]) {
+        await client.query("rollback");
+        return { active: false as const, status: "invalid", code: "revoked" as const };
+      }
+
+      await client.query("commit");
+      return {
+        active: true as const,
+        status: license.status,
+        tokenExpiresAt: toIsoString(updated.rows[0].expires_at),
+        license,
+      };
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    }
   });
-  if (!license.active) {
-    return { active: false as const, status: license.status, code: "license_inactive" as const, license };
-  }
-
-  const legacyTokenExpiresAt = needsLegacyLicenseCompatibility(row.activation_app_version)
-    ? addDays(new Date(), LEGACY_LICENSE_TOKEN_TTL_DAYS).toISOString()
-    : "";
-  const updated = await query<{ expires_at: Date | string }>(
-    `
-      update public.sidestream_license_tokens
-      set last_seen_at = now(),
-          expires_at = case
-            when $2::timestamptz is not null then greatest(expires_at, $2::timestamptz)
-            else expires_at
-          end,
-          updated_at = now()
-      where id = $1
-      returning expires_at
-    `,
-    [row.token_id, legacyTokenExpiresAt || null],
-  );
-
-  return {
-    active: true as const,
-    status: license.status,
-    tokenExpiresAt: toIsoString(updated.rows[0]?.expires_at || row.expires_at),
-    license,
-  };
 }
 
 export async function recordStripeEvent(
@@ -1667,7 +1859,15 @@ export async function upsertLicenseFromSubscription(
         current_period_end = excluded.current_period_end,
         cancel_at_period_end = excluded.cancel_at_period_end,
         grace_until = excluded.grace_until,
-        features = excluded.features,
+        features = excluded.features || case
+          when sidestream_licenses.account_id = excluded.account_id
+            and sidestream_licenses.features ? 'singleDevicePolicy'
+            then jsonb_build_object(
+              'singleDevicePolicy',
+              sidestream_licenses.features -> 'singleDevicePolicy'
+            )
+          else '{}'::jsonb
+        end,
         updated_at = now()
     `,
     [
@@ -1895,7 +2095,15 @@ async function upsertLicenseFromOneTimeCheckoutSession(options: {
         current_period_end = excluded.current_period_end,
         cancel_at_period_end = excluded.cancel_at_period_end,
         grace_until = excluded.grace_until,
-        features = excluded.features,
+        features = excluded.features || case
+          when sidestream_licenses.account_id = excluded.account_id
+            and sidestream_licenses.features ? 'singleDevicePolicy'
+            then jsonb_build_object(
+              'singleDevicePolicy',
+              sidestream_licenses.features -> 'singleDevicePolicy'
+            )
+          else '{}'::jsonb
+        end,
         updated_at = now()
       returning id
     `,
@@ -1985,7 +2193,45 @@ function getPool() {
   return pool;
 }
 
+function requireMatchingLicenseEnvironment(
+  environmentInput?: ResolvedLicenseEnvironment,
+) {
+  const trustedServerEnvironment = resolveLicenseEnvironment({
+    serverEnv: process.env,
+  });
+  const environment = environmentInput || trustedServerEnvironment;
+  if (!environment) {
+    throw new Error("Unable to resolve the trusted Sidestream license environment");
+  }
+  if (
+    trustedServerEnvironment &&
+    environment.namespace !== trustedServerEnvironment.namespace
+  ) {
+    throw new Error("License namespace does not match trusted deployment state");
+  }
+
+  const configuredConnectionString = normalizeConnectionString(
+    requirePostgresConnectionString(),
+  );
+  const selectedConnectionString = normalizeConnectionString(
+    environment.database.connectionString,
+  );
+  if (configuredConnectionString !== selectedConnectionString) {
+    throw new Error("License namespace database does not match the configured server database");
+  }
+  return environment;
+}
+
 function requirePostgresConnectionString() {
+  const environment = resolveLicenseEnvironment({ serverEnv: process.env });
+  if (environment) return environment.database.connectionString;
+  if (
+    getValidEnvValue("SIDESTREAM_LICENSE_NAMESPACE") ||
+    getValidEnvValue("VERCEL_ENV")
+  ) {
+    throw new Error("Invalid or incomplete Sidestream license environment configuration");
+  }
+
   for (const name of POSTGRES_URL_ENV_NAMES) {
     const value = getValidEnvValue(name);
     if (value) return value;
@@ -2067,21 +2313,749 @@ function shouldGrantGrace(status: string) {
   return status === "past_due" || status === "unpaid";
 }
 
+type AccountDeviceRow = {
+  id: string;
+  device_id_hash: string;
+  activated_at: Date | string;
+  revoked_at: Date | string | null;
+  revocation_reason: DeviceRevocationReason | null;
+};
+
+type AccountDeviceBinding = {
+  allowed: true;
+  deviceGeneration: string;
+  activeDeviceId: string;
+  activeDeviceActivatedAt: Date | string;
+  bindingMatches: boolean;
+  observedErrorCode: DevicePolicyErrorCode | null;
+} | {
+  allowed: false;
+  code: DevicePolicyErrorCode;
+};
+
+function getAccountDeviceLockKey(accountId: string, namespace: DeviceNamespace) {
+  return `${ACCOUNT_DEVICE_LOCK_PREFIX}:${accountId}:${namespace}`;
+}
+
+async function lockAccountDeviceBinding(
+  client: PoolClient,
+  options: {
+    accountId: string;
+    namespace: DeviceNamespace;
+    requestedDeviceIdHash: string;
+    purpose: "activation" | "credential";
+    claimEmpty?: boolean;
+    touchLastSeen?: boolean;
+    credentialCreatedAt?: Date | string;
+    platform?: unknown;
+    appVersion?: unknown;
+    buildChannel?: unknown;
+    licenseFeatures?: Record<string, unknown> | null;
+  },
+): Promise<AccountDeviceBinding> {
+  await client.query("select pg_advisory_xact_lock(hashtext($1))", [
+    getAccountDeviceLockKey(options.accountId, options.namespace),
+  ]);
+
+  let activeResult = await client.query<AccountDeviceRow>(
+    `
+      select id, device_id_hash, activated_at, revoked_at, revocation_reason
+      from public.sidestream_account_devices
+      where account_id = $1
+        and license_namespace = $2
+        and revoked_at is null
+      order by activated_at desc, id desc
+      limit 1
+      for update
+    `,
+    [options.accountId, options.namespace],
+  );
+  let activeDevice = activeResult.rows[0] || null;
+
+  let latestRequestedResult = await client.query<AccountDeviceRow>(
+    `
+      select id, device_id_hash, activated_at, revoked_at, revocation_reason
+      from public.sidestream_account_devices
+      where account_id = $1
+        and license_namespace = $2
+        and device_id_hash = $3
+      order by activated_at desc, id desc
+      limit 1
+      for update
+    `,
+    [options.accountId, options.namespace, options.requestedDeviceIdHash],
+  );
+  let latestRequestedDevice = latestRequestedResult.rows[0] || null;
+
+  if (
+    !activeDevice &&
+    options.claimEmpty !== false &&
+    !(options.purpose === "credential" && latestRequestedDevice?.revoked_at)
+  ) {
+    if (options.purpose === "activation") {
+      const transferLimit = await getEmptySlotTransferLimitState(client, {
+        accountId: options.accountId,
+        namespace: options.namespace,
+        requestedDeviceIdHash: options.requestedDeviceIdHash,
+        licenseFeatures: options.licenseFeatures,
+      });
+      if (!transferLimit.allowed) {
+        return {
+          allowed: false,
+          code: DEVICE_POLICY_ERROR_CODES.TRANSFER_LIMIT_REACHED,
+        };
+      }
+    }
+    const platform = normalizeDevicePlatform(options.platform);
+    const appVersion = normalizeRegistryAppVersion(options.appVersion);
+    const buildChannel = getLicenseDiagnosticMetadata({
+      buildChannel: options.buildChannel,
+    }).buildChannel;
+    const activatedAt = options.purpose === "credential"
+      ? toIsoString(options.credentialCreatedAt)
+      : "";
+    await client.query(
+      `
+        insert into public.sidestream_account_devices (
+          account_id,
+          license_namespace,
+          device_id_hash,
+          platform,
+          app_version,
+          build_channel,
+          activated_at,
+          last_seen_at
+        )
+        select $1, $2, $3, $4, $5, $6, coalesce($7::timestamptz, now()), now()
+        where not exists (
+          select 1
+          from public.sidestream_account_devices
+          where account_id = $1
+            and license_namespace = $2
+            and revoked_at is null
+        )
+        on conflict do nothing
+      `,
+      [
+        options.accountId,
+        options.namespace,
+        options.requestedDeviceIdHash,
+        platform,
+        appVersion,
+        buildChannel,
+        activatedAt || null,
+      ],
+    );
+    activeResult = await client.query<AccountDeviceRow>(
+      `
+        select id, device_id_hash, activated_at, revoked_at, revocation_reason
+        from public.sidestream_account_devices
+        where account_id = $1
+          and license_namespace = $2
+          and revoked_at is null
+        order by activated_at desc, id desc
+        limit 1
+        for update
+      `,
+      [options.accountId, options.namespace],
+    );
+    activeDevice = activeResult.rows[0] || null;
+    latestRequestedResult = await client.query<AccountDeviceRow>(
+      `
+        select id, device_id_hash, activated_at, revoked_at, revocation_reason
+        from public.sidestream_account_devices
+        where account_id = $1
+          and license_namespace = $2
+          and device_id_hash = $3
+        order by activated_at desc, id desc
+        limit 1
+        for update
+      `,
+      [options.accountId, options.namespace, options.requestedDeviceIdHash],
+    );
+    latestRequestedDevice = latestRequestedResult.rows[0] || null;
+  }
+
+  if (!activeDevice) {
+    const credentialDecision = evaluateDeviceCredentialBinding({
+      namespace: options.namespace,
+      requestedDeviceIdHash: options.requestedDeviceIdHash,
+      activeDevice: null,
+      latestRequestedDevice: latestRequestedDevice
+        ? mapAccountDevicePolicyRecord(options.namespace, latestRequestedDevice)
+        : null,
+      credentialCreatedAt: options.credentialCreatedAt || new Date(0),
+      mode: process.env[DEVICE_POLICY_MODE_ENV],
+    });
+    const code = credentialDecision.publicErrorCode ||
+      DEVICE_POLICY_ERROR_CODES.DEVICE_DEACTIVATED;
+    return { allowed: false, code };
+  }
+
+  const activePolicyRecord = mapAccountDevicePolicyRecord(options.namespace, activeDevice);
+  const latestRequestedPolicyRecord = latestRequestedDevice
+    ? mapAccountDevicePolicyRecord(options.namespace, latestRequestedDevice)
+    : null;
+  const policyMode = resolveDevicePolicyMode(process.env[DEVICE_POLICY_MODE_ENV]);
+  let bindingMatches = false;
+  let observedErrorCode: DevicePolicyErrorCode | null = null;
+
+  if (options.purpose === "activation") {
+    if (
+      latestRequestedDevice?.revoked_at &&
+      !safeEqual(activeDevice.device_id_hash, options.requestedDeviceIdHash)
+    ) {
+      return {
+        allowed: false,
+        code: getDeviceRevocationErrorCode(
+          latestRequestedDevice.revocation_reason === "deactivated"
+            ? "deactivated"
+            : "replaced",
+        ),
+      };
+    }
+    const activationDecision = decideDeviceActivation({
+      namespace: options.namespace,
+      requestedDeviceIdHash: options.requestedDeviceIdHash,
+      activeDevice: activePolicyRecord,
+    });
+    bindingMatches = activationDecision.decision !== "transfer_required";
+    const policy = applyDevicePolicyMode({
+      mode: policyMode,
+      errorCode: activationDecision.errorCode,
+    });
+    if (!policy.allowed) {
+      return {
+        allowed: false,
+        code: policy.publicErrorCode || DEVICE_POLICY_ERROR_CODES.TRANSFER_REQUIRED,
+      };
+    }
+    observedErrorCode = policy.observedErrorCode;
+  } else {
+    const credentialDecision = evaluateDeviceCredentialBinding({
+      namespace: options.namespace,
+      requestedDeviceIdHash: options.requestedDeviceIdHash,
+      activeDevice: activePolicyRecord,
+      latestRequestedDevice: latestRequestedPolicyRecord,
+      credentialCreatedAt: options.credentialCreatedAt || new Date(0),
+      activeDeviceActivatedAt: activeDevice.activated_at,
+      mode: policyMode,
+    });
+    if (!credentialDecision.allowed) {
+      return {
+        allowed: false,
+        code: credentialDecision.publicErrorCode ||
+          DEVICE_POLICY_ERROR_CODES.DEVICE_REPLACED,
+      };
+    }
+    bindingMatches = safeEqual(activeDevice.device_id_hash, options.requestedDeviceIdHash);
+    observedErrorCode = credentialDecision.observedErrorCode;
+  }
+
+  if (observedErrorCode) {
+    recordDevicePolicyObservation({
+      accountId: options.accountId,
+      namespace: options.namespace,
+      requestedDeviceIdHash: options.requestedDeviceIdHash,
+      stage: options.purpose,
+      code: observedErrorCode,
+    });
+  }
+
+  if (bindingMatches && options.touchLastSeen !== false) {
+    await client.query(
+      `
+        update public.sidestream_account_devices
+        set last_seen_at = greatest(last_seen_at, now()),
+            platform = case when platform = 'unknown' then $2 else platform end,
+            app_version = coalesce($3, app_version),
+            build_channel = coalesce($4, build_channel)
+        where id = $1
+          and revoked_at is null
+      `,
+      [
+        activeDevice.id,
+        normalizeDevicePlatform(options.platform),
+        normalizeRegistryAppVersion(options.appVersion),
+        getLicenseDiagnosticMetadata({ buildChannel: options.buildChannel }).buildChannel,
+      ],
+    );
+  }
+
+  const generation = await client.query<{ device_generation: string }>(
+    `
+      select count(*)::text as device_generation
+      from public.sidestream_account_devices
+      where account_id = $1
+        and license_namespace = $2
+    `,
+    [options.accountId, options.namespace],
+  );
+  const deviceGeneration = generation.rows[0]?.device_generation || "";
+  if (!/^[1-9][0-9]*$/.test(deviceGeneration)) {
+    throw new Error("Unable to resolve account device generation");
+  }
+
+  return {
+    allowed: true,
+    deviceGeneration,
+    activeDeviceId: activeDevice.id,
+    activeDeviceActivatedAt: activeDevice.activated_at,
+    bindingMatches,
+    observedErrorCode,
+  };
+}
+
+async function getEmptySlotTransferLimitState(
+  client: PoolClient,
+  options: {
+    accountId: string;
+    namespace: DeviceNamespace;
+    requestedDeviceIdHash: string;
+    licenseFeatures?: Record<string, unknown> | null;
+  },
+) {
+  const devices = await client.query<{
+    id: string;
+    device_id_hash: string;
+    activated_at: Date | string;
+  }>(
+    `
+      select id, device_id_hash, activated_at
+      from public.sidestream_account_devices
+      where account_id = $1
+        and license_namespace = $2
+      order by activated_at asc, id asc
+    `,
+    [options.accountId, options.namespace],
+  );
+  const latestDevice = devices.rows.at(-1);
+  if (
+    !latestDevice ||
+    safeEqual(latestDevice.device_id_hash, options.requestedDeviceIdHash)
+  ) {
+    return { allowed: true as const };
+  }
+
+  const transfers = await client.query<{
+    from_device_id: string;
+    to_device_id: string;
+    transferred_at: Date | string;
+  }>(
+    `
+      select from_device_id, to_device_id, transferred_at
+      from public.sidestream_device_transfers
+      where account_id = $1
+        and license_namespace = $2
+      order by transferred_at asc, id asc
+    `,
+    [options.accountId, options.namespace],
+  );
+  const nowMs = Date.now();
+  return evaluateDeviceTransferLimit({
+    transferTimestampsMs: getConfirmedDeviceMoveTimestamps({
+      devices: devices.rows.map((device) => ({
+        id: device.id,
+        deviceIdHash: device.device_id_hash,
+        activatedAt: device.activated_at,
+      })),
+      transfers: transfers.rows.map((transfer) => ({
+        fromDeviceId: transfer.from_device_id,
+        toDeviceId: transfer.to_device_id,
+        transferredAt: transfer.transferred_at,
+      })),
+    }),
+    nowMs,
+    configuredLimit: getDeviceTransferLimitOverride(
+      options.licenseFeatures,
+      options.namespace,
+      nowMs,
+    ),
+  });
+}
+
+function mapAccountDevicePolicyRecord(
+  namespace: DeviceNamespace,
+  row: AccountDeviceRow,
+) {
+  return {
+    namespace,
+    deviceIdHash: row.device_id_hash,
+    revokedAt: row.revoked_at,
+    revocationReason: row.revocation_reason,
+  } as const;
+}
+
+function normalizeRegistryAppVersion(value: unknown) {
+  const appVersion = cleanString(value, 64);
+  return /^[0-9A-Za-z][0-9A-Za-z._+-]{0,63}$/.test(appVersion)
+    ? appVersion
+    : null;
+}
+
+function recordDevicePolicyObservation(options: {
+  accountId: string;
+  namespace: DeviceNamespace;
+  requestedDeviceIdHash: string;
+  stage: "activation" | "credential";
+  code: DevicePolicyErrorCode;
+}) {
+  const accountReference = createHash("sha256")
+    .update(`device-policy-account:${options.accountId}`)
+    .digest("hex")
+    .slice(0, 16);
+  console.warn("sidestream_device_policy_observation", {
+    accountReference,
+    namespace: options.namespace,
+    requestedDeviceReference: options.requestedDeviceIdHash.slice(0, 16),
+    stage: options.stage,
+    code: options.code,
+  });
+}
+
+type DownloadAuthorizationCredentialRow = {
+  token_id: string;
+  account_id: string;
+  device_id_hash: string | null;
+  created_at: Date | string;
+  expires_at: Date | string;
+  refresh_token_hash: string | null;
+  refresh_expires_at: Date | string | null;
+  revoked_at: Date | string | null;
+  status: string | null;
+  plan_key: string | null;
+  current_period_end: Date | string | null;
+  cancel_at_period_end: boolean | null;
+  grace_until: Date | string | null;
+  features: Record<string, unknown> | null;
+};
+
+type DownloadAuthorizationFailureCode =
+  | typeof DEVICE_POLICY_ERROR_CODES.DEVICE_REPLACED
+  | typeof DEVICE_POLICY_ERROR_CODES.DEVICE_DEACTIVATED
+  | "license_inactive";
+
+function deniedDownloadAuthorization(code: DownloadAuthorizationFailureCode) {
+  return { active: false as const, code };
+}
+
+export async function authorizeLicenseDownload(options: {
+  licenseToken: string;
+  deviceId: string;
+  environment: ResolvedLicenseEnvironment;
+}) {
+  const environment = requireMatchingLicenseEnvironment(options.environment);
+  if (!options.licenseToken || !options.deviceId) {
+    return deniedDownloadAuthorization(
+      DEVICE_POLICY_ERROR_CODES.DEVICE_DEACTIVATED,
+    );
+  }
+
+  const tokenHash = hashToken(options.licenseToken);
+  const deviceIdHash = hashPrivateIdentifier(options.deviceId);
+  const accountLookup = await query<{ account_id: string }>(
+    `
+      select account_id
+      from public.sidestream_license_tokens
+      where token_hash = $1
+      order by created_at desc
+      limit 1
+    `,
+    [tokenHash],
+  );
+  const accountId = accountLookup.rows[0]?.account_id;
+  if (!accountId) {
+    return deniedDownloadAuthorization(
+      DEVICE_POLICY_ERROR_CODES.DEVICE_DEACTIVATED,
+    );
+  }
+
+  return withPgClient(async (client) => {
+    await client.query("begin");
+    try {
+      await client.query("select pg_advisory_xact_lock(hashtext($1))", [
+        getAccountDeviceLockKey(accountId, environment.namespace),
+      ]);
+      const selected = await client.query<DownloadAuthorizationCredentialRow>(
+        `
+          select
+            t.id as token_id,
+            t.account_id,
+            t.device_id_hash,
+            t.created_at,
+            t.expires_at,
+            t.refresh_token_hash,
+            t.refresh_expires_at,
+            t.revoked_at,
+            l.status,
+            l.plan_key,
+            l.current_period_end,
+            l.cancel_at_period_end,
+            l.grace_until,
+            l.features
+          from public.sidestream_license_tokens t
+          join public.sidestream_licenses l on l.id = t.license_id
+          where t.token_hash = $1
+            and t.account_id = $2
+          limit 1
+          for update of t
+        `,
+        [tokenHash, accountId],
+      );
+      const credential = selected.rows[0];
+      if (!credential) {
+        await client.query("rollback");
+        return deniedDownloadAuthorization(
+          DEVICE_POLICY_ERROR_CODES.DEVICE_DEACTIVATED,
+        );
+      }
+      if (!matchesDeviceHash(credential.device_id_hash, deviceIdHash)) {
+        await client.query("rollback");
+        return deniedDownloadAuthorization(
+          DEVICE_POLICY_ERROR_CODES.DEVICE_REPLACED,
+        );
+      }
+
+      const license = buildLicenseSummary({
+        status: credential.status,
+        planKey: credential.plan_key,
+        currentPeriodEnd: credential.current_period_end,
+        cancelAtPeriodEnd: credential.cancel_at_period_end,
+        graceUntil: credential.grace_until,
+        features: credential.features,
+      });
+      if (!license.active) {
+        await client.query("rollback");
+        return deniedDownloadAuthorization("license_inactive");
+      }
+
+      const binding = await lockAccountDeviceBinding(client, {
+        accountId: credential.account_id,
+        namespace: environment.namespace,
+        requestedDeviceIdHash: deviceIdHash,
+        purpose: "credential",
+        claimEmpty: false,
+        touchLastSeen: false,
+        credentialCreatedAt: credential.created_at,
+      });
+      if (!binding.allowed) {
+        await client.query("commit");
+        return deniedDownloadAuthorization(
+          binding.code === DEVICE_POLICY_ERROR_CODES.DEVICE_DEACTIVATED
+            ? DEVICE_POLICY_ERROR_CODES.DEVICE_DEACTIVATED
+            : DEVICE_POLICY_ERROR_CODES.DEVICE_REPLACED,
+        );
+      }
+      if (!binding.bindingMatches) {
+        await client.query("commit");
+        return deniedDownloadAuthorization(
+          DEVICE_POLICY_ERROR_CODES.DEVICE_REPLACED,
+        );
+      }
+
+      const now = Date.now();
+      const familyIsCurrent = !credential.revoked_at &&
+        new Date(credential.expires_at).getTime() > now &&
+        Boolean(credential.refresh_token_hash) &&
+        credential.refresh_expires_at !== null &&
+        new Date(credential.refresh_expires_at).getTime() > now;
+      if (!familyIsCurrent) {
+        await client.query("commit");
+        return deniedDownloadAuthorization(
+          DEVICE_POLICY_ERROR_CODES.DEVICE_DEACTIVATED,
+        );
+      }
+
+      const touched = await client.query(
+        `
+          update public.sidestream_license_tokens
+          set last_seen_at = now(), updated_at = now()
+          where id = $1
+            and token_hash = $2
+            and refresh_token_hash is not null
+            and revoked_at is null
+            and expires_at > now()
+            and refresh_expires_at > now()
+        `,
+        [credential.token_id, tokenHash],
+      );
+      if (touched.rowCount !== 1) {
+        await client.query("rollback");
+        return deniedDownloadAuthorization(
+          DEVICE_POLICY_ERROR_CODES.DEVICE_DEACTIVATED,
+        );
+      }
+      await client.query(
+        `
+          update public.sidestream_account_devices
+          set last_seen_at = greatest(last_seen_at, now())
+          where id = $1
+            and account_id = $2
+            and license_namespace = $3
+            and revoked_at is null
+        `,
+        [binding.activeDeviceId, credential.account_id, environment.namespace],
+      );
+
+      await client.query("commit");
+      return { active: true as const };
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    }
+  });
+}
+
+export async function getAccountDeviceStatus(
+  accountId: string,
+  environmentInput: ResolvedLicenseEnvironment,
+) {
+  const environment = requireMatchingLicenseEnvironment(environmentInput);
+  if (!accountId) throw new TypeError("Invalid account device status identity");
+
+  const result = await query<{
+    platform: DevicePlatform;
+    activated_at: Date | string;
+    last_seen_at: Date | string;
+  }>(
+    `
+      select platform, activated_at, last_seen_at
+      from public.sidestream_account_devices
+      where account_id = $1
+        and license_namespace = $2
+        and revoked_at is null
+      order by activated_at desc, id desc
+      limit 1
+    `,
+    [accountId, environment.namespace],
+  );
+  const device = result.rows[0];
+  if (!device) return { active: false as const, device: null };
+
+  return {
+    active: true as const,
+    device: {
+      platform: normalizeDevicePlatform(device.platform),
+      activatedAt: toIsoString(device.activated_at),
+      lastSeenAt: toIsoString(device.last_seen_at),
+    },
+  };
+}
+
+export async function deactivateAccountDevice(options: {
+  accountId: string;
+  environment: ResolvedLicenseEnvironment;
+}) {
+  const environment = requireMatchingLicenseEnvironment(options.environment);
+  if (!options.accountId) throw new TypeError("Invalid account device identity");
+
+  return withPgClient(async (client) => {
+    await client.query("begin");
+    try {
+      await client.query("select pg_advisory_xact_lock(hashtext($1))", [
+        getAccountDeviceLockKey(options.accountId, environment.namespace),
+      ]);
+      const selected = await client.query<{ id: string }>(
+        `
+          select id
+          from public.sidestream_account_devices
+          where account_id = $1
+            and license_namespace = $2
+            and revoked_at is null
+          order by activated_at desc, id desc
+          limit 1
+          for update
+        `,
+        [options.accountId, environment.namespace],
+      );
+      const activeDeviceId = selected.rows[0]?.id || "";
+      if (activeDeviceId) {
+        const revokedDevice = await client.query(
+          `
+            update public.sidestream_account_devices
+            set revoked_at = now(), revocation_reason = 'deactivated'
+            where id = $1
+              and account_id = $2
+              and license_namespace = $3
+              and revoked_at is null
+          `,
+          [activeDeviceId, options.accountId, environment.namespace],
+        );
+        if (revokedDevice.rowCount !== 1) {
+          throw new Error("Account device deactivation compare-and-swap failed");
+        }
+      }
+
+      await client.query(
+        `
+          update public.sidestream_license_tokens
+          set revoked_at = coalesce(revoked_at, now()), updated_at = now()
+          where account_id = $1
+            and revoked_at is null
+        `,
+        [options.accountId],
+      );
+      await client.query("commit");
+      return {
+        active: false as const,
+        deactivated: Boolean(activeDeviceId),
+      };
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    }
+  });
+}
+
+async function checkActivationDeviceBinding(options: {
+  accountId: string;
+  environment: ResolvedLicenseEnvironment;
+  deviceIdHash: string;
+  platform?: unknown;
+  appVersion?: unknown;
+  buildChannel?: unknown;
+  previouslyIssuedAt?: Date | string | null;
+  licenseFeatures?: Record<string, unknown> | null;
+}) {
+  return withPgClient(async (client) => {
+    await client.query("begin");
+    try {
+      const binding = await lockAccountDeviceBinding(client, {
+        accountId: options.accountId,
+        namespace: options.environment.namespace,
+        requestedDeviceIdHash: options.deviceIdHash,
+        purpose: options.previouslyIssuedAt ? "credential" : "activation",
+        credentialCreatedAt: options.previouslyIssuedAt || undefined,
+        platform: options.platform,
+        appVersion: options.appVersion,
+        buildChannel: options.buildChannel,
+        licenseFeatures: options.licenseFeatures,
+      });
+      await client.query("commit");
+      return binding;
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    }
+  });
+}
+
 async function issueLicenseTokenPair(options: {
   activationId: string;
   activationKey: string;
   accountId: string;
   licenseId: string;
   deviceId: string;
+  environment: ResolvedLicenseEnvironment;
+  platform?: unknown;
+  appVersion?: unknown;
+  buildChannel?: unknown;
+  previouslyIssuedAt?: Date | string | null;
   accessTokenTtlDays?: number;
 }) {
   if (!options.deviceId) throw new Error("Cannot issue a device-less refresh credential");
 
-  const tokens = deriveActivationTokenPair(
-    options.activationKey,
-    options.deviceId,
-    getPrivateServerSecret(),
-  );
+  const environment = requireMatchingLicenseEnvironment(options.environment);
   const deviceIdHash = hashPrivateIdentifier(options.deviceId);
   const tokenExpiresAt = addDays(
     new Date(),
@@ -2091,10 +3065,41 @@ async function issueLicenseTokenPair(options: {
   return withPgClient(async (client) => {
     await client.query("begin");
     try {
+      const binding = await lockAccountDeviceBinding(client, {
+        accountId: options.accountId,
+        namespace: environment.namespace,
+        requestedDeviceIdHash: deviceIdHash,
+        purpose: options.previouslyIssuedAt ? "credential" : "activation",
+        credentialCreatedAt: options.previouslyIssuedAt || undefined,
+        platform: options.platform,
+        appVersion: options.appVersion,
+        buildChannel: options.buildChannel,
+      });
+      if (!binding.allowed) {
+        await client.query("commit");
+        return { issued: false as const, code: binding.code };
+      }
+
       await client.query("select pg_advisory_xact_lock(hashtext($1))", [
         `activation_token:${options.activationId}`,
       ]);
+      const deviceScope: CredentialDeviceScope = {
+        licenseNamespace: environment.namespace,
+        deviceGeneration: binding.deviceGeneration,
+      };
+      const tokens = deriveActivationTokenPair(
+        options.activationKey,
+        options.deviceId,
+        getPrivateServerSecret(),
+        deviceScope,
+      );
+      const legacyTokens = deriveActivationTokenPair(
+        options.activationKey,
+        options.deviceId,
+        getPrivateServerSecret(),
+      );
       const existing = await client.query<{
+        token_id: string;
         token_hash: string;
         refresh_token_hash: string;
         expires_at: Date | string;
@@ -2102,44 +3107,58 @@ async function issueLicenseTokenPair(options: {
         revoked_at: Date | string | null;
       }>(
         `
-          select token_hash, refresh_token_hash, expires_at, refresh_expires_at, revoked_at
+          select
+            id as token_id,
+            token_hash,
+            refresh_token_hash,
+            expires_at,
+            refresh_expires_at,
+            revoked_at
           from public.sidestream_license_tokens
           where activation_session_id = $1
             and device_id_hash = $2
+            and created_at >= $3::timestamptz
             and refresh_token_hash is not null
           order by created_at asc
           limit 1
           for update
         `,
-        [options.activationId, deviceIdHash],
+        [options.activationId, deviceIdHash, toIsoString(binding.activeDeviceActivatedAt)],
       );
       const row = existing.rows[0];
       if (row) {
+        const replayTokens = [tokens, legacyTokens].find((candidate) =>
+          safeEqual(row.token_hash, hashToken(candidate.licenseToken)) &&
+          safeEqual(row.refresh_token_hash, hashToken(candidate.refreshToken))
+        );
         if (
           !row.revoked_at &&
-          safeEqual(row.token_hash, hashToken(tokens.licenseToken)) &&
-          safeEqual(row.refresh_token_hash, hashToken(tokens.refreshToken))
+          replayTokens
         ) {
           const extended = await client.query<{ expires_at: Date | string }>(
             `
               update public.sidestream_license_tokens
               set expires_at = greatest(expires_at, $2::timestamptz), updated_at = now()
-              where activation_session_id = $1
-                and device_id_hash = $3
-                and refresh_token_hash is not null
+              where id = $1
+                and revoked_at is null
               returning expires_at
             `,
-            [options.activationId, tokenExpiresAt, deviceIdHash],
+            [row.token_id, tokenExpiresAt],
           );
+          if (!extended.rows[0]) {
+            await client.query("rollback");
+            return { issued: false as const, code: "revoked" as const };
+          }
           await client.query("commit");
           return {
-            ...tokens,
+            issued: true as const,
+            ...replayTokens,
             tokenExpiresAt: toIsoString(extended.rows[0]?.expires_at || row.expires_at),
             refreshExpiresAt: toIsoString(row.refresh_expires_at),
           };
         }
         await client.query("commit");
-        return null;
+        return { issued: false as const, code: null };
       }
 
       const refreshExpiresAt = addDays(new Date(), REFRESH_TOKEN_TTL_DAYS).toISOString();
@@ -2171,7 +3190,12 @@ async function issueLicenseTokenPair(options: {
         ],
       );
       await client.query("commit");
-      return { ...tokens, tokenExpiresAt, refreshExpiresAt };
+      return {
+        issued: true as const,
+        ...tokens,
+        tokenExpiresAt,
+        refreshExpiresAt,
+      };
     } catch (error) {
       await client.query("rollback");
       throw error;
@@ -2185,9 +3209,14 @@ type RefreshCredentialRow = {
   license_id: string;
   activation_session_id: string | null;
   device_id_hash: string;
+  token_hash: string;
+  refresh_token_hash: string;
   revoked_at: Date | string | null;
+  created_at: Date | string;
   refresh_expires_at: Date | string;
   expires_at: Date | string;
+  activation_app_version: string | null;
+  activation_build_channel: string | null;
   status: string | null;
   plan_key: string | null;
   current_period_end: Date | string | null;
@@ -2199,17 +3228,42 @@ type RefreshCredentialRow = {
 export async function refreshLicenseToken(
   refreshToken: string,
   deviceId: string,
+  environmentInput?: ResolvedLicenseEnvironment,
 ) {
   if (!refreshToken || !deviceId) {
     return { active: false as const, status: "invalid", code: "invalid_token" as const };
   }
 
+  const environment = requireMatchingLicenseEnvironment(environmentInput);
   const refreshTokenHash = hashToken(refreshToken);
   const deviceIdHash = hashPrivateIdentifier(deviceId);
+  const accountLookup = await query<{ account_id: string }>(
+    `
+      select account_id
+      from public.sidestream_license_tokens
+      where refresh_token_hash = $1
+        or (
+          previous_refresh_token_hash = $1
+          and previous_refresh_valid_until > now()
+        )
+      order by
+        case when previous_refresh_token_hash = $1 and revoked_at is null then 0 else 1 end,
+        created_at desc
+      limit 1
+    `,
+    [refreshTokenHash],
+  );
+  const accountId = accountLookup.rows[0]?.account_id;
+  if (!accountId) {
+    return { active: false as const, status: "invalid", code: "invalid_token" as const };
+  }
 
   return withPgClient(async (client) => {
     await client.query("begin");
     try {
+      await client.query("select pg_advisory_xact_lock(hashtext($1))", [
+        getAccountDeviceLockKey(accountId, environment.namespace),
+      ]);
       const selected = await client.query<RefreshCredentialRow>(
         `
           select
@@ -2218,9 +3272,14 @@ export async function refreshLicenseToken(
             t.license_id,
             t.activation_session_id,
             t.device_id_hash,
+            t.token_hash,
+            t.refresh_token_hash,
             t.revoked_at,
+            t.created_at,
             t.refresh_expires_at,
             t.expires_at,
+            a.app_version as activation_app_version,
+            a.build_channel as activation_build_channel,
             l.status,
             l.plan_key,
             l.current_period_end,
@@ -2229,11 +3288,13 @@ export async function refreshLicenseToken(
             l.features
           from public.sidestream_license_tokens t
           join public.sidestream_licenses l on l.id = t.license_id
+          left join public.sidestream_activation_sessions a on a.id = t.activation_session_id
           where t.refresh_token_hash = $1
+            and t.account_id = $2
           limit 1
           for update of t
         `,
-        [refreshTokenHash],
+        [refreshTokenHash, accountId],
       );
       const current = selected.rows[0];
 
@@ -2242,8 +3303,8 @@ export async function refreshLicenseToken(
         return { active: false as const, status: "invalid", code: "device_mismatch" as const };
       }
 
-      if (!current || current.revoked_at) {
-        const replay = await client.query<RefreshCredentialRow>(
+      const replay = !current || current.revoked_at
+        ? await client.query<RefreshCredentialRow>(
           `
             select
               t.id as token_id,
@@ -2251,9 +3312,14 @@ export async function refreshLicenseToken(
               t.license_id,
               t.activation_session_id,
               t.device_id_hash,
+              t.token_hash,
+              t.refresh_token_hash,
               t.revoked_at,
+              t.created_at,
               t.refresh_expires_at,
               t.expires_at,
+              a.app_version as activation_app_version,
+              a.build_channel as activation_build_channel,
               l.status,
               l.plan_key,
               l.current_period_end,
@@ -2262,86 +3328,135 @@ export async function refreshLicenseToken(
               l.features
             from public.sidestream_license_tokens t
             join public.sidestream_licenses l on l.id = t.license_id
+            left join public.sidestream_activation_sessions a on a.id = t.activation_session_id
             where t.previous_refresh_token_hash = $1
+              and t.account_id = $2
               and t.previous_refresh_valid_until > now()
               and t.revoked_at is null
               and t.refresh_expires_at > now()
             limit 1
             for update of t
           `,
-          [refreshTokenHash],
-        );
-        const replayRow = replay.rows[0];
-        if (replayRow) {
-          if (!matchesDeviceHash(replayRow.device_id_hash, deviceIdHash)) {
-            await client.query("rollback");
-            return { active: false as const, status: "invalid", code: "device_mismatch" as const };
-          }
-          const license = buildLicenseSummary({
-            status: replayRow.status,
-            planKey: replayRow.plan_key,
-            currentPeriodEnd: replayRow.current_period_end,
-            cancelAtPeriodEnd: replayRow.cancel_at_period_end,
-            graceUntil: replayRow.grace_until,
-            features: replayRow.features,
+          [refreshTokenHash, accountId],
+        )
+        : null;
+      const replayRow = replay?.rows[0] || null;
+      const credential = current && !current.revoked_at ? current : replayRow;
+      if (!credential) {
+        if (current) {
+          const revokedBinding = await lockAccountDeviceBinding(client, {
+            accountId: current.account_id,
+            namespace: environment.namespace,
+            requestedDeviceIdHash: deviceIdHash,
+            purpose: "credential",
+            claimEmpty: false,
+            credentialCreatedAt: current.created_at,
+            appVersion: current.activation_app_version,
+            buildChannel: current.activation_build_channel,
           });
-          if (!license.active) {
-            await client.query("rollback");
-            return { active: false as const, status: license.status, code: "license_inactive" as const, license };
-          }
-          const replayedTokens = deriveRefreshRotationTokens(
-            refreshToken,
-            getPrivateServerSecret(),
-          );
           await client.query("commit");
           return {
-            active: true as const,
-            status: license.status,
-            license,
-            ...replayedTokens,
-            tokenExpiresAt: toIsoString(replayRow.expires_at),
-            refreshExpiresAt: toIsoString(replayRow.refresh_expires_at),
+            active: false as const,
+            status: "invalid",
+            code: revokedBinding.allowed ? "revoked" as const : revokedBinding.code,
           };
         }
-
         await client.query("rollback");
-        return {
-          active: false as const,
-          status: "invalid",
-          code: current?.revoked_at ? "revoked" as const : "invalid_token" as const,
-        };
+        return { active: false as const, status: "invalid", code: "invalid_token" as const };
       }
 
-      if (new Date(current.refresh_expires_at).getTime() <= Date.now()) {
+      if (!matchesDeviceHash(credential.device_id_hash, deviceIdHash)) {
+        await client.query("rollback");
+        return { active: false as const, status: "invalid", code: "device_mismatch" as const };
+      }
+      if (new Date(credential.refresh_expires_at).getTime() <= Date.now()) {
         await client.query("rollback");
         return { active: false as const, status: "invalid", code: "invalid_token" as const };
       }
 
       const license = buildLicenseSummary({
-        status: current.status,
-        planKey: current.plan_key,
-        currentPeriodEnd: current.current_period_end,
-        cancelAtPeriodEnd: current.cancel_at_period_end,
-        graceUntil: current.grace_until,
-        features: current.features,
+        status: credential.status,
+        planKey: credential.plan_key,
+        currentPeriodEnd: credential.current_period_end,
+        cancelAtPeriodEnd: credential.cancel_at_period_end,
+        graceUntil: credential.grace_until,
+        features: credential.features,
       });
       if (!license.active) {
         await client.query(
-          `update public.sidestream_license_tokens set revoked_at = now(), updated_at = now() where id = $1`,
-          [current.token_id],
+          `
+            update public.sidestream_license_tokens
+            set revoked_at = coalesce(revoked_at, now()), updated_at = now()
+            where id = $1
+          `,
+          [credential.token_id],
         );
         await client.query("commit");
         return { active: false as const, status: license.status, code: "license_inactive" as const, license };
       }
 
-      const rotated = deriveRefreshRotationTokens(refreshToken, getPrivateServerSecret());
+      const binding = await lockAccountDeviceBinding(client, {
+        accountId: credential.account_id,
+        namespace: environment.namespace,
+        requestedDeviceIdHash: deviceIdHash,
+        purpose: "credential",
+        credentialCreatedAt: credential.created_at,
+        appVersion: credential.activation_app_version,
+        buildChannel: credential.activation_build_channel,
+      });
+      if (!binding.allowed) {
+        await client.query("commit");
+        return { active: false as const, status: "invalid", code: binding.code };
+      }
+
+      const deviceScope: CredentialDeviceScope = {
+        licenseNamespace: environment.namespace,
+        deviceGeneration: binding.deviceGeneration,
+      };
+      if (replayRow) {
+        const replayedTokens = [
+          deriveRefreshRotationTokens(refreshToken, getPrivateServerSecret(), deviceScope),
+          deriveRefreshRotationTokens(refreshToken, getPrivateServerSecret()),
+        ].find((candidate) =>
+          safeEqual(replayRow.token_hash, hashToken(candidate.licenseToken)) &&
+          safeEqual(replayRow.refresh_token_hash, hashToken(candidate.refreshToken))
+        );
+        if (!replayedTokens) {
+          await client.query("rollback");
+          return { active: false as const, status: "invalid", code: "invalid_token" as const };
+        }
+        await client.query("commit");
+        return {
+          active: true as const,
+          status: license.status,
+          license,
+          ...replayedTokens,
+          tokenExpiresAt: toIsoString(replayRow.expires_at),
+          refreshExpiresAt: toIsoString(replayRow.refresh_expires_at),
+        };
+      }
+
+      const rotated = deriveRefreshRotationTokens(
+        refreshToken,
+        getPrivateServerSecret(),
+        deviceScope,
+      );
       const tokenExpiresAt = addDays(new Date(), LICENSE_TOKEN_TTL_DAYS).toISOString();
       const refreshExpiresAt = addDays(new Date(), REFRESH_TOKEN_TTL_DAYS).toISOString();
 
-      await client.query(
-        `update public.sidestream_license_tokens set revoked_at = now(), updated_at = now() where id = $1`,
-        [current.token_id],
+      const revoked = await client.query(
+        `
+          update public.sidestream_license_tokens
+          set revoked_at = now(), updated_at = now()
+          where id = $1
+            and revoked_at is null
+        `,
+        [credential.token_id],
       );
+      if (revoked.rowCount !== 1) {
+        await client.query("rollback");
+        return { active: false as const, status: "invalid", code: "revoked" as const };
+      }
       await client.query(
         `
           insert into public.sidestream_license_tokens (
@@ -2365,9 +3480,9 @@ export async function refreshLicenseToken(
           )
         `,
         [
-          current.account_id,
-          current.license_id,
-          current.activation_session_id,
+          credential.account_id,
+          credential.license_id,
+          credential.activation_session_id,
           deviceIdHash,
           hashToken(rotated.licenseToken),
           tokenExpiresAt,
@@ -2386,6 +3501,165 @@ export async function refreshLicenseToken(
         ...rotated,
         tokenExpiresAt,
         refreshExpiresAt,
+      };
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    }
+  });
+}
+
+export async function confirmAccountDeviceTransfer(
+  options: ConfirmAccountDeviceTransferOptions,
+) {
+  const environment = requireMatchingLicenseEnvironment(options.environment);
+  if (
+    !/^[0-9a-f]{64}$/.test(options.expectedPriorDeviceIdHash) ||
+    !/^[0-9a-f]{64}$/.test(options.newDeviceIdHash) ||
+    !options.expectedPriorDeviceId ||
+    !options.accountId
+  ) {
+    throw new TypeError("Invalid account device transfer identity");
+  }
+  if (!["account", "support", "system"].includes(options.initiatedBy)) {
+    throw new TypeError("Invalid account device transfer initiator");
+  }
+  if (!["device_change", "lost_device", "support_override"].includes(options.transferReason)) {
+    throw new TypeError("Invalid account device transfer reason");
+  }
+
+  return withPgClient(async (client) => {
+    await client.query("begin");
+    try {
+      await client.query("select pg_advisory_xact_lock(hashtext($1))", [
+        getAccountDeviceLockKey(options.accountId, environment.namespace),
+      ]);
+      const selected = await client.query<AccountDeviceRow>(
+        `
+          select id, device_id_hash, activated_at, revoked_at, revocation_reason
+          from public.sidestream_account_devices
+          where account_id = $1
+            and license_namespace = $2
+            and revoked_at is null
+          order by activated_at desc, id desc
+          limit 1
+          for update
+        `,
+        [options.accountId, environment.namespace],
+      );
+      const priorDevice = selected.rows[0];
+      if (
+        !priorDevice ||
+        !safeEqual(priorDevice.id, options.expectedPriorDeviceId) ||
+        !safeEqual(priorDevice.device_id_hash, options.expectedPriorDeviceIdHash)
+      ) {
+        await client.query("commit");
+        return { transferred: false as const, reason: "binding_changed" as const };
+      }
+      if (safeEqual(priorDevice.device_id_hash, options.newDeviceIdHash)) {
+        await client.query("commit");
+        return { transferred: false as const, reason: "same_device" as const };
+      }
+
+      const revokedPrior = await client.query(
+        `
+          update public.sidestream_account_devices
+          set revoked_at = now(), revocation_reason = 'replaced'
+          where id = $1
+            and account_id = $2
+            and license_namespace = $3
+            and device_id_hash = $4
+            and revoked_at is null
+        `,
+        [
+          priorDevice.id,
+          options.accountId,
+          environment.namespace,
+          options.expectedPriorDeviceIdHash,
+        ],
+      );
+      if (revokedPrior.rowCount !== 1) {
+        await client.query("rollback");
+        return { transferred: false as const, reason: "binding_changed" as const };
+      }
+
+      await client.query(
+        `
+          update public.sidestream_license_tokens
+          set revoked_at = now(), updated_at = now()
+          where account_id = $1
+            and revoked_at is null
+        `,
+        [options.accountId],
+      );
+      const inserted = await client.query<{ id: string }>(
+        `
+          insert into public.sidestream_account_devices (
+            account_id,
+            license_namespace,
+            device_id_hash,
+            platform,
+            app_version,
+            build_channel,
+            activated_at,
+            last_seen_at
+          )
+          values ($1, $2, $3, $4, $5, $6, now(), now())
+          returning id
+        `,
+        [
+          options.accountId,
+          environment.namespace,
+          options.newDeviceIdHash,
+          normalizeDevicePlatform(options.platform),
+          normalizeRegistryAppVersion(options.appVersion),
+          getLicenseDiagnosticMetadata({ buildChannel: options.buildChannel }).buildChannel,
+        ],
+      );
+      const newDeviceId = inserted.rows[0]?.id;
+      if (!newDeviceId) throw new Error("Account device transfer insert failed");
+
+      await client.query(
+        `
+          insert into public.sidestream_device_transfers (
+            account_id,
+            license_namespace,
+            from_device_id,
+            to_device_id,
+            initiated_by,
+            transfer_reason,
+            transferred_at
+          )
+          values ($1, $2, $3, $4, $5, $6, now())
+        `,
+        [
+          options.accountId,
+          environment.namespace,
+          priorDevice.id,
+          newDeviceId,
+          options.initiatedBy,
+          options.transferReason,
+        ],
+      );
+      const generation = await client.query<{ device_generation: string }>(
+        `
+          select count(*)::text as device_generation
+          from public.sidestream_account_devices
+          where account_id = $1
+            and license_namespace = $2
+        `,
+        [options.accountId, environment.namespace],
+      );
+      const deviceGeneration = generation.rows[0]?.device_generation || "";
+      if (!/^[1-9][0-9]*$/.test(deviceGeneration)) {
+        throw new Error("Unable to resolve transferred account device generation");
+      }
+
+      await client.query("commit");
+      return {
+        transferred: true as const,
+        newDeviceId,
+        deviceGeneration,
       };
     } catch (error) {
       await client.query("rollback");

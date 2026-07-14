@@ -128,6 +128,10 @@
     color: var(--ink);
   }
   .secondary:hover { background: rgba(255, 255, 255, 0.14); }
+  button:disabled {
+    cursor: not-allowed;
+    opacity: 0.58;
+  }
   [hidden] { display: none !important; }
 
   @media (max-width: 680px) {
@@ -187,6 +191,16 @@
             <button class="secondary" id="refund-button" type="button">Request refund</button>
           </div>
         </div>
+        <div class="row" id="device-row" hidden>
+          <div>
+            <p class="label">Active production device</p>
+            <p class="value" id="device-status">Checking device status...</p>
+            <p class="note">Sidestream does not collect a device name, so this page will not guess which computer is active. Deactivating signs this device out of Pro while keeping your purchase and device history.</p>
+          </div>
+          <div class="actions">
+            <button class="secondary" id="deactivate-device-button" type="button" disabled>Checking...</button>
+          </div>
+        </div>
         <div class="row">
           <div>
             <p class="label">Installer</p>
@@ -207,6 +221,9 @@
     const upgradeLink = document.getElementById("upgrade-link");
     const billingButton = document.getElementById("billing-button");
     const purchaseRow = document.getElementById("purchase-row");
+    const deviceRow = document.getElementById("device-row");
+    const deviceStatus = document.getElementById("device-status");
+    const deactivateDeviceButton = document.getElementById("deactivate-device-button");
     const receiptButton = document.getElementById("receipt-button");
     const refundButton = document.getElementById("refund-button");
     const signOutButton = document.getElementById("sign-out-button");
@@ -252,10 +269,46 @@
       signedInEmail = session.user.email || "";
       accountEmail.textContent = session.user.email;
       accountPlan.textContent = describePlan(session.license);
-      accountPlan.classList.toggle("status", Boolean(session.license && session.license.active));
-      upgradeLink.hidden = Boolean(session.license && session.license.active);
+      const hasActiveLicense = Boolean(session.license && session.license.active);
+      accountPlan.classList.toggle("status", hasActiveLicense);
+      upgradeLink.hidden = hasActiveLicense;
+      deviceRow.hidden = !hasActiveLicense;
       billingButton.hidden = !session.billing.hasCustomer;
       purchaseRow.hidden = !session.billing.hasCustomer;
+      if (hasActiveLicense) {
+        try {
+          await loadDeviceStatus();
+        } catch {
+          deviceStatus.textContent = "Device status unavailable";
+          deactivateDeviceButton.textContent = "Try again later";
+          deactivateDeviceButton.disabled = true;
+        }
+      }
+    }
+
+    async function loadDeviceStatus() {
+      const response = await fetch("/api/account/device", { cache: "no-store" });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.error || "Device status unavailable");
+      if (!payload.active || !payload.device) {
+        deviceStatus.textContent = "No active production device";
+        deactivateDeviceButton.textContent = "No active device";
+        deactivateDeviceButton.disabled = true;
+        return;
+      }
+
+      const platform = payload.device.platform === "macos"
+        ? "Mac"
+        : payload.device.platform === "windows"
+          ? "Windows"
+          : "Sidestream";
+      const activatedAt = new Date(payload.device.activatedAt);
+      const activated = Number.isFinite(activatedAt.getTime())
+        ? " since " + activatedAt.toLocaleDateString()
+        : "";
+      deviceStatus.textContent = platform + " device active" + activated;
+      deactivateDeviceButton.textContent = "Deactivate device";
+      deactivateDeviceButton.disabled = false;
     }
 
     billingButton.addEventListener("click", async () => {
@@ -298,6 +351,23 @@
       window.location.href = "mailto:" + refundEmail +
         "?subject=" + encodeURIComponent(subject) +
         "&body=" + encodeURIComponent(body);
+    });
+
+    deactivateDeviceButton.addEventListener("click", async () => {
+      if (!window.confirm("Deactivate the active Sidestream device? Pro downloads on that device will stop until you reconnect.")) return;
+      deactivateDeviceButton.disabled = true;
+      deactivateDeviceButton.textContent = "Deactivating...";
+      try {
+        await apiPost("/api/license/deactivate", {
+          intent: "deactivate_active_device"
+        });
+        deviceStatus.textContent = "No active production device";
+        deactivateDeviceButton.textContent = "No active device";
+      } catch (error) {
+        alert(error.message);
+        deactivateDeviceButton.disabled = false;
+        deactivateDeviceButton.textContent = "Deactivate device";
+      }
     });
 
     signOutButton.addEventListener("click", async () => {

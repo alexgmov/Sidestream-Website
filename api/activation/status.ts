@@ -4,6 +4,7 @@ import {
   getActivationStatus,
   methodNotAllowed,
   readJsonBody,
+  resolveRequestLicenseEnvironment,
   sendJson,
   type AccountRequest,
 } from "../_lib/account.js";
@@ -11,6 +12,7 @@ import {
 type ActivationStatusPayload = {
   activationKey?: unknown;
   deviceId?: unknown;
+  platform?: unknown;
 };
 
 export default async function handler(
@@ -30,9 +32,17 @@ export default async function handler(
     return sendJson(response, 400, { error: "Missing device ID", code: "invalid_request" });
   }
 
-  const status = await getActivationStatus(
-    activationKey,
-    deviceId,
-  );
+  const environment = resolveRequestLicenseEnvironment(request);
+  if (!environment) {
+    return sendJson(response, 503, {
+      error: "License environment unavailable",
+      code: "license_environment_unavailable",
+    });
+  }
+
+  const status = await getActivationStatus(activationKey, deviceId, {
+    environment,
+    platform: payload.platform,
+  });
   return sendJson(response, 200, status);
 }
