@@ -4,6 +4,7 @@
   "version": "0.0.1",
   "type": "module",
   "scripts": {
+    "analytics:installer": "node scripts/report-installer-referrals.mjs",
     "dev": "vite",
     "build": "tsc -b && vite build && node scripts/generate-sitemap.mjs",
     "billing:ensure-freedev": "node scripts/ensure-freedev-promo.mjs",
@@ -11,6 +12,7 @@
     "leads:dump": "node scripts/dump-download-leads.mjs",
     "leads:migrate": "node scripts/migrate-download-leads-to-postgres.mjs --apply-schema",
     "release:publish-manifest": "node scripts/publish-release-manifest.mjs",
+    "test:download-referral": "node --test tests/download-referral.test.mjs",
     "test:entitlement": "node --experimental-strip-types --test tests/entitlement.test.mjs",
     "typecheck": "tsc --noEmit",
     "preview": "vite preview"
@@ -21,6 +23,7 @@
     "@tailwindcss/vite": "^4.1.17",
     "@vercel/analytics": "^2.0.1",
     "@vercel/blob": "^2.4.1",
+    "@vercel/functions": "^3.7.5",
     "pg": "^8.22.0",
     "react": "^19.2.6",
     "react-dom": "^19.2.6",
