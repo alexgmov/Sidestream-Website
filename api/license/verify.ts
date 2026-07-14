@@ -7,7 +7,6 @@ import {
   type AccountRequest,
   verifyLicenseToken,
 } from "../_lib/account.js";
-
 type LicenseVerifyPayload = {
   licenseToken?: unknown;
   deviceId?: unknown;
@@ -23,12 +22,17 @@ export default async function handler(
   const payload = await readJsonBody<LicenseVerifyPayload>(request);
   const licenseToken = cleanString(payload.licenseToken, 500);
   if (!licenseToken) {
-    return sendJson(response, 400, { error: "Missing license token" });
+    return sendJson(response, 400, { error: "Missing license token", code: "invalid_request" });
+  }
+  const deviceId = cleanString(payload.deviceId, 240);
+  if (!deviceId) {
+    return sendJson(response, 400, { error: "Missing device ID", code: "invalid_request" });
   }
 
-  return sendJson(
-    response,
-    200,
-    await verifyLicenseToken(licenseToken, cleanString(payload.deviceId, 240)),
-  );
+  const verified = await verifyLicenseToken(licenseToken, deviceId);
+  if (!verified.active) {
+    const statusCode = verified.code === "license_inactive" ? 403 : 401;
+    return sendJson(response, statusCode, verified);
+  }
+  return sendJson(response, 200, verified);
 }

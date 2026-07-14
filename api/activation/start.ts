@@ -1,5 +1,6 @@
 import type { ServerResponse } from "node:http";
 import {
+  cleanString,
   createActivationSession,
   methodNotAllowed,
   readJsonBody,
@@ -22,6 +23,9 @@ export default async function handler(
   if (method !== "POST") return methodNotAllowed(response, "POST");
 
   const payload = await readJsonBody<ActivationStartPayload>(request);
+  if (!cleanString(payload.deviceId, 240)) {
+    return sendJson(response, 400, { error: "Missing device ID", code: "invalid_request" });
+  }
   const activation = await createActivationSession(request, payload);
   return sendJson(response, 200, activation);
 }

@@ -3,24 +3,52 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { isIP } from "node:net";
 import { Pool, type PoolClient } from "pg";
 import Stripe from "stripe";
+import {
+  canBindActivationAccount,
+  createClaimCsrfToken,
+  deriveActivationTokenPair,
+  deriveRefreshRotationTokens,
+  getStripeCheckoutWindow,
+  needsLegacyLicenseCompatibility,
+  isActivationTokenReplayAllowed,
+  REFRESH_RETRY_GRACE_SECONDS,
+  matchesDeviceHash,
+  safeEqual,
+  sanitizeAccountNextPath,
+  validateActivationClaimPost,
+  validateClaimCsrfToken,
+  verifyPaidCheckoutSession,
+} from "./entitlement.js";
 
 const SESSION_COOKIE = "sidestream_session";
 const OAUTH_STATE_COOKIE = "sidestream_oauth_state";
 const OAUTH_NEXT_COOKIE = "sidestream_oauth_next";
 const SESSION_MAX_AGE_SECONDS = 60 * 60 * 24 * 30;
 const OAUTH_MAX_AGE_SECONDS = 60 * 10;
-const ACTIVATION_TTL_MINUTES = 30;
+const ACTIVATION_TTL_HOURS = 24;
+const CHECKOUT_CLAIM_GRACE_SECONDS = 10 * 60;
 const LICENSE_TOKEN_TTL_DAYS = 7;
+const LEGACY_LICENSE_TOKEN_TTL_DAYS = 365;
+const REFRESH_TOKEN_TTL_DAYS = 365;
+const ACTIVATION_RECONCILIATION_COOLDOWN_SECONDS = 5;
+const ACTIVATION_CLAIM_CSRF_TTL_SECONDS = 10 * 60;
+const ACTIVATION_TOKEN_REPLAY_SECONDS = 10 * 60;
 const MAX_BODY_BYTES = 64 * 1024;
 export const SIDESTREAM_PRO_PLAN_KEY = "sidestream_pro";
 const SIDESTREAM_LEGACY_UNLIMITED_PLAN_KEY = "sidestream_unlimited";
+const SIDESTREAM_PAID_PLAN_KEYS = [
+  SIDESTREAM_PRO_PLAN_KEY,
+  SIDESTREAM_LEGACY_UNLIMITED_PLAN_KEY,
+] as const;
 const SIDESTREAM_PRO_DEFAULT_PRODUCT_ID = "prod_UpwXh6oO1OmPyQ";
-const SIDESTREAM_PRO_DEFAULT_PRICE_ID = "price_1TqGeBDFKjeGlioXlV8fBGK8";
+// Stripe Prices are immutable. Resolve the active $9.99 one-time Price by
+// lookup key, creating it once if this deployment is the first to use it.
+const SIDESTREAM_PRO_DEFAULT_PRICE_ID = "";
 const SIDESTREAM_PRO_PRICE = {
-  lookupKey: "sidestream_pro_once",
+  lookupKey: "sidestream_pro_once_999",
   name: "Sidestream Pro",
   description: "Lifetime Sidestream Pro access for one Mac editor.",
-  unitAmount: 499,
+  unitAmount: 999,
   currency: "usd",
 };
 const BASIC_SUBSCRIPTION_RESOURCE_KEY_BASE = "basic_subscription";
@@ -464,7 +492,10 @@ export async function getSession(
       where s.session_token_hash = $1
         and s.revoked_at is null
         and s.expires_at > now()
-      order by l.updated_at desc nulls last
+      -- Usable licenses first: a grandfathered one-time 'active' row must
+      -- outrank a newer cancelled subscription row for the same account.
+      order by (case when l.status in ('active', 'trialing') then 0 else 1 end),
+        l.updated_at desc nulls last
       limit 1
     `,
     [hashToken(token)],
@@ -597,7 +628,7 @@ export async function getSidestreamUnlimitedPriceId() {
   return getSidestreamProPriceId();
 }
 
-function getSidestreamProProductId() {
+export function getSidestreamProProductId() {
   return getValidEnvValue("SIDESTREAM_PRO_PRODUCT_ID") ||
     SIDESTREAM_PRO_DEFAULT_PRODUCT_ID;
 }
@@ -613,7 +644,7 @@ async function getConfiguredSidestreamProPriceId(productId: string) {
     if (isSidestreamProPriceShape(price, productId)) return price.id;
 
     throw new Error(
-      `Configured SIDESTREAM_PRO_PRICE_ID ${configuredPriceId} is not the active $4.99 one-time Sidestream Pro price for product ${productId}`,
+      `Configured SIDESTREAM_PRO_PRICE_ID ${configuredPriceId} is not the active $9.99 one-time Sidestream Pro price for product ${productId}`,
     );
   }
 
@@ -638,6 +669,8 @@ async function getConfiguredSidestreamProPriceId(productId: string) {
 }
 
 async function getDefaultSidestreamProPriceId(productId: string) {
+  if (!SIDESTREAM_PRO_DEFAULT_PRICE_ID) return "";
+
   try {
     const price = await getStripe().prices.retrieve(
       SIDESTREAM_PRO_DEFAULT_PRICE_ID,
@@ -646,9 +679,7 @@ async function getDefaultSidestreamProPriceId(productId: string) {
     );
     if (isSidestreamProPriceShape(price, productId)) return price.id;
 
-    throw new Error(
-      `Default Sidestream Pro price ${SIDESTREAM_PRO_DEFAULT_PRICE_ID} is not the active $4.99 one-time price for product ${productId}`,
-    );
+    return "";
   } catch (error) {
     if (isStripeResourceMissing(error) && !isLiveStripeMode()) return "";
     throw error;
@@ -716,7 +747,7 @@ async function findSidestreamProLookupPriceId(productId: string) {
   const conflictingPrice = prices.data[0];
   if (conflictingPrice) {
     throw new Error(
-      `Stripe lookup key ${SIDESTREAM_PRO_PRICE.lookupKey} points to a price that is not the active $4.99 one-time Sidestream Pro price for product ${productId}`,
+      `Stripe lookup key ${SIDESTREAM_PRO_PRICE.lookupKey} points to a price that is not the active $9.99 one-time Sidestream Pro price for product ${productId}`,
     );
   }
 
@@ -970,8 +1001,9 @@ export async function createActivationSession(
   },
 ) {
   const activationKey = randomToken(24);
-  const expiresAt = addMinutes(new Date(), ACTIVATION_TTL_MINUTES);
+  const expiresAt = addHours(new Date(), ACTIVATION_TTL_HOURS);
   const deviceId = cleanString(payload.deviceId, 240);
+  if (!deviceId) throw new Error("Missing device ID");
 
   await query(
     `
@@ -992,7 +1024,7 @@ export async function createActivationSession(
     `,
     [
       activationKey,
-      deviceId ? hashPrivateIdentifier(deviceId) : null,
+      hashPrivateIdentifier(deviceId),
       cleanString(payload.appVersion, 80) || null,
       cleanString(payload.buildChannel, 80) || null,
       cleanString(payload.source, 120) || "plugin",
@@ -1006,41 +1038,254 @@ export async function createActivationSession(
     activationKey,
     expiresAt: expiresAt.toISOString(),
     upgradeUrl: `${getBaseUrl(request)}/api/checkout/start?activation=${encodeURIComponent(activationKey)}`,
+    restoreUrl: `${getBaseUrl(request)}/api/activation/claim?activation=${encodeURIComponent(activationKey)}`,
   };
 }
 
-export async function bindActivationToAccount(
-  activationKey: string,
-  accountId: string,
-) {
-  if (!activationKey) return;
+export async function getActivationCheckoutContext(activationKey: string) {
+  const result = await query<{
+    expires_at: Date | string;
+    stripe_checkout_session_id: string | null;
+    stripe_checkout_price_id: string | null;
+    stripe_checkout_product_id: string | null;
+    stripe_checkout_expires_at: Date | string | null;
+    checkout_claim_grace_until: Date | string | null;
+  }>(
+    `
+      select
+        expires_at,
+        stripe_checkout_session_id,
+        stripe_checkout_price_id,
+        stripe_checkout_product_id,
+        stripe_checkout_expires_at,
+        checkout_claim_grace_until
+      from public.sidestream_activation_sessions
+      where activation_key = $1
+        and expires_at > now()
+        and completed_at is null
+        and device_id_hash is not null
+        and account_id is null
+        and status = 'pending'
+      limit 1
+    `,
+    [activationKey],
+  );
 
-  await query(
+  const row = result.rows[0];
+  if (!row) return null;
+
+  const activationExpiresAt = new Date(row.expires_at);
+  if (
+    row.stripe_checkout_session_id &&
+    row.stripe_checkout_price_id &&
+    row.stripe_checkout_product_id &&
+    row.stripe_checkout_expires_at &&
+    row.checkout_claim_grace_until
+  ) {
+    return {
+      checkoutSessionId: row.stripe_checkout_session_id,
+      priceId: row.stripe_checkout_price_id,
+      productId: row.stripe_checkout_product_id,
+      checkoutExpiresAt: Math.floor(new Date(row.stripe_checkout_expires_at).getTime() / 1000),
+      claimGraceUntil: toIsoString(row.checkout_claim_grace_until),
+    };
+  }
+
+  const checkoutWindow = getStripeCheckoutWindow(
+    activationExpiresAt.getTime(),
+    CHECKOUT_CLAIM_GRACE_SECONDS,
+  );
+  if (checkoutWindow.checkoutExpiresAt * 1000 < Date.now() + 31 * 60 * 1000) return null;
+
+  return {
+    checkoutSessionId: "",
+    priceId: "",
+    productId: "",
+    ...checkoutWindow,
+  };
+}
+
+export async function attachCheckoutSessionToActivation(options: {
+  activationKey: string;
+  checkoutSessionId: string;
+  priceId: string;
+  productId: string;
+  checkoutExpiresAt: number;
+  claimGraceUntil: string;
+}) {
+  const result = await query<{ id: string }>(
     `
       update public.sidestream_activation_sessions
-      set account_id = $2,
-          status = case when status = 'pending' then 'authenticated' else status end,
+      set stripe_checkout_session_id = $2,
+          stripe_checkout_price_id = $3,
+          stripe_checkout_product_id = $4,
+          checkout_attached_at = coalesce(checkout_attached_at, now()),
+          stripe_checkout_expires_at = to_timestamp($5),
+          checkout_claim_grace_until = $6::timestamptz,
           updated_at = now()
       where activation_key = $1
         and expires_at > now()
-        and status <> 'expired'
+        and completed_at is null
+        and device_id_hash is not null
+        and account_id is null
+        and status = 'pending'
+        and (stripe_checkout_session_id is null or stripe_checkout_session_id = $2)
+      returning id
     `,
-    [activationKey, accountId],
+    [
+      options.activationKey,
+      options.checkoutSessionId,
+      options.priceId,
+      options.productId,
+      options.checkoutExpiresAt,
+      options.claimGraceUntil,
+    ],
   );
+  return Boolean(result.rows[0]);
+}
+
+export async function getActivationClaimContext(activationKey: string) {
+  const result = await query<{
+    app_version: string | null;
+    build_channel: string | null;
+    expires_at: Date | string;
+  }>(
+    `
+      select app_version, build_channel, expires_at
+      from public.sidestream_activation_sessions
+      where activation_key = $1
+        and expires_at > now()
+        and completed_at is null
+        and device_id_hash is not null
+        and status = 'pending'
+      limit 1
+    `,
+    [activationKey],
+  );
+
+  const row = result.rows[0];
+  return row
+    ? {
+        available: true as const,
+        appVersion: row.app_version || "",
+        buildChannel: row.build_channel || "",
+        expiresAt: toIsoString(row.expires_at),
+      }
+    : { available: false as const };
+}
+
+export async function claimActivationToAccount(
+  activationKey: string,
+  accountId: string,
+) {
+  return withPgClient(async (client) => {
+    await client.query("begin");
+    try {
+      const selected = await client.query<{
+        account_id: string | null;
+        status: string;
+        completed_at: Date | string | null;
+        expired: boolean;
+      }>(
+        `
+          select
+            account_id,
+            status,
+            completed_at,
+            expires_at <= now() as expired
+          from public.sidestream_activation_sessions
+          where activation_key = $1
+            and device_id_hash is not null
+          for update
+        `,
+        [activationKey],
+      );
+      const row = selected.rows[0];
+      if (!row || row.expired || row.completed_at || row.status !== "pending") {
+        await client.query("rollback");
+        return { claimed: false as const, reason: "unavailable" as const };
+      }
+      if (!canBindActivationAccount(row.account_id, accountId)) {
+        await client.query("rollback");
+        return { claimed: false as const, reason: "account_conflict" as const };
+      }
+
+      const updated = await client.query<{ id: string }>(
+        `
+          update public.sidestream_activation_sessions
+          set account_id = $2,
+              status = 'restored',
+              updated_at = now()
+          where activation_key = $1
+            and expires_at > now()
+            and completed_at is null
+            and status = 'pending'
+            and (account_id is null or account_id = $2)
+          returning id
+        `,
+        [activationKey, accountId],
+      );
+      if (!updated.rows[0]) {
+        await client.query("rollback");
+        return { claimed: false as const, reason: "conflict" as const };
+      }
+
+      await client.query("commit");
+      return { claimed: true as const };
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    }
+  });
+}
+
+export function createActivationClaimCsrf(
+  activationKey: string,
+  accountId: string,
+) {
+  return createClaimCsrfToken({
+    activationKey,
+    accountId,
+    expiresAtSeconds: Math.floor(Date.now() / 1000) + ACTIVATION_CLAIM_CSRF_TTL_SECONDS,
+    secret: getPrivateServerSecret(),
+  });
+}
+
+export function validateActivationClaimRequest(
+  request: IncomingMessage,
+  options: { activationKey: string; accountId: string; csrfToken: string },
+) {
+  const nowSeconds = Math.floor(Date.now() / 1000);
+  return validateActivationClaimPost({
+    requestOrigin: firstHeaderValue(request.headers.origin),
+    expectedOrigin: getBaseUrl(request),
+    contentType: firstHeaderValue(request.headers["content-type"]),
+    submittedToken: options.csrfToken,
+    expectedToken: options.csrfToken,
+  }) && validateClaimCsrfToken({
+    token: options.csrfToken,
+    activationKey: options.activationKey,
+    accountId: options.accountId,
+    nowSeconds,
+    secret: getPrivateServerSecret(),
+  });
 }
 
 export async function getActivationStatus(
   activationKey: string,
   deviceId: string,
+  options: { skipReconciliation?: boolean } = {},
 ) {
-  await processUnprocessedStripeEvents();
-
   const result = await query<{
     activation_id: string;
+    app_version: string | null;
     account_id: string | null;
     license_id: string | null;
     status: string;
     expires_at: Date | string;
+    completed_at: Date | string | null;
+    device_id_hash: string | null;
+    stripe_checkout_session_id: string | null;
     license_status: string | null;
     plan_key: string | null;
     current_period_end: Date | string | null;
@@ -1051,10 +1296,14 @@ export async function getActivationStatus(
     `
       select
         a.id as activation_id,
+        a.app_version,
         a.account_id,
         l.id as license_id,
         a.status,
         a.expires_at,
+        a.completed_at,
+        a.device_id_hash,
+        a.stripe_checkout_session_id,
         l.status as license_status,
         l.plan_key,
         l.current_period_end,
@@ -1064,7 +1313,10 @@ export async function getActivationStatus(
       from public.sidestream_activation_sessions a
       left join public.sidestream_licenses l on l.account_id = a.account_id
       where a.activation_key = $1
-      order by l.updated_at desc nulls last
+      -- Usable licenses first: a grandfathered one-time 'active' row must
+      -- outrank a newer cancelled subscription row for the same account.
+      order by (case when l.status in ('active', 'trialing') then 0 else 1 end),
+        l.updated_at desc nulls last
       limit 1
     `,
     [activationKey],
@@ -1073,6 +1325,35 @@ export async function getActivationStatus(
   const row = result.rows[0];
   if (!row) {
     return { status: "not_found" as const };
+  }
+
+  const deviceIdHash = deviceId ? hashPrivateIdentifier(deviceId) : "";
+  if (!matchesDeviceHash(row.device_id_hash, deviceIdHash)) {
+    return { status: "device_mismatch" as const };
+  }
+
+  if (
+    !options.skipReconciliation &&
+    !row.license_id &&
+    row.stripe_checkout_session_id
+  ) {
+    const cooldown = await query<{ id: string }>(
+      `
+        update public.sidestream_activation_sessions
+        set reconciliation_last_attempt_at = now(), updated_at = now()
+        where id = $1
+          and (
+            reconciliation_last_attempt_at is null
+            or reconciliation_last_attempt_at < now() - ($2 * interval '1 second')
+          )
+        returning id
+      `,
+      [row.activation_id, ACTIVATION_RECONCILIATION_COOLDOWN_SECONDS],
+    );
+    if (cooldown.rows[0]) {
+      await fulfillCheckoutSession(row.stripe_checkout_session_id, activationKey);
+      return getActivationStatus(activationKey, deviceId, { skipReconciliation: true });
+    }
   }
 
   if (new Date(row.expires_at).getTime() <= Date.now()) {
@@ -1104,11 +1385,28 @@ export async function getActivationStatus(
     return { status: "pending_payment" as const, license };
   }
 
-  const issued = await issueLicenseToken({
+  const legacyClient = needsLegacyLicenseCompatibility(row.app_version);
+
+  if (
+    !legacyClient &&
+    !isActivationTokenReplayAllowed(
+      row.completed_at ? new Date(row.completed_at).getTime() : null,
+      Date.now(),
+      ACTIVATION_TOKEN_REPLAY_SECONDS,
+    )
+  ) {
+    return { status: "completed" as const, license };
+  }
+
+  const issued = await issueLicenseTokenPair({
     activationId: row.activation_id,
+    activationKey,
     accountId: row.account_id,
     licenseId: row.license_id,
     deviceId,
+    accessTokenTtlDays: legacyClient
+      ? LEGACY_LICENSE_TOKEN_TTL_DAYS
+      : LICENSE_TOKEN_TTL_DAYS,
   });
 
   await query(
@@ -1126,8 +1424,7 @@ export async function getActivationStatus(
   return {
     status: "active" as const,
     license,
-    licenseToken: issued.token,
-    tokenExpiresAt: issued.expiresAt,
+    ...(issued || {}),
   };
 }
 
@@ -1138,6 +1435,9 @@ export async function verifyLicenseToken(
   const result = await query<{
     token_id: string;
     expires_at: Date | string;
+    revoked_at: Date | string | null;
+    device_id_hash: string | null;
+    activation_app_version: string | null;
     status: string | null;
     plan_key: string | null;
     current_period_end: Date | string | null;
@@ -1149,6 +1449,9 @@ export async function verifyLicenseToken(
       select
         t.id as token_id,
         t.expires_at,
+        t.revoked_at,
+        t.device_id_hash,
+        a.app_version as activation_app_version,
         l.status,
         l.plan_key,
         l.current_period_end,
@@ -1157,32 +1460,32 @@ export async function verifyLicenseToken(
         l.features
       from public.sidestream_license_tokens t
       join public.sidestream_licenses l on l.id = t.license_id
+      left join public.sidestream_activation_sessions a on a.id = t.activation_session_id
       where t.token_hash = $1
-        and t.revoked_at is null
-        and t.expires_at > now()
-        and (t.device_id_hash is null or t.device_id_hash = $2)
       limit 1
     `,
-    [hashToken(licenseToken), deviceId ? hashPrivateIdentifier(deviceId) : null],
+    [hashToken(licenseToken)],
   );
 
   const row = result.rows[0];
   if (!row) {
     return {
-      active: false,
+      active: false as const,
       status: "invalid",
-      license: buildLicenseSummary({}),
+      code: "invalid_token" as const,
     };
   }
 
-  await query(
-    `
-      update public.sidestream_license_tokens
-      set last_seen_at = now(), updated_at = now()
-      where id = $1
-    `,
-    [row.token_id],
-  );
+  const deviceIdHash = deviceId ? hashPrivateIdentifier(deviceId) : "";
+  if (!matchesDeviceHash(row.device_id_hash, deviceIdHash)) {
+    return { active: false as const, status: "invalid", code: "device_mismatch" as const };
+  }
+  if (row.revoked_at) {
+    return { active: false as const, status: "invalid", code: "revoked" as const };
+  }
+  if (new Date(row.expires_at).getTime() <= Date.now()) {
+    return { active: false as const, status: "invalid", code: "invalid_token" as const };
+  }
 
   const license = buildLicenseSummary({
     status: row.status,
@@ -1192,11 +1495,32 @@ export async function verifyLicenseToken(
     graceUntil: row.grace_until,
     features: row.features,
   });
+  if (!license.active) {
+    return { active: false as const, status: license.status, code: "license_inactive" as const, license };
+  }
+
+  const legacyTokenExpiresAt = needsLegacyLicenseCompatibility(row.activation_app_version)
+    ? addDays(new Date(), LEGACY_LICENSE_TOKEN_TTL_DAYS).toISOString()
+    : "";
+  const updated = await query<{ expires_at: Date | string }>(
+    `
+      update public.sidestream_license_tokens
+      set last_seen_at = now(),
+          expires_at = case
+            when $2::timestamptz is not null then greatest(expires_at, $2::timestamptz)
+            else expires_at
+          end,
+          updated_at = now()
+      where id = $1
+      returning expires_at
+    `,
+    [row.token_id, legacyTokenExpiresAt || null],
+  );
 
   return {
-    active: license.active,
+    active: true as const,
     status: license.status,
-    tokenExpiresAt: toIsoString(row.expires_at),
+    tokenExpiresAt: toIsoString(updated.rows[0]?.expires_at || row.expires_at),
     license,
   };
 }
@@ -1363,64 +1687,179 @@ export async function upsertLicenseFromSubscription(
 export async function upsertLicenseFromCheckoutSession(
   sessionPayload: unknown,
 ) {
-  const checkoutSession = sessionPayload as Record<string, any>;
-  const mode = cleanString(checkoutSession.mode, 40);
-  const checkoutSessionId = normalizeStripeId(checkoutSession.id);
-  const paymentIntentId = normalizeStripeId(checkoutSession.payment_intent);
-  const paymentStatus = cleanString(checkoutSession.payment_status, 80);
-  const planKey = cleanString(checkoutSession.metadata?.sidestream_plan, 120);
-  const metadataAccountId = cleanString(checkoutSession.metadata?.sidestream_account_id, 80);
-  const activationKey = cleanString(checkoutSession.metadata?.sidestream_activation_key, 120);
+  const checkoutSessionId = normalizeStripeId(
+    (sessionPayload as { id?: unknown } | null)?.id,
+  );
+  if (!checkoutSessionId) return { fulfilled: false as const, reason: "missing_session_id" };
+  return fulfillCheckoutSession(checkoutSessionId);
+}
+
+export async function fulfillCheckoutSession(
+  checkoutSessionId: string,
+  expectedActivationKey = "",
+) {
+  const checkoutSession = await getStripe().checkout.sessions.retrieve(
+    checkoutSessionId,
+    { expand: ["line_items.data.price.product"] },
+    getStripeRequestOptions(),
+  );
+  const activationKey = cleanString(
+    checkoutSession.metadata?.sidestream_activation_key,
+    160,
+  );
+  if (expectedActivationKey && activationKey !== expectedActivationKey) {
+    return { fulfilled: false as const, reason: "activation_mismatch" };
+  }
+
   const subscriptionId = normalizeStripeId(checkoutSession.subscription);
-  const customerId = normalizeStripeId(checkoutSession.customer);
-  const checkoutEmail = checkoutSession.customer_details?.email ||
-    checkoutSession.customer_email;
-  const checkoutName = checkoutSession.customer_details?.name;
-  let accountId = metadataAccountId;
-
-  if (customerId) {
-    const stripeAccountId = await findOrCreateAccountForStripeCustomer(customerId, {
-      email: checkoutEmail,
-      name: checkoutName,
-    });
-    accountId = stripeAccountId || accountId;
-  }
-
-  if (accountId && customerId) {
-    await query(
-      `
-        update public.sidestream_accounts
-        set stripe_customer_id = $2, updated_at = now()
-        where id = $1
-      `,
-      [accountId, customerId],
-    );
-  }
-
-  if (activationKey && accountId) {
-    await bindActivationToAccount(activationKey, accountId);
-  }
-
   if (subscriptionId) {
+    if (
+      checkoutSession.status !== "complete" ||
+      !isSidestreamPaidPlanKey(cleanString(checkoutSession.metadata?.sidestream_plan, 120))
+    ) {
+      return { fulfilled: false as const, reason: "invalid_subscription_checkout" };
+    }
     const subscription = await getStripe().subscriptions.retrieve(subscriptionId);
-    await upsertLicenseFromSubscription(subscription, accountId || undefined);
-    return;
+    await upsertLicenseFromSubscription(subscription);
+    return { fulfilled: true as const, activationBound: false };
   }
 
-  if (
-    mode === "payment" &&
-    checkoutSessionId &&
-    customerId &&
-    isSidestreamPaidPlanKey(planKey) &&
-    (paymentStatus === "paid" || paymentStatus === "no_payment_required")
-  ) {
-    await upsertLicenseFromOneTimeCheckoutSession({
-      accountId,
-      customerId,
-      checkoutSessionId,
-      paymentIntentId,
-    });
+  let expectedPriceId = activationKey
+    ? cleanString(checkoutSession.metadata?.sidestream_price_id, 160)
+    : await getSidestreamProPriceId();
+  let expectedProductId = getSidestreamProProductId();
+  let activationId = "";
+
+  if (activationKey) {
+    const attachment = await query<{
+      id: string;
+      stripe_checkout_price_id: string;
+      stripe_checkout_product_id: string;
+    }>(
+      `
+        select id, stripe_checkout_price_id, stripe_checkout_product_id
+        from public.sidestream_activation_sessions
+        where activation_key = $1
+          and stripe_checkout_session_id = $2
+          and checkout_attached_at is not null
+          and checkout_attached_at <= stripe_checkout_expires_at
+          and stripe_checkout_expires_at <= checkout_claim_grace_until
+        limit 1
+      `,
+      [activationKey, checkoutSessionId],
+    );
+    const row = attachment.rows[0];
+    if (!row) return { fulfilled: false as const, reason: "unattached_session" };
+    activationId = row.id;
+    expectedPriceId = row.stripe_checkout_price_id;
+    expectedProductId = row.stripe_checkout_product_id;
   }
+
+  const verification = verifyPaidCheckoutSession(checkoutSession, {
+    sessionId: checkoutSessionId,
+    activationKey: activationKey || undefined,
+    priceId: expectedPriceId,
+    productId: expectedProductId,
+    paidPlanKeys: SIDESTREAM_PAID_PLAN_KEYS,
+  });
+  if (verification.ok === false) {
+    return { fulfilled: false as const, reason: verification.reason };
+  }
+
+  const customerId = normalizeStripeId(checkoutSession.customer);
+  if (!customerId) return { fulfilled: false as const, reason: "missing_customer" };
+
+  const stripeAccountId = await findOrCreateAccountForStripeCustomer(customerId, {
+    email: checkoutSession.customer_details?.email || checkoutSession.customer_email,
+    name: checkoutSession.customer_details?.name,
+  });
+  const metadataAccountId = cleanString(
+    checkoutSession.metadata?.sidestream_account_id,
+    80,
+  );
+  const accountId = stripeAccountId || metadataAccountId;
+  if (!accountId) return { fulfilled: false as const, reason: "missing_account" };
+
+  return withPgClient(async (client) => {
+    await client.query("begin");
+    try {
+      await client.query("select pg_advisory_xact_lock(hashtext($1))", [
+        `checkout_session:${checkoutSessionId}`,
+      ]);
+
+      let activationCanBind = false;
+      if (activationKey && activationId) {
+        const lockedActivation = await client.query<{
+          account_id: string | null;
+          stripe_checkout_price_id: string;
+          stripe_checkout_product_id: string;
+        }>(
+          `
+            select account_id, stripe_checkout_price_id, stripe_checkout_product_id
+            from public.sidestream_activation_sessions
+            where id = $1
+              and activation_key = $2
+              and stripe_checkout_session_id = $3
+              and checkout_claim_grace_until >= now()
+              and checkout_attached_at <= stripe_checkout_expires_at
+            for update
+          `,
+          [activationId, activationKey, checkoutSessionId],
+        );
+        const locked = lockedActivation.rows[0];
+        activationCanBind = Boolean(
+          locked &&
+          locked.stripe_checkout_price_id === expectedPriceId &&
+          locked.stripe_checkout_product_id === expectedProductId &&
+          canBindActivationAccount(locked.account_id, accountId),
+        );
+      }
+
+      await client.query(
+        `
+          update public.sidestream_accounts
+          set stripe_customer_id = $2, updated_at = now()
+          where id = $1
+        `,
+        [accountId, customerId],
+      );
+
+      const licenseId = await upsertLicenseFromOneTimeCheckoutSession({
+        accountId,
+        customerId,
+        checkoutSessionId,
+        paymentIntentId: normalizeStripeId(checkoutSession.payment_intent),
+      }, client);
+
+      let activationBound = false;
+      if (activationKey && activationId && activationCanBind) {
+        const bound = await client.query<{ id: string }>(
+          `
+            update public.sidestream_activation_sessions
+            set account_id = $3,
+                license_id = $4,
+                status = case when status = 'linked' then status else 'paid' end,
+                updated_at = now()
+            where id = $1
+              and activation_key = $2
+              and stripe_checkout_session_id = $5
+              and checkout_claim_grace_until >= now()
+              and checkout_attached_at <= stripe_checkout_expires_at
+              and (account_id is null or account_id = $3)
+            returning id
+          `,
+          [activationId, activationKey, accountId, licenseId, checkoutSessionId],
+        );
+        activationBound = Boolean(bound.rows[0]);
+      }
+
+      await client.query("commit");
+      return { fulfilled: true as const, activationBound };
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    }
+  });
 }
 
 async function upsertLicenseFromOneTimeCheckoutSession(options: {
@@ -1428,12 +1867,8 @@ async function upsertLicenseFromOneTimeCheckoutSession(options: {
   customerId: string;
   checkoutSessionId: string;
   paymentIntentId: string;
-}) {
-  if (!options.accountId) return;
-
-  await ensureOneTimeCheckoutLicenseSchema();
-
-  await query(
+}, runner: Pool | PoolClient) {
+  const result = await runner.query<{ id: string }>(
     `
       insert into public.sidestream_licenses (
         account_id,
@@ -1462,6 +1897,7 @@ async function upsertLicenseFromOneTimeCheckoutSession(options: {
         grace_until = excluded.grace_until,
         features = excluded.features,
         updated_at = now()
+      returning id
     `,
     [
       options.accountId,
@@ -1476,60 +1912,11 @@ async function upsertLicenseFromOneTimeCheckoutSession(options: {
       }),
     ],
   );
-}
-
-async function ensureOneTimeCheckoutLicenseSchema() {
-  await query(
-    `
-      alter table public.sidestream_licenses
-        add column if not exists stripe_checkout_session_id text,
-        add column if not exists stripe_payment_intent_id text,
-        alter column stripe_subscription_id drop not null
-    `,
-  );
-
-  await query(
-    `
-      do $$
-      begin
-        alter table public.sidestream_licenses
-          add constraint sidestream_licenses_checkout_session_unique unique (stripe_checkout_session_id);
-      exception
-        when duplicate_object or duplicate_table then null;
-      end $$
-    `,
-  );
-
-  await query(
-    `
-      do $$
-      begin
-        alter table public.sidestream_licenses
-          add constraint sidestream_licenses_payment_intent_unique unique (stripe_payment_intent_id);
-      exception
-        when duplicate_object or duplicate_table then null;
-      end $$
-    `,
-  );
-}
-
-async function ensureStripeFirstAccountSchema(client?: PoolClient) {
-  const runner = client || getPool();
-  await runner.query(
-    `
-      alter table public.sidestream_accounts
-        alter column google_sub drop not null
-    `,
-  );
+  return result.rows[0]?.id || "";
 }
 
 export function sanitizeNextPath(value: unknown) {
-  const nextPath = typeof value === "string" ? value.trim() : "";
-  if (!nextPath || !nextPath.startsWith("/") || nextPath.startsWith("//")) {
-    return "/account.html";
-  }
-  if (/[\r\n]/.test(nextPath)) return "/account.html";
-  return nextPath.slice(0, 500);
+  return sanitizeAccountNextPath(value);
 }
 
 export function cleanString(value: unknown, maxLength = 240) {
@@ -1680,40 +2067,331 @@ function shouldGrantGrace(status: string) {
   return status === "past_due" || status === "unpaid";
 }
 
-async function issueLicenseToken(options: {
+async function issueLicenseTokenPair(options: {
   activationId: string;
+  activationKey: string;
   accountId: string;
   licenseId: string;
   deviceId: string;
+  accessTokenTtlDays?: number;
 }) {
-  const token = randomToken(32);
-  const expiresAt = addDays(new Date(), LICENSE_TOKEN_TTL_DAYS).toISOString();
+  if (!options.deviceId) throw new Error("Cannot issue a device-less refresh credential");
 
-  await query(
-    `
-      insert into public.sidestream_license_tokens (
-        account_id,
-        license_id,
-        activation_session_id,
-        device_id_hash,
-        token_hash,
-        expires_at,
-        created_at,
-        updated_at
-      )
-      values ($1, $2, $3, $4, $5, $6::timestamptz, now(), now())
-    `,
-    [
-      options.accountId,
-      options.licenseId,
-      options.activationId,
-      options.deviceId ? hashPrivateIdentifier(options.deviceId) : null,
-      hashToken(token),
-      expiresAt,
-    ],
+  const tokens = deriveActivationTokenPair(
+    options.activationKey,
+    options.deviceId,
+    getPrivateServerSecret(),
   );
+  const deviceIdHash = hashPrivateIdentifier(options.deviceId);
+  const tokenExpiresAt = addDays(
+    new Date(),
+    options.accessTokenTtlDays || LICENSE_TOKEN_TTL_DAYS,
+  ).toISOString();
 
-  return { token, expiresAt };
+  return withPgClient(async (client) => {
+    await client.query("begin");
+    try {
+      await client.query("select pg_advisory_xact_lock(hashtext($1))", [
+        `activation_token:${options.activationId}`,
+      ]);
+      const existing = await client.query<{
+        token_hash: string;
+        refresh_token_hash: string;
+        expires_at: Date | string;
+        refresh_expires_at: Date | string;
+        revoked_at: Date | string | null;
+      }>(
+        `
+          select token_hash, refresh_token_hash, expires_at, refresh_expires_at, revoked_at
+          from public.sidestream_license_tokens
+          where activation_session_id = $1
+            and device_id_hash = $2
+            and refresh_token_hash is not null
+          order by created_at asc
+          limit 1
+          for update
+        `,
+        [options.activationId, deviceIdHash],
+      );
+      const row = existing.rows[0];
+      if (row) {
+        if (
+          !row.revoked_at &&
+          safeEqual(row.token_hash, hashToken(tokens.licenseToken)) &&
+          safeEqual(row.refresh_token_hash, hashToken(tokens.refreshToken))
+        ) {
+          const extended = await client.query<{ expires_at: Date | string }>(
+            `
+              update public.sidestream_license_tokens
+              set expires_at = greatest(expires_at, $2::timestamptz), updated_at = now()
+              where activation_session_id = $1
+                and device_id_hash = $3
+                and refresh_token_hash is not null
+              returning expires_at
+            `,
+            [options.activationId, tokenExpiresAt, deviceIdHash],
+          );
+          await client.query("commit");
+          return {
+            ...tokens,
+            tokenExpiresAt: toIsoString(extended.rows[0]?.expires_at || row.expires_at),
+            refreshExpiresAt: toIsoString(row.refresh_expires_at),
+          };
+        }
+        await client.query("commit");
+        return null;
+      }
+
+      const refreshExpiresAt = addDays(new Date(), REFRESH_TOKEN_TTL_DAYS).toISOString();
+      await client.query(
+        `
+          insert into public.sidestream_license_tokens (
+            account_id,
+            license_id,
+            activation_session_id,
+            device_id_hash,
+            token_hash,
+            expires_at,
+            refresh_token_hash,
+            refresh_expires_at,
+            created_at,
+            updated_at
+          )
+          values ($1, $2, $3, $4, $5, $6::timestamptz, $7, $8::timestamptz, now(), now())
+        `,
+        [
+          options.accountId,
+          options.licenseId,
+          options.activationId,
+          deviceIdHash,
+          hashToken(tokens.licenseToken),
+          tokenExpiresAt,
+          hashToken(tokens.refreshToken),
+          refreshExpiresAt,
+        ],
+      );
+      await client.query("commit");
+      return { ...tokens, tokenExpiresAt, refreshExpiresAt };
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    }
+  });
+}
+
+type RefreshCredentialRow = {
+  token_id: string;
+  account_id: string;
+  license_id: string;
+  activation_session_id: string | null;
+  device_id_hash: string;
+  revoked_at: Date | string | null;
+  refresh_expires_at: Date | string;
+  expires_at: Date | string;
+  status: string | null;
+  plan_key: string | null;
+  current_period_end: Date | string | null;
+  cancel_at_period_end: boolean | null;
+  grace_until: Date | string | null;
+  features: Record<string, unknown> | null;
+};
+
+export async function refreshLicenseToken(
+  refreshToken: string,
+  deviceId: string,
+) {
+  if (!refreshToken || !deviceId) {
+    return { active: false as const, status: "invalid", code: "invalid_token" as const };
+  }
+
+  const refreshTokenHash = hashToken(refreshToken);
+  const deviceIdHash = hashPrivateIdentifier(deviceId);
+
+  return withPgClient(async (client) => {
+    await client.query("begin");
+    try {
+      const selected = await client.query<RefreshCredentialRow>(
+        `
+          select
+            t.id as token_id,
+            t.account_id,
+            t.license_id,
+            t.activation_session_id,
+            t.device_id_hash,
+            t.revoked_at,
+            t.refresh_expires_at,
+            t.expires_at,
+            l.status,
+            l.plan_key,
+            l.current_period_end,
+            l.cancel_at_period_end,
+            l.grace_until,
+            l.features
+          from public.sidestream_license_tokens t
+          join public.sidestream_licenses l on l.id = t.license_id
+          where t.refresh_token_hash = $1
+          limit 1
+          for update of t
+        `,
+        [refreshTokenHash],
+      );
+      const current = selected.rows[0];
+
+      if (current && !matchesDeviceHash(current.device_id_hash, deviceIdHash)) {
+        await client.query("rollback");
+        return { active: false as const, status: "invalid", code: "device_mismatch" as const };
+      }
+
+      if (!current || current.revoked_at) {
+        const replay = await client.query<RefreshCredentialRow>(
+          `
+            select
+              t.id as token_id,
+              t.account_id,
+              t.license_id,
+              t.activation_session_id,
+              t.device_id_hash,
+              t.revoked_at,
+              t.refresh_expires_at,
+              t.expires_at,
+              l.status,
+              l.plan_key,
+              l.current_period_end,
+              l.cancel_at_period_end,
+              l.grace_until,
+              l.features
+            from public.sidestream_license_tokens t
+            join public.sidestream_licenses l on l.id = t.license_id
+            where t.previous_refresh_token_hash = $1
+              and t.previous_refresh_valid_until > now()
+              and t.revoked_at is null
+              and t.refresh_expires_at > now()
+            limit 1
+            for update of t
+          `,
+          [refreshTokenHash],
+        );
+        const replayRow = replay.rows[0];
+        if (replayRow) {
+          if (!matchesDeviceHash(replayRow.device_id_hash, deviceIdHash)) {
+            await client.query("rollback");
+            return { active: false as const, status: "invalid", code: "device_mismatch" as const };
+          }
+          const license = buildLicenseSummary({
+            status: replayRow.status,
+            planKey: replayRow.plan_key,
+            currentPeriodEnd: replayRow.current_period_end,
+            cancelAtPeriodEnd: replayRow.cancel_at_period_end,
+            graceUntil: replayRow.grace_until,
+            features: replayRow.features,
+          });
+          if (!license.active) {
+            await client.query("rollback");
+            return { active: false as const, status: license.status, code: "license_inactive" as const, license };
+          }
+          const replayedTokens = deriveRefreshRotationTokens(
+            refreshToken,
+            getPrivateServerSecret(),
+          );
+          await client.query("commit");
+          return {
+            active: true as const,
+            status: license.status,
+            license,
+            ...replayedTokens,
+            tokenExpiresAt: toIsoString(replayRow.expires_at),
+            refreshExpiresAt: toIsoString(replayRow.refresh_expires_at),
+          };
+        }
+
+        await client.query("rollback");
+        return {
+          active: false as const,
+          status: "invalid",
+          code: current?.revoked_at ? "revoked" as const : "invalid_token" as const,
+        };
+      }
+
+      if (new Date(current.refresh_expires_at).getTime() <= Date.now()) {
+        await client.query("rollback");
+        return { active: false as const, status: "invalid", code: "invalid_token" as const };
+      }
+
+      const license = buildLicenseSummary({
+        status: current.status,
+        planKey: current.plan_key,
+        currentPeriodEnd: current.current_period_end,
+        cancelAtPeriodEnd: current.cancel_at_period_end,
+        graceUntil: current.grace_until,
+        features: current.features,
+      });
+      if (!license.active) {
+        await client.query(
+          `update public.sidestream_license_tokens set revoked_at = now(), updated_at = now() where id = $1`,
+          [current.token_id],
+        );
+        await client.query("commit");
+        return { active: false as const, status: license.status, code: "license_inactive" as const, license };
+      }
+
+      const rotated = deriveRefreshRotationTokens(refreshToken, getPrivateServerSecret());
+      const tokenExpiresAt = addDays(new Date(), LICENSE_TOKEN_TTL_DAYS).toISOString();
+      const refreshExpiresAt = addDays(new Date(), REFRESH_TOKEN_TTL_DAYS).toISOString();
+
+      await client.query(
+        `update public.sidestream_license_tokens set revoked_at = now(), updated_at = now() where id = $1`,
+        [current.token_id],
+      );
+      await client.query(
+        `
+          insert into public.sidestream_license_tokens (
+            account_id,
+            license_id,
+            activation_session_id,
+            device_id_hash,
+            token_hash,
+            expires_at,
+            refresh_token_hash,
+            refresh_expires_at,
+            previous_refresh_token_hash,
+            previous_refresh_valid_until,
+            refresh_rotated_at,
+            created_at,
+            updated_at
+          )
+          values (
+            $1, $2, $3, $4, $5, $6::timestamptz, $7, $8::timestamptz,
+            $9, now() + ($10 * interval '1 second'), now(), now(), now()
+          )
+        `,
+        [
+          current.account_id,
+          current.license_id,
+          current.activation_session_id,
+          deviceIdHash,
+          hashToken(rotated.licenseToken),
+          tokenExpiresAt,
+          hashToken(rotated.refreshToken),
+          refreshExpiresAt,
+          refreshTokenHash,
+          REFRESH_RETRY_GRACE_SECONDS,
+        ],
+      );
+
+      await client.query("commit");
+      return {
+        active: true as const,
+        status: license.status,
+        license,
+        ...rotated,
+        tokenExpiresAt,
+        refreshExpiresAt,
+      };
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    }
+  });
 }
 
 async function findAccountIdByStripeCustomer(customerId: string) {
@@ -1818,8 +2496,6 @@ async function findOrCreateAccountForStripeCustomer(
         return byEmail.rows[0].id;
       }
 
-      await ensureStripeFirstAccountSchema(client);
-
       const inserted = await client.query<{ id: string }>(
         `
           insert into public.sidestream_accounts (
@@ -1882,10 +2558,13 @@ function hashToken(token: string) {
 }
 
 function hashPrivateIdentifier(value: string) {
-  const secret = process.env.SIDESTREAM_LICENSE_HASH_SECRET ||
+  return createHmac("sha256", getPrivateServerSecret()).update(value).digest("hex");
+}
+
+function getPrivateServerSecret() {
+  return process.env.SIDESTREAM_LICENSE_HASH_SECRET ||
     getOptionalPostgresConnectionString() ||
     "sidestream-license-dev-salt";
-  return createHmac("sha256", secret).update(value).digest("hex");
 }
 
 function getOptionalPostgresConnectionString() {
@@ -1914,8 +2593,8 @@ function addSeconds(date: Date, seconds: number) {
   return new Date(date.getTime() + seconds * 1000);
 }
 
-function addMinutes(date: Date, minutes: number) {
-  return new Date(date.getTime() + minutes * 60 * 1000);
+function addHours(date: Date, hours: number) {
+  return new Date(date.getTime() + hours * 60 * 60 * 1000);
 }
 
 function addDays(date: Date, days: number) {

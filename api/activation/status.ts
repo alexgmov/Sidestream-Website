@@ -23,12 +23,16 @@ export default async function handler(
   const payload = await readJsonBody<ActivationStatusPayload>(request);
   const activationKey = cleanString(payload.activationKey, 160);
   if (!activationKey) {
-    return sendJson(response, 400, { error: "Missing activation key" });
+    return sendJson(response, 400, { error: "Missing activation key", code: "invalid_request" });
+  }
+  const deviceId = cleanString(payload.deviceId, 240);
+  if (!deviceId) {
+    return sendJson(response, 400, { error: "Missing device ID", code: "invalid_request" });
   }
 
   const status = await getActivationStatus(
     activationKey,
-    cleanString(payload.deviceId, 240),
+    deviceId,
   );
   return sendJson(response, 200, status);
 }

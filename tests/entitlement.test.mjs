@@ -1,0 +1,273 @@
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import test from "node:test";
+import {
+  buildCheckoutCompletionUrl,
+  canBindActivationAccount,
+  createClaimCsrfToken,
+  deriveActivationTokenPair,
+  deriveRefreshRotationTokens,
+  getActivationCheckoutIdempotencyKey,
+  getStripeCheckoutWindow,
+  isLegacyVercelHost,
+  isActivationTokenReplayAllowed,
+  matchesDeviceHash,
+  needsLegacyLicenseCompatibility,
+  sanitizeAccountNextPath,
+  validateActivationClaimPost,
+  validateClaimCsrfToken,
+  verifyPaidCheckoutSession,
+} from "../api/_lib/entitlement.ts";
+
+const validCheckout = {
+  id: "cs_test_paid",
+  mode: "payment",
+  status: "complete",
+  payment_status: "paid",
+  metadata: {
+    sidestream_plan: "sidestream_pro",
+    sidestream_price_id: "price_pro",
+    sidestream_activation_key: "activation-1",
+  },
+  line_items: {
+    data: [{ quantity: 1, price: { id: "price_pro", product: { id: "prod_pro" } } }],
+    has_more: false,
+  },
+};
+
+const checkoutExpectation = {
+  sessionId: "cs_test_paid",
+  activationKey: "activation-1",
+  priceId: "price_pro",
+  productId: "prod_pro",
+  paidPlanKeys: ["sidestream_pro", "sidestream_unlimited"],
+};
+
+test("Checkout completion URL keeps Stripe's placeholder unencoded", () => {
+  const url = buildCheckoutCompletionUrl("https://sidestream.tv", "activation + one");
+  assert.match(url, /session_id=\{CHECKOUT_SESSION_ID\}/);
+  assert.doesNotMatch(url, /%7BCHECKOUT_SESSION_ID%7D/i);
+  assert.match(url, /activation=activation\+%2B\+one/);
+});
+
+test("activation Checkout idempotency is stable without exposing the key", () => {
+  const first = getActivationCheckoutIdempotencyKey("secret-activation");
+  assert.equal(first, getActivationCheckoutIdempotencyKey("secret-activation"));
+  assert.notEqual(first, getActivationCheckoutIdempotencyKey("another-activation"));
+  assert.doesNotMatch(first, /secret-activation/);
+});
+
+test("Checkout expiry and paid-completion grace stay inside activation expiry at millisecond boundaries", () => {
+  const activationExpiresAtMs = 86_400_999;
+  const window = getStripeCheckoutWindow(activationExpiresAtMs, 600);
+  assert.equal(new Date(window.claimGraceUntil).getTime() - window.checkoutExpiresAt * 1000, 600_000);
+  assert.ok(new Date(window.claimGraceUntil).getTime() <= activationExpiresAtMs);
+});
+
+test("only the exact attached paid Session, Price, Product, and quantity verifies", () => {
+  assert.deepEqual(verifyPaidCheckoutSession(validCheckout, checkoutExpectation), { ok: true });
+  assert.equal(
+    verifyPaidCheckoutSession(
+      { ...validCheckout, payment_status: "unpaid" },
+      checkoutExpectation,
+    ).reason,
+    "payment_incomplete",
+  );
+  assert.equal(
+    verifyPaidCheckoutSession(
+      { ...validCheckout, id: "cs_attacker" },
+      checkoutExpectation,
+    ).reason,
+    "session_id_mismatch",
+  );
+  assert.equal(
+    verifyPaidCheckoutSession(
+      { ...validCheckout, metadata: { ...validCheckout.metadata, sidestream_activation_key: "attacker" } },
+      checkoutExpectation,
+    ).reason,
+    "activation_mismatch",
+  );
+  assert.equal(
+    verifyPaidCheckoutSession({
+      ...validCheckout,
+      line_items: { data: [{ quantity: 2, price: { id: "price_pro", product: "prod_pro" } }] },
+    }, checkoutExpectation).reason,
+    "invalid_quantity",
+  );
+});
+
+test("wrong devices and account overwrites fail closed", () => {
+  assert.equal(matchesDeviceHash("a".repeat(64), "a".repeat(64)), true);
+  assert.equal(matchesDeviceHash("a".repeat(64), "b".repeat(64)), false);
+  assert.equal(matchesDeviceHash(null, "a".repeat(64)), false);
+  assert.equal(canBindActivationAccount(null, "account-a"), true);
+  assert.equal(canBindActivationAccount("account-a", "account-a"), true);
+  assert.equal(canBindActivationAccount("account-a", "account-b"), false);
+});
+
+test("restore confirmation is account-bound, expiring, and rejects cross-site form posts", () => {
+  const token = createClaimCsrfToken({
+    activationKey: "activation-1",
+    accountId: "account-a",
+    expiresAtSeconds: 1_100,
+    secret: "test-secret",
+  });
+  assert.equal(validateClaimCsrfToken({
+    token,
+    activationKey: "activation-1",
+    accountId: "account-a",
+    nowSeconds: 1_000,
+    secret: "test-secret",
+  }), true);
+  assert.equal(validateClaimCsrfToken({
+    token,
+    activationKey: "activation-1",
+    accountId: "account-b",
+    nowSeconds: 1_000,
+    secret: "test-secret",
+  }), false);
+  assert.equal(validateActivationClaimPost({
+    requestOrigin: "https://evil.example",
+    expectedOrigin: "https://sidestream.tv",
+    contentType: "application/x-www-form-urlencoded",
+    submittedToken: token,
+    expectedToken: token,
+  }), false);
+  assert.equal(validateActivationClaimPost({
+    requestOrigin: "https://sidestream.tv",
+    expectedOrigin: "https://sidestream.tv",
+    contentType: "application/x-www-form-urlencoded; charset=UTF-8",
+    submittedToken: token,
+    expectedToken: token,
+  }), true);
+});
+
+test("OAuth next paths allow only account and restore confirmation routes", () => {
+  assert.equal(sanitizeAccountNextPath("/account.html?restore=1"), "/account.html?restore=1");
+  assert.equal(
+    sanitizeAccountNextPath("/api/activation/claim?activation=abc"),
+    "/api/activation/claim?activation=abc",
+  );
+  assert.equal(sanitizeAccountNextPath("/\\evil.example/path"), "/account.html");
+  assert.equal(sanitizeAccountNextPath("/%5c%5cevil.example/path"), "/account.html");
+  assert.equal(sanitizeAccountNextPath("//evil.example/path"), "/account.html");
+  assert.equal(sanitizeAccountNextPath("/api/checkout/start"), "/account.html");
+});
+
+test("activation issuance and refresh lost-response replay derive one stable token family", () => {
+  const activationPair = deriveActivationTokenPair("activation-1", "device-1", "secret");
+  assert.deepEqual(
+    activationPair,
+    deriveActivationTokenPair("activation-1", "device-1", "secret"),
+  );
+  assert.notDeepEqual(
+    activationPair,
+    deriveActivationTokenPair("activation-1", "device-2", "secret"),
+  );
+
+  const rotation = deriveRefreshRotationTokens("refresh-1", "secret");
+  assert.deepEqual(rotation, deriveRefreshRotationTokens("refresh-1", "secret"));
+  assert.notDeepEqual(rotation, deriveRefreshRotationTokens(rotation.refreshToken, "secret"));
+});
+
+test("activation credential replay is accepted at the boundary and terminal immediately after", () => {
+  assert.equal(isActivationTokenReplayAllowed(null, 10_000, 600), true);
+  assert.equal(isActivationTokenReplayAllowed(10_000, 610_000, 600), true);
+  assert.equal(isActivationTokenReplayAllowed(10_000, 610_001, 600), false);
+});
+
+test("legacy clients through 1.0.13 receive compatibility replay and rolling access", () => {
+  assert.equal(needsLegacyLicenseCompatibility("1.0.12"), true);
+  assert.equal(needsLegacyLicenseCompatibility("1.0.12-beta.1"), true);
+  assert.equal(needsLegacyLicenseCompatibility("1.0.11"), true);
+  assert.equal(needsLegacyLicenseCompatibility("1.0.13"), true);
+  assert.equal(needsLegacyLicenseCompatibility("1.0.14"), false);
+  assert.equal(needsLegacyLicenseCompatibility("unknown"), false);
+});
+
+test("legacy-host bare Checkout fails safe before Stripe", async () => {
+  assert.equal(isLegacyVercelHost("sidestream-xi.vercel.app"), true);
+  assert.equal(isLegacyVercelHost("sidestream-xi.vercel.app:443"), true);
+  assert.equal(isLegacyVercelHost("sidestream.tv"), false);
+
+  const checkoutSource = await readFile(new URL("../api/checkout/start.ts", import.meta.url), "utf8");
+  const upgradeSource = await readFile(new URL("../upgrade.html", import.meta.url), "utf8");
+  const guardIndex = checkoutSource.indexOf("isLegacyVercelHost(request.headers.host)");
+  const stripeIndex = checkoutSource.indexOf("const stripe = getStripe()");
+  assert.ok(guardIndex >= 0 && guardIndex < stripeIndex);
+  assert.match(checkoutSource, /checkout.*activation_required/s);
+  assert.match(upgradeSource, /checkoutState === "activation_required"/);
+  assert.match(upgradeSource, /checkoutLink\.hidden = true/);
+  assert.match(upgradeSource, /You have not been charged/);
+});
+
+test("unlinked paid buyers receive a no-second-charge recovery path", async () => {
+  const thankYouSource = await readFile(new URL("../thank-you.html", import.meta.url), "utf8");
+  assert.match(thankYouSource, /same Google email used at Checkout/);
+  assert.match(thankYouSource, /Upgrade or Restore Purchase/);
+  assert.match(thankYouSource, /instead of charging you again/);
+});
+
+test("paid completion grace is database-bounded and unpaid Sessions fail verification", async () => {
+  const migration = await readFile(new URL(
+    "../db/migrations/20260713180000_add_activation_checkout_and_refresh_rotation.sql",
+    import.meta.url,
+  ), "utf8");
+  assert.match(migration, /checkout_claim_grace_until <= stripe_checkout_expires_at \+ interval '10 minutes'/);
+  assert.match(migration, /checkout_claim_grace_until <= expires_at/);
+  assert.equal(verifyPaidCheckoutSession(
+    { ...validCheckout, payment_status: "unpaid" },
+    checkoutExpectation,
+  ).ok, false);
+});
+
+test("both Checkout routes attach instead of pre-binding attacker activation links", async () => {
+  for (const route of ["../api/checkout/start.ts", "../api/checkout/create.ts"]) {
+    const source = await readFile(new URL(route, import.meta.url), "utf8");
+    assert.doesNotMatch(source, /bindActivationToAccount/);
+    assert.match(source, /attachCheckoutSessionToActivation/);
+    assert.match(source, /getActivationCheckoutIdempotencyKey/);
+    assert.match(source, /license\.active/);
+    assert.match(source, /\/api\/activation\/claim/);
+  }
+});
+
+test("account implementation bounds status replay and uses locked refresh/fulfillment CAS", async () => {
+  const source = await readFile(new URL("../api/_lib/account.ts", import.meta.url), "utf8");
+  assert.match(source, /ACTIVATION_TOKEN_REPLAY_SECONDS/);
+  assert.match(source, /LEGACY_LICENSE_TOKEN_TTL_DAYS/);
+  assert.match(source, /needsLegacyLicenseCompatibility\(row\.app_version\)/);
+  assert.match(source, /needsLegacyLicenseCompatibility\(row\.activation_app_version\)/);
+  assert.match(source, /row\.completed_at/);
+  assert.match(source, /pg_advisory_xact_lock\(hashtext\(\$1\)\)/);
+  assert.match(source, /previous_refresh_token_hash/);
+  assert.match(source, /for update of t/i);
+  assert.match(source, /\(account_id is null or account_id = \$3\)/);
+  assert.match(source, /checkout_claim_grace_until >= now\(\)/);
+  assert.match(source, /code: "device_mismatch"/);
+  assert.match(source, /code: "revoked"/);
+  assert.match(source, /code: "invalid_token"/);
+  assert.match(source, /code: "license_inactive"/);
+});
+
+test("legacy 1.0.12 account API POSTs are not caught by the old-host redirect", async () => {
+  const config = JSON.parse(
+    await readFile(new URL("../vercel.json", import.meta.url), "utf8"),
+  );
+  const oldHostRedirects = config.redirects.filter((rule) =>
+    rule.has?.some((condition) =>
+      condition.type === "host" && condition.value === "sidestream-xi.vercel.app"
+    )
+  );
+
+  assert.ok(oldHostRedirects.some((rule) => rule.source === "/"));
+  assert.equal(
+    oldHostRedirects.some((rule) => rule.source === "/:path*"),
+    false,
+    "a broad old-host redirect would return 308 to installed CEP POST requests",
+  );
+  assert.ok(
+    oldHostRedirects.some((rule) => rule.source === "/:path((?!api/).*)"),
+    "non-API old-host pages should still canonicalize without intercepting /api/*",
+  );
+});
