@@ -10,6 +10,7 @@
     "db:migrate": "node scripts/apply-postgres-migrations.mjs",
     "leads:dump": "node scripts/dump-download-leads.mjs",
     "leads:migrate": "node scripts/migrate-download-leads-to-postgres.mjs --apply-schema",
+    "release:publish-manifest": "node scripts/publish-release-manifest.mjs",
     "typecheck": "tsc --noEmit",
     "preview": "vite preview"
   },

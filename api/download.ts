@@ -7,6 +7,10 @@ import {
   presignUrl,
 } from "@vercel/blob";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import {
+  getReleaseInstallerPathname,
+  resolveReleasePlatform,
+} from "./_lib/release-manifest.js";
 
 const INSTALLER_PATHNAME_ENV = "SIDESTREAM_INSTALLER_BLOB_PATHNAME";
 const DEFAULT_CONTENT_TYPE = "application/octet-stream";
@@ -14,6 +18,7 @@ const SIGNED_DOWNLOAD_TTL_MS = 5 * 60 * 1000;
 
 type DownloadRequest = IncomingMessage & {
   method?: string;
+  url?: string;
 };
 
 export default async function handler(
@@ -27,7 +32,15 @@ export default async function handler(
     return sendText(response, 405, "Method not allowed");
   }
 
-  const pathname = process.env[INSTALLER_PATHNAME_ENV]?.trim();
+  const requestUrl = new URL(request.url || "/api/download", "https://sidestream.tv");
+  const platform = resolveReleasePlatform(requestUrl.searchParams.get("platform"));
+
+  if (!platform) {
+    return sendText(response, 404, "Platform installer not found");
+  }
+
+  const fallbackPathname = platform === "macos" ? process.env[INSTALLER_PATHNAME_ENV] : undefined;
+  const pathname = getReleaseInstallerPathname(platform, fallbackPathname);
   if (!pathname) {
     return sendJson(response, 500, {
       error: `Missing ${INSTALLER_PATHNAME_ENV}`,
