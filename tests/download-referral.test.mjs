@@ -1,12 +1,16 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import { after, before, test } from "node:test";
 import { pathToFileURL } from "node:url";
 
 const repoRoot = process.cwd();
+const installerSizes = {
+  macos: readManifestSize("release-manifest.json"),
+  windows: readManifestSize("release-manifest.windows.json"),
+};
 let compiledDirectory;
 let createDownloadHandler;
 let buildInstallerReferralEvent;
@@ -57,7 +61,7 @@ test("tagged Windows GET redirects before recording a normalized referral", asyn
     headInstaller: async () => ({
       contentType: "application/vnd.microsoft.portable-executable",
       etag: "windows-etag",
-      size: 61_653_939,
+      size: installerSizes.windows,
     }),
     createSignedUrl: async () => "https://blob.example/signed-installer.exe",
     recordReferral: async (event) => {
@@ -285,10 +289,12 @@ test("Gmail UTM parsing rejects malformed, oversized, and unrelated tags", () =>
 function downloadHandler(overrides = {}) {
   const backgroundTasks = [];
   const handler = createDownloadHandler({
-    headInstaller: async () => ({
+    headInstaller: async (pathname) => ({
       contentType: "application/octet-stream",
       etag: "test-etag",
-      size: 42,
+      size: pathname.endsWith(".exe")
+        ? installerSizes.windows
+        : installerSizes.macos,
     }),
     createSignedUrl: async () => "https://blob.example/signed",
     recordReferral: async () => {},
@@ -304,6 +310,13 @@ function downloadHandler(overrides = {}) {
 
 async function flushBackground(handler) {
   await Promise.all(handler.backgroundTasks || []);
+}
+
+function readManifestSize(filename) {
+  const manifest = JSON.parse(
+    readFileSync(path.join(repoRoot, "data", filename), "utf8"),
+  );
+  return manifest.artifact.sizeBytes;
 }
 
 function taggedPath() {
