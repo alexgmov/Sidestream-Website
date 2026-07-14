@@ -18,4 +18,4 @@ Allow: /
 Disallow: /api/download
 Disallow: /api/download-lead
 
-Sitemap: https://sidestream-xi.vercel.app/sitemap.xml
+Sitemap: https://sidestream.tv/sitemap.xml

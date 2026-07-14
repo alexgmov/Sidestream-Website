@@ -4,7 +4,7 @@
 
 ## Canonical pages
 
-- [Sidestream landing page](https://sidestream-xi.vercel.app/): product overview, feature proof, pricing, and Mac installer download entry point.
+- [Sidestream landing page](https://sidestream.tv/): product overview, feature proof, pricing, and Mac installer download entry point.
 
 ## Product facts
 
@@ -12,10 +12,10 @@
 - Category: Adobe Premiere Pro panel / Mac editing workflow utility.
 - Platform: macOS with Adobe Premiere Pro.
 - Core workflow: search YouTube by keyword or pasted link, preview results, then download video or audio assets for editing.
-- Current offer: free access with 5 downloads every day, plus Sidestream Pro as a $4.99 one-time paid upgrade for unlimited downloads.
-- Download endpoint: https://sidestream-xi.vercel.app/api/download.
-- Checkout endpoint: https://sidestream-xi.vercel.app/api/checkout/start.
-- Lead capture endpoint: https://sidestream-xi.vercel.app/api/download-lead.
+- Current offer: free access with 5 downloads every day, plus Sidestream Pro as a $9.99 one-time paid upgrade for unlimited downloads.
+- Download endpoint: https://sidestream.tv/api/download.
+- Checkout endpoint: https://sidestream.tv/api/checkout/start.
+- Lead capture endpoint: https://sidestream.tv/api/download-lead.
 
 ## Crawl guidance
 

@@ -15,12 +15,14 @@ const MAX_BODY_BYTES = 64 * 1024;
 export const SIDESTREAM_PRO_PLAN_KEY = "sidestream_pro";
 const SIDESTREAM_LEGACY_UNLIMITED_PLAN_KEY = "sidestream_unlimited";
 const SIDESTREAM_PRO_DEFAULT_PRODUCT_ID = "prod_UpwXh6oO1OmPyQ";
-const SIDESTREAM_PRO_DEFAULT_PRICE_ID = "price_1TqGeBDFKjeGlioXlV8fBGK8";
+// Stripe Prices are immutable. Resolve the active $9.99 one-time Price by
+// lookup key, creating it once if this deployment is the first to use it.
+const SIDESTREAM_PRO_DEFAULT_PRICE_ID = "";
 const SIDESTREAM_PRO_PRICE = {
-  lookupKey: "sidestream_pro_once",
+  lookupKey: "sidestream_pro_once_999",
   name: "Sidestream Pro",
   description: "Lifetime Sidestream Pro access for one Mac editor.",
-  unitAmount: 499,
+  unitAmount: 999,
   currency: "usd",
 };
 const BASIC_SUBSCRIPTION_RESOURCE_KEY_BASE = "basic_subscription";
@@ -613,7 +615,7 @@ async function getConfiguredSidestreamProPriceId(productId: string) {
     if (isSidestreamProPriceShape(price, productId)) return price.id;
 
     throw new Error(
-      `Configured SIDESTREAM_PRO_PRICE_ID ${configuredPriceId} is not the active $4.99 one-time Sidestream Pro price for product ${productId}`,
+      `Configured SIDESTREAM_PRO_PRICE_ID ${configuredPriceId} is not the active $9.99 one-time Sidestream Pro price for product ${productId}`,
     );
   }
 
@@ -638,6 +640,8 @@ async function getConfiguredSidestreamProPriceId(productId: string) {
 }
 
 async function getDefaultSidestreamProPriceId(productId: string) {
+  if (!SIDESTREAM_PRO_DEFAULT_PRICE_ID) return "";
+
   try {
     const price = await getStripe().prices.retrieve(
       SIDESTREAM_PRO_DEFAULT_PRICE_ID,
@@ -646,9 +650,7 @@ async function getDefaultSidestreamProPriceId(productId: string) {
     );
     if (isSidestreamProPriceShape(price, productId)) return price.id;
 
-    throw new Error(
-      `Default Sidestream Pro price ${SIDESTREAM_PRO_DEFAULT_PRICE_ID} is not the active $4.99 one-time price for product ${productId}`,
-    );
+    return "";
   } catch (error) {
     if (isStripeResourceMissing(error) && !isLiveStripeMode()) return "";
     throw error;
@@ -716,7 +718,7 @@ async function findSidestreamProLookupPriceId(productId: string) {
   const conflictingPrice = prices.data[0];
   if (conflictingPrice) {
     throw new Error(
-      `Stripe lookup key ${SIDESTREAM_PRO_PRICE.lookupKey} points to a price that is not the active $4.99 one-time Sidestream Pro price for product ${productId}`,
+      `Stripe lookup key ${SIDESTREAM_PRO_PRICE.lookupKey} points to a price that is not the active $9.99 one-time Sidestream Pro price for product ${productId}`,
     );
   }
 
