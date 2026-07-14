@@ -20,6 +20,8 @@ import {
   DEVICE_POLICY_ERROR_CODES,
   decideDeviceActivation,
   evaluateDeviceTransferLimit,
+  getConfirmedDeviceMoveTimestamps,
+  getDeviceTransferLimitOverride,
   type DeviceNamespace,
 } from "../_lib/device-policy.js";
 import {
@@ -40,6 +42,7 @@ type ActivationDecisionContext = {
     platform: string;
     activatedAt: Date | string;
   } | null;
+  latestDeviceIdHash: string;
 };
 
 export default async function handler(
@@ -90,6 +93,15 @@ export default async function handler(
     }
 
     const decision = getDeviceDecision(activation, environment.namespace);
+    if (isEmptySlotDeviceMove(activation, decision.decision)) {
+      const transferLimit = await getTransferLimitState(session, environment.namespace);
+      if (!transferLimit.allowed) {
+        return sendConfirmationPage(response, 409, transferLimitPage({
+          limit: transferLimit.limit,
+          email: session.email,
+        }));
+      }
+    }
     const csrfToken = createActivationClaimCsrf(activationKey, session.accountId);
     if (decision.decision === "transfer_required" && activation.activeDevice) {
       const transferLimit = await getTransferLimitState(
@@ -165,6 +177,17 @@ export default async function handler(
   }
 
   const decision = getDeviceDecision(activation, environment.namespace);
+  if (isEmptySlotDeviceMove(activation, decision.decision)) {
+    const transferLimit = await getTransferLimitState(session, environment.namespace);
+    if (!transferLimit.allowed) {
+      return sendJson(response, 409, {
+        error: "Device transfer limit reached",
+        code: DEVICE_POLICY_ERROR_CODES.TRANSFER_LIMIT_REACHED,
+        limit: transferLimit.limit,
+        remainingTransfers: transferLimit.remainingTransfers,
+      });
+    }
+  }
   if (decision.decision === "transfer_required") {
     if (
       intent !== "transfer" ||
@@ -254,6 +277,7 @@ async function getActivationDecisionContext(
     active_device_id_hash: string | null;
     active_device_platform: string | null;
     active_device_activated_at: Date | string | null;
+    latest_device_id_hash: string | null;
   }>(
     `
       select
@@ -267,7 +291,8 @@ async function getActivationDecisionContext(
         d.id as active_device_id,
         d.device_id_hash as active_device_id_hash,
         d.platform as active_device_platform,
-        d.activated_at as active_device_activated_at
+        d.activated_at as active_device_activated_at,
+        h.device_id_hash as latest_device_id_hash
       from public.sidestream_activation_sessions a
       left join lateral (
         select id, device_id_hash, platform, activated_at
@@ -278,6 +303,14 @@ async function getActivationDecisionContext(
         order by activated_at desc, id desc
         limit 1
       ) d on true
+      left join lateral (
+        select device_id_hash
+        from public.sidestream_account_devices
+        where account_id = $2
+          and license_namespace = $3
+        order by activated_at desc, id desc
+        limit 1
+      ) h on true
       where a.activation_key = $1
         and a.device_id_hash is not null
       limit 1
@@ -314,7 +347,17 @@ async function getActivationDecisionContext(
           activatedAt: row.active_device_activated_at,
         }
       : null,
+    latestDeviceIdHash: row.latest_device_id_hash || "",
   };
+}
+
+function isEmptySlotDeviceMove(
+  activation: ActivationDecisionContext,
+  decision: "activate" | "same_device" | "transfer_required",
+) {
+  return decision === "activate" &&
+    Boolean(activation.latestDeviceIdHash) &&
+    activation.latestDeviceIdHash !== activation.deviceIdHash;
 }
 
 function getDeviceDecision(
@@ -370,81 +413,25 @@ async function getTransferLimitState(
     ),
   ]);
   return evaluateDeviceTransferLimit({
-    transferTimestampsMs: getConfirmedMoveTimestamps(devices.rows, transfers.rows),
+    transferTimestampsMs: getConfirmedDeviceMoveTimestamps({
+      devices: devices.rows.map((device) => ({
+        id: device.id,
+        deviceIdHash: device.device_id_hash,
+        activatedAt: device.activated_at,
+      })),
+      transfers: transfers.rows.map((transfer) => ({
+        fromDeviceId: transfer.from_device_id,
+        toDeviceId: transfer.to_device_id,
+        transferredAt: transfer.transferred_at,
+      })),
+    }),
     nowMs,
-    configuredLimit: getTransferLimitOverride(
+    configuredLimit: getDeviceTransferLimitOverride(
       session.license.features,
       namespace,
       nowMs,
     ),
   });
-}
-
-function getConfirmedMoveTimestamps(
-  devices: Array<{
-    id: string;
-    device_id_hash: string;
-    activated_at: Date | string;
-  }>,
-  transfers: Array<{
-    from_device_id: string;
-    to_device_id: string;
-    transferred_at: Date | string;
-  }>,
-) {
-  const devicesById = new Map(devices.map((device) => [device.id, device]));
-  const movesByDestination = new Map<string, number>();
-  let previousHash = "";
-
-  for (const device of devices) {
-    const activatedAtMs = new Date(device.activated_at).getTime();
-    if (
-      previousHash &&
-      previousHash !== device.device_id_hash &&
-      Number.isFinite(activatedAtMs)
-    ) {
-      movesByDestination.set(device.id, activatedAtMs);
-    }
-    previousHash = device.device_id_hash;
-  }
-
-  for (const transfer of transfers) {
-    const fromDevice = devicesById.get(transfer.from_device_id);
-    const toDevice = devicesById.get(transfer.to_device_id);
-    const transferredAtMs = new Date(transfer.transferred_at).getTime();
-    if (
-      fromDevice &&
-      toDevice &&
-      fromDevice.device_id_hash !== toDevice.device_id_hash &&
-      Number.isFinite(transferredAtMs)
-    ) {
-      movesByDestination.set(toDevice.id, transferredAtMs);
-    }
-  }
-  return [...movesByDestination.values()];
-}
-
-function getTransferLimitOverride(
-  features: Record<string, unknown>,
-  namespace: DeviceNamespace,
-  nowMs: number,
-) {
-  const policy = asRecord(features.singleDevicePolicy);
-  const overrides = asRecord(policy?.transferLimitOverrides);
-  const override = asRecord(overrides?.[namespace]);
-  const expiresAtMs = new Date(String(override?.expiresAt || "")).getTime();
-  return Number.isSafeInteger(override?.limit) &&
-      Number(override?.limit) > 0 &&
-      Number.isFinite(expiresAtMs) &&
-      expiresAtMs > nowMs
-    ? Number(override?.limit)
-    : undefined;
-}
-
-function asRecord(value: unknown): Record<string, unknown> | null {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : null;
 }
 
 function validateActivationPost(

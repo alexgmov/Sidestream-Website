@@ -10,7 +10,9 @@ import {
   applyDevicePolicyMode,
   decideDeviceActivation,
   evaluateDeviceTransferLimit,
+  getConfirmedDeviceMoveTimestamps,
   getDeviceRevocationErrorCode,
+  getDeviceTransferLimitOverride,
   isSameAccountDevice,
   resolveDevicePolicyMode,
   resolveDeviceTransferLimit,
@@ -134,6 +136,35 @@ test("transfer limits are capped and use an inclusive rolling window", () => {
   assert.equal(blocked.allowed, false);
   assert.equal(blocked.errorCode, "transfer_limit_reached");
   assert.equal(blocked.remainingTransfers, 0);
+});
+
+test("retained lifecycle rows count deactivate-then-activate moves once", () => {
+  const nowMs = Date.UTC(2026, 6, 14, 19);
+  const devices = [
+    { id: "a", deviceIdHash: "a".repeat(64), activatedAt: nowMs - 3_000 },
+    { id: "a-reconnect", deviceIdHash: "a".repeat(64), activatedAt: nowMs - 2_000 },
+    { id: "b", deviceIdHash: "b".repeat(64), activatedAt: nowMs - 1_000 },
+  ];
+  const timestamps = getConfirmedDeviceMoveTimestamps({
+    devices,
+    transfers: [{
+      fromDeviceId: "a-reconnect",
+      toDeviceId: "b",
+      transferredAt: nowMs - 900,
+    }],
+  });
+  assert.deepEqual(timestamps, [nowMs - 900]);
+
+  const features = {
+    singleDevicePolicy: {
+      transferLimitOverrides: {
+        production: { limit: 5, expiresAt: new Date(nowMs + 60_000).toISOString() },
+        test: { limit: 4, expiresAt: new Date(nowMs - 1).toISOString() },
+      },
+    },
+  };
+  assert.equal(getDeviceTransferLimitOverride(features, "production", nowMs), 5);
+  assert.equal(getDeviceTransferLimitOverride(features, "test", nowMs), undefined);
 });
 
 test("policy defaults to observe and only explicit enforce blocks", () => {

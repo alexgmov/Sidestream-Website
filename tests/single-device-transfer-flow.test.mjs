@@ -126,14 +126,15 @@ test("transfer POST requires CSRF plus explicit intent and limits before mutatio
   const post = source.slice(postStart, source.indexOf("\nasync function getActivationDecisionContext", postStart));
   const csrf = post.indexOf("validateActivationPost(");
   const decision = post.indexOf("getDeviceDecision(");
+  const emptySlotLimit = post.indexOf("getTransferLimitState(", decision);
   const explicitIntent = post.indexOf('intent !== "transfer"');
-  const limit = post.indexOf("getTransferLimitState(");
+  const limit = post.indexOf("getTransferLimitState(", explicitIntent);
   const claim = post.indexOf("claimActivationToAccount(");
   const transfer = post.indexOf("confirmAccountDeviceTransfer(");
 
   assert.ok(postStart >= 0);
   assert.ok(csrf >= 0 && decision > csrf);
-  assert.ok(explicitIntent > decision && limit > explicitIntent);
+  assert.ok(emptySlotLimit > decision && explicitIntent > emptySlotLimit && limit > explicitIntent);
   assert.ok(claim > limit && transfer > claim);
   assert.match(post, /transfer_confirmation/);
   assert.match(post, /deactivate_previous_device/);
@@ -158,7 +159,7 @@ test("decision reads and transfer counts remain account and namespace bound", as
   assert.match(source, /same_device/);
 });
 
-test("public and account copy states one production device without faking deactivation", async () => {
+test("public and account copy states one production device with confirmed deactivation", async () => {
   const [account, thankYou, upgrade, index, llms] = await Promise.all([
     readFile(files.account, "utf8"),
     readFile(files.thankYou, "utf8"),
@@ -171,10 +172,11 @@ test("public and account copy states one production device without faking deacti
     assert.match(page, /noindex, nofollow/);
   }
   assert.match(account, /Active production device/);
-  assert.match(account, /One active device at a time/);
-  assert.match(account, /Deactivate unavailable/);
+  assert.match(account, /No active production device/);
   assert.match(account, /deactivate-device-button[^>]+disabled/);
-  assert.doesNotMatch(account, /fetch\([^)]*deactivate/i);
+  assert.match(account, /fetch\("\/api\/account\/device"/);
+  assert.match(account, /window\.confirm\("Deactivate the active Sidestream device\?/);
+  assert.match(account, /apiPost\("\/api\/license\/deactivate", \{\s*intent: "deactivate_active_device"/);
   assert.match(account, /receipt-button/);
   assert.match(account, /refund-button/);
   assert.match(thankYou, /one active production device at a time/i);
