@@ -4,6 +4,9 @@ import {
   resolveReleasePlatform,
   toPublicReleaseManifest,
 } from "../_lib/release-manifest.js";
+import type {
+  ReleaseManifest,
+} from "../_lib/release-manifest.js";
 
 const SUPPORTED_CHANNELS = new Set(["stable"]);
 
@@ -12,58 +15,88 @@ type ReleaseRequest = IncomingMessage & {
   url?: string;
 };
 
-export default async function handler(
-  request: ReleaseRequest,
-  response: ServerResponse,
+type ReleaseDependencies = {
+  logManifestError: (error: unknown) => void;
+};
+
+export function createReleaseHandler(
+  overrides: Partial<ReleaseDependencies> = {},
 ) {
-  setCorsHeaders(response);
+  const dependencies: ReleaseDependencies = {
+    logManifestError: (error) => {
+      console.error("[sidestream releases] manifest unavailable:", error);
+    },
+    ...overrides,
+  };
 
-  const method = (request.method || "GET").toUpperCase();
+  return async function handler(
+    request: ReleaseRequest,
+    response: ServerResponse,
+  ) {
+    setCorsHeaders(response);
 
-  if (method === "OPTIONS") {
-    response.setHeader("Allow", "GET, HEAD, OPTIONS");
-    response.statusCode = 204;
-    response.end();
-    return;
-  }
+    const method = (request.method || "GET").toUpperCase();
 
-  if (method !== "GET" && method !== "HEAD") {
-    response.setHeader("Allow", "GET, HEAD, OPTIONS");
-    return sendJson(response, 405, { error: "Release manifest accepts GET only" });
-  }
+    if (method === "OPTIONS") {
+      response.setHeader("Allow", "GET, HEAD, OPTIONS");
+      response.statusCode = 204;
+      response.end();
+      return;
+    }
 
-  const requestUrl = new URL(request.url || "/api/releases/latest", "https://sidestream.tv");
-  const channel = sanitizeLabel(requestUrl.searchParams.get("channel") || "stable");
-  const platform = resolveReleasePlatform(sanitizeLabel(requestUrl.searchParams.get("platform") || ""));
+    if (method !== "GET" && method !== "HEAD") {
+      response.setHeader("Allow", "GET, HEAD, OPTIONS");
+      return sendJson(response, 405, {
+        error: "Release manifest accepts GET and HEAD only",
+      });
+    }
 
-  if (!SUPPORTED_CHANNELS.has(channel)) {
-    return sendJson(response, 404, { error: "Release channel not found" });
-  }
+    const requestUrl = new URL(
+      request.url || "/api/releases/latest",
+      "https://sidestream.tv",
+    );
+    const channel = sanitizeLabel(
+      requestUrl.searchParams.get("channel") || "stable",
+    );
+    const platform = resolveReleasePlatform(
+      requestUrl.searchParams.get("platform"),
+    );
 
-  if (!platform) {
-    return sendJson(response, 404, { error: "Platform release not found" });
-  }
+    if (!SUPPORTED_CHANNELS.has(channel)) {
+      return sendJson(response, 404, { error: "Release channel not found" });
+    }
 
-  let manifest;
+    if (!platform) {
+      return sendJson(response, 404, { error: "Platform release not found" });
+    }
 
-  try {
-    manifest = readReleaseManifest(platform);
-  } catch (error) {
-    console.error("[sidestream releases] manifest unavailable:", error);
-    return sendJson(response, 503, { error: "Release manifest is not available" });
-  }
+    let manifest: ReleaseManifest;
 
-  response.setHeader("Cache-Control", "no-store");
-  response.setHeader("X-Content-Type-Options", "nosniff");
+    try {
+      manifest = readReleaseManifest(platform);
+    } catch (error) {
+      dependencies.logManifestError(error);
+      return sendJson(response, 503, {
+        error: "Release manifest is not available",
+      });
+    }
 
-  if (method === "HEAD") {
+    const publicManifest = toPublicReleaseManifest(manifest);
+    const body = JSON.stringify(publicManifest);
+    setManifestHeaders(response, manifest, Buffer.byteLength(body));
+
+    if (method === "HEAD") {
+      response.statusCode = 200;
+      response.end();
+      return;
+    }
+
     response.statusCode = 200;
-    response.end();
-    return;
-  }
-
-  return sendJson(response, 200, toPublicReleaseManifest(manifest));
+    response.end(body);
+  };
 }
+
+export default createReleaseHandler();
 
 function setCorsHeaders(response: ServerResponse) {
   response.setHeader("Access-Control-Allow-Origin", "*");
@@ -76,12 +109,31 @@ function sanitizeLabel(value: string) {
   return String(value || "").trim().toLowerCase().replace(/[^a-z0-9_.-]/g, "").slice(0, 40);
 }
 
+function setManifestHeaders(
+  response: ServerResponse,
+  manifest: ReleaseManifest,
+  contentLength: number,
+) {
+  response.setHeader("Cache-Control", "no-store");
+  response.setHeader("Content-Type", "application/json; charset=utf-8");
+  response.setHeader("Content-Length", String(contentLength));
+  response.setHeader("Last-Modified", new Date(manifest.publishedAt).toUTCString());
+  response.setHeader("X-Sidestream-Platform", manifest.platform);
+  response.setHeader("X-Sidestream-Sha256", manifest.artifact.sha256);
+  response.setHeader("X-Sidestream-Version", manifest.version);
+  response.setHeader("X-Content-Type-Options", "nosniff");
+}
+
 function sendJson(
   response: ServerResponse,
   statusCode: number,
   payload: Record<string, unknown>,
 ) {
+  const body = JSON.stringify(payload);
   response.statusCode = statusCode;
   response.setHeader("Content-Type", "application/json; charset=utf-8");
-  response.end(JSON.stringify(payload));
+  response.setHeader("Cache-Control", "no-store");
+  response.setHeader("Content-Length", String(Buffer.byteLength(body)));
+  response.setHeader("X-Content-Type-Options", "nosniff");
+  response.end(body);
 }
