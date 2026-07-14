@@ -20,6 +20,18 @@ export const DEFAULT_DEVICE_TRANSFER_LIMIT = 3;
 export const MAX_DEVICE_TRANSFER_LIMIT = 10;
 export const DEVICE_TRANSFER_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
 
+export type DeviceHistoryRecord = Readonly<{
+  id: string;
+  deviceIdHash: string;
+  activatedAt: Date | string | number;
+}>;
+
+export type DeviceTransferRecord = Readonly<{
+  fromDeviceId: string;
+  toDeviceId: string;
+  transferredAt: Date | string | number;
+}>;
+
 export type AccountDevicePolicyRecord = Readonly<{
   namespace: DeviceNamespace;
   deviceIdHash: string;
@@ -152,6 +164,60 @@ export function evaluateDeviceTransferLimit(options: {
   } as const;
 }
 
+export function getConfirmedDeviceMoveTimestamps(options: {
+  devices: readonly DeviceHistoryRecord[];
+  transfers?: readonly DeviceTransferRecord[];
+}) {
+  const devicesById = new Map(options.devices.map((device) => [device.id, device]));
+  const movesByDestination = new Map<string, number>();
+  let previousHash = "";
+
+  for (const device of options.devices) {
+    const activatedAtMs = timestampMs(device.activatedAt);
+    if (
+      previousHash &&
+      previousHash !== device.deviceIdHash &&
+      activatedAtMs !== null
+    ) {
+      movesByDestination.set(device.id, activatedAtMs);
+    }
+    previousHash = device.deviceIdHash;
+  }
+
+  for (const transfer of options.transfers || []) {
+    const fromDevice = devicesById.get(transfer.fromDeviceId);
+    const toDevice = devicesById.get(transfer.toDeviceId);
+    const transferredAtMs = timestampMs(transfer.transferredAt);
+    if (
+      fromDevice &&
+      toDevice &&
+      fromDevice.deviceIdHash !== toDevice.deviceIdHash &&
+      transferredAtMs !== null
+    ) {
+      movesByDestination.set(toDevice.id, transferredAtMs);
+    }
+  }
+
+  return [...movesByDestination.values()];
+}
+
+export function getDeviceTransferLimitOverride(
+  features: Record<string, unknown> | null | undefined,
+  namespace: DeviceNamespace,
+  nowMs: number,
+) {
+  const policy = asRecord(features?.singleDevicePolicy);
+  const overrides = asRecord(policy?.transferLimitOverrides);
+  const override = asRecord(overrides?.[namespace]);
+  const expiresAtMs = timestampMs(String(override?.expiresAt || ""));
+  return Number.isSafeInteger(override?.limit) &&
+      Number(override?.limit) > 0 &&
+      expiresAtMs !== null &&
+      expiresAtMs > nowMs
+    ? Number(override?.limit)
+    : undefined;
+}
+
 export function applyDevicePolicyMode(options: {
   mode?: unknown;
   errorCode: DevicePolicyErrorCode | null;
@@ -277,4 +343,10 @@ function opaqueIdsMatch(left: string, right: string) {
 function timestampMs(value: Date | string | number) {
   const timestamp = value instanceof Date ? value.getTime() : new Date(value).getTime();
   return Number.isFinite(timestamp) ? timestamp : null;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
 }

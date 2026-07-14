@@ -26,7 +26,10 @@ import {
   applyDevicePolicyMode,
   decideDeviceActivation,
   evaluateDeviceCredentialBinding,
+  evaluateDeviceTransferLimit,
+  getConfirmedDeviceMoveTimestamps,
   getDeviceRevocationErrorCode,
+  getDeviceTransferLimitOverride,
   normalizeDevicePlatform,
   resolveDevicePolicyMode,
   type DeviceNamespace,
@@ -1482,6 +1485,7 @@ export async function getActivationStatus(
     appVersion: row.app_version,
     buildChannel: row.build_channel,
     previouslyIssuedAt: row.completed_at,
+    licenseFeatures: row.features,
   });
   if (!activationBinding.allowed) {
     return {
@@ -1855,7 +1859,15 @@ export async function upsertLicenseFromSubscription(
         current_period_end = excluded.current_period_end,
         cancel_at_period_end = excluded.cancel_at_period_end,
         grace_until = excluded.grace_until,
-        features = excluded.features,
+        features = excluded.features || case
+          when sidestream_licenses.account_id = excluded.account_id
+            and sidestream_licenses.features ? 'singleDevicePolicy'
+            then jsonb_build_object(
+              'singleDevicePolicy',
+              sidestream_licenses.features -> 'singleDevicePolicy'
+            )
+          else '{}'::jsonb
+        end,
         updated_at = now()
     `,
     [
@@ -2083,7 +2095,15 @@ async function upsertLicenseFromOneTimeCheckoutSession(options: {
         current_period_end = excluded.current_period_end,
         cancel_at_period_end = excluded.cancel_at_period_end,
         grace_until = excluded.grace_until,
-        features = excluded.features,
+        features = excluded.features || case
+          when sidestream_licenses.account_id = excluded.account_id
+            and sidestream_licenses.features ? 'singleDevicePolicy'
+            then jsonb_build_object(
+              'singleDevicePolicy',
+              sidestream_licenses.features -> 'singleDevicePolicy'
+            )
+          else '{}'::jsonb
+        end,
         updated_at = now()
       returning id
     `,
@@ -2330,6 +2350,7 @@ async function lockAccountDeviceBinding(
     platform?: unknown;
     appVersion?: unknown;
     buildChannel?: unknown;
+    licenseFeatures?: Record<string, unknown> | null;
   },
 ): Promise<AccountDeviceBinding> {
   await client.query("select pg_advisory_xact_lock(hashtext($1))", [
@@ -2371,6 +2392,20 @@ async function lockAccountDeviceBinding(
     options.claimEmpty !== false &&
     !(options.purpose === "credential" && latestRequestedDevice?.revoked_at)
   ) {
+    if (options.purpose === "activation") {
+      const transferLimit = await getEmptySlotTransferLimitState(client, {
+        accountId: options.accountId,
+        namespace: options.namespace,
+        requestedDeviceIdHash: options.requestedDeviceIdHash,
+        licenseFeatures: options.licenseFeatures,
+      });
+      if (!transferLimit.allowed) {
+        return {
+          allowed: false,
+          code: DEVICE_POLICY_ERROR_CODES.TRANSFER_LIMIT_REACHED,
+        };
+      }
+    }
     const platform = normalizeDevicePlatform(options.platform);
     const appVersion = normalizeRegistryAppVersion(options.appVersion);
     const buildChannel = getLicenseDiagnosticMetadata({
@@ -2569,6 +2604,74 @@ async function lockAccountDeviceBinding(
     bindingMatches,
     observedErrorCode,
   };
+}
+
+async function getEmptySlotTransferLimitState(
+  client: PoolClient,
+  options: {
+    accountId: string;
+    namespace: DeviceNamespace;
+    requestedDeviceIdHash: string;
+    licenseFeatures?: Record<string, unknown> | null;
+  },
+) {
+  const devices = await client.query<{
+    id: string;
+    device_id_hash: string;
+    activated_at: Date | string;
+  }>(
+    `
+      select id, device_id_hash, activated_at
+      from public.sidestream_account_devices
+      where account_id = $1
+        and license_namespace = $2
+      order by activated_at asc, id asc
+    `,
+    [options.accountId, options.namespace],
+  );
+  const latestDevice = devices.rows.at(-1);
+  if (
+    !latestDevice ||
+    safeEqual(latestDevice.device_id_hash, options.requestedDeviceIdHash)
+  ) {
+    return { allowed: true as const };
+  }
+
+  const transfers = await client.query<{
+    from_device_id: string;
+    to_device_id: string;
+    transferred_at: Date | string;
+  }>(
+    `
+      select from_device_id, to_device_id, transferred_at
+      from public.sidestream_device_transfers
+      where account_id = $1
+        and license_namespace = $2
+      order by transferred_at asc, id asc
+    `,
+    [options.accountId, options.namespace],
+  );
+  const nowMs = Date.now();
+  return evaluateDeviceTransferLimit({
+    transferTimestampsMs: getConfirmedDeviceMoveTimestamps({
+      devices: devices.rows.map((device) => ({
+        id: device.id,
+        deviceIdHash: device.device_id_hash,
+        activatedAt: device.activated_at,
+      })),
+      transfers: transfers.rows.map((transfer) => ({
+        fromDeviceId: transfer.from_device_id,
+        toDeviceId: transfer.to_device_id,
+        transferredAt: transfer.transferred_at,
+      })),
+    }),
+    nowMs,
+    configuredLimit: getDeviceTransferLimitOverride(
+      options.licenseFeatures,
+      options.namespace,
+      nowMs,
+    ),
+  });
 }
 
 function mapAccountDevicePolicyRecord(
@@ -2912,6 +3015,7 @@ async function checkActivationDeviceBinding(options: {
   appVersion?: unknown;
   buildChannel?: unknown;
   previouslyIssuedAt?: Date | string | null;
+  licenseFeatures?: Record<string, unknown> | null;
 }) {
   return withPgClient(async (client) => {
     await client.query("begin");
@@ -2925,6 +3029,7 @@ async function checkActivationDeviceBinding(options: {
         platform: options.platform,
         appVersion: options.appVersion,
         buildChannel: options.buildChannel,
+        licenseFeatures: options.licenseFeatures,
       });
       await client.query("commit");
       return binding;

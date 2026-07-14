@@ -133,7 +133,8 @@ test("retained device lifecycle rows still count after deactivate then reactivat
     claim,
     /select id, device_id_hash, activated_at\s+from public\.sidestream_account_devices\s+where account_id = \$1\s+and license_namespace = \$2\s+order by activated_at asc/is,
   );
-  assert.match(claim, /previousHash !== device\.device_id_hash/);
+  assert.match(claim, /getConfirmedDeviceMoveTimestamps\(/);
+  assert.match(claim, /deviceIdHash: device\.device_id_hash/);
 });
 
 test("all account GET surfaces remain free of device mutation calls", async () => {
