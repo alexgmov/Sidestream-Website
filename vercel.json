@@ -17,6 +17,18 @@
       "permanent": true
     },
     {
+      "source": "/",
+      "has": [{ "type": "host", "value": "www.sidestream.tv" }],
+      "destination": "https://sidestream.tv/",
+      "permanent": true
+    },
+    {
+      "source": "/",
+      "has": [{ "type": "host", "value": "sidestream-xi.vercel.app" }],
+      "destination": "https://sidestream.tv/",
+      "permanent": true
+    },
+    {
       "source": "/:path*",
       "has": [{ "type": "host", "value": "www.sidestream.tv" }],
       "destination": "https://sidestream.tv/:path*",
