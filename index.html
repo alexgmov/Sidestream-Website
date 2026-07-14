@@ -305,7 +305,7 @@
   }
   .btn-primary:active { transform: translateY(0); }
   .btn[data-download],
-  .btn[data-windows-waitlist-open] {
+  .btn[data-windows-download] {
     --download-platform-mark: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M18.71 19.5c-.83 1.24-1.71 2.45-3.05 2.47-1.34.03-1.77-.79-3.29-.79-1.53 0-2 .77-3.27.82-1.31.05-2.3-1.32-3.14-2.53C4.25 17 2.94 12.45 4.7 9.39c.87-1.52 2.43-2.48 4.12-2.51 1.28-.02 2.5.87 3.29.87.78 0 2.26-1.07 3.81-.91.65.03 2.47.26 3.64 1.98-.09.06-2.17 1.26-2.15 3.81.03 3.05 2.68 4.07 2.71 4.08-.03.07-.42 1.44-1.41 2.83M13 3.5c.73-.83 1.94-1.46 2.94-1.5.13 1.17-.34 2.35-1.04 3.19-.69.85-1.83 1.51-2.95 1.42-.15-1.15.41-2.35 1.05-3.11z'/%3E%3C/svg%3E");
     border-radius: 999px;
     background: #fff;
@@ -313,11 +313,11 @@
     border-color: #fff;
     backdrop-filter: none;
   }
-  .btn[data-windows-waitlist-open] {
+  .btn[data-windows-download] {
     --download-platform-mark: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M3 5.3l8-1.1v7.4H3V5.3zm9-1.3l9-1.3v8.9h-9V4zm0 8.9h9v8.8l-9-1.3v-7.5zM3 12.9h8v7.3l-8-1.1v-6.2z'/%3E%3C/svg%3E");
   }
   .btn[data-download]::before,
-  .btn[data-windows-waitlist-open]::before {
+  .btn[data-windows-download]::before {
     content: "";
     flex: none;
     width: 15px;
@@ -330,7 +330,7 @@
     width: 13px;
   }
   .btn[data-download]:hover,
-  .btn[data-windows-waitlist-open]:hover {
+  .btn[data-windows-download]:hover {
     background: var(--blue);
     color: #fff;
     border-color: var(--blue);
@@ -1001,6 +1001,8 @@
     h1 { font-size: 2.58rem; }
     .hero-subline { font-size: 1.48rem; }
     .hero-description { font-size: 15.5px; }
+    #hero .cta-row { align-items: stretch; width: 100%; }
+    #hero .cta-row .btn { width: 100%; }
     .rotating-copy { min-width: 0; width: 100%; }
     .pricing-line { white-space: normal; }
     .beta-title { font-size: 26px; }
@@ -1121,8 +1123,8 @@
           <p class="hero-subline">in Premiere Pro</p>
           <p class="hero-description">Search, preview, and download YouTube videos from a panel inside Premiere Pro, so you never leave the app.</p>
           <div class="cta-row">
-            <a class="btn btn-primary btn-lg" href="https://sidestream.tv/api/download" data-download aria-label="Free Download for Mac">Free Download</a>
-            <button class="btn btn-primary btn-lg" type="button" data-windows-waitlist-open aria-label="Join the Windows waitlist">Windows Waitlist</button>
+            <a class="btn btn-primary btn-lg" href="https://sidestream.tv/api/download" data-download aria-label="Download Sidestream for Mac">Download for Mac</a>
+            <a class="btn btn-primary btn-lg" href="https://sidestream.tv/api/download?platform=win32-x64" data-windows-download aria-label="Download Sidestream for Windows">Download for Windows</a>
           </div>
         </div>
       </div>
@@ -1647,7 +1649,7 @@
       ping("Starting your download...");
     }
 
-    document.querySelectorAll("[data-download]").forEach((el) => {
+    document.querySelectorAll("[data-download], [data-windows-download]").forEach((el) => {
       el.addEventListener("click", (ev) => handleDownloadRequest(ev, el));
       el.addEventListener("auxclick", (ev) => handleDownloadRequest(ev, el));
     });
