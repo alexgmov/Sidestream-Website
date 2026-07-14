@@ -28,6 +28,7 @@ export type AccountDevicePolicyRecord = Readonly<{
 }>;
 
 export type DeviceRevocationReason = "deactivated" | "replaced";
+export type DevicePlatform = "macos" | "windows" | "unknown";
 
 export type DeviceActivationDecision =
   | { decision: "activate"; errorCode: null }
@@ -173,6 +174,96 @@ export function getDeviceRevocationErrorCode(reason: DeviceRevocationReason) {
     : DEVICE_POLICY_ERROR_CODES.DEVICE_DEACTIVATED;
 }
 
+export function normalizeDevicePlatform(value: unknown): DevicePlatform {
+  const normalized = typeof value === "string" ? value.trim().toLowerCase() : "";
+  if (["mac", "macos", "darwin", "osx"].includes(normalized)) return "macos";
+  if (["win", "win32", "win64", "windows"].includes(normalized)) return "windows";
+  return "unknown";
+}
+
+export function isCredentialGenerationCurrent(options: {
+  credentialCreatedAt: Date | string | number;
+  deviceActivatedAt: Date | string | number;
+}) {
+  const credentialCreatedAtMs = timestampMs(options.credentialCreatedAt);
+  const deviceActivatedAtMs = timestampMs(options.deviceActivatedAt);
+  return credentialCreatedAtMs !== null &&
+    deviceActivatedAtMs !== null &&
+    credentialCreatedAtMs >= deviceActivatedAtMs;
+}
+
+export function evaluateDeviceCredentialBinding(options: {
+  namespace: DeviceNamespace;
+  requestedDeviceIdHash: string;
+  activeDevice: AccountDevicePolicyRecord | null;
+  latestRequestedDevice: AccountDevicePolicyRecord | null;
+  credentialCreatedAt: Date | string | number;
+  activeDeviceActivatedAt?: Date | string | number | null;
+  mode?: unknown;
+}) {
+  const latestRequestedDevice = options.latestRequestedDevice;
+  if (latestRequestedDevice && latestRequestedDevice.revokedAt !== null) {
+    const publicErrorCode = getDeviceRevocationErrorCode(
+      latestRequestedDevice.revocationReason === "deactivated"
+        ? "deactivated"
+        : "replaced",
+    );
+    return {
+      allowed: false,
+      publicErrorCode,
+      observedErrorCode: null,
+      definitive: true,
+    } as const;
+  }
+
+  if (
+    options.activeDevice &&
+    options.activeDeviceActivatedAt !== null &&
+    options.activeDeviceActivatedAt !== undefined &&
+    !isCredentialGenerationCurrent({
+      credentialCreatedAt: options.credentialCreatedAt,
+      deviceActivatedAt: options.activeDeviceActivatedAt,
+    })
+  ) {
+    return {
+      allowed: false,
+      publicErrorCode: DEVICE_POLICY_ERROR_CODES.DEVICE_REPLACED,
+      observedErrorCode: null,
+      definitive: true,
+    } as const;
+  }
+
+  if (
+    options.activeDevice &&
+    isSameAccountDevice({
+      namespace: options.namespace,
+      requestedDeviceIdHash: options.requestedDeviceIdHash,
+      activeDevice: options.activeDevice,
+    })
+  ) {
+    return {
+      allowed: true,
+      publicErrorCode: null,
+      observedErrorCode: null,
+      definitive: false,
+    } as const;
+  }
+
+  const candidateErrorCode = options.activeDevice
+    ? DEVICE_POLICY_ERROR_CODES.DEVICE_REPLACED
+    : DEVICE_POLICY_ERROR_CODES.DEVICE_DEACTIVATED;
+  const policy = applyDevicePolicyMode({
+    mode: options.mode,
+    errorCode: candidateErrorCode,
+  });
+  return {
+    allowed: policy.allowed,
+    publicErrorCode: policy.publicErrorCode,
+    observedErrorCode: policy.observedErrorCode,
+    definitive: false,
+  } as const;
+}
+
 function opaqueIdsMatch(left: string, right: string) {
   if (!left || left.length !== right.length) return false;
 
@@ -181,4 +272,9 @@ function opaqueIdsMatch(left: string, right: string) {
     mismatch |= left.charCodeAt(index) ^ right.charCodeAt(index);
   }
   return mismatch === 0;
+}
+
+function timestampMs(value: Date | string | number) {
+  const timestamp = value instanceof Date ? value.getTime() : new Date(value).getTime();
+  return Number.isFinite(timestamp) ? timestamp : null;
 }

@@ -3,6 +3,7 @@ import {
   cleanString,
   methodNotAllowed,
   readJsonBody,
+  resolveRequestLicenseEnvironment,
   sendJson,
   type AccountRequest,
   verifyLicenseToken,
@@ -29,7 +30,16 @@ export default async function handler(
     return sendJson(response, 400, { error: "Missing device ID", code: "invalid_request" });
   }
 
-  const verified = await verifyLicenseToken(licenseToken, deviceId);
+  const environment = resolveRequestLicenseEnvironment(request);
+  if (!environment) {
+    return sendJson(response, 503, {
+      active: false,
+      status: "unavailable",
+      code: "license_environment_unavailable",
+    });
+  }
+
+  const verified = await verifyLicenseToken(licenseToken, deviceId, environment);
   if (!verified.active) {
     const statusCode = verified.code === "license_inactive" ? 403 : 401;
     return sendJson(response, statusCode, verified);
