@@ -9,6 +9,7 @@ import {
   deriveActivationTokenPair,
   deriveRefreshRotationTokens,
   getStripeCheckoutWindow,
+  isActivationClaimReplay,
   needsLegacyLicenseCompatibility,
   isActivationTokenReplayAllowed,
   REFRESH_RETRY_GRACE_SECONDS,
@@ -1201,7 +1202,20 @@ export async function claimActivationToAccount(
         [activationKey],
       );
       const row = selected.rows[0];
-      if (!row || row.expired || row.completed_at || row.status !== "pending") {
+      if (!row) {
+        await client.query("rollback");
+        return { claimed: false as const, reason: "unavailable" as const };
+      }
+      if (isActivationClaimReplay({
+        existingAccountId: row.account_id,
+        requestedAccountId: accountId,
+        status: row.status,
+        expired: row.expired,
+      })) {
+        await client.query("commit");
+        return { claimed: true as const };
+      }
+      if (row.expired || row.completed_at || row.status !== "pending") {
         await client.query("rollback");
         return { claimed: false as const, reason: "unavailable" as const };
       }
