@@ -8,10 +8,13 @@
     "build": "tsc -b && vite build && node scripts/generate-sitemap.mjs",
     "billing:ensure-freedev": "node scripts/ensure-freedev-promo.mjs",
     "db:migrate": "node scripts/apply-postgres-migrations.mjs",
+    "devices:audit": "node scripts/audit-license-devices.mjs",
+    "devices:manage": "node scripts/manage-license-device.mjs",
     "leads:dump": "node scripts/dump-download-leads.mjs",
     "leads:migrate": "node scripts/migrate-download-leads-to-postgres.mjs --apply-schema",
     "release:publish-manifest": "node scripts/publish-release-manifest.mjs",
     "test:entitlement": "node --experimental-strip-types --test tests/entitlement.test.mjs",
+    "test:single-device-ops": "node --experimental-strip-types --test tests/single-device-ops.test.mjs",
     "typecheck": "tsc --noEmit",
     "preview": "vite preview"
   },
