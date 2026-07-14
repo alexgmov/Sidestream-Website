@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b && vite build",
+    "build": "tsc -b && vite build && node scripts/generate-sitemap.mjs",
     "billing:ensure-freedev": "node scripts/ensure-freedev-promo.mjs",
     "db:migrate": "node scripts/apply-postgres-migrations.mjs",
     "leads:dump": "node scripts/dump-download-leads.mjs",

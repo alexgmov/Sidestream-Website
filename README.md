@@ -6,10 +6,10 @@ Sidestream is an HTML-first landing page for a Premiere Pro panel that lets edit
 
 ## File Map
 
-- `Sidestream front end 2/Sidestream.html` - Legacy compatibility redirect for the old exported page URL. It is `noindex` and immediately sends visitors back to `/`.
+- `Sidestream front end 2/Sidestream.html` - Inert `noindex` fallback document for the old exported page URL. Production requests never serve it because `vercel.json` sends the legacy path to `https://sidestream.tv/` with a server-side `308`.
 - `index.html` - Canonical page implementation served at `/`. Contains the shader mount root, header, hero, Windows waitlist modal trigger, feature sections, pricing, final CTA, footer, styles, rotating-word script, toast behavior, crawler metadata, and structured data.
-- `public/robots.txt` - Public crawler policy copied to `/robots.txt` by Vite. Allows search and AI discovery crawlers while keeping installer and lead-capture API routes out of crawl targets.
-- `public/sitemap.xml` - Public XML sitemap for the current canonical Sidestream landing URL.
+- `public/robots.txt` - Public crawler policy copied to `/robots.txt` by Vite. Allows normal search plus OpenAI `OAI-SearchBot`, blocks all `/api/` routes from automatic crawlers, and opts out of training-oriented `GPTBot` separately.
+- `public/sitemap.xml` - Valid source template for the canonical root-only XML sitemap. It intentionally contains no hand-maintained date; the build replaces its marker in `dist/sitemap.xml` with the root page's last meaningful source modification time.
 - `public/llms.txt` - Concise AI-readable product summary and canonical-source guide for LLM/search agents. It is additive and does not replace normal SEO metadata or visible page content.
 - `public/sidestream-og.jpg` - Small Open Graph/Twitter preview image copied from the existing hero screenshot so link previews and crawlers have a stable public image asset.
 - `components/ui/demo.tsx` - Adapted Paper demo component mounted as the page background. The active default effect keeps the original simple `MeshGradient` look with non-black stops darkened 20% to `#151515`, `#292929`, and `#a3a3a3`, with demo install/clipboard overlay text removed and no background mouse interaction.
@@ -38,12 +38,13 @@ Sidestream is an HTML-first landing page for a Premiere Pro panel that lets edit
 - `scripts/ensure-freedev-promo.mjs` - Maintainer utility that creates or verifies the sandbox-only Stripe `FREEDEV` 100% off promotion code used to test no-cost Sidestream Pro Checkout.
 - `scripts/migrate-download-leads-to-postgres.mjs` - One-shot utility that applies the Postgres schema and migrates existing private Vercel Blob lead JSON records into Postgres.
 - `scripts/dump-download-leads.mjs` - Maintainer utility that dumps captured Sidestream download leads from Postgres for quick audits.
+- `scripts/generate-sitemap.mjs` - Post-build sitemap generator. It uses the latest committed `index.html` change time for clean builds, the file mtime for a dirty local page, and writes the resulting ISO timestamp only to `dist/sitemap.xml`.
 - `src/main.tsx` - React entry that mounts `DemoOne` into `#shader-background-root` and renders Vercel Analytics through `@vercel/analytics/react`.
 - `src/paper-shaders-compat.d.ts` - Local TypeScript compatibility declarations for the pasted prop names that the installed Paper package does not type directly.
 - `src/index.css` - Tailwind v4 theme/utilities import, `tw-animate-css`, shadcn theme tokens, and source paths for the background component. It avoids Tailwind preflight so the static HTML styles are not reset.
 - `components.json` - shadcn configuration with aliases rooted at the repository root.
 - `vite.config.ts` - Vite React/Tailwind build config with the canonical root page, legacy redirect, account page, and upgrade page as HTML inputs.
-- `vercel.json` - Vercel deployment config. Forces npm install/build/dev commands and `dist` as the output directory so Vercel does not fall back to a stale Yarn project setting. The dev command passes Vercel's `$PORT` to Vite.
+- `vercel.json` - Vercel deployment config. Forces npm install/build/dev commands and `dist` output, permanently canonicalizes the `www` and project Vercel hosts plus `/index.html` and the legacy nested HTML path onto `https://sidestream.tv`, and adds `X-Robots-Tag: noindex, nofollow` to `/api/`, account, checkout-success, and upgrade responses. Host redirects preserve the requested path so old API/download links do not break. The dev command passes Vercel's `$PORT` to Vite.
 - `mockups/mockup1_2.webm` - Browser-sized autoplay alpha WebM generated from the cleaner local MacBook Pro mockup source and mounted below the pricing panels.
 - `demos/search demo.mp4` and `demos/preview demo.mp4` - Autoplaying feature demo videos showing the Tudor Place search and preview workflow.
 - `demos/sidestream-panel-corner.webm` - Square VP9-alpha WebM generated from the ProRes source `sidestream demo Linked Comp 01_2.mov` using the full-plugin/timeline top-left crop. Mounted as an opaque decorative Premiere/Sidestream corner on the right side of the hero/main page, visually scaled to 70% from the Premiere top-left corner, and positioned so real video content covers the right and bottom areas without moving the frosted feature band.
@@ -55,7 +56,7 @@ Sidestream is an HTML-first landing page for a Premiere Pro panel that lets edit
 - Header/nav - `header`, `.nav`, `.brand`, `.nav-links`
 - Shader background - `#shader-background-root`, `src/main.tsx`, `components/ui/demo.tsx`, the active Paper `MeshGradient`, `components/ui/background-paper-shaders.tsx`, and `src/paper-shaders-compat.d.ts`
 - Vercel Analytics - `src/main.tsx` imports `Analytics` from `@vercel/analytics/react` and renders it alongside the shader component
-- SEO/GEO metadata - `<head>` metadata in `index.html` provides the title, description, robots directive, absolute canonical root URL, Open Graph/Twitter tags, sitemap hint, public OG image, and JSON-LD `Organization`, `WebSite`, `SoftwareApplication`, and `Product` graph for the product surface. Keep this crawler-readable layer aligned with visible product claims. The legacy nested HTML path only redirects back to `/`.
+- SEO/GEO metadata - `<head>` metadata in `index.html` provides the title, description, robots directive, absolute canonical root URL, Open Graph/Twitter tags, sitemap hint, public OG image, and JSON-LD `Organization`, `WebSite`, `SoftwareApplication`, and `Product` graph for the product surface. Keep this crawler-readable layer aligned with visible product claims. `vercel.json` owns duplicate-host and duplicate-path `308` canonicalization; do not restore client-side redirect code in the legacy file.
 - Hero - `#hero`, `.hero-split`, `.hero-copy`, `.hero-title-line`, `.rotating-copy`, `.rotating-word`, `.hero-subline`, `.hero-description`
 - Windows waitlist - `[data-windows-waitlist-open]` lives beside the hero Mac download CTA as a matching white platform pill with a Windows mark. It opens `#windows-waitlist-gate`, whose centered modal form posts valid emails to `POST /api/download-lead` with `source: "windows-waitlist"` and stores a local `sidestream.windows.email` value only to prefill the modal on repeat visits.
 - Feature sections - `#features` anchor, `.feature-glass` full-bleed frosted backdrop band, the two `.sec-pad` feature blocks, `.feature-subtext` heading sublines, `.shot` video frames, `.demo-video` MP4 embeds, the bottom inline viewport-playback observer, and the pointer-driven `.shot` 3D tilt handler
@@ -86,7 +87,7 @@ The current canonical public landing URL for crawlers is:
 https://sidestream.tv/
 ```
 
-The old exported static page path, `/Sidestream%20front%20end%202/Sidestream.html`, is kept only as a compatibility redirect back to `/`.
+The old exported static page path, `/Sidestream%20front%20end%202/Sidestream.html`, is kept only as a compatibility route. Vercel returns a server-side `308` to `https://sidestream.tv/`; the built fallback HTML contains no meta refresh or JavaScript redirect.
 
 Vite copies public crawler assets to the site root:
 
@@ -97,7 +98,9 @@ GET /llms.txt
 GET /sidestream-og.jpg
 ```
 
-`robots.txt` explicitly allows normal search discovery plus OpenAI `OAI-SearchBot`, `GPTBot`, and `ChatGPT-User` access to content while disallowing `/api/download` and `/api/download-lead` as crawl targets. The sitemap contains the current canonical landing page only. `llms.txt` is an additive AI-readable summary for agents; do not use it as a place for claims that are absent from the landing page.
+`robots.txt` allows normal search discovery plus OpenAI `OAI-SearchBot` and user-initiated `ChatGPT-User` access to public content, while disallowing all `/api/` routes so crawlers cannot create Checkout Sessions or trigger installer fulfillment. `GPTBot` is disallowed site-wide as a separate training choice; this does not opt the site out of ChatGPT search. OpenAI referrals can still be attributed through the `utm_source=chatgpt.com` query parameter they attach. The sitemap contains the canonical landing page only. `llms.txt` is an additive AI-readable summary for agents; do not use it as a place for claims that are absent from the landing page.
+
+Every `/api/` response and the functional `account.html`, `thank-you.html`, and `upgrade.html` pages also receive `X-Robots-Tag: noindex, nofollow` from Vercel. The HTML pages keep matching meta directives as defense in depth. Host-conditional redirects are deployment routing and cannot be proven with Vite alone.
 
 Vercel serves these serverless API routes:
 
@@ -237,6 +240,8 @@ Build before publishing or after shader, TypeScript, Tailwind, static HTML, layo
 npm run build
 ```
 
+The build copies the valid undated sitemap template, then `scripts/generate-sitemap.mjs` writes `dist/sitemap.xml` with an ISO `<lastmod>` derived from `index.html`. A clean Git checkout uses the latest commit that changed the page; a dirty local page uses its filesystem modification time. If Git history is unavailable, the build omits `<lastmod>` instead of inventing a build-time date. Do not put a manual `<lastmod>` back into `public/sitemap.xml`.
+
 ## Git / Publishing
 
 This folder is a git repository for `git@github.com:alexgmov/Sidestream-Website.git`.
@@ -247,7 +252,7 @@ The generated MacBook mockup video in `mockups/mockup1_2.webm` is tracked. Raw m
 
 The project is linked to Vercel project `alex-3685s-projects/sidestream`. `.vercel/`, `.env.local`, and other `.env*` files are ignored. The installer download pointer should be updated by changing the `SIDESTREAM_INSTALLER_BLOB_PATHNAME` Vercel env var after publishing a new private Blob artifact. Keep this pointer on the normal native/base `Mac-Installer.dmg` flow unless the product intentionally returns to the legacy ZXP-helper handoff. Keep `.vercelignore` aligned with the tracked publishable media files so Vercel CLI deploys do not upload raw local `demos/` and `mockups/` production assets.
 
-`vercel.json` deliberately pins `installCommand`, `buildCommand`, and `devCommand` to npm. The dev command must pass Vercel's `$PORT` into Vite; otherwise `vercel dev` can accept connections on its proxy port and hang. If the Vercel dashboard still has an old package-manager preference, the repo config should win.
+`vercel.json` deliberately pins `installCommand`, `buildCommand`, and `devCommand` to npm. The dev command must pass Vercel's `$PORT` into Vite; otherwise `vercel dev` can accept connections on its proxy port and hang. If the Vercel dashboard still has an old package-manager preference, the repo config should win. Vercel's host-based `has` matching works after deployment but not in `vercel dev`, so use a preview/production deployment plus `curl -I` to prove the `www` and `sidestream-xi.vercel.app` redirects.
 
 ## Testing Guide
 
@@ -255,7 +260,8 @@ Use the narrowest relevant check after edits:
 
 - Open the HTML page and check that the first fold intentionally places the hero copy lower than the older `Sidestream front end 2/screenshots/01-scan.png` reference.
 - Run `npm run build` after shader, TypeScript, Tailwind, HTML mount, Vite config, or package changes.
-- After SEO/GEO metadata changes, run `npm run build`, confirm `dist/robots.txt`, `dist/sitemap.xml`, `dist/llms.txt`, and `dist/sidestream-og.jpg` exist, and spot-check the built HTML for the absolute canonical URL, meta description, Open Graph/Twitter image tags, and valid JSON-LD.
+- After SEO/GEO metadata changes, run `npm run build`, confirm `dist/robots.txt`, `dist/sitemap.xml`, `dist/llms.txt`, and `dist/sidestream-og.jpg` exist, validate both source and built sitemap XML, confirm the built sitemap contains a generated ISO `<lastmod>` while the source contains only the generator marker, and spot-check the built HTML for the absolute canonical URL, meta description, Open Graph/Twitter image tags, and valid JSON-LD.
+- Run `npx vercel@latest build` after routing/header changes. Inspect `.vercel/output/config.json`, then verify a deployed response: the two duplicate hosts, `/index.html`, and `/Sidestream%20front%20end%202/Sidestream.html` must return `308`; `/api/auth/session`, `HEAD /api/download`, `/account.html`, `/thank-you.html`, and `/upgrade.html` must return `X-Robots-Tag: noindex, nofollow`. Do not issue `GET /api/download` just to test headers.
 - After publishing analytics changes, visit the deployed site without a content blocker and allow roughly 30 seconds before checking the Vercel Analytics dashboard for page-view data.
 - Confirm the dark Paper shader renders behind the header, hero, cards, pricing, footer, and toast.
 - Confirm the Sidestream wordmark and desktop hero copy share the viewport-left `24px` first-fold gutter, and the Features/Pricing/Free Download header cluster sits at the viewport's top-right with a `15px` top offset and `24px` right gutter.
@@ -343,13 +349,14 @@ Use the narrowest relevant check after edits:
 - The Windows waitlist reuses `/api/download-lead` and stores its segment in `cta_source`; do not create a separate client-only endpoint or table unless the lead product needs a different data model. Keep the visible waitlist entry as the matching hero platform pill plus centered modal, not as a large inline email box.
 - Download-lead capture and SaaS entitlement storage use a server-only Postgres pooler connection. Prefer `SIDESTREAM_POSTGRES_URL`; the code also accepts `SIDESTREAM_POSTGRES_PRISMA_URL`, `SIDESTREAM_POSTGRES_URL_NON_POOLING`, and generic Postgres variants as fallbacks. Do not expose a Postgres password, service-role key, or any private database URL to `Sidestream.html`, React browser code, or the CEP plugin.
 - Supabase-hosted Sidestream SaaS tables must keep RLS enabled with no direct `anon` or `authenticated` table access. If a future feature needs browser-side Supabase reads or writes, add the narrow policy for that feature intentionally and document the public data shape; do not make the private account, session, activation, license, license-token, Stripe event, or lead tables broadly API-readable.
-- The canonical URL is the deployed root, `https://sidestream.tv/`. Keep every crawler-facing URL in the HTML head, sitemap, `llms.txt`, and README pointed at `/`; the old `Sidestream%20front%20end%202/Sidestream.html` path should stay a noindex compatibility redirect.
+- The canonical URL is the deployed root, `https://sidestream.tv/`. Keep every crawler-facing URL in the HTML head, sitemap, `llms.txt`, and README pointed at `/`; keep the duplicate-host and duplicate-path canonicalization in `vercel.json` as server-side `308` rules. The legacy fallback file must remain inert and `noindex`, not become a second client-side redirect implementation.
 - Keep structured data conservative and matched to visible page claims. Do not add FAQ, review, rating, or price claims unless the same facts are present in the visible landing page.
 - `llms.txt` is useful as an AI-readable summary, but it is not a substitute for crawlable HTML, normal metadata, structured data, sitemap hygiene, or external citations/backlinks.
 
 ## Recent Change Log
 
 - 2026-07-13: Protected the `https://sidestream.tv/` canonical and `$9.99` one-time Sidestream Pro offer across the landing page, legacy redirect, checkout resolver, JSON-LD, crawler files, fallback page, and README.
+- Added server-side `308` canonical redirects for `www.sidestream.tv`, `sidestream-xi.vercel.app`, `/index.html`, and the legacy nested HTML path; added response-level `X-Robots-Tag` protection for functional HTML/API responses; blocked automatic crawlers from `/api/`; kept `OAI-SearchBot` enabled while opting out of `GPTBot`; and moved sitemap `<lastmod>` generation into the build.
 - Promoted the public installer pointer to the private Blob `1.0.12` native/base DMG and redeployed production so `/api/download` serves `Sidestream-1.0.12-Mac-Installer.dmg`.
 - Added a Supabase RLS hardening migration for server-owned Sidestream public tables, revoking direct `anon` and `authenticated` Data API table access while preserving the server-only Postgres route contract.
 - Retired the first-week-unlimited free-trial offer, which was never implemented in the entitlement backend: the Free pricing card and `llms.txt` now say "5 free downloads every day," matching the plugin's actual free-tier daily cap. Only backend-issued Sidestream Pro license tokens bypass the cap.

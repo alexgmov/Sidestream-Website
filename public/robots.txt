@@ -1,21 +1,16 @@
 User-agent: *
 Allow: /
-Disallow: /api/download
-Disallow: /api/download-lead
+Disallow: /api/
 
 User-agent: OAI-SearchBot
 Allow: /
-Disallow: /api/download
-Disallow: /api/download-lead
+Disallow: /api/
 
 User-agent: GPTBot
-Allow: /
-Disallow: /api/download
-Disallow: /api/download-lead
+Disallow: /
 
 User-agent: ChatGPT-User
 Allow: /
-Disallow: /api/download
-Disallow: /api/download-lead
+Disallow: /api/
 
 Sitemap: https://sidestream.tv/sitemap.xml
