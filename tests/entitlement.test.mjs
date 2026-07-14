@@ -10,6 +10,7 @@ import {
   getActivationCheckoutIdempotencyKey,
   getStripeCheckoutWindow,
   isLegacyVercelHost,
+  isActivationClaimReplay,
   isActivationTokenReplayAllowed,
   matchesDeviceHash,
   needsLegacyLicenseCompatibility,
@@ -103,6 +104,36 @@ test("wrong devices and account overwrites fail closed", () => {
   assert.equal(canBindActivationAccount(null, "account-a"), true);
   assert.equal(canBindActivationAccount("account-a", "account-a"), true);
   assert.equal(canBindActivationAccount("account-a", "account-b"), false);
+});
+
+test("same-account activation claim retries are idempotent only after a valid bind", () => {
+  for (const status of ["restored", "paid", "linked"]) {
+    assert.equal(isActivationClaimReplay({
+      existingAccountId: "account-a",
+      requestedAccountId: "account-a",
+      status,
+      expired: false,
+    }), true);
+  }
+
+  assert.equal(isActivationClaimReplay({
+    existingAccountId: "account-a",
+    requestedAccountId: "account-b",
+    status: "restored",
+    expired: false,
+  }), false);
+  assert.equal(isActivationClaimReplay({
+    existingAccountId: "account-a",
+    requestedAccountId: "account-a",
+    status: "pending",
+    expired: false,
+  }), false);
+  assert.equal(isActivationClaimReplay({
+    existingAccountId: "account-a",
+    requestedAccountId: "account-a",
+    status: "linked",
+    expired: true,
+  }), false);
 });
 
 test("restore confirmation is account-bound, expiring, and rejects cross-site form posts", () => {
@@ -234,6 +265,12 @@ test("both Checkout routes attach instead of pre-binding attacker activation lin
 
 test("account implementation bounds status replay and uses locked refresh/fulfillment CAS", async () => {
   const source = await readFile(new URL("../api/_lib/account.ts", import.meta.url), "utf8");
+  const claimStart = source.indexOf("export async function claimActivationToAccount");
+  const claimReplay = source.indexOf("isActivationClaimReplay({", claimStart);
+  const terminalRejection = source.indexOf(
+    "row.expired || row.completed_at || row.status !== \"pending\"",
+    claimStart,
+  );
   assert.match(source, /ACTIVATION_TOKEN_REPLAY_SECONDS/);
   assert.match(source, /LEGACY_LICENSE_TOKEN_TTL_DAYS/);
   assert.match(source, /needsLegacyLicenseCompatibility\(row\.app_version\)/);
@@ -244,6 +281,7 @@ test("account implementation bounds status replay and uses locked refresh/fulfil
   assert.match(source, /for update of t/i);
   assert.match(source, /\(account_id is null or account_id = \$3\)/);
   assert.match(source, /checkout_claim_grace_until >= now\(\)/);
+  assert.ok(claimStart >= 0 && claimReplay > claimStart && terminalRejection > claimReplay);
   assert.match(source, /code: "device_mismatch"/);
   assert.match(source, /code: "revoked"/);
   assert.match(source, /code: "invalid_token"/);

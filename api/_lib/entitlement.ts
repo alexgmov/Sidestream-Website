@@ -259,6 +259,18 @@ export function canBindActivationAccount(
   return !existingAccountId || safeEqual(existingAccountId, requestedAccountId);
 }
 
+export function isActivationClaimReplay(options: {
+  existingAccountId: string | null;
+  requestedAccountId: string;
+  status: string;
+  expired: boolean;
+}) {
+  return !options.expired &&
+    Boolean(options.existingAccountId) &&
+    ["restored", "paid", "linked"].includes(options.status) &&
+    safeEqual(options.existingAccountId || "", options.requestedAccountId);
+}
+
 export function isActivationTokenReplayAllowed(
   completedAtMs: number | null,
   nowMs: number,
