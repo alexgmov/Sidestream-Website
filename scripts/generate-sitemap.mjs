@@ -21,7 +21,64 @@ function readGit(args) {
   }).trim();
 }
 
+async function getVercelGitHubLastModifiedAt() {
+  const commitSha = process.env.VERCEL_GIT_COMMIT_SHA;
+
+  if (!commitSha) {
+    return null;
+  }
+
+  const provider = process.env.VERCEL_GIT_PROVIDER;
+
+  if (provider && provider !== "github") {
+    return null;
+  }
+
+  const owner = process.env.VERCEL_GIT_REPO_OWNER ?? "alexgmov";
+  const repository =
+    process.env.VERCEL_GIT_REPO_SLUG ?? "Sidestream-Website";
+  const commitsUrl = new URL(
+    `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repository)}/commits`,
+  );
+  commitsUrl.search = new URLSearchParams({
+    path: pageSource,
+    sha: commitSha,
+    per_page: "1",
+  }).toString();
+
+  const response = await fetch(commitsUrl, {
+    headers: {
+      Accept: "application/vnd.github+json",
+      "X-GitHub-Api-Version": "2022-11-28",
+    },
+    signal: AbortSignal.timeout(10_000),
+  });
+
+  if (!response.ok) {
+    throw new Error(
+      `GitHub could not resolve ${pageSource} history (${response.status})`,
+    );
+  }
+
+  const commits = await response.json();
+  const committedAt = commits?.[0]?.commit?.committer?.date;
+
+  if (!committedAt) {
+    throw new Error(
+      `GitHub returned no committed date for ${pageSource} at ${commitSha}`,
+    );
+  }
+
+  return new Date(committedAt);
+}
+
 async function getLastModifiedAt() {
+  const vercelGitHubDate = await getVercelGitHubLastModifiedAt();
+
+  if (vercelGitHubDate) {
+    return vercelGitHubDate;
+  }
+
   try {
     const isDirty = Boolean(
       readGit(["status", "--porcelain=v1", "--", pageSource]),
@@ -43,7 +100,7 @@ async function getLastModifiedAt() {
       return new Date(committedAt);
     }
   } catch {
-    // Omit lastmod when Git metadata cannot prove when the page changed.
+    // Omit lastmod when local Git metadata cannot prove when the page changed.
   }
 
   return null;
