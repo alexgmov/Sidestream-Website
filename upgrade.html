@@ -139,7 +139,7 @@
       <section>
         <p class="eyebrow">Sidestream Pro</p>
         <h1>Unlock downloads when you need them.</h1>
-        <p class="lede">Checkout is handled directly by Stripe as a one-time payment. No account setup or subscription detour.</p>
+        <p class="lede">Public website checkout is handled directly by Stripe as a one-time payment. If Sidestream sent you here to activate or recover Pro, sign in first so you can reconnect, move your license, or purchase without being charged twice.</p>
       </section>
 
       <section class="card">
@@ -148,6 +148,7 @@
         <ul>
           <li>Unlimited video and audio downloads</li>
           <li>Maximum available source quality</li>
+          <li>One active production device at a time</li>
           <li>No recurring subscription</li>
           <li>Secure checkout handled by Stripe</li>
         </ul>
@@ -167,8 +168,11 @@
     const checkoutLink = document.getElementById("checkout-link");
     const accountLink = document.getElementById("account-link");
 
-    function checkoutUrl() {
-      const url = new URL("/api/checkout/start", window.location.origin);
+    function entryUrl() {
+      const url = new URL(
+        activationKey ? "/api/activation/claim" : "/api/checkout/start",
+        window.location.origin
+      );
       if (activationKey) url.searchParams.set("activation", activationKey);
       return url.pathname + url.search;
     }
@@ -183,12 +187,18 @@
         return;
       }
 
-      checkoutLink.href = checkoutUrl();
+      checkoutLink.href = entryUrl();
+      if (activationKey) {
+        statusEl.textContent = "Continue with your account first. Sidestream will offer the correct reconnect, device move, or one-time purchase for this activation.";
+        checkoutLink.textContent = "Continue with your account";
+      }
       if (checkoutState === "activation_required") {
         statusEl.textContent = "Checkout was stopped before payment because this Sidestream panel was not attached. You have not been charged. Return to the panel and click Upgrade again.";
         checkoutLink.hidden = true;
       } else if (checkoutState === "cancelled") {
-        statusEl.textContent = "Checkout was cancelled. You can continue whenever you're ready.";
+        statusEl.textContent = activationKey
+          ? "Checkout was cancelled. Your activation is still attached; return to your account decision whenever you're ready."
+          : "Checkout was cancelled. You can continue whenever you're ready.";
       }
     }
 

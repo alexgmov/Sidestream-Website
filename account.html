@@ -128,6 +128,10 @@
     color: var(--ink);
   }
   .secondary:hover { background: rgba(255, 255, 255, 0.14); }
+  button:disabled {
+    cursor: not-allowed;
+    opacity: 0.58;
+  }
   [hidden] { display: none !important; }
 
   @media (max-width: 680px) {
@@ -187,6 +191,16 @@
             <button class="secondary" id="refund-button" type="button">Request refund</button>
           </div>
         </div>
+        <div class="row" id="device-row" hidden>
+          <div>
+            <p class="label">Active production device</p>
+            <p class="value">One active device at a time</p>
+            <p class="note">Sidestream does not collect a device name, so this page will not guess which computer is active. Starting Upgrade or Restore Purchase on another computer shows a clear confirmation before this one is deactivated.</p>
+          </div>
+          <div class="actions">
+            <button class="secondary" id="deactivate-device-button" type="button" disabled aria-disabled="true" title="Self-service deactivation is not available on this page yet">Deactivate unavailable</button>
+          </div>
+        </div>
         <div class="row">
           <div>
             <p class="label">Installer</p>
@@ -207,6 +221,7 @@
     const upgradeLink = document.getElementById("upgrade-link");
     const billingButton = document.getElementById("billing-button");
     const purchaseRow = document.getElementById("purchase-row");
+    const deviceRow = document.getElementById("device-row");
     const receiptButton = document.getElementById("receipt-button");
     const refundButton = document.getElementById("refund-button");
     const signOutButton = document.getElementById("sign-out-button");
@@ -252,8 +267,10 @@
       signedInEmail = session.user.email || "";
       accountEmail.textContent = session.user.email;
       accountPlan.textContent = describePlan(session.license);
-      accountPlan.classList.toggle("status", Boolean(session.license && session.license.active));
-      upgradeLink.hidden = Boolean(session.license && session.license.active);
+      const hasActiveLicense = Boolean(session.license && session.license.active);
+      accountPlan.classList.toggle("status", hasActiveLicense);
+      upgradeLink.hidden = hasActiveLicense;
+      deviceRow.hidden = !hasActiveLicense;
       billingButton.hidden = !session.billing.hasCustomer;
       purchaseRow.hidden = !session.billing.hasCustomer;
     }
