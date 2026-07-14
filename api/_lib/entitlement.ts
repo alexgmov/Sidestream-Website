@@ -7,6 +7,11 @@ export const REFRESH_RETRY_GRACE_SECONDS = 120;
 export const LEGACY_LICENSE_CLIENT_MAX_VERSION = "1.0.13";
 export const LEGACY_VERCEL_HOST = "sidestream-xi.vercel.app";
 
+export type CredentialDeviceScope = Readonly<{
+  licenseNamespace: "production" | "test";
+  deviceGeneration: number | string;
+}>;
+
 export type CheckoutSessionLike = {
   id?: unknown;
   mode?: unknown;
@@ -210,9 +215,21 @@ export function validateClaimCsrfToken(options: {
   return safeEqual(options.token, expected);
 }
 
-export function deriveRefreshRotationTokens(refreshToken: string, secret: string) {
+export function deriveRefreshRotationTokens(
+  refreshToken: string,
+  secret: string,
+  deviceScope?: CredentialDeviceScope,
+) {
+  const normalizedScope = normalizeCredentialDeviceScope(deviceScope);
   const seed = createHmac("sha256", secret)
-    .update(`refresh-rotation:${refreshToken}`)
+    .update(normalizedScope
+      ? [
+          "refresh-rotation:v2",
+          normalizedScope.licenseNamespace,
+          normalizedScope.deviceGeneration,
+          refreshToken,
+        ].join("\0")
+      : `refresh-rotation:${refreshToken}`)
     .digest("base64url");
   return {
     licenseToken: createHmac("sha256", secret)
@@ -228,9 +245,19 @@ export function deriveActivationTokenPair(
   activationKey: string,
   deviceId: string,
   secret: string,
+  deviceScope?: CredentialDeviceScope,
 ) {
+  const normalizedScope = normalizeCredentialDeviceScope(deviceScope);
   const seed = createHmac("sha256", secret)
-    .update(`activation-token:${activationKey}:${deviceId}`)
+    .update(normalizedScope
+      ? [
+          "activation-token:v2",
+          normalizedScope.licenseNamespace,
+          normalizedScope.deviceGeneration,
+          activationKey,
+          deviceId,
+        ].join("\0")
+      : `activation-token:${activationKey}:${deviceId}`)
     .digest("base64url");
   return {
     licenseToken: createHmac("sha256", secret)
@@ -240,6 +267,30 @@ export function deriveActivationTokenPair(
       .update(`activation-refresh:${seed}`)
       .digest("base64url"),
   };
+}
+
+export function normalizeCredentialDeviceScope(
+  deviceScope: CredentialDeviceScope | undefined,
+) {
+  if (!deviceScope) return null;
+  if (
+    deviceScope.licenseNamespace !== "production" &&
+    deviceScope.licenseNamespace !== "test"
+  ) {
+    throw new TypeError("Invalid credential license namespace");
+  }
+
+  const deviceGeneration = typeof deviceScope.deviceGeneration === "number"
+    ? String(deviceScope.deviceGeneration)
+    : deviceScope.deviceGeneration.trim();
+  if (!/^[1-9][0-9]*$/.test(deviceGeneration)) {
+    throw new TypeError("Invalid credential device generation");
+  }
+
+  return {
+    licenseNamespace: deviceScope.licenseNamespace,
+    deviceGeneration,
+  } as const;
 }
 
 export function safeEqual(left: string, right: string) {

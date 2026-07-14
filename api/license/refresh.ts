@@ -4,6 +4,7 @@ import {
   methodNotAllowed,
   readJsonBody,
   refreshLicenseToken,
+  resolveRequestLicenseEnvironment,
   sendJson,
   type AccountRequest,
 } from "../_lib/account.js";
@@ -27,7 +28,16 @@ export default async function handler(
     return sendJson(response, 400, { error: "Missing refresh token or device ID", code: "invalid_request" });
   }
 
-  const refreshed = await refreshLicenseToken(refreshToken, deviceId);
+  const environment = resolveRequestLicenseEnvironment(request);
+  if (!environment) {
+    return sendJson(response, 503, {
+      active: false,
+      status: "unavailable",
+      code: "license_environment_unavailable",
+    });
+  }
+
+  const refreshed = await refreshLicenseToken(refreshToken, deviceId, environment);
   if (!refreshed.active) {
     const statusCode = refreshed.code === "license_inactive" ? 403 : 401;
     return sendJson(response, statusCode, refreshed);
