@@ -866,6 +866,141 @@ test("Customer commerce materializes idempotent per-currency Stripe money truth"
       }
     });
 
+    await t.test("paid Invoice fallback shadows only its related Checkout before instrument arrival", async () => {
+      const overlapProfile = await seedProfile(
+        pool,
+        quotedSchema,
+        "test",
+        "2026-01-02T00:15:00Z",
+        null,
+      );
+      await seedLinks(pool, quotedSchema, overlapProfile.id, "test", [
+        ["stripe_checkout_session", "cs_overlap_related"],
+        ["stripe_payment_intent", "pi_overlap_related"],
+        ["stripe_checkout_session", "cs_overlap_unrelated"],
+      ]);
+      await materializeCustomerCommerceEvent(stripeEvent(
+        "evt_checkout_overlap_related",
+        "checkout.session.completed",
+        1_806_055_000,
+        {
+          id: "cs_overlap_related",
+          object: "checkout.session",
+          payment_intent: "pi_overlap_related",
+          mode: "payment",
+          payment_status: "paid",
+          amount_total: 1000,
+          currency: "usd",
+        },
+      ), query);
+      await materializeCustomerCommerceEvent(stripeEvent(
+        "evt_checkout_overlap_unrelated",
+        "checkout.session.completed",
+        1_806_055_005,
+        {
+          id: "cs_overlap_unrelated",
+          object: "checkout.session",
+          payment_intent: "pi_overlap_unrelated",
+          mode: "payment",
+          payment_status: "paid",
+          amount_total: 700,
+          currency: "usd",
+        },
+      ), query);
+      await materializeCustomerCommerceEvent(stripeEvent(
+        "evt_invoice_overlap_related",
+        "invoice.paid",
+        1_806_055_010,
+        {
+          id: "in_overlap_related",
+          object: "invoice",
+          paid: true,
+          status: "paid",
+          amount_paid: 1000,
+          amount_paid_off_stripe: 0,
+          currency: "usd",
+          payments: { data: [invoicePayment({
+            id: "inpay_overlap_related",
+            invoiceId: "in_overlap_related",
+            paymentIntentId: "pi_overlap_related",
+            amountPaid: 1000,
+            currency: "usd",
+          })] },
+          status_transitions: { paid_at: 1_806_055_008 },
+        },
+      ), query);
+
+      const expected = {
+        gross_paid_minor: "1700",
+        off_stripe_paid_minor: "0",
+        net_paid_minor: "1700",
+        paid_transaction_count: "2",
+      };
+      assert.deepEqual(
+        await fallbackMoneyTotal(pool, quotedSchema, overlapProfile.id, "usd"),
+        expected,
+      );
+      assert.deepEqual((await pool.query(
+        `select source_object_id, payment_key
+         from ${quotedSchema}.sidestream_customer_commerce_materializations
+         where source_object_id = any($1::text[])
+         order by source_object_id`,
+        [["cs_overlap_related", "cs_overlap_unrelated", "in_overlap_related"]],
+      )).rows, [
+        {
+          source_object_id: "cs_overlap_related",
+          payment_key: "payment_intent:pi_overlap_related",
+        },
+        {
+          source_object_id: "cs_overlap_unrelated",
+          payment_key: "payment_intent:pi_overlap_unrelated",
+        },
+        {
+          source_object_id: "in_overlap_related",
+          payment_key: "invoice:in_overlap_related",
+        },
+      ]);
+      const fallbackDates = (await pool.query(
+        `select first_paid_at, last_paid_at, first_upgraded_at, last_upgraded_at
+         from ${quotedSchema}.sidestream_customer_profiles where id = $1`,
+        [overlapProfile.id],
+      )).rows[0];
+      assert.equal(
+        fallbackDates.first_paid_at.toISOString(),
+        new Date(1_806_055_005 * 1000).toISOString(),
+      );
+      assert.equal(
+        fallbackDates.last_paid_at.toISOString(),
+        new Date(1_806_055_008 * 1000).toISOString(),
+      );
+      assert.equal(
+        fallbackDates.first_upgraded_at.toISOString(),
+        new Date(1_806_055_005 * 1000).toISOString(),
+      );
+      assert.equal(
+        fallbackDates.last_upgraded_at.toISOString(),
+        new Date(1_806_055_008 * 1000).toISOString(),
+      );
+
+      await materializeCustomerCommerceEvent(stripeEvent(
+        "evt_pi_overlap_related",
+        "payment_intent.succeeded",
+        1_806_055_020,
+        {
+          id: "pi_overlap_related",
+          object: "payment_intent",
+          status: "succeeded",
+          amount: 1000,
+          amount_received: 1000,
+          currency: "usd",
+        },
+      ), query);
+      assert.deepEqual(
+        await fallbackMoneyTotal(pool, quotedSchema, overlapProfile.id, "usd"),
+        expected,
+      );
+    });
+
     await t.test("paid Invoice fallback is atomically replaced by its later instrument", async () => {
       const invoiceProfile = await seedProfile(
         pool,

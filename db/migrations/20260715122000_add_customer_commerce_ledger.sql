@@ -588,6 +588,30 @@ begin
           and instrument.gross_paid_minor > 0
       )
       and (
+        fact.source_object_type <> 'checkout_session'
+        or not exists (
+          select 1
+          from public.sidestream_customer_commerce_invoice_payments edge
+          join public.sidestream_customer_commerce_aliases alias
+            on alias.license_namespace = edge.license_namespace
+            and alias.alias_type = edge.instrument_type
+            and alias.alias_id = edge.instrument_id
+            and alias.payment_key = fact.payment_key
+          join public.sidestream_customer_commerce_materializations invoice
+            on invoice.license_namespace = edge.license_namespace
+            and invoice.source_object_type = 'invoice'
+            and invoice.source_object_id = edge.invoice_id
+            and invoice.profile_id = fact.profile_id
+            and invoice.currency = fact.currency
+            and invoice.fact_kind = 'payment'
+            and invoice.gross_paid_minor > 0
+            and not invoice.identity_conflict
+          where edge.license_namespace = fact.license_namespace
+            and edge.currency = fact.currency
+            and edge.status = 'paid'
+        )
+      )
+      and (
         fact.source_object_type <> 'invoice'
         or not exists (
           select 1
@@ -794,6 +818,27 @@ begin
           and instrument.payment_key = fact.payment_key
           and instrument.source_object_type in ('payment_intent', 'charge')
       )
+      and not exists (
+        select 1
+        from public.sidestream_customer_commerce_invoice_payments edge
+        join public.sidestream_customer_commerce_aliases alias
+          on alias.license_namespace = edge.license_namespace
+          and alias.alias_type = edge.instrument_type
+          and alias.alias_id = edge.instrument_id
+          and alias.payment_key = fact.payment_key
+        join public.sidestream_customer_commerce_materializations invoice
+          on invoice.license_namespace = edge.license_namespace
+          and invoice.source_object_type = 'invoice'
+          and invoice.source_object_id = edge.invoice_id
+          and invoice.profile_id = fact.profile_id
+          and invoice.currency = fact.currency
+          and invoice.fact_kind = 'payment'
+          and invoice.gross_paid_minor > 0
+          and not invoice.identity_conflict
+        where edge.license_namespace = fact.license_namespace
+          and edge.currency = fact.currency
+          and edge.status = 'paid'
+      )
     union all
     select fact.profile_id, fact.commerce_model
     from public.sidestream_customer_commerce_materializations fact
@@ -837,6 +882,27 @@ begin
                   and instrument.payment_key = fact.payment_key
                   and instrument.source_object_type in ('payment_intent', 'charge')
                   and instrument.gross_paid_minor > 0
+              )
+              and not exists (
+                select 1
+                from public.sidestream_customer_commerce_invoice_payments edge
+                join public.sidestream_customer_commerce_aliases alias
+                  on alias.license_namespace = edge.license_namespace
+                  and alias.alias_type = edge.instrument_type
+                  and alias.alias_id = edge.instrument_id
+                  and alias.payment_key = fact.payment_key
+                join public.sidestream_customer_commerce_materializations invoice
+                  on invoice.license_namespace = edge.license_namespace
+                  and invoice.source_object_type = 'invoice'
+                  and invoice.source_object_id = edge.invoice_id
+                  and invoice.profile_id = fact.profile_id
+                  and invoice.currency = fact.currency
+                  and invoice.fact_kind = 'payment'
+                  and invoice.gross_paid_minor > 0
+                  and not invoice.identity_conflict
+                where edge.license_namespace = fact.license_namespace
+                  and edge.currency = fact.currency
+                  and edge.status = 'paid'
               )
             )
             or (
