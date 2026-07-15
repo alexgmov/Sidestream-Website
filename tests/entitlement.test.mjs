@@ -67,34 +67,50 @@ test("Checkout expiry and paid-completion grace stay inside activation expiry at
 
 test("only the exact attached paid Session, Price, Product, and quantity verifies", () => {
   assert.deepEqual(verifyPaidCheckoutSession(validCheckout, checkoutExpectation), { ok: true });
-  assert.equal(
+  assert.deepEqual(
     verifyPaidCheckoutSession(
-      { ...validCheckout, payment_status: "unpaid" },
+      { ...validCheckout, payment_status: "no_payment_required" },
       checkoutExpectation,
-    ).reason,
-    "payment_incomplete",
+    ),
+    { ok: true },
   );
-  assert.equal(
-    verifyPaidCheckoutSession(
-      { ...validCheckout, id: "cs_attacker" },
-      checkoutExpectation,
-    ).reason,
-    "session_id_mismatch",
-  );
-  assert.equal(
-    verifyPaidCheckoutSession(
-      { ...validCheckout, metadata: { ...validCheckout.metadata, sidestream_activation_key: "attacker" } },
-      checkoutExpectation,
-    ).reason,
-    "activation_mismatch",
-  );
-  assert.equal(
-    verifyPaidCheckoutSession({
+
+  const rejected = [
+    [{ ...validCheckout, id: "cs_attacker" }, "session_id_mismatch"],
+    [{ ...validCheckout, mode: "subscription" }, "invalid_checkout_mode"],
+    [{ ...validCheckout, status: "open" }, "checkout_incomplete"],
+    [{ ...validCheckout, payment_status: "unpaid" }, "payment_incomplete"],
+    [{ ...validCheckout, metadata: null }, "invalid_plan"],
+    [{
+      ...validCheckout,
+      metadata: { ...validCheckout.metadata, sidestream_plan: "attacker_plan" },
+    }, "invalid_plan"],
+    [{
+      ...validCheckout,
+      metadata: { ...validCheckout.metadata, sidestream_price_id: "price_attacker" },
+    }, "metadata_price_mismatch"],
+    [{
+      ...validCheckout,
+      metadata: { ...validCheckout.metadata, sidestream_activation_key: "attacker" },
+    }, "activation_mismatch"],
+    [{ ...validCheckout, line_items: { data: [], has_more: false } }, "invalid_line_items"],
+    [{ ...validCheckout, line_items: { ...validCheckout.line_items, has_more: true } }, "invalid_line_items"],
+    [{
       ...validCheckout,
       line_items: { data: [{ quantity: 2, price: { id: "price_pro", product: "prod_pro" } }] },
-    }, checkoutExpectation).reason,
-    "invalid_quantity",
-  );
+    }, "invalid_quantity"],
+    [{
+      ...validCheckout,
+      line_items: { data: [{ quantity: 1, price: { id: "price_attacker", product: "prod_pro" } }] },
+    }, "line_item_price_mismatch"],
+    [{
+      ...validCheckout,
+      line_items: { data: [{ quantity: 1, price: { id: "price_pro", product: "prod_attacker" } }] },
+    }, "line_item_product_mismatch"],
+  ];
+  for (const [session, reason] of rejected) {
+    assert.equal(verifyPaidCheckoutSession(session, checkoutExpectation).reason, reason);
+  }
 });
 
 test("wrong devices and account overwrites fail closed", () => {
@@ -136,7 +152,7 @@ test("same-account activation claim retries are idempotent only after a valid bi
   }), false);
 });
 
-test("restore confirmation is account-bound, expiring, and rejects cross-site form posts", () => {
+test("restore confirmation has one account-bound HMAC check after origin and form validation", () => {
   const token = createClaimCsrfToken({
     activationKey: "activation-1",
     accountId: "account-a",
@@ -157,19 +173,46 @@ test("restore confirmation is account-bound, expiring, and rejects cross-site fo
     nowSeconds: 1_000,
     secret: "test-secret",
   }), false);
+  assert.equal(validateClaimCsrfToken({
+    token,
+    activationKey: "activation-1",
+    accountId: "account-a",
+    nowSeconds: 1_101,
+    secret: "test-secret",
+  }), false);
+  assert.equal(validateClaimCsrfToken({
+    token: "malformed",
+    activationKey: "activation-1",
+    accountId: "account-a",
+    nowSeconds: 1_000,
+    secret: "test-secret",
+  }), false);
+  assert.equal(validateClaimCsrfToken({
+    token: `${token}.extra`,
+    activationKey: "activation-1",
+    accountId: "account-a",
+    nowSeconds: 1_000,
+    secret: "test-secret",
+  }), false);
   assert.equal(validateActivationClaimPost({
     requestOrigin: "https://evil.example",
     expectedOrigin: "https://sidestream.tv",
     contentType: "application/x-www-form-urlencoded",
-    submittedToken: token,
-    expectedToken: token,
+  }), false);
+  assert.equal(validateActivationClaimPost({
+    requestOrigin: "https://sidestream.tv",
+    expectedOrigin: "https://sidestream.tv",
+    contentType: "application/json",
+  }), false);
+  assert.equal(validateActivationClaimPost({
+    requestOrigin: "https://sidestream.tv",
+    expectedOrigin: "https://sidestream.tv",
+    contentType: "application/x-www-form-urlencoded.attacker",
   }), false);
   assert.equal(validateActivationClaimPost({
     requestOrigin: "https://sidestream.tv",
     expectedOrigin: "https://sidestream.tv",
     contentType: "application/x-www-form-urlencoded; charset=UTF-8",
-    submittedToken: token,
-    expectedToken: token,
   }), true);
 });
 
