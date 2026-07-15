@@ -1,199 +1,245 @@
-import { BlobError, put } from "@vercel/blob";
-import { createHmac, randomUUID } from "node:crypto";
+import {
+  BlobError,
+  BlobPreconditionFailedError,
+  get,
+  put,
+} from "@vercel/blob";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { isIP } from "node:net";
 import {
+  buildCanonicalDownloadLead,
+  captureDownloadLeadInPostgres,
+  DownloadLeadConfigurationError,
+  DownloadLeadIdempotencyConflictError,
+  DownloadLeadValidationError,
+  getDeterministicLeadBlobPathname,
+  MAX_DOWNLOAD_LEAD_BODY_BYTES,
+  MAX_REPLAY_BLOB_BYTES,
+  mergeFallbackLeads,
+  parseReplayBlob,
+  parseIdempotencyKey,
+  serializeFallbackLead,
+  type CanonicalDownloadLead,
+  type DownloadLeadCaptureResult,
+  type DownloadLeadPayload,
+} from "./_lib/download-leads.js";
+import {
   isPostgresConfigured,
-  queryPostgres,
   safePostgresErrorCode,
 } from "./_lib/postgres.js";
 import {
   applyRateLimitHeaders,
-  consumeRateLimit,
   sendRateLimitExceeded,
 } from "./_lib/rate-limit.js";
 
-const LEADS_PREFIX_ENV = "SIDESTREAM_DOWNLOAD_LEADS_BLOB_PREFIX";
-const DEFAULT_LEADS_PREFIX = "sidestream/download-leads";
-const DOWNLOAD_LEADS_TABLE = "public.sidestream_download_leads";
-const MAX_BODY_BYTES = 8 * 1024;
-const LEAD_RATE_LIMIT_WINDOW_SECONDS = 10 * 60;
-const LEAD_RATE_LIMIT_PER_EMAIL = 5;
-const LEAD_RATE_LIMIT_PER_IP = 20;
+type LeadRequest = IncomingMessage & { method?: string };
 
-type LeadRequest = IncomingMessage & {
-  method?: string;
+type DownloadLeadHandlerDependencies = Readonly<{
+  now: () => Date;
+  postgresConfigured: () => boolean;
+  capturePostgres: (
+    lead: CanonicalDownloadLead,
+    options: { ipAddress: string; now: Date },
+  ) => Promise<DownloadLeadCaptureResult>;
+  writeFallback: (pathname: string, lead: CanonicalDownloadLead) => Promise<void>;
+  log: (entry: Record<string, string | number>) => void;
+}>;
+
+class RequestBodyError extends Error {
+  readonly statusCode: number;
+  readonly code: string;
+
+  constructor(statusCode: number, code: string, message: string) {
+    super(message);
+    this.statusCode = statusCode;
+    this.code = code;
+  }
+}
+
+const defaultDependencies: DownloadLeadHandlerDependencies = {
+  now: () => new Date(),
+  postgresConfigured: () => isPostgresConfigured(),
+  capturePostgres: (lead, options) => captureDownloadLeadInPostgres(lead, options),
+  writeFallback: writeDeterministicFallback,
+  log: (entry) => console.info(JSON.stringify(entry)),
 };
 
-type DownloadLeadPayload = {
-  email?: unknown;
-  page?: unknown;
-  source?: unknown;
-};
-
-export default async function handler(
-  request: LeadRequest,
-  response: ServerResponse,
+export function createDownloadLeadHandler(
+  overrides: Partial<DownloadLeadHandlerDependencies> = {},
 ) {
-  const method = (request.method || "GET").toUpperCase();
+  const dependencies = { ...defaultDependencies, ...overrides };
 
-  if (method !== "POST") {
-    response.setHeader("Allow", "POST");
-    return sendJson(response, 405, { error: "Method not allowed" });
-  }
+  return async function downloadLeadHandler(
+    request: LeadRequest,
+    response: ServerResponse,
+  ) {
+    const method = (request.method || "GET").toUpperCase();
+    if (method !== "POST") {
+      response.setHeader("Allow", "POST");
+      return sendJson(response, 405, { error: "Method not allowed" });
+    }
 
-  let payload: DownloadLeadPayload;
-  try {
-    payload = JSON.parse(await readRequestBody(request)) as DownloadLeadPayload;
-  } catch (error) {
-    return sendJson(response, 400, { error: "Invalid JSON payload" });
-  }
-
-  const email = normalizeEmail(payload.email);
-  if (!isValidEmail(email)) {
-    return sendJson(response, 400, { error: "Invalid email address" });
-  }
-
-  const now = new Date();
-  const leadKey = randomUUID();
-  const ipAddress = getClientIp(request);
-  const lead = {
-    leadKey,
-    email,
-    emailHash: hashEmail(email),
-    capturedAt: now.toISOString(),
-    page: cleanOptionalString(payload.page, 240),
-    source: cleanOptionalString(payload.source, 300),
-    referrer: cleanOptionalString(request.headers.referer, 500),
-    userAgent: cleanOptionalString(request.headers["user-agent"], 500),
-    ipAddress,
-  };
-  let postgresFailed = false;
-
-  if (isPostgresConfigured()) {
-    try {
-      const dimensions = [
-        { name: "email", value: email, limit: LEAD_RATE_LIMIT_PER_EMAIL },
-        ...(ipAddress
-          ? [{ name: "ip", value: ipAddress, limit: LEAD_RATE_LIMIT_PER_IP }]
-          : []),
-      ];
-      const rateLimit = await consumeRateLimit({
-        scope: "download-lead",
-        dimensions,
-        windowSeconds: LEAD_RATE_LIMIT_WINDOW_SECONDS,
-        now,
+    if (!isJsonContentType(firstHeaderValue(request.headers["content-type"]))) {
+      return sendJson(response, 415, {
+        error: "Content-Type must be application/json",
+        code: "unsupported_media_type",
       });
-      if (!rateLimit.allowed) return sendRateLimitExceeded(response, rateLimit);
-      applyRateLimitHeaders(response, rateLimit);
-    } catch (error) {
-      console.error(
-        "Sidestream download lead rate-limit check failed",
-        safePostgresErrorCode(error),
-      );
-      return sendJson(response, 503, { error: "Lead capture temporarily unavailable" });
     }
 
+    let payload: DownloadLeadPayload;
     try {
-      await recordPostgresLead(lead);
-      return sendJson(response, 200, { ok: "true" });
+      const body = await readRequestBody(request, MAX_DOWNLOAD_LEAD_BODY_BYTES);
+      payload = JSON.parse(body) as DownloadLeadPayload;
     } catch (error) {
-      postgresFailed = true;
-      console.error(
-        "Sidestream download lead Postgres capture failed",
-        safePostgresErrorCode(error),
+      const bodyError = error instanceof RequestBodyError ? error : null;
+      return sendJson(response, bodyError?.statusCode || 400, {
+        error: bodyError?.message || "Invalid JSON payload",
+        code: bodyError?.code || "invalid_json",
+      });
+    }
+
+    const now = dependencies.now();
+    let lead: CanonicalDownloadLead;
+    try {
+      const idempotencyKey = parseIdempotencyKey(
+        request.headers["idempotency-key"],
       );
-    }
-  }
-
-  const pathname = leadBlobPathname(now, leadKey);
-  try {
-    await put(pathname, JSON.stringify(lead, null, 2), {
-      access: "private",
-      contentType: "application/json; charset=utf-8",
-    });
-
-    return sendJson(response, 200, { ok: "true" });
-  } catch (error) {
-    if (error instanceof BlobError) {
-      const body: Record<string, string> = {
-        error: "Lead capture is not configured correctly",
-      };
-
-      if (process.env.VERCEL_ENV === "development") {
-        body.message = error.message;
-        if (postgresFailed) body.postgres = "capture_failed";
+      lead = buildCanonicalDownloadLead(payload, {
+        capturedAt: now,
+        referrer: firstHeaderValue(request.headers.referer),
+        idempotencyKey,
+      });
+    } catch (error) {
+      if (error instanceof DownloadLeadValidationError) {
+        return sendJson(response, 400, {
+          error: "Invalid lead payload",
+          code: error.code,
+        });
       }
-
-      return sendJson(response, 500, body);
+      if (error instanceof DownloadLeadConfigurationError) {
+        dependencies.log({
+          event: "download_lead_capture",
+          outcome: "configuration_error",
+          count: 1,
+        });
+        return sendJson(response, 503, {
+          error: "Lead capture temporarily unavailable",
+          code: "capture_unavailable",
+        });
+      }
+      throw error;
     }
 
-    throw error;
-  }
+    const ipAddress = getClientIp(request);
+    let postgresErrorCode = "not_configured";
+    let postgresAvailable = false;
+    try {
+      postgresAvailable = dependencies.postgresConfigured();
+    } catch (error) {
+      postgresErrorCode = safePostgresErrorCode(error);
+    }
+
+    if (postgresAvailable) {
+      try {
+        const result = await dependencies.capturePostgres(lead, { ipAddress, now });
+        if (!result.rateLimit.allowed) {
+          dependencies.log({
+            event: "download_lead_capture",
+            outcome: "rate_limited",
+            count: 1,
+          });
+          return sendRateLimitExceeded(response, result.rateLimit);
+        }
+        applyRateLimitHeaders(response, result.rateLimit);
+        return sendJson(response, 200, { ok: true });
+      } catch (error) {
+        if (error instanceof DownloadLeadIdempotencyConflictError) {
+          return sendJson(response, 409, {
+            error: "Idempotency key conflict",
+            code: "idempotency_conflict",
+          });
+        }
+        postgresErrorCode = safePostgresErrorCode(error);
+      }
+    }
+
+    const pathname = getDeterministicLeadBlobPathname(lead.leadKey);
+    try {
+      await dependencies.writeFallback(pathname, lead);
+      dependencies.log({
+        event: "download_lead_capture",
+        outcome: "blob_fallback",
+        count: 1,
+        databaseCode: postgresErrorCode,
+      });
+      return sendJson(response, 200, { ok: true, queued: true });
+    } catch (error) {
+      dependencies.log({
+        event: "download_lead_capture",
+        outcome: "failed",
+        count: 1,
+        databaseCode: postgresErrorCode,
+        blobCode: safeOperationalErrorCode(error),
+      });
+      return sendJson(response, 503, {
+        error: "Lead capture temporarily unavailable",
+        code: error instanceof BlobError ? "blob_unavailable" : "capture_unavailable",
+      });
+    }
+  };
 }
 
-async function recordPostgresLead(
-  lead: {
-    leadKey: string;
-    email: string;
-    emailHash: string;
-    capturedAt: string;
-    page: string;
-    source: string;
-    referrer: string;
-    userAgent: string;
-    ipAddress: string;
-  },
+const handler = createDownloadLeadHandler();
+export default handler;
+
+async function writeDeterministicFallback(
+  pathname: string,
+  incoming: CanonicalDownloadLead,
 ) {
-  await queryPostgres(
-    `
-        insert into ${DOWNLOAD_LEADS_TABLE} (
-          lead_key,
-          email,
-          email_hash,
-          captured_at,
-          source_page,
-          cta_source,
-          referrer,
-          user_agent,
-          ip_address,
-          context,
-          created_at,
-          updated_at
-        )
-        values ($1, $2, $3, $4::timestamptz, $5, $6, $7, $8, $9::inet, $10::jsonb, now(), now())
-        on conflict (lead_key) do update set
-          email = excluded.email,
-          email_hash = excluded.email_hash,
-          captured_at = excluded.captured_at,
-          source_page = excluded.source_page,
-          cta_source = excluded.cta_source,
-          referrer = excluded.referrer,
-          user_agent = excluded.user_agent,
-          ip_address = excluded.ip_address,
-          context = ${DOWNLOAD_LEADS_TABLE}.context || excluded.context,
-          updated_at = now()
-    `,
-    [
-      lead.leadKey,
-      lead.email,
-      lead.emailHash,
-      lead.capturedAt,
-      lead.page || null,
-      lead.source || null,
-      lead.referrer || null,
-      lead.userAgent || null,
-      lead.ipAddress || null,
-      JSON.stringify({ source: "download_email_gate" }),
-    ],
-  );
-}
-
-function hashEmail(email: string) {
-  const secret = process.env.SIDESTREAM_LEAD_HASH_SECRET ||
-    process.env.SIDESTREAM_RATE_LIMIT_HASH_SECRET ||
-    "sidestream-download-leads-dev-salt";
-  return createHmac("sha256", secret).update(email).digest("hex");
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const current = await get(pathname, { access: "private", useCache: false });
+    if (!current) {
+      try {
+        await put(pathname, serializeFallbackLead(incoming), {
+          access: "private",
+          addRandomSuffix: false,
+          allowOverwrite: false,
+          contentType: "application/json; charset=utf-8",
+          cacheControlMaxAge: 60,
+        });
+        return;
+      } catch (error) {
+        if (error instanceof BlobPreconditionFailedError) continue;
+        throw error;
+      }
+    }
+    if (current.statusCode !== 200 || !current.stream) {
+      throw new BlobError("Fallback Blob could not be read consistently");
+    }
+    if (current.blob.size > MAX_REPLAY_BLOB_BYTES) {
+      throw new BlobError("Fallback Blob exceeds the bounded replay size");
+    }
+    const existing = parseReplayBlob(await new Response(current.stream).text(), {
+      uploadedAt: current.blob.uploadedAt,
+    });
+    const merged = mergeFallbackLeads(existing, incoming);
+    if (merged === existing) return;
+    try {
+      await put(pathname, serializeFallbackLead(merged), {
+        access: "private",
+        addRandomSuffix: false,
+        allowOverwrite: true,
+        ifMatch: current.blob.etag,
+        contentType: "application/json; charset=utf-8",
+        cacheControlMaxAge: 60,
+      });
+      return;
+    } catch (error) {
+      if (error instanceof BlobPreconditionFailedError) continue;
+      throw error;
+    }
+  }
+  throw new BlobError("Fallback Blob could not be updated after bounded retries");
 }
 
 function getClientIp(request: IncomingMessage) {
@@ -209,85 +255,85 @@ function getClientIp(request: IncomingMessage) {
     const ipAddress = normalizeIpAddress(candidate);
     if (ipAddress) return ipAddress;
   }
-
-  return "";
+  return "unknown";
 }
 
 function normalizeIpAddress(value: string) {
   let candidate = value.trim();
   if (!candidate || candidate.toLowerCase() === "unknown") return "";
-
   if (candidate.startsWith("[") && candidate.includes("]")) {
     candidate = candidate.slice(1, candidate.indexOf("]"));
   }
-
   const ipv4WithPort = candidate.match(/^(\d{1,3}(?:\.\d{1,3}){3}):\d+$/);
-  if (ipv4WithPort) {
-    candidate = ipv4WithPort[1];
-  }
-
+  if (ipv4WithPort) candidate = ipv4WithPort[1];
   return isIP(candidate) ? candidate : "";
 }
 
-function leadBlobPathname(now: Date, leadKey: string) {
-  return [
-    getLeadPrefix(),
-    now.toISOString().slice(0, 10),
-    `${now.getTime()}-${leadKey}.json`,
-  ].join("/");
+function isJsonContentType(value: string) {
+  const mediaType = value.split(";", 1)[0].trim().toLowerCase();
+  return mediaType === "application/json";
 }
 
-function getLeadPrefix() {
-  return (
-    process.env[LEADS_PREFIX_ENV]?.trim().replace(/^\/+|\/+$/g, "") ||
-    DEFAULT_LEADS_PREFIX
-  );
+function readRequestBody(request: IncomingMessage, maxBytes: number) {
+  const contentLength = firstHeaderValue(request.headers["content-length"]);
+  if (contentLength) {
+    if (!/^\d+$/.test(contentLength)) {
+      throw new RequestBodyError(400, "invalid_content_length", "Invalid Content-Length");
+    }
+    if (Number(contentLength) > maxBytes) {
+      throw new RequestBodyError(413, "payload_too_large", "Request body too large");
+    }
+  }
+
+  return new Promise<string>((resolve, reject) => {
+    let size = 0;
+    let body = "";
+    let settled = false;
+    request.setEncoding("utf8");
+    request.on("data", (chunk: string) => {
+      if (settled) return;
+      size += Buffer.byteLength(chunk);
+      if (size > maxBytes) {
+        settled = true;
+        reject(new RequestBodyError(413, "payload_too_large", "Request body too large"));
+        return;
+      }
+      body += chunk;
+    });
+    request.on("end", () => {
+      if (settled) return;
+      settled = true;
+      if (!body) {
+        reject(new RequestBodyError(400, "invalid_json", "Invalid JSON payload"));
+        return;
+      }
+      resolve(body);
+    });
+    request.on("error", (error) => {
+      if (settled) return;
+      settled = true;
+      reject(error);
+    });
+  });
 }
 
-function normalizeEmail(value: unknown) {
-  return typeof value === "string" ? value.trim().toLowerCase() : "";
-}
-
-function isValidEmail(email: string) {
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
-}
-
-function cleanOptionalString(value: unknown, maxLength: number) {
-  if (typeof value !== "string") return "";
-  return value.trim().slice(0, maxLength).replace(/[\u0000-\u001f\u007f]/g, "");
+function safeOperationalErrorCode(error: unknown) {
+  const name = error instanceof Error ? error.name : "operation_error";
+  return /^[A-Za-z][A-Za-z0-9_]{0,39}$/.test(name) ? name : "operation_error";
 }
 
 function firstHeaderValue(value: string | string[] | undefined) {
   return Array.isArray(value) ? value[0] || "" : value || "";
 }
 
-function readRequestBody(request: IncomingMessage) {
-  return new Promise<string>((resolve, reject) => {
-    let size = 0;
-    let body = "";
-
-    request.setEncoding("utf8");
-    request.on("data", (chunk: string) => {
-      size += Buffer.byteLength(chunk);
-      if (size > MAX_BODY_BYTES) {
-        reject(new Error("Request body too large"));
-        request.destroy();
-        return;
-      }
-      body += chunk;
-    });
-    request.on("end", () => resolve(body));
-    request.on("error", reject);
-  });
-}
-
 function sendJson(
   response: ServerResponse,
   statusCode: number,
-  payload: Record<string, string>,
+  payload: Record<string, unknown>,
 ) {
   response.statusCode = statusCode;
   response.setHeader("Content-Type", "application/json; charset=utf-8");
   response.setHeader("Cache-Control", "no-store");
+  response.setHeader("X-Content-Type-Options", "nosniff");
   response.end(JSON.stringify(payload));
 }
