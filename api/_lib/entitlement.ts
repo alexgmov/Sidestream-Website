@@ -12,6 +12,8 @@ export type CredentialDeviceScope = Readonly<{
   deviceGeneration: number | string;
 }>;
 
+export type CheckoutIntentKind = "anonymous" | "account" | "activation";
+
 export type CheckoutSessionLike = {
   id?: unknown;
   mode?: unknown;
@@ -51,6 +53,105 @@ export function buildCheckoutCompletionUrl(
 export function getActivationCheckoutIdempotencyKey(activationKey: string) {
   const digest = createHash("sha256").update(activationKey).digest("hex");
   return `sidestream_activation_${digest}`;
+}
+
+export function getCheckoutSessionIdempotencyKey(options: {
+  kind: CheckoutIntentKind;
+  intentId: string;
+  activationKey?: string;
+  attempt: number;
+}) {
+  if (!Number.isSafeInteger(options.attempt) || options.attempt < 0) {
+    throw new TypeError("Checkout attempt must be a non-negative integer");
+  }
+
+  if (options.kind === "activation") {
+    if (!options.activationKey) {
+      throw new TypeError("Activation Checkout requires an activation key");
+    }
+    const base = getActivationCheckoutIdempotencyKey(options.activationKey);
+    return options.attempt === 0 ? base : `${base}_retry_${options.attempt}`;
+  }
+
+  const digest = createHash("sha256").update(options.intentId).digest("hex");
+  return `sidestream_${options.kind}_intent_${digest}_attempt_${options.attempt}`;
+}
+
+export function getStripeCustomerIdempotencyKey(accountId: string) {
+  const digest = createHash("sha256").update(accountId).digest("hex");
+  return `sidestream_customer_${digest}`;
+}
+
+export function getStripePriceIdempotencyKey(productId: string) {
+  const digest = createHash("sha256").update(productId).digest("hex");
+  return `sidestream_pro_price_${digest}`;
+}
+
+export function createCheckoutIntentToken(options: {
+  intentId: string;
+  browserToken: string;
+  expiresAtSeconds: number;
+  secret: string;
+}) {
+  const payload = [
+    "v1",
+    options.expiresAtSeconds,
+    options.intentId,
+    options.browserToken,
+  ].join(".");
+  const signature = createHmac("sha256", options.secret)
+    .update(`checkout-intent:${payload}`)
+    .digest("base64url");
+  return `v1.${options.expiresAtSeconds}.${signature}`;
+}
+
+export function validateCheckoutIntentToken(options: {
+  token: string;
+  intentId: string;
+  browserToken: string;
+  nowSeconds: number;
+  secret: string;
+}) {
+  const [version, rawExpiresAt, signature, ...rest] = options.token.split(".");
+  const expiresAtSeconds = Number(rawExpiresAt);
+  if (
+    version !== "v1" ||
+    rest.length ||
+    !signature ||
+    !Number.isSafeInteger(expiresAtSeconds) ||
+    expiresAtSeconds < options.nowSeconds ||
+    expiresAtSeconds > options.nowSeconds + 15 * 60
+  ) {
+    return false;
+  }
+
+  return safeEqual(options.token, createCheckoutIntentToken({
+    intentId: options.intentId,
+    browserToken: options.browserToken,
+    expiresAtSeconds,
+    secret: options.secret,
+  }));
+}
+
+export function validateCheckoutIntentPost(options: {
+  requestOrigin: string;
+  expectedOrigin: string;
+  fetchSite: string;
+  contentType: string;
+}) {
+  let requestOrigin = "";
+  let expectedOrigin = "";
+  try {
+    requestOrigin = new URL(options.requestOrigin).origin;
+    expectedOrigin = new URL(options.expectedOrigin).origin;
+  } catch {
+    return false;
+  }
+
+  const mediaType = options.contentType.split(";", 1)[0].trim().toLowerCase();
+  return requestOrigin === expectedOrigin &&
+    options.fetchSite.trim().toLowerCase() === "same-origin" &&
+    ["application/json", "application/x-www-form-urlencoded"].includes(mediaType);
 }
 
 export function getStripeCheckoutWindow(

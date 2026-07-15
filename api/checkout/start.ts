@@ -1,26 +1,16 @@
 import type { ServerResponse } from "node:http";
-import type Stripe from "stripe";
 import {
   cleanString,
-  findOrCreateStripeCustomer,
+  createCheckoutIntentConfirmation,
   getBaseUrl,
   getSession,
-  getSidestreamProPriceId,
-  getStripe,
-  getStripeRequestOptions,
   methodNotAllowed,
   redirect,
-  sendJson,
-  SIDESTREAM_PRO_PLAN_KEY,
+  resumeCheckoutIntentConfirmation,
   type AccountRequest,
+  type CheckoutIntentConfirmation,
 } from "../_lib/account.js";
-import {
-  buildCheckoutCompletionUrl,
-  isLegacyVercelHost,
-} from "../_lib/entitlement.js";
-
-const CHECKOUT_PROMISE_TEXT =
-  "One-time payment. No subscription.";
+import { isLegacyVercelHost } from "../_lib/entitlement.js";
 
 export default async function handler(
   request: AccountRequest,
@@ -32,72 +22,122 @@ export default async function handler(
   const baseUrl = getBaseUrl(request);
   const requestUrl = new URL(request.url || "/api/checkout/start", baseUrl);
   const activationKey = cleanString(requestUrl.searchParams.get("activation"), 160);
-  if (!activationKey && isLegacyVercelHost(request.headers.host)) {
+  const browserToken = cleanString(requestUrl.searchParams.get("intent"), 160);
+  const checkoutState = cleanString(requestUrl.searchParams.get("checkout"), 32);
+  if (!activationKey && !browserToken && isLegacyVercelHost(request.headers.host)) {
     const retryUrl = new URL("/upgrade.html", baseUrl);
     retryUrl.searchParams.set("checkout", "activation_required");
     return redirect(response, retryUrl.toString(), 302);
   }
-
-  if (activationKey) {
-    // Legacy 1.0.12 activation links enter the same authenticated, read-only
-    // decision as Restore Purchase. Free accounts explicitly POST from there;
-    // active `license.active` owners are never sent to a second purchase.
-    const decisionUrl = new URL("/api/activation/claim", baseUrl);
-    decisionUrl.searchParams.set("activation", activationKey);
-    return redirect(response, decisionUrl.toString(), 302);
+  if (activationKey && isLegacyVercelHost(request.headers.host)) {
+    const canonicalConfirmation = new URL("/api/checkout/start", baseUrl);
+    if (!isLegacyVercelHost(canonicalConfirmation.host)) {
+      canonicalConfirmation.searchParams.set("activation", activationKey);
+      return redirect(response, canonicalConfirmation.toString(), 302);
+    }
   }
 
-  // Activation attachment is intentionally confined to authenticated POST
-  // /api/checkout/create (attachCheckoutSessionToActivation and
-  // getActivationCheckoutIdempotencyKey), after the user chooses purchase.
+  // GET is a read/confirmation boundary for Stripe. In particular, the old
+  // `const stripe = getStripe()` path is forbidden here. The confirmed POST
+  // owns attachCheckoutSessionToActivation and
+  // getActivationCheckoutIdempotencyKey behavior through the intent worker.
   const session = await getSession(request);
-  const stripe = getStripe();
-  const stripeCustomerId = session
-    ? await findOrCreateStripeCustomer(session)
-    : "";
-  const stripePriceId = await getSidestreamProPriceId();
-  const cancelUrl = new URL("/upgrade.html", baseUrl);
-  const metadata: Record<string, string> = {
-    sidestream_plan: SIDESTREAM_PRO_PLAN_KEY,
-    sidestream_price_id: stripePriceId,
-  };
-  if (session) metadata.sidestream_account_id = session.accountId;
-
-  cancelUrl.searchParams.set("checkout", "cancelled");
-  const checkoutParams: Stripe.Checkout.SessionCreateParams = {
-    mode: "payment",
-    ...(stripeCustomerId ? { customer: stripeCustomerId } : {}),
-    ...(!stripeCustomerId ? { customer_creation: "always" as const } : {}),
-    line_items: [{ price: stripePriceId, quantity: 1 }],
-    payment_method_types: ["card"],
-    allow_promotion_codes: true,
-    billing_address_collection: "auto",
-    success_url: buildCheckoutCompletionUrl(baseUrl),
-    cancel_url: cancelUrl.toString(),
-    client_reference_id: session?.accountId || undefined,
-    custom_text: {
-      submit: {
-        message: CHECKOUT_PROMISE_TEXT,
-      },
-    },
-    invoice_creation: {
-      enabled: true,
-      invoice_data: {
-        metadata,
-      },
-    },
-    metadata,
-    payment_intent_data: {
-      metadata,
-    },
-  };
-
-  const checkoutSession = await stripe.checkout.sessions.create(
-    checkoutParams,
-    getStripeRequestOptions(),
-  );
-  if (!checkoutSession.url) {
-    return sendJson(response, 502, { error: "Stripe did not return a Checkout URL" });
+  if (session?.license.active) {
+    if (activationKey) {
+      const restoreUrl = new URL("/api/activation/claim", baseUrl);
+      restoreUrl.searchParams.set("activation", activationKey);
+      return redirect(response, restoreUrl.toString(), 302);
+    }
+    const accountUrl = new URL("/account.html", baseUrl);
+    accountUrl.searchParams.set("checkout", "already_owned");
+    return redirect(response, accountUrl.toString(), 302);
   }
-  return redirect(response, checkoutSession.url);
+
+  const confirmation = browserToken
+    ? await resumeCheckoutIntentConfirmation({ browserToken, session })
+    : await createCheckoutIntentConfirmation({ activationKey, session });
+  if (!confirmation) {
+    return sendConfirmationPage(
+      response,
+      409,
+      "Checkout link unavailable",
+      "Return to Sidestream and start Upgrade again. No Stripe Customer, Price, or Checkout Session was created.",
+    );
+  }
+
+  return sendConfirmationPage(
+    response,
+    200,
+    confirmation.activationKey
+      ? "Confirm this Sidestream activation purchase"
+      : "Confirm Sidestream Pro purchase",
+    confirmation.activationKey
+      ? "This $9.99 one-time purchase will stay attached to the exact Sidestream activation that opened this page."
+      : "Continue only if you intend to buy Sidestream Pro for $9.99 as a one-time payment.",
+    checkoutForm(confirmation, checkoutState === "cancelled"),
+  );
+}
+
+function checkoutForm(
+  confirmation: CheckoutIntentConfirmation,
+  cancelled: boolean,
+) {
+  const label = cancelled && confirmation.hasCheckoutSession
+    ? "Expire cancelled checkout and start a new one"
+    : confirmation.hasCheckoutSession
+      ? "Return to secure checkout"
+      : "Continue to secure checkout";
+  return `<form method="post" action="/api/checkout/create">
+    <input type="hidden" name="checkoutIntentId" value="${escapeHtml(confirmation.intentId)}">
+    <input type="hidden" name="checkoutIntent" value="${escapeHtml(confirmation.browserToken)}">
+    <input type="hidden" name="intentToken" value="${escapeHtml(confirmation.signedToken)}">
+    <input type="hidden" name="intent" value="purchase">
+    ${cancelled ? '<input type="hidden" name="rotate" value="cancelled">' : ""}
+    <button type="submit">${escapeHtml(label)}</button>
+  </form>`;
+}
+
+function sendConfirmationPage(
+  response: ServerResponse,
+  statusCode: number,
+  title: string,
+  description: string,
+  action = '<a href="/upgrade.html">Back to Upgrade</a>',
+) {
+  response.statusCode = statusCode;
+  response.setHeader("Content-Type", "text/html; charset=utf-8");
+  response.setHeader("Cache-Control", "no-store");
+  response.setHeader(
+    "Content-Security-Policy",
+    "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
+  );
+  response.setHeader("X-Frame-Options", "DENY");
+  response.end(`<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="robots" content="noindex,nofollow">
+  <title>${escapeHtml(title)} - Sidestream</title>
+  <style>
+    :root{color-scheme:dark;font-family:Inter,ui-sans-serif,system-ui,sans-serif;background:#090909;color:#f7f7f7}
+    body{min-height:100vh;margin:0;display:grid;place-items:center;padding:24px;box-sizing:border-box}
+    main{width:min(520px,100%);padding:32px;border:1px solid #2b2b2b;border-radius:24px;background:#151515}
+    h1{font-size:clamp(1.8rem,5vw,2.6rem);line-height:1.05;margin:0 0 18px}
+    p{color:#b8b8b8;line-height:1.55;margin:0 0 24px}
+    button,a{display:inline-block;border:0;border-radius:999px;padding:13px 19px;background:#fff;color:#000;font:inherit;font-weight:700;text-decoration:none;cursor:pointer}
+  </style>
+</head>
+<body><main><h1>${escapeHtml(title)}</h1><p>${escapeHtml(description)}</p>${action}</main></body>
+</html>`);
+}
+
+function escapeHtml(value: string) {
+  return value.replace(/[&<>'"]/g, (character) => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    "'": "&#39;",
+    '\"': "&quot;",
+  })[character] || character);
 }

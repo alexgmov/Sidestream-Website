@@ -139,7 +139,7 @@
       <section>
         <p class="eyebrow">Sidestream Pro</p>
         <h1>Unlock downloads when you need them.</h1>
-        <p class="lede">Public website checkout is handled directly by Stripe as a one-time payment. If Sidestream sent you here to activate or recover Pro, sign in first so you can reconnect, move your license, or purchase without being charged twice.</p>
+        <p class="lede">Public website checkout is handled by Stripe as a one-time payment after you confirm the purchase. If Sidestream sent you here to activate or recover Pro, the confirmation keeps that exact activation attached without letting a link preview start billing.</p>
       </section>
 
       <section class="card">
@@ -152,8 +152,8 @@
           <li>No recurring subscription</li>
           <li>Secure checkout handled by Stripe</li>
         </ul>
-        <p class="status" id="upgrade-status">Ready for secure checkout.</p>
-        <a class="button primary" id="checkout-link" href="/api/checkout/start">Continue to secure checkout</a>
+        <p class="status" id="upgrade-status">Review the offer, then continue to the purchase confirmation.</p>
+        <a class="button primary" id="checkout-link" href="/api/checkout/start">Review and confirm purchase</a>
         <a class="button secondary" id="account-link" href="/account.html" hidden>Open account</a>
         <p class="note">Payment history and receipts are handled by Stripe.</p>
       </section>
@@ -170,7 +170,7 @@
 
     function entryUrl() {
       const url = new URL(
-        activationKey ? "/api/activation/claim" : "/api/checkout/start",
+        "/api/checkout/start",
         window.location.origin
       );
       if (activationKey) url.searchParams.set("activation", activationKey);
@@ -189,8 +189,8 @@
 
       checkoutLink.href = entryUrl();
       if (activationKey) {
-        statusEl.textContent = "Continue with your account first. Sidestream will offer the correct reconnect, device move, or one-time purchase for this activation.";
-        checkoutLink.textContent = "Continue with your account";
+        statusEl.textContent = "Continue to a server-owned confirmation for this exact activation. If you already own Pro, Sidestream will send you to Restore Purchase instead of Checkout.";
+        checkoutLink.textContent = "Review this activation purchase";
       }
       if (checkoutState === "activation_required") {
         statusEl.textContent = "Checkout was stopped before payment because this Sidestream panel was not attached. You have not been charged. Return to the panel and click Upgrade again.";
