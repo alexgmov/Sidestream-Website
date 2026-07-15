@@ -527,9 +527,16 @@ async function applyComponent(client, queries, component, namespace) {
     for (const row of installOwners.rows) ownerIds.add(row.profile_id);
   }
 
-  const candidateId = deterministicProfileId(namespace, component.seedRecordId);
-  const candidateRoot = await findProfileRoot(client, queries, candidateId, namespace);
-  if (candidateRoot) ownerIds.add(candidateRoot);
+  const candidateId = component.deterministicProfileId;
+  for (const deterministicId of component.deterministicProfileIds) {
+    const deterministicRoot = await findProfileRoot(
+      client,
+      queries,
+      deterministicId,
+      namespace,
+    );
+    if (deterministicRoot) ownerIds.add(deterministicRoot);
+  }
   if (ownerIds.size > 1) {
     return safeAppliedComponent(component, "conflict", "existing_evidence_disagrees", 0);
   }
@@ -693,6 +700,8 @@ function buildComponent(records, recordIndexes, namespace) {
   const installIdHashes = evidence
     .filter((item) => item.linkType === "install_identity_hash")
     .map((item) => item.linkValue);
+  const deterministicProfileIds = recordIndexes.map((index) =>
+    deterministicProfileId(namespace, records[index].recordId));
   return Object.freeze({
     namespace,
     firstRecordIndex: Math.min(...recordIndexes),
@@ -705,6 +714,7 @@ function buildComponent(records, recordIndexes, namespace) {
     orphan: evidence.length === 0,
     inputConflict: accountIds.size > 1,
     deterministicProfileId: deterministicProfileId(namespace, seedRecordId),
+    deterministicProfileIds: Object.freeze(deterministicProfileIds),
   });
 }
 

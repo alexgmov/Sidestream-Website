@@ -6,6 +6,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import {
   buildBackfillPlan,
+  deterministicProfileId,
   loadPostgresModule,
   runCustomer360Backfill,
 } from "../../scripts/backfill-customer-360.mjs";
@@ -28,6 +29,7 @@ const ACTIVATION_A = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const ACTIVATION_B = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const ACTIVATION_C = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 const INSTALL_A = "a".repeat(64);
+const INSTALL_BRIDGE = "c".repeat(64);
 const RECEIPT_A = "b".repeat(64);
 const PRIVATE_FIELDS = Object.freeze({
   email: "backfill.private@example.com",
@@ -264,6 +266,62 @@ test("test-only Customer 360 apply is atomic, resumable, idempotent, and private
       });
       assert.equal(fullReplay.summary.writes, 0);
       assert.deepEqual(await databaseSnapshot(pool, quotedSchema), completed);
+    });
+
+    await t.test("later durable evidence quarantines previously separate orphan roots", async () => {
+      const orphanInput = [
+        { recordId: "evolving-orphan-a", ...PRIVATE_FIELDS },
+        { recordId: "evolving-orphan-b", ...PRIVATE_FIELDS },
+      ];
+      const orphanApply = await runCustomer360Backfill({
+        input: orphanInput,
+        namespace: "test",
+        apply: true,
+        pool,
+        schema,
+      });
+      assert.equal(orphanApply.summary.orphanComponents, 2);
+      assert.equal(orphanApply.summary.writes, 2);
+
+      const beforeBridge = await databaseSnapshot(pool, quotedSchema);
+      const orphanProfileIds = orphanInput.map(({ recordId }) =>
+        deterministicProfileId("test", recordId));
+      assert.deepEqual(
+        beforeBridge.profiles
+          .filter((profile) => orphanProfileIds.includes(profile.id))
+          .map(({ id, merged_into: mergedInto }) => [id, mergedInto])
+          .sort(([left], [right]) => left.localeCompare(right)),
+        orphanProfileIds
+          .map((profileId) => [profileId, null])
+          .sort(([left], [right]) => left.localeCompare(right)),
+      );
+
+      const bridgeInput = orphanInput.map((record) => ({
+        ...record,
+        installIdHash: INSTALL_BRIDGE,
+      }));
+      const bridgeReport = await runCustomer360Backfill({
+        input: bridgeInput,
+        namespace: "test",
+        apply: true,
+        pool,
+        schema,
+      });
+
+      assert.deepEqual(await databaseSnapshot(pool, quotedSchema), beforeBridge);
+      assert.equal(bridgeReport.summary.appliedComponents, 0);
+      assert.equal(bridgeReport.summary.conflictComponents, 1);
+      assert.equal(bridgeReport.summary.writes, 0);
+      assert.deepEqual(
+        bridgeReport.components.map(({ status, reason, writes }) => [status, reason, writes]),
+        [["conflict", "existing_evidence_disagrees", 0]],
+      );
+      assertPrivacySafeReport(bridgeReport, [
+        ...Object.values(PRIVATE_FIELDS),
+        INSTALL_BRIDGE,
+        "evolving-orphan-a",
+        "evolving-orphan-b",
+      ]);
     });
 
     await t.test("checkpoint digest rejects changed or reordered work", async () => {
