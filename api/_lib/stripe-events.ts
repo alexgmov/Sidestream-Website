@@ -1,12 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type Stripe from "stripe";
-import {
-  getStripe,
-  getStripeRequestOptions,
-  query as queryAccountPostgres,
-  upsertLicenseFromCheckoutSession,
-  upsertLicenseFromSubscription,
-} from "./account.js";
+import * as account from "./account.js";
 
 export const DEFAULT_STRIPE_EVENT_BATCH_SIZE = 10;
 export const MAX_STRIPE_EVENT_BATCH_SIZE = 50;
@@ -67,7 +61,7 @@ type StripeEventDrainOptions = Readonly<{
 }>;
 
 const runtimeQuery: StripeEventQuery = async (text, params = []) =>
-  queryAccountPostgres(text, [...params]);
+  account.query(text, [...params]);
 
 export async function recordStripeEvent(
   event: Stripe.Event,
@@ -253,7 +247,10 @@ export async function reconcileStripeEvent(
 
   switch (event.type) {
     case "checkout.session.completed": {
-      const result = await upsertLicenseFromCheckoutSession(event.data.object);
+      const result = await account.upsertLicenseFromCheckoutSession(
+        event.data.object,
+        { eventId: event.id, created: event.created },
+      );
       if (!result.fulfilled) {
         return { status: "ignored", outcome: safeOutcome(`checkout_${result.reason}`) };
       }
@@ -271,12 +268,12 @@ export async function reconcileStripeEvent(
       if (!subscriptionId) {
         return { status: "ignored", outcome: "subscription_missing_id" };
       }
-      const subscription = await getStripe().subscriptions.retrieve(
+      const subscription = await account.getStripe().subscriptions.retrieve(
         subscriptionId,
         {},
-        getStripeRequestOptions(),
+        account.getStripeRequestOptions(),
       );
-      const result = await upsertLicenseFromSubscription(
+      const result = await account.upsertLicenseFromSubscription(
         subscription,
         undefined,
         { eventId: event.id, created: event.created },
@@ -286,7 +283,39 @@ export async function reconcileStripeEvent(
       }
       return {
         status: "processed",
-        outcome: result.applied ? "subscription_reconciled" : "subscription_stale_noop",
+        outcome: result.applied
+          ? ("eligible" in result && result.eligible === false
+            ? "subscription_quarantined"
+            : "subscription_reconciled")
+          : "subscription_stale_noop",
+      };
+    }
+    case "charge.refunded":
+    case "charge.updated":
+    case "refund.created":
+    case "refund.updated":
+    case "charge.dispute.created":
+    case "charge.dispute.updated":
+    case "charge.dispute.closed": {
+      if (!("reconcileOneTimePaymentLifecycle" in account)) {
+        return { status: "ignored", outcome: "lifecycle_reconciler_unavailable" };
+      }
+      const result = await account.reconcileOneTimePaymentLifecycle(
+        event.type,
+        event.data.object,
+        { eventId: event.id, created: event.created },
+      );
+      if (!result.fulfilled) {
+        return {
+          status: "ignored",
+          outcome: safeOutcome(`lifecycle_${result.reason}`),
+        };
+      }
+      return {
+        status: "processed",
+        outcome: result.applied
+          ? `lifecycle_${result.entitlementStatus}`
+          : "lifecycle_stale_noop",
       };
     }
     default:

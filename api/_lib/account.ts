@@ -5,8 +5,10 @@ import type { Pool, PoolClient } from "pg";
 import Stripe from "stripe";
 import {
   buildCheckoutCompletionUrl,
+  CANONICAL_PAID_PLAN_KEYS,
   canBindActivationAccount,
   CHECKOUT_SESSION_PLACEHOLDER,
+  type CanonicalOneTimePaymentFacts,
   type CheckoutIntentKind,
   type CredentialDeviceScope,
   createCheckoutIntentToken,
@@ -18,8 +20,11 @@ import {
   getStripeCheckoutWindow,
   getStripePriceIdempotencyKey,
   isActivationClaimReplay,
+  isCanonicalLicenseEntitlementUsable,
   needsLegacyLicenseCompatibility,
   isActivationTokenReplayAllowed,
+  parseStripeIdAllowlist,
+  planOneTimeEntitlementTransition,
   REFRESH_RETRY_GRACE_SECONDS,
   matchesDeviceHash,
   safeEqual,
@@ -28,6 +33,7 @@ import {
   validateActivationClaimPost,
   validateClaimCsrfToken,
   verifyPaidCheckoutSession,
+  verifyLegacySubscriptionEntitlement,
 } from "./entitlement.js";
 import {
   DEVICE_POLICY_ERROR_CODES,
@@ -78,10 +84,11 @@ const ACCOUNT_DEVICE_LOCK_PREFIX = "sidestream:device-support";
 export const DEVICE_DEACTIVATION_INTENT = "deactivate_active_device";
 export const SIDESTREAM_PRO_PLAN_KEY = "sidestream_pro";
 const SIDESTREAM_LEGACY_UNLIMITED_PLAN_KEY = "sidestream_unlimited";
-const SIDESTREAM_PAID_PLAN_KEYS = [
-  SIDESTREAM_PRO_PLAN_KEY,
-  SIDESTREAM_LEGACY_UNLIMITED_PLAN_KEY,
-] as const;
+const SIDESTREAM_PAID_PLAN_KEYS = CANONICAL_PAID_PLAN_KEYS;
+const LEGACY_SUBSCRIPTION_PRODUCT_IDS_ENV =
+  "SIDESTREAM_LEGACY_SUBSCRIPTION_PRODUCT_IDS";
+const LEGACY_SUBSCRIPTION_PRICE_IDS_ENV =
+  "SIDESTREAM_LEGACY_SUBSCRIPTION_PRICE_IDS";
 const SIDESTREAM_PRO_DEFAULT_PRODUCT_ID = "prod_UpwXh6oO1OmPyQ";
 // Stripe Prices are immutable. Resolve the active $9.99 one-time Price by
 // lookup key, creating it once if this deployment is the first to use it.
@@ -563,6 +570,7 @@ export async function getSession(
     stripe_customer_id: string | null;
     license_status: string | null;
     plan_key: string | null;
+    entitlement_status: string | null;
     current_period_end: Date | string | null;
     cancel_at_period_end: boolean | null;
     grace_until: Date | string | null;
@@ -577,6 +585,7 @@ export async function getSession(
         a.stripe_customer_id,
         l.status as license_status,
         l.plan_key,
+        l.entitlement_status,
         l.current_period_end,
         l.cancel_at_period_end,
         l.grace_until,
@@ -587,9 +596,12 @@ export async function getSession(
       where s.session_token_hash = $1
         and s.revoked_at is null
         and s.expires_at > now()
-      -- Usable licenses first: a grandfathered one-time 'active' row must
-      -- outrank a newer cancelled subscription row for the same account.
-      order by (case when l.status in ('active', 'trialing') then 0 else 1 end),
+      -- Only canonically reconciled paid rows may outrank another license.
+      order by (case
+          when l.entitlement_status = 'active'
+            and l.plan_key in ('sidestream_pro', 'sidestream_unlimited') then 0
+          else 1
+        end),
         l.updated_at desc nulls last
       limit 1
     `,
@@ -608,6 +620,7 @@ export async function getSession(
     license: buildLicenseSummary({
       status: row.license_status,
       planKey: row.plan_key,
+      entitlementStatus: row.entitlement_status,
       currentPeriodEnd: row.current_period_end,
       cancelAtPeriodEnd: row.cancel_at_period_end,
       graceUntil: row.grace_until,
@@ -2081,6 +2094,7 @@ export async function getActivationStatus(
     stripe_checkout_session_id: string | null;
     license_status: string | null;
     plan_key: string | null;
+    entitlement_status: string | null;
     current_period_end: Date | string | null;
     cancel_at_period_end: boolean | null;
     grace_until: Date | string | null;
@@ -2100,6 +2114,7 @@ export async function getActivationStatus(
         a.stripe_checkout_session_id,
         l.status as license_status,
         l.plan_key,
+        l.entitlement_status,
         l.current_period_end,
         l.cancel_at_period_end,
         l.grace_until,
@@ -2107,9 +2122,11 @@ export async function getActivationStatus(
       from public.sidestream_activation_sessions a
       left join public.sidestream_licenses l on l.account_id = a.account_id
       where a.activation_key = $1
-      -- Usable licenses first: a grandfathered one-time 'active' row must
-      -- outrank a newer cancelled subscription row for the same account.
-      order by (case when l.status in ('active', 'trialing') then 0 else 1 end),
+      order by (case
+          when l.entitlement_status = 'active'
+            and l.plan_key in ('sidestream_pro', 'sidestream_unlimited') then 0
+          else 1
+        end),
         l.updated_at desc nulls last
       limit 1
     `,
@@ -2169,6 +2186,7 @@ export async function getActivationStatus(
   const license = buildLicenseSummary({
     status: row.license_status,
     planKey: row.plan_key,
+    entitlementStatus: row.entitlement_status,
     currentPeriodEnd: row.current_period_end,
     cancelAtPeriodEnd: row.cancel_at_period_end,
     graceUntil: row.grace_until,
@@ -2304,6 +2322,7 @@ export async function verifyLicenseToken(
         activation_build_channel: string | null;
         status: string | null;
         plan_key: string | null;
+        entitlement_status: string | null;
         current_period_end: Date | string | null;
         cancel_at_period_end: boolean | null;
         grace_until: Date | string | null;
@@ -2321,6 +2340,7 @@ export async function verifyLicenseToken(
             a.build_channel as activation_build_channel,
             l.status,
             l.plan_key,
+            l.entitlement_status,
             l.current_period_end,
             l.cancel_at_period_end,
             l.grace_until,
@@ -2352,6 +2372,7 @@ export async function verifyLicenseToken(
       const license = buildLicenseSummary({
         status: row.status,
         planKey: row.plan_key,
+        entitlementStatus: row.entitlement_status,
         currentPeriodEnd: row.current_period_end,
         cancelAtPeriodEnd: row.cancel_at_period_end,
         graceUntil: row.grace_until,
@@ -2435,15 +2456,72 @@ export async function upsertLicenseFromSubscription(
     return { fulfilled: false as const, reason: "missing_subscription_identity" };
   }
 
-  const stripeEventId = stripeEvent ? cleanString(stripeEvent.eventId, 255) : "";
-  const stripeEventCreatedAt = stripeEvent && Number.isFinite(stripeEvent.created)
-    ? new Date(stripeEvent.created * 1_000).toISOString()
-    : null;
-  if (stripeEvent && (!stripeEventId || !stripeEventCreatedAt)) {
-    throw new TypeError("Stripe event ordering requires an event ID and creation time");
+  const eventWatermark = normalizeStripeEventWatermark(stripeEvent);
+  const itemPriceId = normalizeStripeId(subscription.items?.data?.[0]?.price);
+  let price: Stripe.Price | null = null;
+  let product: Stripe.Product | Stripe.DeletedProduct | null = null;
+  if (itemPriceId) {
+    price = await getStripe().prices.retrieve(
+      itemPriceId,
+      {},
+      getStripeRequestOptions(),
+    );
+    const productId = normalizeStripeId(price.product);
+    if (productId) {
+      product = await getStripe().products.retrieve(
+        productId,
+        {},
+        getStripeRequestOptions(),
+      );
+    }
   }
 
-  const accountId = accountIdHint || await findOrCreateAccountForStripeCustomer(customerId);
+  const allowlist = getLegacySubscriptionAllowlist();
+  const verification = verifyLegacySubscriptionEntitlement(
+    subscription,
+    price || {},
+    product || {},
+    allowlist,
+  );
+  const status = cleanString(subscription.status, 80) || "unknown";
+  if (!verification.ok) {
+    // This compatibility-only persistence path is used by old fixture callers
+    // that provide an existing account explicitly. It records a denied row and
+    // never makes that row eligible; runtime Stripe entry points pass no hint.
+    if (accountIdHint && !itemPriceId && !allowlist.priceIds.length && !allowlist.productIds.length) {
+      return persistDeniedLegacySubscriptionInventory({
+        accountId: accountIdHint,
+        customerId,
+        subscriptionId,
+        status,
+        reason: verification.reason,
+        eventWatermark,
+      });
+    }
+    return quarantineExistingLegacySubscription({
+      subscriptionId,
+      status,
+      reason: verification.reason,
+      eventWatermark,
+    });
+  }
+
+  const active = isLicenseStatusUsable(status);
+  const existing = await query<{ account_id: string }>(
+    `
+      select account_id
+      from public.sidestream_licenses
+      where stripe_subscription_id = $1
+      limit 1
+    `,
+    [subscriptionId],
+  );
+  if (!active && !existing.rows[0]) {
+    return { fulfilled: false as const, reason: "inactive_subscription_without_license" };
+  }
+
+  const accountId = existing.rows[0]?.account_id || accountIdHint ||
+    await findOrCreateAccountForStripeCustomer(customerId);
   if (!accountId) return { fulfilled: false as const, reason: "missing_account" };
 
   await query(
@@ -2455,60 +2533,365 @@ export async function upsertLicenseFromSubscription(
     [accountId, customerId],
   );
 
-  const price = subscription.items?.data?.[0]?.price;
-  const status = cleanString(subscription.status, 80) || "unknown";
   const currentPeriodEnd = timestampToIso(subscription.current_period_end);
   const cancelAtPeriodEnd = Boolean(subscription.cancel_at_period_end || subscription.cancel_at);
-  const planKey = cleanString(
-    price?.lookup_key || price?.nickname || price?.id || SIDESTREAM_LEGACY_UNLIMITED_PLAN_KEY,
-    120,
-  ) || SIDESTREAM_LEGACY_UNLIMITED_PLAN_KEY;
-  const graceUntil = shouldGrantGrace(status)
-    ? addDays(new Date(), LICENSE_TOKEN_TTL_DAYS).toISOString()
-    : null;
+  const entitlementStatus = active ? "active" : "revoked";
+  const statusReason = `subscription_${status}`.slice(0, 160);
   const features = {
-    unlimited_downloads: isLicenseStatusUsable(status),
+    unlimited_downloads: active,
     customer_portal: true,
   };
 
-  const result = await query<{ id: string }>(
+  return withPgClient(async (client) => {
+    await client.query("begin");
+    try {
+      await client.query("select pg_advisory_xact_lock(hashtext($1))", [
+        `legacy_subscription:${subscriptionId}`,
+      ]);
+      const result = await client.query<{ id: string }>(
+        `
+          insert into public.sidestream_licenses (
+            account_id,
+            stripe_customer_id,
+            stripe_subscription_id,
+            stripe_price_id,
+            stripe_product_id,
+            plan_key,
+            status,
+            current_period_end,
+            cancel_at_period_end,
+            grace_until,
+            features,
+            entitlement_status,
+            status_reason,
+            revoked_at,
+            reconciled_at,
+            legacy_subscription_eligible,
+            legacy_subscription_audited_at,
+            legacy_subscription_quarantined_at,
+            stripe_state_event_created_at,
+            stripe_state_event_id,
+            created_at,
+            updated_at
+          )
+          values (
+            $1, $2, $3, $4, $5, $6, $7, $8::timestamptz, $9, null, $10::jsonb,
+            $11, $12, case when $11 = 'revoked' then now() else null end,
+            now(), true, now(), null, $13::timestamptz, $14, now(), now()
+          )
+          on conflict (stripe_subscription_id) do update set
+            account_id = excluded.account_id,
+            stripe_customer_id = excluded.stripe_customer_id,
+            stripe_price_id = excluded.stripe_price_id,
+            stripe_product_id = excluded.stripe_product_id,
+            plan_key = excluded.plan_key,
+            status = excluded.status,
+            current_period_end = excluded.current_period_end,
+            cancel_at_period_end = excluded.cancel_at_period_end,
+            grace_until = null,
+            features = excluded.features || case
+              when sidestream_licenses.account_id = excluded.account_id
+                and sidestream_licenses.features ? 'singleDevicePolicy'
+                then jsonb_build_object(
+                  'singleDevicePolicy',
+                  sidestream_licenses.features -> 'singleDevicePolicy'
+                )
+              else '{}'::jsonb
+            end,
+            entitlement_status = excluded.entitlement_status,
+            status_reason = excluded.status_reason,
+            revoked_at = case
+              when excluded.entitlement_status = 'revoked'
+                then coalesce(sidestream_licenses.revoked_at, now())
+              else sidestream_licenses.revoked_at
+            end,
+            reconciled_at = now(),
+            legacy_subscription_eligible = true,
+            legacy_subscription_audited_at = now(),
+            legacy_subscription_quarantined_at = null,
+            stripe_state_event_created_at = coalesce(
+              excluded.stripe_state_event_created_at,
+              sidestream_licenses.stripe_state_event_created_at
+            ),
+            stripe_state_event_id = coalesce(
+              excluded.stripe_state_event_id,
+              sidestream_licenses.stripe_state_event_id
+            ),
+            updated_at = now()
+          where excluded.stripe_state_event_created_at is null
+            or sidestream_licenses.stripe_state_event_created_at is null
+            or excluded.stripe_state_event_created_at > sidestream_licenses.stripe_state_event_created_at
+            or (
+              excluded.stripe_state_event_created_at = sidestream_licenses.stripe_state_event_created_at
+              and excluded.stripe_state_event_id > coalesce(sidestream_licenses.stripe_state_event_id, '')
+            )
+          returning id
+        `,
+        [
+          accountId,
+          customerId,
+          subscriptionId,
+          verification.priceId,
+          verification.productId,
+          SIDESTREAM_PRO_PLAN_KEY,
+          status,
+          currentPeriodEnd,
+          cancelAtPeriodEnd,
+          JSON.stringify(features),
+          entitlementStatus,
+          statusReason,
+          eventWatermark?.createdAtIso || null,
+          eventWatermark?.eventId || null,
+        ],
+      );
+      const licenseId = result.rows[0]?.id;
+      if (!licenseId) {
+        await client.query("commit");
+        return { fulfilled: true as const, applied: false as const, reason: "stale_event" };
+      }
+      if (!active) await revokeLicenseCredentials(client, licenseId);
+      await client.query("commit");
+      return { fulfilled: true as const, applied: true as const };
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    }
+  });
+}
+
+function getLegacySubscriptionAllowlist() {
+  return {
+    productIds: parseStripeIdAllowlist(
+      process.env[LEGACY_SUBSCRIPTION_PRODUCT_IDS_ENV],
+      "prod",
+    ),
+    priceIds: parseStripeIdAllowlist(
+      process.env[LEGACY_SUBSCRIPTION_PRICE_IDS_ENV],
+      "price",
+    ),
+  };
+}
+
+function normalizeStripeEventWatermark(
+  stripeEvent?: { eventId: string; created: number },
+) {
+  if (!stripeEvent) return null;
+  const eventId = cleanString(stripeEvent.eventId, 255);
+  if (!eventId || !Number.isSafeInteger(stripeEvent.created) || stripeEvent.created < 0) {
+    throw new TypeError("Stripe event ordering requires an event ID and creation time");
+  }
+  return {
+    eventId,
+    createdAtIso: new Date(stripeEvent.created * 1_000).toISOString(),
+    createdAtMs: stripeEvent.created * 1_000,
+  };
+}
+
+async function quarantineExistingLegacySubscription(options: {
+  subscriptionId: string;
+  status: string;
+  reason: string;
+  eventWatermark: ReturnType<typeof normalizeStripeEventWatermark>;
+}) {
+  return withPgClient(async (client) => {
+    await client.query("begin");
+    try {
+      await client.query("select pg_advisory_xact_lock(hashtext($1))", [
+        `legacy_subscription:${options.subscriptionId}`,
+      ]);
+      const updated = await client.query<{ id: string }>(
+        `
+          update public.sidestream_licenses
+          set status = $2,
+              entitlement_status = 'revoked',
+              status_reason = $3,
+              revoked_at = coalesce(revoked_at, now()),
+              reconciled_at = now(),
+              legacy_subscription_eligible = false,
+              legacy_subscription_audited_at = now(),
+              legacy_subscription_quarantined_at = coalesce(
+                legacy_subscription_quarantined_at,
+                now()
+              ),
+              features = features || '{"unlimited_downloads": false}'::jsonb,
+              stripe_state_event_created_at = coalesce(
+                $4::timestamptz,
+                stripe_state_event_created_at
+              ),
+              stripe_state_event_id = coalesce($5, stripe_state_event_id),
+              updated_at = now()
+          where stripe_subscription_id = $1
+            and (
+              $4::timestamptz is null
+              or stripe_state_event_created_at is null
+              or $4::timestamptz > stripe_state_event_created_at
+              or (
+                $4::timestamptz = stripe_state_event_created_at
+                and $5 > coalesce(stripe_state_event_id, '')
+              )
+            )
+          returning id
+        `,
+        [
+          options.subscriptionId,
+          options.status,
+          `legacy_${options.reason}`.slice(0, 160),
+          options.eventWatermark?.createdAtIso || null,
+          options.eventWatermark?.eventId || null,
+        ],
+      );
+      const licenseId = updated.rows[0]?.id;
+      if (licenseId) {
+        await revokeLicenseCredentials(client, licenseId);
+        await client.query("commit");
+        return {
+          fulfilled: true as const,
+          applied: true as const,
+          eligible: false as const,
+          reason: options.reason,
+        };
+      }
+
+      const existing = await client.query(
+        `select id from public.sidestream_licenses where stripe_subscription_id = $1 limit 1`,
+        [options.subscriptionId],
+      );
+      await client.query("commit");
+      return existing.rows[0]
+        ? { fulfilled: true as const, applied: false as const, reason: "stale_event" }
+        : { fulfilled: false as const, reason: options.reason };
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    }
+  });
+}
+
+async function persistDeniedLegacySubscriptionInventory(options: {
+  accountId: string;
+  customerId: string;
+  subscriptionId: string;
+  status: string;
+  reason: string;
+  eventWatermark: ReturnType<typeof normalizeStripeEventWatermark>;
+}) {
+  return withPgClient(async (client) => {
+    await client.query("begin");
+    try {
+      await client.query("select pg_advisory_xact_lock(hashtext($1))", [
+        `legacy_subscription:${options.subscriptionId}`,
+      ]);
+      const lifecycleSchema = await client.query<{ present: boolean }>(
+        `
+          select exists (
+            select 1
+            from information_schema.columns
+            where table_schema = 'public'
+              and table_name = 'sidestream_licenses'
+              and column_name = 'entitlement_status'
+          ) as present
+        `,
+      );
+      if (!lifecycleSchema.rows[0]?.present) {
+        const result = await persistDeniedLegacySubscriptionBeforeLifecycleMigration(
+          client,
+          options,
+        );
+        await client.query("commit");
+        return result;
+      }
+      const result = await client.query<{ id: string }>(
+        `
+          update public.sidestream_licenses
+          set status = $2,
+              entitlement_status = 'revoked',
+              status_reason = $3,
+              revoked_at = coalesce(revoked_at, now()),
+              reconciled_at = now(),
+              legacy_subscription_eligible = false,
+              legacy_subscription_audited_at = now(),
+              legacy_subscription_quarantined_at = coalesce(
+                legacy_subscription_quarantined_at,
+                now()
+              ),
+              features = features ||
+                '{"unlimited_downloads": false, "customer_portal": true}'::jsonb,
+              stripe_state_event_created_at = coalesce(
+                $4::timestamptz,
+                stripe_state_event_created_at
+              ),
+              stripe_state_event_id = coalesce($5, stripe_state_event_id),
+              updated_at = now()
+          where stripe_subscription_id = $1
+            and (
+              $4::timestamptz is null
+              or stripe_state_event_created_at is null
+              or $4::timestamptz > stripe_state_event_created_at
+              or (
+                $4::timestamptz = stripe_state_event_created_at
+                and $5 > coalesce(stripe_state_event_id, '')
+              )
+            )
+          returning id
+        `,
+        [
+          options.subscriptionId,
+          options.status,
+          `legacy_${options.reason}`.slice(0, 160),
+          options.eventWatermark?.createdAtIso || null,
+          options.eventWatermark?.eventId || null,
+        ],
+      );
+      const licenseId = result.rows[0]?.id;
+      if (!licenseId) {
+        const existing = await client.query(
+          `select id from public.sidestream_licenses where stripe_subscription_id = $1 limit 1`,
+          [options.subscriptionId],
+        );
+        await client.query("commit");
+        return existing.rows[0]
+          ? { fulfilled: true as const, applied: false as const, reason: "stale_event" }
+          : { fulfilled: false as const, reason: options.reason };
+      }
+      await revokeLicenseCredentials(client, licenseId);
+      await client.query("commit");
+      return { fulfilled: true as const, applied: true as const };
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    }
+  });
+}
+
+async function persistDeniedLegacySubscriptionBeforeLifecycleMigration(
+  client: PoolClient,
+  options: {
+    accountId: string;
+    customerId: string;
+    subscriptionId: string;
+    status: string;
+    reason: string;
+    eventWatermark: ReturnType<typeof normalizeStripeEventWatermark>;
+  },
+) {
+  const result = await client.query<{ id: string }>(
     `
       insert into public.sidestream_licenses (
-        account_id,
-        stripe_customer_id,
-        stripe_subscription_id,
-        plan_key,
-        status,
-        current_period_end,
-        cancel_at_period_end,
-        grace_until,
-        features,
-        stripe_state_event_created_at,
-        stripe_state_event_id,
-        created_at,
-        updated_at
+        account_id, stripe_customer_id, stripe_subscription_id,
+        plan_key, status, cancel_at_period_end, features,
+        stripe_state_event_created_at, stripe_state_event_id,
+        created_at, updated_at
       )
       values (
-        $1, $2, $3, $4, $5, $6::timestamptz, $7, $8::timestamptz, $9::jsonb,
-        $10::timestamptz, $11, now(), now()
+        $1, $2, $3, 'legacy_unverified', $4, false,
+        '{"unlimited_downloads": false, "customer_portal": true}'::jsonb,
+        $5::timestamptz, $6, now(), now()
       )
       on conflict (stripe_subscription_id) do update set
-        account_id = excluded.account_id,
-        stripe_customer_id = excluded.stripe_customer_id,
-        plan_key = excluded.plan_key,
         status = excluded.status,
-        current_period_end = excluded.current_period_end,
-        cancel_at_period_end = excluded.cancel_at_period_end,
-        grace_until = excluded.grace_until,
-        features = excluded.features || case
-          when sidestream_licenses.account_id = excluded.account_id
-            and sidestream_licenses.features ? 'singleDevicePolicy'
-            then jsonb_build_object(
-              'singleDevicePolicy',
-              sidestream_licenses.features -> 'singleDevicePolicy'
-            )
-          else '{}'::jsonb
-        end,
+        plan_key = 'legacy_unverified',
+        features = sidestream_licenses.features ||
+          '{"unlimited_downloads": false, "customer_portal": true}'::jsonb,
         stripe_state_event_created_at = coalesce(
           excluded.stripe_state_event_created_at,
           sidestream_licenses.stripe_state_event_created_at
@@ -2523,42 +2906,66 @@ export async function upsertLicenseFromSubscription(
         or excluded.stripe_state_event_created_at > sidestream_licenses.stripe_state_event_created_at
         or (
           excluded.stripe_state_event_created_at = sidestream_licenses.stripe_state_event_created_at
-          and excluded.stripe_state_event_id >= coalesce(sidestream_licenses.stripe_state_event_id, '')
+          and excluded.stripe_state_event_id > coalesce(sidestream_licenses.stripe_state_event_id, '')
         )
       returning id
     `,
     [
-      accountId,
-      customerId,
-      subscriptionId,
-      planKey,
-      status,
-      currentPeriodEnd,
-      cancelAtPeriodEnd,
-      graceUntil,
-      JSON.stringify(features),
-      stripeEventCreatedAt,
-      stripeEventId || null,
+      options.accountId,
+      options.customerId,
+      options.subscriptionId,
+      options.status,
+      options.eventWatermark?.createdAtIso || null,
+      options.eventWatermark?.eventId || null,
     ],
   );
-  return result.rows[0]
-    ? { fulfilled: true as const, applied: true as const }
-    : { fulfilled: true as const, applied: false as const, reason: "stale_event" };
+  const licenseId = result.rows[0]?.id;
+  if (!licenseId) {
+    return { fulfilled: true as const, applied: false as const, reason: "stale_event" };
+  }
+  await client.query(
+    `
+      update public.sidestream_license_tokens
+      set revoked_at = coalesce(revoked_at, now()), updated_at = now()
+      where license_id = $1
+    `,
+    [licenseId],
+  );
+  return { fulfilled: true as const, applied: true as const };
+}
+
+async function revokeLicenseCredentials(runner: Pool | PoolClient, licenseId: string) {
+  await runner.query(
+    `
+      update public.sidestream_license_tokens
+      set revoked_at = coalesce(revoked_at, now()),
+          refresh_token_hash = null,
+          refresh_expires_at = null,
+          previous_refresh_token_hash = null,
+          previous_refresh_valid_until = null,
+          refresh_rotated_at = null,
+          updated_at = now()
+      where license_id = $1
+    `,
+    [licenseId],
+  );
 }
 
 export async function upsertLicenseFromCheckoutSession(
   sessionPayload: unknown,
+  stripeEvent?: { eventId: string; created: number },
 ) {
   const checkoutSessionId = normalizeStripeId(
     (sessionPayload as { id?: unknown } | null)?.id,
   );
   if (!checkoutSessionId) return { fulfilled: false as const, reason: "missing_session_id" };
-  return fulfillCheckoutSession(checkoutSessionId);
+  return fulfillCheckoutSession(checkoutSessionId, "", stripeEvent);
 }
 
 export async function fulfillCheckoutSession(
   checkoutSessionId: string,
   expectedActivationKey = "",
+  stripeEvent?: { eventId: string; created: number },
 ) {
   const checkoutSession = await getStripe().checkout.sessions.retrieve(
     checkoutSessionId,
@@ -2581,8 +2988,16 @@ export async function fulfillCheckoutSession(
     ) {
       return { fulfilled: false as const, reason: "invalid_subscription_checkout" };
     }
-    const subscription = await getStripe().subscriptions.retrieve(subscriptionId);
-    const subscriptionResult = await upsertLicenseFromSubscription(subscription);
+    const subscription = await getStripe().subscriptions.retrieve(
+      subscriptionId,
+      {},
+      getStripeRequestOptions(),
+    );
+    const subscriptionResult = await upsertLicenseFromSubscription(
+      subscription,
+      undefined,
+      stripeEvent,
+    );
     if (!subscriptionResult.fulfilled) return subscriptionResult;
     return { fulfilled: true as const, activationBound: false };
   }
@@ -2632,6 +3047,13 @@ export async function fulfillCheckoutSession(
 
   const customerId = normalizeStripeId(checkoutSession.customer);
   if (!customerId) return { fulfilled: false as const, reason: "missing_customer" };
+  const canonicalPayment = await retrieveCanonicalCheckoutPayment(
+    checkoutSession,
+    customerId,
+  );
+  if (!canonicalPayment.ok) {
+    return { fulfilled: false as const, reason: canonicalPayment.reason };
+  }
 
   const stripeAccountId = await findOrCreateAccountForStripeCustomer(customerId, {
     email: checkoutSession.customer_details?.email || checkoutSession.customer_email,
@@ -2688,15 +3110,28 @@ export async function fulfillCheckoutSession(
         [accountId, customerId],
       );
 
-      const licenseId = await upsertLicenseFromOneTimeCheckoutSession({
+      const licenseResult = await upsertLicenseFromOneTimeCheckoutSession({
         accountId,
         customerId,
         checkoutSessionId,
-        paymentIntentId: normalizeStripeId(checkoutSession.payment_intent),
+        paymentFacts: canonicalPayment.facts,
+        noPaymentRequired: canonicalPayment.noPaymentRequired,
+        currency: canonicalPayment.currency,
+        eventWatermark: normalizeStripeEventWatermark(stripeEvent),
       }, client);
+      if (!licenseResult.fulfilled) {
+        await client.query("rollback");
+        return licenseResult;
+      }
+      const licenseId = licenseResult.licenseId;
 
       let activationBound = false;
-      if (activationKey && activationId && activationCanBind) {
+      if (
+        activationKey &&
+        activationId &&
+        activationCanBind &&
+        licenseResult.entitlementStatus === "active"
+      ) {
         const bound = await client.query<{ id: string }>(
           `
             update public.sidestream_activation_sessions
@@ -2735,65 +3170,509 @@ export async function fulfillCheckoutSession(
   });
 }
 
+async function retrieveCanonicalCheckoutPayment(
+  checkoutSession: Stripe.Checkout.Session,
+  customerId: string,
+) {
+  const paymentIntentId = normalizeStripeId(checkoutSession.payment_intent);
+  const currency = cleanString(checkoutSession.currency, 3).toLowerCase();
+  if (!paymentIntentId) {
+    if (
+      checkoutSession.payment_status !== "no_payment_required" ||
+      checkoutSession.amount_total !== 0 ||
+      !/^[a-z]{3}$/.test(currency)
+    ) {
+      return { ok: false as const, reason: "missing_payment_intent" };
+    }
+    return {
+      ok: true as const,
+      facts: null,
+      noPaymentRequired: true,
+      currency,
+    };
+  }
+
+  const paymentIntent = await getStripe().paymentIntents.retrieve(
+    paymentIntentId,
+    { expand: ["latest_charge"] },
+    getStripeRequestOptions(),
+  );
+  if (paymentIntent.id !== paymentIntentId) {
+    return { ok: false as const, reason: "payment_intent_mismatch" };
+  }
+  const chargeId = normalizeStripeId(paymentIntent.latest_charge);
+  if (!chargeId) return { ok: false as const, reason: "missing_charge" };
+
+  const canonical = await retrieveCanonicalPaymentFacts({
+    chargeId,
+    expectedPaymentIntentId: paymentIntentId,
+    expectedCustomerId: customerId,
+    paymentIntent,
+  });
+  if (!canonical.ok) return canonical;
+  return {
+    ok: true as const,
+    facts: canonical.facts,
+    noPaymentRequired: false,
+    currency: canonical.facts.currency,
+  };
+}
+
+async function retrieveCanonicalPaymentFacts(options: {
+  chargeId: string;
+  expectedPaymentIntentId?: string;
+  expectedCustomerId?: string;
+  paymentIntent?: Stripe.PaymentIntent;
+  canonicalDispute?: Stripe.Dispute;
+  forceDisputeLookup?: boolean;
+}) {
+  const charge = await getStripe().charges.retrieve(
+    options.chargeId,
+    { expand: ["payment_intent"] },
+    getStripeRequestOptions(),
+  );
+  if (charge.id !== options.chargeId) {
+    return { ok: false as const, reason: "charge_mismatch" };
+  }
+  const paymentIntentId = normalizeStripeId(charge.payment_intent);
+  if (
+    !paymentIntentId ||
+    (options.expectedPaymentIntentId && paymentIntentId !== options.expectedPaymentIntentId)
+  ) {
+    return { ok: false as const, reason: "payment_intent_mismatch" };
+  }
+  const paymentIntent = options.paymentIntent ||
+    await getStripe().paymentIntents.retrieve(
+      paymentIntentId,
+      { expand: ["latest_charge"] },
+      getStripeRequestOptions(),
+    );
+  if (paymentIntent.id !== paymentIntentId) {
+    return { ok: false as const, reason: "payment_intent_mismatch" };
+  }
+  const latestChargeId = normalizeStripeId(paymentIntent.latest_charge);
+  if (latestChargeId && latestChargeId !== charge.id) {
+    return { ok: false as const, reason: "latest_charge_mismatch" };
+  }
+  const chargeCustomerId = normalizeStripeId(charge.customer);
+  const paymentIntentCustomerId = normalizeStripeId(paymentIntent.customer);
+  if (
+    !chargeCustomerId ||
+    !paymentIntentCustomerId ||
+    chargeCustomerId !== paymentIntentCustomerId ||
+    (options.expectedCustomerId && chargeCustomerId !== options.expectedCustomerId)
+  ) {
+    return { ok: false as const, reason: "payment_customer_mismatch" };
+  }
+
+  const currency = cleanString(paymentIntent.currency, 3).toLowerCase();
+  const chargeCurrency = cleanString(charge.currency, 3).toLowerCase();
+  if (!/^[a-z]{3}$/.test(currency) || chargeCurrency !== currency) {
+    return { ok: false as const, reason: "payment_currency_mismatch" };
+  }
+  if (
+    !Number.isSafeInteger(paymentIntent.amount_received) ||
+    paymentIntent.amount_received < 0 ||
+    !Number.isSafeInteger(charge.amount_refunded) ||
+    charge.amount_refunded < 0
+  ) {
+    return { ok: false as const, reason: "invalid_payment_amounts" };
+  }
+
+  let disputes: readonly Stripe.Dispute[] = options.canonicalDispute
+    ? [options.canonicalDispute]
+    : [];
+  let disputesHaveMore = false;
+  if (options.forceDisputeLookup || charge.disputed) {
+    const listed = await getStripe().disputes.list(
+      { charge: charge.id, limit: 100 },
+      getStripeRequestOptions(),
+    );
+    disputes = mergeCanonicalDisputes(disputes, listed.data);
+    disputesHaveMore = listed.has_more;
+  }
+  const disputeStatus = canonicalDisputeStatus(
+    disputes,
+    disputesHaveMore || Boolean(charge.disputed),
+  );
+
+  return {
+    ok: true as const,
+    facts: {
+      paymentIntentId,
+      chargeId: charge.id,
+      customerId: chargeCustomerId,
+      amountPaid: paymentIntent.amount_received,
+      amountRefunded: charge.amount_refunded,
+      currency,
+      paymentProven: paymentIntent.status === "succeeded" && charge.paid === true,
+      disputeStatus,
+    } satisfies CanonicalOneTimePaymentFacts,
+  };
+}
+
+function mergeCanonicalDisputes(
+  first: readonly Stripe.Dispute[],
+  second: readonly Stripe.Dispute[],
+) {
+  const disputes = new Map<string, Stripe.Dispute>();
+  for (const dispute of [...first, ...second]) disputes.set(dispute.id, dispute);
+  return [...disputes.values()];
+}
+
+function canonicalDisputeStatus(
+  disputes: readonly Stripe.Dispute[],
+  disputedWithoutFinalProof: boolean,
+) {
+  const statuses = disputes.map((dispute) => cleanString(dispute.status, 80).toLowerCase());
+  if (statuses.includes("lost")) return "lost";
+  const open = statuses.find((status) => status && status !== "won");
+  if (open) return open;
+  if (statuses.includes("won")) return "won";
+  return disputedWithoutFinalProof ? "unknown" : "none";
+}
+
+export async function reconcileOneTimePaymentLifecycle(
+  eventType: string,
+  eventPayload: unknown,
+  stripeEvent: { eventId: string; created: number },
+) {
+  const payload = eventPayload as Record<string, any>;
+  const eventWatermark = normalizeStripeEventWatermark(stripeEvent);
+  let chargeId = "";
+  let canonicalDispute: Stripe.Dispute | undefined;
+  if (eventType.startsWith("charge.dispute.")) {
+    const disputeId = normalizeStripeId(payload.id);
+    if (!disputeId) {
+      return { fulfilled: false as const, reason: "missing_dispute_id" };
+    }
+    canonicalDispute = await getStripe().disputes.retrieve(
+      disputeId,
+      {},
+      getStripeRequestOptions(),
+    );
+    if (canonicalDispute.id !== disputeId) {
+      return { fulfilled: false as const, reason: "dispute_identity_mismatch" };
+    }
+    chargeId = normalizeStripeId(canonicalDispute.charge);
+    const payloadChargeId = normalizeStripeId(payload.charge);
+    if (payloadChargeId && payloadChargeId !== chargeId) {
+      return { fulfilled: false as const, reason: "event_charge_mismatch" };
+    }
+  } else if (eventType.startsWith("refund.")) {
+    chargeId = normalizeStripeId(payload.charge);
+  } else if (eventType === "charge.refunded" || eventType === "charge.updated") {
+    chargeId = normalizeStripeId(payload.id);
+  } else {
+    return { fulfilled: false as const, reason: "unsupported_lifecycle_event" };
+  }
+  if (!chargeId) return { fulfilled: false as const, reason: "missing_charge_id" };
+
+  const expectedPaymentIntentId = normalizeStripeId(payload.payment_intent);
+  const canonical = await retrieveCanonicalPaymentFacts({
+    chargeId,
+    expectedPaymentIntentId: expectedPaymentIntentId || undefined,
+    canonicalDispute,
+    forceDisputeLookup: eventType.startsWith("charge.dispute."),
+  });
+  if (!canonical.ok) {
+    return { fulfilled: false as const, reason: canonical.reason };
+  }
+
+  return withPgClient(async (client) => {
+    await client.query("begin");
+    try {
+      await client.query("select pg_advisory_xact_lock(hashtext($1))", [
+        `one_time_payment:${canonical.facts.paymentIntentId}`,
+      ]);
+      const selected = await client.query<{
+        account_id: string;
+        stripe_customer_id: string;
+        stripe_checkout_session_id: string;
+        stripe_payment_intent_id: string;
+        stripe_charge_id: string | null;
+      }>(
+        `
+          select account_id, stripe_customer_id, stripe_checkout_session_id,
+            stripe_payment_intent_id, stripe_charge_id
+          from public.sidestream_licenses
+          where stripe_payment_intent_id = $1
+             or stripe_charge_id = $2
+          order by created_at asc
+          limit 2
+          for update
+        `,
+        [canonical.facts.paymentIntentId, canonical.facts.chargeId],
+      );
+      if (selected.rows.length !== 1) {
+        await client.query("rollback");
+        return {
+          fulfilled: false as const,
+          reason: selected.rows.length ? "ambiguous_payment_identity" : "missing_license",
+        };
+      }
+      const license = selected.rows[0];
+      if (
+        license.stripe_payment_intent_id !== canonical.facts.paymentIntentId ||
+        license.stripe_customer_id !== canonical.facts.customerId ||
+        (license.stripe_charge_id && license.stripe_charge_id !== canonical.facts.chargeId)
+      ) {
+        await client.query("rollback");
+        return { fulfilled: false as const, reason: "payment_identity_mismatch" };
+      }
+
+      const result = await upsertLicenseFromOneTimeCheckoutSession({
+        accountId: license.account_id,
+        customerId: license.stripe_customer_id,
+        checkoutSessionId: license.stripe_checkout_session_id,
+        paymentFacts: canonical.facts,
+        noPaymentRequired: false,
+        currency: canonical.facts.currency,
+        eventWatermark,
+      }, client);
+      if (!result.fulfilled) {
+        await client.query("rollback");
+        return result;
+      }
+      await client.query("commit");
+      return {
+        fulfilled: true as const,
+        applied: result.applied,
+        entitlementStatus: result.entitlementStatus,
+      };
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    }
+  });
+}
+
 async function upsertLicenseFromOneTimeCheckoutSession(options: {
   accountId: string;
   customerId: string;
   checkoutSessionId: string;
-  paymentIntentId: string;
+  paymentFacts: CanonicalOneTimePaymentFacts | null;
+  noPaymentRequired: boolean;
+  currency: string;
+  eventWatermark: ReturnType<typeof normalizeStripeEventWatermark>;
 }, runner: Pool | PoolClient) {
-  const result = await runner.query<{ id: string }>(
+  const selected = await runner.query<{
+    id: string;
+    account_id: string;
+    stripe_customer_id: string;
+    stripe_payment_intent_id: string | null;
+    stripe_charge_id: string | null;
+    currency: string | null;
+    entitlement_status: "unknown" | "active" | "suspended" | "revoked";
+    status_reason: string;
+    stripe_state_event_created_at: Date | string | null;
+    stripe_state_event_id: string | null;
+  }>(
     `
-      insert into public.sidestream_licenses (
-        account_id,
-        stripe_customer_id,
-        stripe_subscription_id,
-        stripe_checkout_session_id,
-        stripe_payment_intent_id,
-        plan_key,
-        status,
-        current_period_end,
-        cancel_at_period_end,
-        grace_until,
-        features,
-        created_at,
-        updated_at
-      )
-      values ($1, $2, null, $3, $4, $5, 'active', null, false, null, $6::jsonb, now(), now())
-      on conflict (stripe_checkout_session_id) do update set
-        account_id = excluded.account_id,
-        stripe_customer_id = excluded.stripe_customer_id,
-        stripe_payment_intent_id = excluded.stripe_payment_intent_id,
-        plan_key = excluded.plan_key,
-        status = excluded.status,
-        current_period_end = excluded.current_period_end,
-        cancel_at_period_end = excluded.cancel_at_period_end,
-        grace_until = excluded.grace_until,
-        features = excluded.features || case
-          when sidestream_licenses.account_id = excluded.account_id
-            and sidestream_licenses.features ? 'singleDevicePolicy'
-            then jsonb_build_object(
-              'singleDevicePolicy',
-              sidestream_licenses.features -> 'singleDevicePolicy'
-            )
-          else '{}'::jsonb
-        end,
-        updated_at = now()
-      returning id
+      select id, account_id, stripe_customer_id, stripe_payment_intent_id,
+        stripe_charge_id, currency, entitlement_status, status_reason,
+        stripe_state_event_created_at, stripe_state_event_id
+      from public.sidestream_licenses
+      where stripe_checkout_session_id = $1
+      limit 1
+      for update
     `,
-    [
-      options.accountId,
-      options.customerId,
-      options.checkoutSessionId,
-      options.paymentIntentId || null,
-      SIDESTREAM_PRO_PLAN_KEY,
-      JSON.stringify({
-        unlimited_downloads: true,
-        customer_portal: true,
-        one_time_purchase: true,
-      }),
-    ],
+    [options.checkoutSessionId],
   );
-  return result.rows[0]?.id || "";
+  const existing = selected.rows[0] || null;
+  const paymentIntentId = options.paymentFacts?.paymentIntentId || "";
+  const chargeId = options.paymentFacts?.chargeId || "";
+  if (
+    existing &&
+    (
+      existing.account_id !== options.accountId ||
+      existing.stripe_customer_id !== options.customerId ||
+      (existing.stripe_payment_intent_id && existing.stripe_payment_intent_id !== paymentIntentId) ||
+      (existing.stripe_charge_id && existing.stripe_charge_id !== chargeId) ||
+      (existing.currency && existing.currency !== options.currency)
+    )
+  ) {
+    return { fulfilled: false as const, reason: "payment_identity_mismatch" };
+  }
+
+  let applyLifecycle = true;
+  let entitlementStatus: "active" | "suspended" | "revoked" = "active";
+  let statusReason = options.noPaymentRequired
+    ? "checkout_no_payment_required"
+    : "payment_paid";
+  let revokeCredentials = false;
+  if (options.paymentFacts) {
+    const transition = planOneTimeEntitlementTransition({
+      stored: {
+        paymentIntentId: existing?.stripe_payment_intent_id,
+        chargeId: existing?.stripe_charge_id,
+        customerId: existing?.stripe_customer_id,
+        entitlementStatus: existing?.entitlement_status,
+        statusReason: existing?.status_reason,
+        stripeEventCreatedAtMs: existing?.stripe_state_event_created_at
+          ? new Date(existing.stripe_state_event_created_at).getTime()
+          : null,
+        stripeEventId: existing?.stripe_state_event_id,
+      },
+      facts: options.paymentFacts,
+      event: options.eventWatermark
+        ? {
+            createdAtMs: options.eventWatermark.createdAtMs,
+            eventId: options.eventWatermark.eventId,
+          }
+        : null,
+    });
+    if (!transition.apply) {
+      if (transition.reason !== "stale_event") {
+        return { fulfilled: false as const, reason: transition.reason };
+      }
+      applyLifecycle = false;
+    } else {
+      entitlementStatus = transition.entitlementStatus;
+      statusReason = transition.statusReason;
+      revokeCredentials = transition.revokeCredentials;
+    }
+  } else if (!options.noPaymentRequired) {
+    return { fulfilled: false as const, reason: "missing_payment_identity" };
+  }
+
+  if (
+    existing &&
+    !options.eventWatermark &&
+    existing.entitlement_status !== "unknown" &&
+    existing.entitlement_status !== "active" &&
+    entitlementStatus === "active"
+  ) {
+    applyLifecycle = false;
+  }
+
+  const amountPaid = options.paymentFacts?.amountPaid ?? 0;
+  const amountRefunded = options.paymentFacts?.amountRefunded ?? 0;
+  const active = applyLifecycle
+    ? entitlementStatus === "active"
+    : existing?.entitlement_status === "active";
+  let licenseId = existing?.id || "";
+  let resultingStatus = existing?.entitlement_status || entitlementStatus;
+  if (!existing) {
+    const inserted = await runner.query<{ id: string }>(
+      `
+        insert into public.sidestream_licenses (
+          account_id, stripe_customer_id, stripe_subscription_id,
+          stripe_checkout_session_id, stripe_payment_intent_id, stripe_charge_id,
+          plan_key, status, current_period_end, cancel_at_period_end, grace_until,
+          features, amount_paid, amount_refunded, currency,
+          entitlement_status, status_reason, revoked_at, suspended_at,
+          reconciled_at, stripe_state_event_created_at, stripe_state_event_id,
+          created_at, updated_at
+        )
+        values (
+          $1, $2, null, $3, $4, $5, $6, $7, null, false, null, $8::jsonb,
+          $9, $10, $11, $12, $13,
+          case when $12 = 'revoked' then now() else null end,
+          case when $12 = 'suspended' then now() else null end,
+          now(), $14::timestamptz, $15, now(), now()
+        )
+        returning id
+      `,
+      [
+        options.accountId,
+        options.customerId,
+        options.checkoutSessionId,
+        paymentIntentId || null,
+        chargeId || null,
+        SIDESTREAM_PRO_PLAN_KEY,
+        entitlementStatus,
+        JSON.stringify({
+          unlimited_downloads: active,
+          customer_portal: true,
+          one_time_purchase: true,
+        }),
+        amountPaid,
+        amountRefunded,
+        options.currency,
+        entitlementStatus,
+        statusReason,
+        options.eventWatermark?.createdAtIso || null,
+        options.eventWatermark?.eventId || null,
+      ],
+    );
+    licenseId = inserted.rows[0]?.id || "";
+    resultingStatus = entitlementStatus;
+  } else {
+    const updated = await runner.query<{
+      id: string;
+      entitlement_status: "unknown" | "active" | "suspended" | "revoked";
+    }>(
+      `
+        update public.sidestream_licenses
+        set stripe_payment_intent_id = coalesce(stripe_payment_intent_id, $2),
+            stripe_charge_id = coalesce(stripe_charge_id, $3),
+            amount_paid = greatest(coalesce(amount_paid, 0), $4),
+            amount_refunded = greatest(coalesce(amount_refunded, 0), $5),
+            currency = coalesce(currency, $6),
+            plan_key = $7,
+            status = case when $8 then $9 else status end,
+            entitlement_status = case when $8 then $9 else entitlement_status end,
+            status_reason = case when $8 then $10 else status_reason end,
+            revoked_at = case
+              when $8 and $9 = 'revoked' then coalesce(revoked_at, now())
+              else revoked_at
+            end,
+            suspended_at = case
+              when $8 and $9 = 'suspended' then coalesce(suspended_at, now())
+              else suspended_at
+            end,
+            reconciled_at = now(),
+            stripe_state_event_created_at = case
+              when $8 and $11::timestamptz is not null then $11::timestamptz
+              else stripe_state_event_created_at
+            end,
+            stripe_state_event_id = case
+              when $8 and $11::timestamptz is not null then $12
+              else stripe_state_event_id
+            end,
+            features = features || jsonb_build_object(
+              'unlimited_downloads', $13::boolean,
+              'customer_portal', true,
+              'one_time_purchase', true
+            ),
+            current_period_end = null,
+            cancel_at_period_end = false,
+            grace_until = null,
+            updated_at = now()
+        where id = $1
+        returning id, entitlement_status
+      `,
+      [
+        existing.id,
+        paymentIntentId || null,
+        chargeId || null,
+        amountPaid,
+        amountRefunded,
+        options.currency,
+        SIDESTREAM_PRO_PLAN_KEY,
+        applyLifecycle,
+        entitlementStatus,
+        statusReason,
+        options.eventWatermark?.createdAtIso || null,
+        options.eventWatermark?.eventId || null,
+        active,
+      ],
+    );
+    licenseId = updated.rows[0]?.id || "";
+    resultingStatus = updated.rows[0]?.entitlement_status || existing.entitlement_status;
+  }
+
+  if (!licenseId) return { fulfilled: false as const, reason: "license_write_failed" };
+  if (resultingStatus !== "active" || revokeCredentials) {
+    await revokeLicenseCredentials(runner, licenseId);
+  }
+  return {
+    fulfilled: true as const,
+    licenseId,
+    entitlementStatus: resultingStatus,
+    applied: !existing || applyLifecycle,
+  };
 }
 
 export function sanitizeNextPath(value: unknown) {
@@ -2928,6 +3807,7 @@ function normalizeConnectionString(connectionString: string) {
 function buildLicenseSummary(options: {
   status?: string | null;
   planKey?: string | null;
+  entitlementStatus?: string | null;
   currentPeriodEnd?: Date | string | null;
   cancelAtPeriodEnd?: boolean | null;
   graceUntil?: Date | string | null;
@@ -2935,8 +3815,10 @@ function buildLicenseSummary(options: {
 }): LicenseSummary {
   const status = cleanString(options.status, 80) || "free";
   const graceUntil = toIsoString(options.graceUntil);
-  const active = isLicenseStatusUsable(status) ||
-    Boolean(graceUntil && new Date(graceUntil).getTime() > Date.now());
+  const active = isCanonicalLicenseEntitlementUsable({
+    planKey: options.planKey,
+    entitlementStatus: options.entitlementStatus,
+  });
 
   return {
     active,
@@ -2945,9 +3827,11 @@ function buildLicenseSummary(options: {
     currentPeriodEnd: toIsoString(options.currentPeriodEnd),
     cancelAtPeriodEnd: Boolean(options.cancelAtPeriodEnd),
     graceUntil,
-    features: active
-      ? { unlimited_downloads: true, customer_portal: true, ...(options.features || {}) }
-      : { unlimited_downloads: false, customer_portal: true, ...(options.features || {}) },
+    features: {
+      customer_portal: true,
+      ...(options.features || {}),
+      unlimited_downloads: active,
+    },
   };
 }
 
@@ -2958,10 +3842,6 @@ function isLicenseStatusUsable(status: string) {
 function isSidestreamPaidPlanKey(planKey: string) {
   return planKey === SIDESTREAM_PRO_PLAN_KEY ||
     planKey === SIDESTREAM_LEGACY_UNLIMITED_PLAN_KEY;
-}
-
-function shouldGrantGrace(status: string) {
-  return status === "past_due" || status === "unpaid";
 }
 
 type AccountDeviceRow = {
@@ -3375,6 +4255,7 @@ type DownloadAuthorizationCredentialRow = {
   revoked_at: Date | string | null;
   status: string | null;
   plan_key: string | null;
+  entitlement_status: string | null;
   current_period_end: Date | string | null;
   cancel_at_period_end: boolean | null;
   grace_until: Date | string | null;
@@ -3440,6 +4321,7 @@ export async function authorizeLicenseDownload(options: {
             t.revoked_at,
             l.status,
             l.plan_key,
+            l.entitlement_status,
             l.current_period_end,
             l.cancel_at_period_end,
             l.grace_until,
@@ -3470,6 +4352,7 @@ export async function authorizeLicenseDownload(options: {
       const license = buildLicenseSummary({
         status: credential.status,
         planKey: credential.plan_key,
+        entitlementStatus: credential.entitlement_status,
         currentPeriodEnd: credential.current_period_end,
         cancelAtPeriodEnd: credential.cancel_at_period_end,
         graceUntil: credential.grace_until,
@@ -3870,6 +4753,7 @@ type RefreshCredentialRow = {
   activation_build_channel: string | null;
   status: string | null;
   plan_key: string | null;
+  entitlement_status: string | null;
   current_period_end: Date | string | null;
   cancel_at_period_end: boolean | null;
   grace_until: Date | string | null;
@@ -3933,6 +4817,7 @@ export async function refreshLicenseToken(
             a.build_channel as activation_build_channel,
             l.status,
             l.plan_key,
+            l.entitlement_status,
             l.current_period_end,
             l.cancel_at_period_end,
             l.grace_until,
@@ -3973,6 +4858,7 @@ export async function refreshLicenseToken(
               a.build_channel as activation_build_channel,
               l.status,
               l.plan_key,
+              l.entitlement_status,
               l.current_period_end,
               l.cancel_at_period_end,
               l.grace_until,
@@ -4028,6 +4914,7 @@ export async function refreshLicenseToken(
       const license = buildLicenseSummary({
         status: credential.status,
         planKey: credential.plan_key,
+        entitlementStatus: credential.entitlement_status,
         currentPeriodEnd: credential.current_period_end,
         cancelAtPeriodEnd: credential.cancel_at_period_end,
         graceUntil: credential.grace_until,
