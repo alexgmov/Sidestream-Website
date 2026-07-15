@@ -144,11 +144,17 @@ Persisted intent state is constrained to `pending`, `open`, `completed`,
 read; its next signed confirmation POST may explicitly request bounded Session
 rotation. A caller cannot supply its own Stripe or activation tuple.
 
-New one-time purchases must match both allowlisted resources: Product
-`SIDESTREAM_PRO_PRODUCT_ID` (default `prod_UpwXh6oO1OmPyQ`) and either the exact
-`SIDESTREAM_PRO_PRICE_ID` or the active `$9.99` one-time Price with lookup key
-`sidestream_pro_once_999`. `SIDESTREAM_UNLIMITED_PRICE_ID` is accepted only as a
-legacy fallback when it belongs to that Product.
+New one-time purchases select `SIDESTREAM_PRO_PRODUCT_ID` (default
+`prod_UpwXh6oO1OmPyQ`), then use this runtime-compatible Price precedence: exact
+`SIDESTREAM_PRO_PRICE_ID`; the code default Price ID (currently empty); compatible
+`SIDESTREAM_UNLIMITED_PRICE_ID`; the expanded Product's active matching
+`default_price`; the exact `sidestream_pro_once_999` lookup-key match; then any
+other active matching Product Price. Only after every discovery branch misses
+does runtime use its create fallback. Every compatible Price must belong to the
+selected Product and have the active one-time USD 999-cent shape. Runtime
+discovery is not cutover approval: the Production procedure separately requires
+an approved exact Product/Price manifest and direct live proof that the selector
+resolves to those exact IDs before mutation and again before promotion.
 
 ### Activation compatibility
 
@@ -583,18 +589,23 @@ Every multi-command shell block below uses exit-on-error; do not remove `set -e`
 or continue a gate after any command, assertion, or evidence write fails.
 
 Every `/secure/*.env` reference below means a mode-`0600`, ignored,
-command-specific file materialized by the approved secret manager. Use three
+command-specific file materialized by the approved secret manager. Use four
 separate files: `/secure/prod-db.env` contains only the reviewed direct
 `SIDESTREAM_POSTGRES_URL_NON_POOLING`, whose connection parameters require
 `sslmode=verify-full` and the reviewed `/secure/` provider-CA path;
 `/secure/prod-legacy.env` carries that same reviewed URL plus only
 `STRIPE_SECRET_KEY` and the two exact legacy allowlists for the catalog gate; it
-does not make the current legacy database client authenticated or executable; and
+does not make the current legacy database client authenticated or executable;
 `/secure/prod-stripe-read.env` contains only the live Stripe key for account-level
-read/reconciliation. The CA file is materialized separately, pinned by an
-approved SHA-256, and never replaced by an unreviewed downloaded bundle. None may define
-`SIDESTREAM_ENV_FILE`, `SIDESTREAM_DB_ENV_FILE`, another Postgres URL name, or an
-unrelated application setting. Never source, print, archive, or commit them.
+read/reconciliation; and `/secure/prod-pro.env` contains only
+`STRIPE_SECRET_KEY` plus the actually configured runtime selectors
+`SIDESTREAM_PRO_PRODUCT_ID`,
+`SIDESTREAM_PRO_PRICE_ID`, and/or `SIDESTREAM_UNLIMITED_PRICE_ID`. The Pro file may
+omit any unset selector but may define no other key. The CA file is materialized
+separately, pinned by an approved SHA-256, and never replaced by an unreviewed
+downloaded bundle. None may define `SIDESTREAM_ENV_FILE`,
+`SIDESTREAM_DB_ENV_FILE`, another Postgres URL name, or an unrelated application
+setting. Never source, print, archive, or commit them.
 
 A URL-derived host/database fingerprint and `current_database()` are target
 selection evidence only. They become authenticated database evidence only when
