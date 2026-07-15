@@ -3,12 +3,8 @@
  *
  * Customer 360 may contain profile/contact fields, platform and app-version
  * summaries, aggregate lifecycle timestamps, aggregate download outcomes, and
- * canonical commerce. It must NEVER contain search text, source titles, URLs,
- * raw telemetry payloads, raw IPs, raw user agents, tokens, or credentials.
- *
- * The types below describe the allowed shape; `assertCustomer360PrivacyBoundary`
- * enforces the denylist at runtime so a forbidden field cannot silently reach a
- * customer-facing surface.
+ * canonical commerce. Search/source details, URLs, raw telemetry, request
+ * identity, tokens, and credentials are outside this boundary.
  */
 
 import type { CustomerLicenseNamespace } from "./customer-profiles.js";
@@ -27,12 +23,11 @@ export type Customer360Profile = Readonly<{
   appVersionSummary: string | null;
   firstSeenAt: string | null;
   lastActivityAt: string | null;
-  downloadSuccessCount: number;
-  downloadFailureCount: number;
+  downloadSuccessCount: number | null;
+  downloadFailureCount: number | null;
   commerce: Customer360Commerce | null;
 }>;
 
-/** Field-concept groups the boundary permits, kept for documentation and review. */
 export const CUSTOMER_360_ALLOWED_FIELD_GROUPS = [
   "profile_contact",
   "platform_app_version_summary",
@@ -43,11 +38,7 @@ export const CUSTOMER_360_ALLOWED_FIELD_GROUPS = [
 export type Customer360AllowedFieldGroup =
   (typeof CUSTOMER_360_ALLOWED_FIELD_GROUPS)[number];
 
-/**
- * Key-name concepts that must never appear in a Customer 360 record. Compared
- * against a normalized key (lowercased, alphanumeric only) as substrings, so
- * both camelCase and snake_case spellings are caught.
- */
+/** Normalized key fragments that are forbidden at every nesting level. */
 export const CUSTOMER_360_FORBIDDEN_KEY_SUBSTRINGS = [
   "searchtext",
   "searchquery",
@@ -73,9 +64,9 @@ export const CUSTOMER_360_FORBIDDEN_KEY_SUBSTRINGS = [
 ] as const;
 
 /**
- * Standalone key names that are forbidden only as an exact match, to avoid false
- * positives on allowed fields (for example `ip` is forbidden but `recipient` is
- * not, and `url` is forbidden but `appVersionSummary` is not).
+ * Generic containers are explicitly forbidden. Otherwise raw event data could
+ * be smuggled through a harmless-looking `metadata.value` shape while every
+ * domain-specific denylist continued to pass.
  */
 export const CUSTOMER_360_FORBIDDEN_EXACT_KEYS = [
   "ip",
@@ -84,9 +75,46 @@ export const CUSTOMER_360_FORBIDDEN_EXACT_KEYS = [
   "href",
   "query",
   "title",
+  "metadata",
+  "payload",
+  "event",
+  "value",
 ] as const;
 
 const MAX_SCAN_DEPTH = 8;
+
+type FieldRule = Readonly<{
+  accepts: (value: unknown) => boolean;
+  children?: Readonly<Record<string, FieldRule>>;
+}>;
+
+const nullableString = (value: unknown) => value === null || typeof value === "string";
+const nullableCount = (value: unknown) =>
+  value === null || (Number.isSafeInteger(value) && Number(value) >= 0);
+
+const COMMERCE_FIELDS: Readonly<Record<string, FieldRule>> = Object.freeze({
+  entitlementStatus: { accepts: nullableString },
+  commerceSyncedAt: { accepts: nullableString },
+});
+
+const PROFILE_FIELDS: Readonly<Record<string, FieldRule>> = Object.freeze({
+  id: { accepts: (value) => typeof value === "string" && value.length > 0 },
+  licenseNamespace: {
+    accepts: (value) => value === "production" || value === "test",
+  },
+  contactEmail: { accepts: nullableString },
+  displayName: { accepts: nullableString },
+  platformSummary: { accepts: nullableString },
+  appVersionSummary: { accepts: nullableString },
+  firstSeenAt: { accepts: nullableString },
+  lastActivityAt: { accepts: nullableString },
+  downloadSuccessCount: { accepts: nullableCount },
+  downloadFailureCount: { accepts: nullableCount },
+  commerce: {
+    accepts: (value) => value === null || isPlainRecord(value),
+    children: COMMERCE_FIELDS,
+  },
+});
 
 function normalizeKey(key: string): string {
   return key.toLowerCase().replace(/[^a-z0-9]/g, "");
@@ -101,41 +129,75 @@ function keyViolates(normalized: string): boolean {
   );
 }
 
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
 /**
- * Returns the dotted paths of every forbidden key found in `record`. Empty means
- * the record is inside the privacy boundary. Bounded depth guards against hostile
- * or cyclic inputs.
+ * Returns every path that falls outside the explicit Customer 360 shape.
+ * Unknown keys, generic raw-data containers, cycles, and over-depth objects all
+ * fail closed. The schema is intentionally sparse, so allowed fields may be
+ * absent and unknown lifetime counters are represented by null.
  */
 export function findCustomer360PrivacyViolations(record: unknown): string[] {
-  const violations: string[] = [];
+  const violations = new Set<string>();
   const seen = new Set<object>();
 
-  const walk = (value: unknown, path: string, depth: number): void => {
-    if (depth > MAX_SCAN_DEPTH || value === null || typeof value !== "object") {
+  const scanForbidden = (value: unknown, path: string, depth: number): void => {
+    if (value === null || typeof value !== "object") return;
+    if (depth > MAX_SCAN_DEPTH) {
+      violations.add(`${path || "$"}.__maxDepth`);
       return;
     }
-    if (seen.has(value as object)) return;
+    if (seen.has(value as object)) {
+      violations.add(`${path || "$"}.__cycle`);
+      return;
+    }
     seen.add(value as object);
 
     if (Array.isArray(value)) {
-      value.forEach((item, index) => walk(item, `${path}[${index}]`, depth + 1));
+      value.forEach((item, index) => scanForbidden(item, `${path}[${index}]`, depth + 1));
       return;
     }
 
     for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
       const childPath = path ? `${path}.${key}` : key;
-      if (keyViolates(normalizeKey(key))) {
-        violations.push(childPath);
-      }
-      walk(child, childPath, depth + 1);
+      if (keyViolates(normalizeKey(key))) violations.add(childPath);
+      scanForbidden(child, childPath, depth + 1);
     }
   };
 
-  walk(record, "", 0);
-  return violations;
+  const validateShape = (
+    value: unknown,
+    fields: Readonly<Record<string, FieldRule>>,
+    path: string,
+  ): void => {
+    if (!isPlainRecord(value)) {
+      violations.add(path || "$");
+      return;
+    }
+    for (const [key, child] of Object.entries(value)) {
+      const childPath = path ? `${path}.${key}` : key;
+      const rule = fields[key];
+      if (!rule) {
+        violations.add(childPath);
+        continue;
+      }
+      if (!rule.accepts(child)) violations.add(childPath);
+      if (rule.children && child !== null) {
+        validateShape(child, rule.children, childPath);
+      }
+    }
+  };
+
+  scanForbidden(record, "", 0);
+  validateShape(record, PROFILE_FIELDS, "");
+  return [...violations];
 }
 
-/** Throws if `record` carries any forbidden field. Use before returning it. */
+/** Throws unless `record` is entirely inside the allowed Customer 360 shape. */
 export function assertCustomer360PrivacyBoundary(record: unknown): void {
   const violations = findCustomer360PrivacyViolations(record);
   if (violations.length > 0) {

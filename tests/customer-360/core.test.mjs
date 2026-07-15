@@ -2,12 +2,15 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import {
+  CUSTOMER_HASH_IDENTITY_LINK_TYPES,
   CUSTOMER_IDENTITY_LINK_TYPES,
   CUSTOMER_LICENSE_NAMESPACES,
   FORBIDDEN_MERGE_SIGNALS,
+  assertCustomerIdentityLinkValue,
   assertDeterministicIdentityLinkType,
   isCustomerIdentityLinkType,
   isCustomerLicenseNamespace,
+  mergeCustomerProfiles,
   planProfileMerge,
   resolveProfileRoot,
 } from "../../api/_lib/customer-profiles.ts";
@@ -59,6 +62,33 @@ test("identity evidence allowlist is deterministic and excludes every heuristic"
   assert.equal(
     assertDeterministicIdentityLinkType("installer_receipt_hash"),
     "installer_receipt_hash",
+  );
+  assert.equal(typeof mergeCustomerProfiles, "function");
+});
+
+test("hash-only identity values reject raw, uppercase, and malformed identifiers", () => {
+  assert.deepEqual([...CUSTOMER_HASH_IDENTITY_LINK_TYPES], [
+    "install_identity_hash",
+    "installer_receipt_hash",
+  ]);
+  for (const linkType of CUSTOMER_HASH_IDENTITY_LINK_TYPES) {
+    assert.throws(
+      () => assertCustomerIdentityLinkValue(linkType, "raw-device-or-receipt-id"),
+      /lowercase hex64/,
+    );
+    assert.throws(
+      () => assertCustomerIdentityLinkValue(linkType, "A".repeat(64)),
+      /lowercase hex64/,
+    );
+    assert.equal(assertCustomerIdentityLinkValue(linkType, "a".repeat(64)), "a".repeat(64));
+  }
+  assert.equal(
+    assertCustomerIdentityLinkValue("stripe_customer", "cus_verified"),
+    "cus_verified",
+  );
+  assert.throws(
+    () => assertCustomerIdentityLinkValue("stripe_customer", " cus_untrimmed"),
+    /exact characters/,
   );
 });
 
@@ -147,8 +177,8 @@ test("privacy boundary accepts an allowed record and rejects forbidden fields", 
     appVersionSummary: "1.0.12",
     firstSeenAt: "2026-07-01T00:00:00.000Z",
     lastActivityAt: "2026-07-10T00:00:00.000Z",
-    downloadSuccessCount: 3,
-    downloadFailureCount: 0,
+    downloadSuccessCount: null,
+    downloadFailureCount: null,
     commerce: { entitlementStatus: "active", commerceSyncedAt: "2026-07-10T00:00:00.000Z" },
   };
   assert.deepEqual(findCustomer360PrivacyViolations(allowed), []);
@@ -178,16 +208,41 @@ test("privacy boundary accepts an allowed record and rejects forbidden fields", 
     );
   }
 
-  // Nested forbidden fields are detected with a dotted path.
+  // Nested forbidden fields and their unknown container both fail closed.
   const nested = { commerce: { latestCharge: { userAgent: "curl" } } };
   const violations = findCustomer360PrivacyViolations(nested);
-  assert.deepEqual(violations, ["commerce.latestCharge.userAgent"]);
+  assert.ok(violations.includes("commerce.latestCharge"));
+  assert.ok(violations.includes("commerce.latestCharge.userAgent"));
 
-  // Allowed field names that merely resemble forbidden concepts are not flagged.
+  // Unknown keys are rejected even when they do not match a denylist concept.
+  assert.deepEqual(findCustomer360PrivacyViolations({ arbitrarySummary: "x" }), [
+    "arbitrarySummary",
+  ]);
+
+  // Allowed field names that merely resemble forbidden concepts still pass.
   assert.deepEqual(
-    findCustomer360PrivacyViolations({ recipientCount: 2, zipHint: "9", appVersionSummary: "1.0" }),
+    findCustomer360PrivacyViolations({ appVersionSummary: "1.0" }),
     [],
   );
+
+  const genericTelemetry = {
+    metadata: { payload: { event: "search", value: "raw query and source title" } },
+  };
+  assert.ok(findCustomer360PrivacyViolations(genericTelemetry).length > 0);
+  assert.throws(
+    () => assertCustomer360PrivacyBoundary(genericTelemetry),
+    /privacy boundary violation/,
+  );
+
+  let deep = { rawIp: "203.0.113.9" };
+  for (let index = 0; index < 12; index += 1) deep = { profile: deep };
+  assert.ok(
+    findCustomer360PrivacyViolations(deep).some((path) => path.includes("__maxDepth")),
+  );
+
+  const cycle = {};
+  cycle.commerce = cycle;
+  assert.ok(findCustomer360PrivacyViolations(cycle).some((path) => path.includes("__cycle")));
 });
 
 test("migration defines the sparse, namespace-scoped, append-only identity core", async () => {
@@ -222,6 +277,10 @@ test("migration defines the sparse, namespace-scoped, append-only identity core"
   assert.match(sql, /entitlement_status text,/);
   assert.doesNotMatch(sql, /contact_email text not null/);
   assert.doesNotMatch(sql, /entitlement_status text not null/);
+  assert.match(sql, /download_success_count bigint,/);
+  assert.match(sql, /download_failure_count bigint,/);
+  assert.doesNotMatch(sql, /download_(?:success|failure)_count bigint not null/);
+  assert.doesNotMatch(sql, /download_(?:success|failure)_count bigint[^\n]*default 0/);
 
   // Deterministic evidence: a value maps to one profile per namespace, and the
   // link/merge allowlists never include a heuristic or the Gmail HMAC.
@@ -242,14 +301,24 @@ test("migration defines the sparse, namespace-scoped, append-only identity core"
   // Install identity and merge evidence are stored only as lowercase hashes.
   assert.match(sql, /install_id_hash text not null[\s\S]*?~ '\^\[0-9a-f\]\{64\}\$'/);
   assert.match(sql, /merge_evidence_value_hash text not null[\s\S]*?~ '\^\[0-9a-f\]\{64\}\$'/);
+  assert.match(
+    sql,
+    /link_type not in \('install_identity_hash', 'installer_receipt_hash'\)[\s\S]*?link_value ~ '\^\[0-9a-f\]\{64\}\$'/,
+  );
 
-  // Immutable audit: each source profile is tombstoned at most once.
+  // The database rejects cycles and makes the audit immutable under owner writes.
+  assert.match(sql, /sidestream_customer_profiles_guard_merge_cycle/);
+  assert.match(sql, /Customer profile merge cycle detected/);
+  assert.match(sql, /sidestream_customer_membership_require_live_profile/);
   assert.match(
     sql,
     /sidestream_customer_profile_merges_source_once_unique\s+unique \(license_namespace, source_profile_id\)/,
   );
+  assert.match(sql, /sidestream_customer_profile_merges_immutable_guard/);
+  assert.match(sql, /before update or delete on public\.sidestream_customer_profile_merges/);
 
   // Server-role-only: direct Supabase API roles are revoked.
+  assert.match(sql, /revoke all on table public\.sidestream_customer_profiles from public/);
   assert.match(sql, /revoke all on table public\.%I from %I/);
   assert.match(sql, /array\[\s*'anon',\s*'authenticated'\s*\]/);
 });
