@@ -16,7 +16,9 @@ type StripeEventProcessDependencies = Readonly<{
 const defaultDependencies: StripeEventProcessDependencies = {
   getCronSecret: () => {
     const secret = process.env.CRON_SECRET?.trim() || "";
-    if (!secret) throw new Error("CRON_SECRET is not configured");
+    if (secret.length < 16 || secret.length > 512) {
+      throw new Error("CRON_SECRET is not configured");
+    }
     return secret;
   },
   drainQueue: () => drainStripeEventQueue({

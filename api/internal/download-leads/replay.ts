@@ -20,7 +20,7 @@ import {
   withPostgresTransaction,
 } from "../../_lib/postgres.js";
 
-const REPLAY_SECRET_ENV = "SIDESTREAM_DOWNLOAD_LEADS_REPLAY_SECRET";
+const CRON_SECRET_ENV = "CRON_SECRET";
 const MAX_REPLAY_REQUEST_BYTES = 4 * 1024;
 const DEFAULT_REPLAY_BATCH_SIZE = 25;
 const MAX_REPLAY_BATCH_SIZE = 100;
@@ -50,7 +50,7 @@ type ReplaySummary = {
 };
 
 type ReplayDependencies = Readonly<{
-  getReplaySecret: () => string;
+  getCronSecret: () => string;
   listPage: (input: {
     prefix: string;
     cursor?: string;
@@ -68,7 +68,7 @@ type ReplayDependencies = Readonly<{
 }>;
 
 const defaultDependencies: ReplayDependencies = {
-  getReplaySecret,
+  getCronSecret,
   listPage: async ({ prefix, cursor, limit }) => list({ prefix, cursor, limit }),
   readBlob: async (blob) => {
     if (blob.size > MAX_REPLAY_BLOB_BYTES) {
@@ -101,14 +101,15 @@ export function createDownloadLeadReplayHandler(
     request: ReplayRequest,
     response: ServerResponse,
   ) {
-    if ((request.method || "GET").toUpperCase() !== "POST") {
-      response.setHeader("Allow", "POST");
+    const method = (request.method || "GET").toUpperCase();
+    if (method !== "GET" && method !== "POST") {
+      response.setHeader("Allow", "GET, POST");
       return sendJson(response, 405, { error: "Method not allowed" });
     }
 
-    let replaySecret: string;
+    let cronSecret: string;
     try {
-      replaySecret = dependencies.getReplaySecret();
+      cronSecret = dependencies.getCronSecret();
     } catch (error) {
       dependencies.log({
         event: "download_lead_replay",
@@ -120,14 +121,17 @@ export function createDownloadLeadReplayHandler(
         code: "replay_unavailable",
       });
     }
-    if (!isAuthorized(request, replaySecret)) {
+    if (!isAuthorized(request, cronSecret)) {
       return sendJson(response, 401, {
         error: "Unauthorized",
         code: "unauthorized",
       });
     }
 
-    if (!isJsonContentType(firstHeaderValue(request.headers["content-type"]))) {
+    if (
+      method === "POST" &&
+      !isJsonContentType(firstHeaderValue(request.headers["content-type"]))
+    ) {
       return sendJson(response, 415, {
         error: "Content-Type must be application/json",
         code: "unsupported_media_type",
@@ -136,9 +140,14 @@ export function createDownloadLeadReplayHandler(
 
     let input: { cursor?: string; limit: number; disposition: "preserve" | "delete" };
     try {
-      input = parseReplayInput(
-        JSON.parse(await readRequestBody(request, MAX_REPLAY_REQUEST_BYTES)),
-      );
+      input = method === "GET"
+        ? parseReplayInput({
+            limit: DEFAULT_REPLAY_BATCH_SIZE,
+            disposition: "delete",
+          })
+        : parseReplayInput(
+            JSON.parse(await readRequestBody(request, MAX_REPLAY_REQUEST_BYTES)),
+          );
     } catch (error) {
       return sendJson(response, 400, {
         error: "Invalid replay request",
@@ -313,11 +322,11 @@ export function parseReplayInput(value: unknown) {
   };
 }
 
-function getReplaySecret() {
-  const secret = process.env[REPLAY_SECRET_ENV]?.trim() || "";
-  if (secret.length < 32 || secret.length > 512) {
+function getCronSecret() {
+  const secret = process.env[CRON_SECRET_ENV]?.trim() || "";
+  if (secret.length < 16 || secret.length > 512) {
     throw new DownloadLeadConfigurationError(
-      `Missing or weak ${REPLAY_SECRET_ENV}; expected at least 32 characters`,
+      `Missing or weak ${CRON_SECRET_ENV}; expected 16-512 characters`,
     );
   }
   return secret;

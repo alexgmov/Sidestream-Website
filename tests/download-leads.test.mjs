@@ -444,7 +444,7 @@ test("protected replay pages mapped blobs, isolates bad data, and deletes only c
   const logs = [];
   let activeEmail = "";
   const handler = createDownloadLeadReplayHandler({
-    getReplaySecret: () => "replay-route-secret-that-is-long-enough",
+    getCronSecret: () => "replay-route-secret-that-is-long-enough",
     listPage: async ({ limit }) => {
       assert.equal(limit, 5);
       return { blobs, cursor: "cursor-next", hasMore: true };
@@ -511,7 +511,7 @@ test("protected replay pages mapped blobs, isolates bad data, and deletes only c
 test("replay rejects bad authorization and overlarge batches before listing Blob", async () => {
   let listCalls = 0;
   const handler = createDownloadLeadReplayHandler({
-    getReplaySecret: () => "replay-route-secret-that-is-long-enough",
+    getCronSecret: () => "replay-route-secret-that-is-long-enough",
     listPage: async () => {
       listCalls += 1;
       return { blobs: [], hasMore: false };

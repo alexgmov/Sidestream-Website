@@ -63,19 +63,21 @@ test("rolling device-transfer limit blocks before a fourth default move", () => 
   assert.equal(blocked.remainingTransfers, 0);
 });
 
-test("legacy activation-bearing Checkout GET redirects before any Stripe state", async () => {
+test("activation-bearing Checkout GET stays on a read-only confirmation boundary", async () => {
   const source = await readFile(files.checkoutStart, "utf8");
-  const activationGuard = source.indexOf("if (activationKey)");
-  const decisionRedirect = source.indexOf("/api/activation/claim", activationGuard);
-  const stripeClient = source.indexOf("const stripe = getStripe()");
-  const stripeCreate = source.indexOf("stripe.checkout.sessions.create");
+  const legacyHostGuard = source.indexOf("activationKey && isLegacyVercelHost");
+  const canonicalRedirect = source.indexOf("canonicalConfirmation", legacyHostGuard);
+  const sessionRead = source.indexOf("const session = await getSession(request)");
+  const activeOwnerRedirect = source.indexOf("/api/activation/claim", sessionRead);
+  const confirmation = source.indexOf("createCheckoutIntentConfirmation", sessionRead);
 
-  assert.ok(activationGuard >= 0);
-  assert.ok(decisionRedirect > activationGuard && decisionRedirect < stripeClient);
-  assert.ok(stripeClient > decisionRedirect && stripeCreate > stripeClient);
+  assert.ok(legacyHostGuard >= 0 && canonicalRedirect > legacyHostGuard);
+  assert.ok(sessionRead > canonicalRedirect && activeOwnerRedirect > sessionRead);
+  assert.ok(confirmation > activeOwnerRedirect);
   assert.match(source, /if \(method !== "GET"\)/);
-  assert.match(source, /buildCheckoutCompletionUrl\(baseUrl\)/);
-  assert.doesNotMatch(source, /getActivationCheckoutContext\(/);
+  assert.match(source, /GET is a read\/confirmation boundary for Stripe/);
+  assert.doesNotMatch(source, /stripe\.checkout\.sessions\.create/);
+  assert.doesNotMatch(source, /attachCheckoutSessionToActivation\(/);
 });
 
 test("claim GET authenticates first and stays a no-store read-only decision", async () => {
@@ -99,24 +101,32 @@ test("claim GET authenticates first and stays a no-store read-only decision", as
   assert.match(source, /noindex,nofollow/);
 });
 
-test("free activation purchase is an explicit authenticated POST with the key", async () => {
+test("activation purchase requires a signed intent POST before the locked worker", async () => {
   const [claim, create] = await Promise.all([
     readFile(files.claim, "utf8"),
     readFile(files.checkoutCreate, "utf8"),
   ]);
-  const requireSession = create.indexOf("await requireSession(request, response)");
-  const activeOwner = create.indexOf("activationKey && session.license.active");
-  const stripeClient = create.indexOf("const stripe = getStripe()");
+  const legacyRedirect = create.indexOf("legacyActivationKey &&");
+  const intentValidation = create.indexOf(
+    "validateCheckoutIntentConfirmation({",
+    legacyRedirect,
+  );
+  const sessionRead = create.indexOf("const session = await getSession(request)");
+  const activeOwner = create.indexOf("session?.license.active", sessionRead);
+  const rateLimit = create.indexOf("await consumeRateLimit", activeOwner);
+  const lockedWorker = create.indexOf("await createOrReuseCheckoutSession", rateLimit);
 
   assert.match(claim, /form method="post" action="\/api\/checkout\/create"/);
   assert.match(claim, /name="activationKey"/);
   assert.match(claim, /name="intent" value="purchase"/);
   assert.match(create, /application\/x-www-form-urlencoded/);
+  assert.ok(legacyRedirect >= 0 && intentValidation > legacyRedirect);
+  assert.ok(sessionRead > intentValidation && activeOwner > sessionRead);
+  assert.ok(rateLimit > activeOwner && lockedWorker > rateLimit);
   assert.match(create, /cleanString\(payload\.intent, 32\) !== "purchase"/);
-  assert.ok(requireSession >= 0 && activeOwner > requireSession && stripeClient > activeOwner);
-  assert.match(create, /attachCheckoutSessionToActivation/);
-  assert.match(create, /getActivationCheckoutIdempotencyKey/);
-  assert.match(create, /sendCheckoutDestination\(response, browserForm/);
+  assert.match(create, /No caller-controlled[\s\S]+activation tuple reaches Stripe/);
+  assert.doesNotMatch(create, /getStripe\(\)/);
+  assert.doesNotMatch(create, /stripe\.checkout\.sessions\.create/);
 });
 
 test("transfer POST requires CSRF plus explicit intent and limits before mutation", async () => {
@@ -182,7 +192,8 @@ test("public and account copy states one production device with confirmed deacti
   assert.match(thankYou, /one active production device at a time/i);
   assert.match(thankYou, /instead of charging you again/);
   assert.match(upgrade, /One active production device at a time/);
-  assert.match(upgrade, /activationKey \? "\/api\/activation\/claim" : "\/api\/checkout\/start"/);
+  assert.match(upgrade, /if \(activationKey\) url\.searchParams\.set\("activation", activationKey\)/);
+  assert.match(upgrade, /already own Pro[\s\S]+Restore Purchase instead of Checkout/);
   assert.match(index, /One active production device at a time/);
   assert.match(llms, /one active production device at a time/);
 });

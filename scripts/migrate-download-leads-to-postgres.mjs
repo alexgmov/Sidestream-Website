@@ -7,7 +7,7 @@ const DEFAULT_MAX_PAGES = 100;
 const MAX_PAGES = 10_000;
 const DEFAULT_TIMEOUT_MS = 20_000;
 const REPLAY_ROUTE = "/api/internal/download-leads/replay";
-const REPLAY_SECRET_ENV = "SIDESTREAM_DOWNLOAD_LEADS_REPLAY_SECRET";
+const CRON_SECRET_ENV = "CRON_SECRET";
 
 class ReplayCliError extends Error {
   constructor(code) {
@@ -85,8 +85,10 @@ export async function runReplay(options, dependencies = {}) {
   const fetchImpl = dependencies.fetchImpl || fetch;
   const timeoutMs = dependencies.timeoutMs || DEFAULT_TIMEOUT_MS;
   const endpoint = resolveReplayEndpoint(options.endpoint, environment);
-  const secret = String(environment[REPLAY_SECRET_ENV] || "").trim();
-  if (secret.length < 32) throw new ReplayCliError("missing_replay_secret");
+  const secret = String(environment[CRON_SECRET_ENV] || "").trim();
+  if (secret.length < 16 || secret.length > 512) {
+    throw new ReplayCliError("missing_cron_secret");
+  }
   if (options.legacyApplySchemaRequested) {
     throw new ReplayCliError("apply_schema_removed_use_db_migrate");
   }
@@ -309,7 +311,7 @@ async function selfTest() {
     fetchImpl,
     environment: {
       SIDESTREAM_BASE_URL: "https://sidestream.example",
-      [REPLAY_SECRET_ENV]: secret,
+      [CRON_SECRET_ENV]: secret,
     },
   });
   assert.equal(requests.length, 2);
@@ -338,7 +340,7 @@ async function selfTest() {
     runReplay(parseArguments([]), {
       environment: {
         SIDESTREAM_BASE_URL: "https://sidestream.example",
-        [REPLAY_SECRET_ENV]: secret,
+        [CRON_SECRET_ENV]: secret,
       },
       fetchImpl: async () => ({
         ok: false,

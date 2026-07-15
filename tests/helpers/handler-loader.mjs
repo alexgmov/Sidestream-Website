@@ -10,6 +10,17 @@ let loadSequence = 0;
  * in the repository and every injected binding is fixed for that import.
  */
 export async function loadInjectedHandler(sourceUrl, injectedModules) {
+  const loaded = await loadInjectedModule(sourceUrl, injectedModules);
+  if (typeof loaded.default !== "function") {
+    const normalizedSourceUrl = sourceUrl instanceof URL
+      ? sourceUrl
+      : pathToFileURL(sourceUrl);
+    throw new TypeError(`Expected ${normalizedSourceUrl.href} to export a default handler`);
+  }
+  return loaded.default;
+}
+
+export async function loadInjectedModule(sourceUrl, injectedModules) {
   const normalizedSourceUrl = sourceUrl instanceof URL
     ? sourceUrl
     : pathToFileURL(sourceUrl);
@@ -42,11 +53,7 @@ export async function loadInjectedHandler(sourceUrl, injectedModules) {
   );
   const uniqueSource = `${executableSource}\n//# sourceURL=${normalizedSourceUrl.href}?contract=${++loadSequence}`;
   const moduleUrl = `data:text/javascript;charset=utf-8,${encodeURIComponent(uniqueSource)}`;
-  const loaded = await import(moduleUrl);
-  if (typeof loaded.default !== "function") {
-    throw new TypeError(`Expected ${normalizedSourceUrl.href} to export a default handler`);
-  }
-  return loaded.default;
+  return import(moduleUrl);
 }
 
 function createInjectedModuleUrl(bindings) {

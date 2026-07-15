@@ -758,6 +758,12 @@ export function waitUntil() {}
 
 async function loadAccountRuntime(directory) {
   const postgresUrl = pathToFileURL(join(repositoryRoot, "api/_lib/postgres.ts")).href;
+  const maintenanceUrl = await writeAdaptedModule(
+    directory,
+    "account-maintenance",
+    join(repositoryRoot, "api/_lib/maintenance.ts"),
+    { "./postgres.js": postgresUrl },
+  );
   const accountUrl = await writeAdaptedModule(
     directory,
     "account",
@@ -773,6 +779,7 @@ async function loadAccountRuntime(directory) {
       "./license-environment.js": pathToFileURL(
         join(repositoryRoot, "api/_lib/license-environment.ts"),
       ).href,
+      "./maintenance.js": maintenanceUrl,
       "./postgres.js": postgresUrl,
     },
   );
