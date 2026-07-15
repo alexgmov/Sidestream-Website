@@ -1,7 +1,7 @@
 import { createHash, createHmac, randomBytes, randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { isIP } from "node:net";
-import { Pool, type PoolClient } from "pg";
+import type { Pool, PoolClient } from "pg";
 import Stripe from "stripe";
 import {
   canBindActivationAccount,
@@ -42,6 +42,12 @@ import {
   resolveLicenseEnvironment,
   type ResolvedLicenseEnvironment,
 } from "./license-environment.js";
+import {
+  getOptionalRuntimePostgresConnectionString,
+  getPostgresPool,
+  normalizePostgresConnectionString,
+  requireRuntimePostgresTarget,
+} from "./postgres.js";
 
 const SESSION_COOKIE = "sidestream_session";
 const OAUTH_STATE_COOKIE = "sidestream_oauth_state";
@@ -86,16 +92,6 @@ const BASIC_SUBSCRIPTION_PRODUCT = {
   currency: "usd",
   interval: "month",
 };
-const POSTGRES_URL_ENV_NAMES = [
-  "SIDESTREAM_POSTGRES_URL",
-  "SIDESTREAM_POSTGRES_PRISMA_URL",
-  "SIDESTREAM_POSTGRES_URL_NON_POOLING",
-  "POSTGRES_URL",
-  "POSTGRES_PRISMA_URL",
-  "POSTGRES_URL_NON_POOLING",
-];
-
-let pool: Pool | null = null;
 let stripeClient: Stripe | null = null;
 
 export type AccountRequest = IncomingMessage & {
@@ -2179,18 +2175,15 @@ function isStripeResourceMissing(error: unknown) {
 }
 
 function getPool() {
-  if (!pool) {
-    const connectionString = normalizeConnectionString(requirePostgresConnectionString());
-    pool = new Pool({
-      connectionString,
-      max: Number(process.env.POSTGRES_POOL_MAX || 1),
-      idleTimeoutMillis: 10_000,
-      connectionTimeoutMillis: 5_000,
-      ssl: shouldUseSsl(connectionString) ? { rejectUnauthorized: false } : false,
+  const environment = resolveLicenseEnvironment({ serverEnv: process.env });
+  if (environment) {
+    return getPostgresPool({
+      connectionString: environment.database.connectionString,
+      environmentVariable: environment.database.environmentVariable,
+      pooled: true,
     });
   }
-
-  return pool;
+  return getPostgresPool();
 }
 
 function requireMatchingLicenseEnvironment(
@@ -2232,12 +2225,7 @@ function requirePostgresConnectionString() {
     throw new Error("Invalid or incomplete Sidestream license environment configuration");
   }
 
-  for (const name of POSTGRES_URL_ENV_NAMES) {
-    const value = getValidEnvValue(name);
-    if (value) return value;
-  }
-
-  throw new Error(`Missing Postgres connection string (${POSTGRES_URL_ENV_NAMES.join(", ")})`);
+  return requireRuntimePostgresTarget().connectionString;
 }
 
 function requireEnv(name: string) {
@@ -2257,21 +2245,7 @@ function getValidEnvValue(name: string) {
 }
 
 function normalizeConnectionString(connectionString: string) {
-  try {
-    const url = new URL(connectionString);
-    if (/^(prefer|require)$/i.test(url.searchParams.get("sslmode") || "")) {
-      url.searchParams.delete("sslmode");
-    }
-    return url.toString();
-  } catch {
-    return connectionString;
-  }
-}
-
-function shouldUseSsl(connectionString: string) {
-  if (process.env.POSTGRES_SSL === "0") return false;
-  if (/sslmode=(disable|false)/i.test(connectionString)) return false;
-  return !/localhost|127\.0\.0\.1|::1/.test(connectionString);
+  return normalizePostgresConnectionString(connectionString);
 }
 
 function buildLicenseSummary(options: {
@@ -3842,11 +3816,7 @@ function getPrivateServerSecret() {
 }
 
 function getOptionalPostgresConnectionString() {
-  for (const name of POSTGRES_URL_ENV_NAMES) {
-    const value = getValidEnvValue(name);
-    if (value) return value;
-  }
-  return "";
+  return getOptionalRuntimePostgresConnectionString();
 }
 
 function normalizeEmail(value: unknown) {
