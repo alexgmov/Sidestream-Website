@@ -157,8 +157,6 @@ export function validateActivationClaimPost(options: {
   requestOrigin: string;
   expectedOrigin: string;
   contentType: string;
-  submittedToken: string;
-  expectedToken: string;
 }) {
   let requestOrigin = "";
   let expectedOrigin = "";
@@ -169,9 +167,9 @@ export function validateActivationClaimPost(options: {
     return false;
   }
 
+  const mediaType = options.contentType.split(";", 1)[0].trim().toLowerCase();
   return requestOrigin === expectedOrigin &&
-    options.contentType.toLowerCase().startsWith("application/x-www-form-urlencoded") &&
-    safeEqual(options.submittedToken, options.expectedToken);
+    mediaType === "application/x-www-form-urlencoded";
 }
 
 export function createClaimCsrfToken(options: {

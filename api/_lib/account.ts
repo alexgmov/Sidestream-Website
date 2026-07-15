@@ -1193,7 +1193,16 @@ export async function attachCheckoutSessionToActivation(options: {
         and device_id_hash is not null
         and account_id is null
         and status = 'pending'
-        and (stripe_checkout_session_id is null or stripe_checkout_session_id = $2)
+        and (
+          stripe_checkout_session_id is null
+          or (
+            stripe_checkout_session_id = $2
+            and stripe_checkout_price_id = $3
+            and stripe_checkout_product_id = $4
+            and stripe_checkout_expires_at = to_timestamp($5)
+            and checkout_claim_grace_until = $6::timestamptz
+          )
+        )
       returning id
     `,
     [
@@ -1337,8 +1346,6 @@ export function validateActivationClaimRequest(
     requestOrigin: firstHeaderValue(request.headers.origin),
     expectedOrigin: getBaseUrl(request),
     contentType: firstHeaderValue(request.headers["content-type"]),
-    submittedToken: options.csrfToken,
-    expectedToken: options.csrfToken,
   }) && validateClaimCsrfToken({
     token: options.csrfToken,
     activationKey: options.activationKey,
