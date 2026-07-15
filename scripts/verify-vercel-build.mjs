@@ -12,6 +12,8 @@ const REQUIRED_FUNCTIONS = Object.freeze([
   "api/internal/download-leads/replay.func",
   "api/internal/maintenance.func",
   "api/internal/customer-usage/sync.func",
+  "api/internal/customers/index.func",
+  "api/internal/customers/[customerId].func",
 ]);
 
 export async function verifyVercelBuild(outputRoot = OUTPUT_ROOT) {

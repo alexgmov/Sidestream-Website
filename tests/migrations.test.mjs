@@ -36,7 +36,7 @@ function knownBaselineSnapshot(rowSecurityEnabled = false) {
 
 test("migration files are ordered, checksummed, and append-only baseline files are pinned", async () => {
   const migrations = validateMigrationFiles(await loadMigrationFiles());
-  assert.equal(migrations.length, 22);
+  assert.equal(migrations.length, 23);
   assert.deepEqual(
     migrations.map((migration) => migration.filename),
     [...migrations.map((migration) => migration.filename)].sort(),
@@ -58,9 +58,29 @@ test("migration files are ordered, checksummed, and append-only baseline files a
     "20260715121000_add_customer_identity_links.sql",
     "20260715122000_add_customer_commerce_ledger.sql",
     "20260715123000_add_customer_usage_aggregates.sql",
+    "20260715124000_add_customer_360_read_model.sql",
   ]) {
     assert.ok(migrations.some((migration) => migration.filename === filename));
   }
+});
+
+test("Customer query migration exposes only compact live read models", async () => {
+  const migration = await readFile(new URL(
+    "../db/migrations/20260715124000_add_customer_360_read_model.sql",
+    import.meta.url,
+  ), "utf8");
+  assert.match(migration, /create function public\.sidestream_customer_360_profile_read_model\(\)/);
+  assert.match(migration, /create function public\.sidestream_customer_360_money_read_model\(\)/);
+  assert.match(migration, /security invoker/);
+  assert.match(migration, /stable/);
+  assert.match(migration, /where profile\.merged_into is null/);
+  assert.match(migration, /first_download_success_at as first_download_succeeded_at/);
+  assert.match(migration, /download_success_count as download_outcome_numerator/);
+  assert.match(migration, /download_outcome_count as download_outcome_denominator/);
+  assert.match(migration, /usage_source_freshness_at/);
+  assert.match(migration, /data_quality_flags/);
+  assert.match(migration, /revoke all on function .* from public/);
+  assert.doesNotMatch(migration, /payload|data_points|search_query|install_id_hash|link_value/i);
 });
 
 test("Customer usage migration stores private UTC aggregates without raw telemetry", async () => {
