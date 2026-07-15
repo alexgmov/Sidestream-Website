@@ -67,6 +67,7 @@ test("only versioned scalar paths and explicit aggregate columns cross the bound
   assert.ok(paths.length > 0);
   for (const forbidden of [
     "search", "query", "title", "url", "ip", "user_agent", "token", "credential",
+    "gmail_campaign",
   ]) {
     assert.equal(paths.some((path) => path.toLowerCase().includes(forbidden)), false, forbidden);
   }
@@ -90,7 +91,6 @@ test("only versioned scalar paths and explicit aggregate columns cross the bound
     download_unknown_count: "0",
     platform: "macos",
     app_version: "1.0.13",
-    gmail_campaign_hashes: ["f".repeat(64)],
     payload: { token: "must-not-cross" },
     data_points: { details: { searchQuery: "must-not-cross" } },
     source_url: "https://must-not-cross.invalid",
@@ -114,7 +114,6 @@ test("only versioned scalar paths and explicit aggregate columns cross the bound
     "downloadUnknownCount",
     "platform",
     "appVersion",
-    "gmailCampaignHashes",
   ]);
   assert.doesNotMatch(JSON.stringify(aggregate), /must-not-cross/);
 
@@ -123,6 +122,7 @@ test("only versioned scalar paths and explicit aggregate columns cross the bound
   assert.doesNotMatch(source, /select\s+[^;]*(?:event\.)?data_points\s*,/i);
   assert.match(source, /case event\.schema_version/);
   assert.match(source, /default_transaction_read_only=on/);
+  assert.doesNotMatch(source, /gmail_campaign_hash/i);
 });
 
 test("download outcomes prefer finalization and preserve pending and unknown", () => {

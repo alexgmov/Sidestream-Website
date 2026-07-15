@@ -18,7 +18,7 @@ const targetMigrations = [
 ];
 const INSTALL_HASH = "a".repeat(64);
 const UNMAPPED_INSTALL_HASH = "b".repeat(64);
-const CAMPAIGN_HASH = "c".repeat(64);
+const BULK_EVENT_COUNT = 120;
 const {
   buildTelemetryPoolOptions,
   runCustomerUsageSync,
@@ -110,9 +110,25 @@ test("daily usage sync is read-only, resumable, idempotent, and UTC-windowed", {
       INSTALL_HASH,
     );
     const emptyProfile = await seedProfile(adminPool, quotedTarget);
+    await adminPool.query(
+      `update ${quotedTarget}.sidestream_customer_profiles
+       set first_seen_at = '2025-01-02T03:04:05Z',
+           last_activity_at = '2025-06-07T08:09:10Z',
+           platform_summary = 'macos', app_version_summary = '0.9.0'
+       where id = $1`,
+      [emptyProfile],
+    );
+    await adminPool.query(
+      `update ${quotedTarget}.sidestream_customer_profiles
+       set first_seen_at = '2026-01-01T00:00:00Z',
+           last_activity_at = '2026-11-15T00:00:00Z'
+       where id = $1`,
+      [mappedProfile],
+    );
     await seedInitialTelemetry(adminPool, quotedSource);
+    let unseenProfileId = "";
 
-    await t.test("a crash checkpoints only committed batches and retry converges", async () => {
+    await t.test("source aggregate egress stays bucket-bounded and crash retry converges", async () => {
       let crashed = false;
       await assert.rejects(
         runCustomerUsageSync({
@@ -155,6 +171,14 @@ test("daily usage sync is read-only, resumable, idempotent, and UTC-windowed", {
       assert.equal(completed.outcome, "completed");
       assert.ok(completed.batches > 1);
       assert.ok(completed.dailyBucketsWritten > 0);
+      assert.ok(
+        completed.sourceRowsScanned < BULK_EVENT_COUNT,
+        JSON.stringify(completed),
+      );
+      assert.ok(
+        completed.sourceRowsScanned <= completed.batches * 2,
+        JSON.stringify(completed),
+      );
 
       const skipped = await runCustomerUsageSync({
         targetPool: adminPool,
@@ -200,7 +224,7 @@ test("daily usage sync is read-only, resumable, idempotent, and UTC-windowed", {
         `select download_attempt_count, download_outcome_count,
            download_success_count, download_failure_count,
            download_cancelled_count, download_pending_count,
-           download_unknown_count, gmail_campaign_hashes
+           download_unknown_count
          from ${quotedTarget}.sidestream_customer_usage_daily
          where license_namespace = 'test' and install_id_hash = $1
            and activity_day = date '2026-11-01'`,
@@ -214,7 +238,6 @@ test("daily usage sync is read-only, resumable, idempotent, and UTC-windowed", {
         download_cancelled_count: "1",
         download_pending_count: "1",
         download_unknown_count: "1",
-        gmail_campaign_hashes: [CAMPAIGN_HASH],
       });
 
       const bucketCount = await adminPool.query(
@@ -224,9 +247,40 @@ test("daily usage sync is read-only, resumable, idempotent, and UTC-windowed", {
         [INSTALL_HASH],
       );
       assert.equal(bucketCount.rows[0].count, 2);
+
     });
 
-    await t.test("equal timestamps and late events obey the overlap boundary", async () => {
+    await t.test("first telemetry for an unseen install creates one anonymous profile", async () => {
+      const unseen = await installUsage(adminPool, quotedTarget, UNMAPPED_INSTALL_HASH);
+      unseenProfileId = unseen.profile_id;
+      assert.match(unseenProfileId, /^[0-9a-f-]{36}$/);
+      assert.deepEqual(unseen, {
+        profile_id: unseenProfileId,
+        profile_count: 1,
+        install_count: 1,
+        bucket_count: 1,
+        download_attempt_count: "1",
+        download_pending_count: "1",
+        usage_install_count: "1",
+      });
+    });
+
+    await t.test("NULL usage preserves existing lifecycle, platform, and version facts", async () => {
+      assert.deepEqual(await profileLifecycle(adminPool, quotedTarget, emptyProfile), {
+        first_seen_at: "2025-01-02T03:04:05.000Z",
+        last_activity_at: "2025-06-07T08:09:10.000Z",
+        platform_summary: "macos",
+        app_version_summary: "0.9.0",
+      });
+      assert.deepEqual(await profileLifecycle(adminPool, quotedTarget, mappedProfile), {
+        first_seen_at: "2026-01-01T00:00:00.000Z",
+        last_activity_at: "2026-11-15T00:00:00.000Z",
+        platform_summary: "windows",
+        app_version_summary: "1.0.13",
+      });
+    });
+
+    await t.test("equal timestamps, overlap boundaries, and unseen-install replay converge", async () => {
       const checkpointBefore = await syncState(adminPool, quotedTarget);
       assert.equal(checkpointBefore.checkpoint_telemetry_event_id, "event-032");
       assert.equal(checkpointBefore.checkpoint_received_at, "2026-11-02T10:00:00.000Z");
@@ -272,6 +326,10 @@ test("daily usage sync is read-only, resumable, idempotent, and UTC-windowed", {
       );
       assert.equal(outsideBucket.rows.length, 0);
       assert.deepEqual(await syncState(adminPool, quotedTarget), checkpointBefore);
+      assert.equal(
+        (await installUsage(adminPool, quotedTarget, UNMAPPED_INSTALL_HASH)).profile_id,
+        unseenProfileId,
+      );
     });
 
     await t.test("zero-event days decay both rolling windows without erasing lifetime", async () => {
@@ -386,7 +444,6 @@ async function seedInitialTelemetry(pool, quotedSource) {
       dataPoints: { runtime: { osPlatform: "win32" } },
       appVersion: "1.0.13",
       payload: {
-        gmail_campaign_hash: CAMPAIGN_HASH,
         search_text: "secret search text",
         source_url: "https://sensitive.invalid/watch?v=1",
         title: "Sensitive title",
@@ -500,6 +557,15 @@ async function seedInitialTelemetry(pool, quotedSource) {
     event("event-031", "session_heartbeat", "2026-11-01T09:20:00Z"),
     event("event-032", "session_heartbeat", "2026-11-01T09:25:00Z"),
   ];
+  for (let index = 0; index < BULK_EVENT_COUNT; index += 1) {
+    events.push(event(
+      `bulk-event-${String(index).padStart(3, "0")}`,
+      "session_heartbeat",
+      `2026-11-01T09:${String(Math.floor(index / 60)).padStart(2, "0")}:${String(
+        index % 60,
+      ).padStart(2, "0")}Z`,
+    ));
+  }
   await insertEvents(pool, quotedSource, events);
 }
 
@@ -545,6 +611,41 @@ async function insertEvents(pool, quotedSource, events) {
       ],
     );
   }
+}
+
+async function profileLifecycle(pool, quotedSchema, profileId) {
+  const result = await pool.query(
+    `select
+       to_char(first_seen_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')
+         as first_seen_at,
+       to_char(last_activity_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')
+         as last_activity_at,
+       platform_summary, app_version_summary
+     from ${quotedSchema}.sidestream_customer_profiles where id = $1`,
+    [profileId],
+  );
+  return result.rows[0];
+}
+
+async function installUsage(pool, quotedSchema, installHash) {
+  const result = await pool.query(
+    `select install.profile_id,
+       (select count(*)::int from ${quotedSchema}.sidestream_customer_profiles profile_count
+        where profile_count.id = install.profile_id) as profile_count,
+       (select count(*)::int from ${quotedSchema}.sidestream_customer_installs install_count
+        where install_count.license_namespace = install.license_namespace
+          and install_count.install_id_hash = install.install_id_hash) as install_count,
+       (select count(*)::int from ${quotedSchema}.sidestream_customer_usage_daily day
+        where day.license_namespace = install.license_namespace
+          and day.install_id_hash = install.install_id_hash) as bucket_count,
+       profile.download_attempt_count, profile.download_pending_count,
+       profile.usage_install_count
+     from ${quotedSchema}.sidestream_customer_installs install
+     join ${quotedSchema}.sidestream_customer_profiles profile on profile.id = install.profile_id
+     where install.license_namespace = 'test' and install.install_id_hash = $1`,
+    [installHash],
+  );
+  return result.rows[0];
 }
 
 async function profileUsage(pool, quotedSchema, profileId) {

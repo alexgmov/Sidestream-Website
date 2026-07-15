@@ -24,7 +24,6 @@ export const CUSTOMER_USAGE_JSON_PATH_ALLOWLIST = Object.freeze({
     "payload.failure_stage",
     "payload.failure_phase",
     "payload.import_result",
-    "payload.gmail_campaign_hash",
     "data_points.details.downloadId",
     "data_points.details.download_id",
     "data_points.details.speculativeDownloadId",
@@ -85,7 +84,6 @@ export type CustomerUsageDailyAggregate = Readonly<{
   downloadUnknownCount: number;
   platform: "macos" | "windows" | "unknown" | null;
   appVersion: string | null;
-  gmailCampaignHashes: readonly string[];
 }>;
 
 export type CustomerUsageSyncSummary = Readonly<{
@@ -274,13 +272,6 @@ export function normalizeCustomerUsageAggregateRow(
   if (platform !== null && !["macos", "windows", "unknown"].includes(platform)) {
     throw new Error("Telemetry aggregate platform is invalid");
   }
-  const gmailCampaignHashes = Array.isArray(row.gmail_campaign_hashes)
-    ? row.gmail_campaign_hashes.map((value) => requiredString(value, "gmail campaign hash", 64))
-    : [];
-  if (gmailCampaignHashes.some((value) => !/^[0-9a-f]{64}$/.test(value))) {
-    throw new Error("Telemetry aggregate Gmail campaign hash is invalid");
-  }
-
   const result: CustomerUsageDailyAggregate = {
     installIdHash,
     activityDay,
@@ -321,7 +312,6 @@ export function normalizeCustomerUsageAggregateRow(
     ),
     platform: platform as CustomerUsageDailyAggregate["platform"],
     appVersion: optionalString(row.app_version, 64),
-    gmailCampaignHashes: Object.freeze([...new Set(gmailCampaignHashes)].sort()),
   };
   if (
     result.downloadOutcomeCount !== result.downloadSuccessCount +
@@ -403,7 +393,7 @@ export async function runCustomerUsageSync(
 
     if (upper) {
       while (compareCustomerUsageHighWater(cursor, upper) < 0) {
-        const sourceBatch = await readSourceBatch(
+        const sourceBatch = await readSourceAggregateBatch(
           sourcePool,
           sourceSchema,
           licenseNamespace,
@@ -411,19 +401,11 @@ export async function runCustomerUsageSync(
           upper,
           batchSize,
         );
-        if (sourceBatch.length === 0) break;
-        const batchCheckpoint = sourceBatch[sourceBatch.length - 1].highWater;
-        const touched = uniqueTouchedDays(sourceBatch);
-        const aggregates = await readSourceDailyAggregates(
-          sourcePool,
-          sourceSchema,
-          licenseNamespace,
-          touched,
-          upper,
-        );
+        if (!sourceBatch) break;
+        const batchCheckpoint = sourceBatch.checkpoint;
         let written = 0;
         await runClientTransaction(targetClient, async () => {
-          for (const aggregate of aggregates) {
+          for (const aggregate of sourceBatch.aggregates) {
             written += await upsertDailyAggregate(
               targetClient,
               targetSchema,
@@ -443,7 +425,7 @@ export async function runCustomerUsageSync(
           );
         });
         batches += 1;
-        sourceRowsScanned += sourceBatch.length;
+        sourceRowsScanned += sourceBatch.aggregates.length;
         dailyBucketsWritten += written;
         cursor = batchCheckpoint;
         await options.afterBatchCommitted?.({ batch: batches, checkpoint: batchCheckpoint });
@@ -583,8 +565,16 @@ export async function materializeCustomerUsageProfiles(options: Readonly<{
      update ${schema}.sidestream_customer_profiles profile
      set first_app_use_at = value.first_app_use_at,
          last_app_use_at = value.last_app_use_at,
-         first_seen_at = value.first_app_use_at,
-         last_activity_at = value.last_app_use_at,
+         first_seen_at = case
+           when value.first_app_use_at is null then profile.first_seen_at
+           when profile.first_seen_at is null then value.first_app_use_at
+           else least(profile.first_seen_at, value.first_app_use_at)
+         end,
+         last_activity_at = case
+           when value.last_app_use_at is null then profile.last_activity_at
+           when profile.last_activity_at is null then value.last_app_use_at
+           else greatest(profile.last_activity_at, value.last_app_use_at)
+         end,
          first_download_attempt_at = value.first_download_attempt_at,
          last_download_attempt_at = value.last_download_attempt_at,
          first_download_success_at = value.first_download_success_at,
@@ -605,8 +595,8 @@ export async function materializeCustomerUsageProfiles(options: Readonly<{
            else null
          end,
          usage_install_count = value.install_count,
-         platform_summary = value.platform,
-         app_version_summary = value.app_version,
+         platform_summary = coalesce(value.platform, profile.platform_summary),
+         app_version_summary = coalesce(value.app_version, profile.app_version_summary),
          usage_synced_at = $5,
          usage_source_freshness_at = $6,
          updated_at = $5
@@ -685,6 +675,8 @@ async function readSourceUpperHighWater(
      where received_at >= $1
        and schema_version = any($2::text[])
        and coalesce(nullif(build_channel, ''), 'production') = any($3::text[])
+       and install_id_hash ~ '^[0-9a-f]{64}$'
+       and occurred_at is not null
      order by received_at desc, telemetry_event_id desc
      limit 1`,
     [
@@ -696,32 +688,19 @@ async function readSourceUpperHighWater(
   return result.rows[0] ? highWaterFromRow(result.rows[0]) : null;
 }
 
-type SourceBatchRow = Readonly<{
-  highWater: CustomerUsageHighWater;
-  installIdHash: string;
-  activityDay: string;
-}>;
-
-async function readSourceBatch(
+async function readSourceAggregateBatch(
   source: QueryRunner,
   schema: string,
   licenseNamespace: LicenseNamespace,
   cursor: CustomerUsageHighWater,
   upper: CustomerUsageHighWater,
   limit: number,
-): Promise<readonly SourceBatchRow[]> {
+): Promise<Readonly<{
+  checkpoint: CustomerUsageHighWater;
+  aggregates: readonly CustomerUsageDailyAggregate[];
+}> | null> {
   const result = await source.query(
-    `select telemetry_event_id, received_at, install_id_hash,
-       (occurred_at at time zone 'UTC')::date::text as activity_day
-     from ${schema}.${CUSTOMER_USAGE_SOURCE_TABLE}
-     where (received_at, telemetry_event_id) > ($1::timestamptz, $2::text)
-       and (received_at, telemetry_event_id) <= ($3::timestamptz, $4::text)
-       and schema_version = any($5::text[])
-       and coalesce(nullif(build_channel, ''), 'production') = any($6::text[])
-       and install_id_hash ~ '^[0-9a-f]{64}$'
-       and occurred_at is not null
-     order by received_at, telemetry_event_id
-     limit $7`,
+    buildSourceAggregateSql(schema),
     [
       cursor.receivedAt,
       cursor.telemetryEventId,
@@ -732,41 +711,47 @@ async function readSourceBatch(
       limit,
     ],
   );
-  return result.rows.map((row) => ({
-    highWater: highWaterFromRow(row),
-    installIdHash: requiredString(row.install_id_hash, "install_id_hash", 64),
-    activityDay: requiredString(row.activity_day, "activity_day", 10),
-  }));
-}
-
-async function readSourceDailyAggregates(
-  source: QueryRunner,
-  schema: string,
-  licenseNamespace: LicenseNamespace,
-  touched: readonly Readonly<{ installIdHash: string; activityDay: string }>[],
-  upper: CustomerUsageHighWater,
-) {
-  if (touched.length === 0) return [];
-  const result = await source.query(
-    buildSourceAggregateSql(schema),
-    [
-      JSON.stringify(touched.map((row) => ({
-        install_id_hash: row.installIdHash,
-        activity_day: row.activityDay,
-      }))),
-      sourceChannels(licenseNamespace),
-      [...CUSTOMER_USAGE_SCHEMA_VERSIONS],
-      upper.receivedAt,
-      upper.telemetryEventId,
-    ],
-  );
-  return result.rows.map(normalizeCustomerUsageAggregateRow);
+  if (result.rows.length === 0) return null;
+  const checkpoint = highWaterFromRow({
+    received_at: result.rows[0].checkpoint_received_at,
+    telemetry_event_id: result.rows[0].checkpoint_telemetry_event_id,
+  });
+  for (const row of result.rows.slice(1)) {
+    const rowCheckpoint = highWaterFromRow({
+      received_at: row.checkpoint_received_at,
+      telemetry_event_id: row.checkpoint_telemetry_event_id,
+    });
+    if (compareCustomerUsageHighWater(checkpoint, rowCheckpoint) !== 0) {
+      throw new Error("Telemetry aggregate batch returned inconsistent checkpoints");
+    }
+  }
+  return {
+    checkpoint,
+    aggregates: result.rows.map(normalizeCustomerUsageAggregateRow),
+  };
 }
 
 function buildSourceAggregateSql(schema: string) {
-  return `with touched as (
-    select install_id_hash, activity_day
-    from jsonb_to_recordset($1::jsonb) as row(install_id_hash text, activity_day date)
+  return `with batch_events as (
+    select telemetry_event_id, received_at, install_id_hash,
+      (occurred_at at time zone 'UTC')::date as activity_day
+    from ${schema}.${CUSTOMER_USAGE_SOURCE_TABLE}
+    where (received_at, telemetry_event_id) > ($1::timestamptz, $2::text)
+      and (received_at, telemetry_event_id) <= ($3::timestamptz, $4::text)
+      and schema_version = any($5::text[])
+      and coalesce(nullif(build_channel, ''), 'production') = any($6::text[])
+      and install_id_hash ~ '^[0-9a-f]{64}$'
+      and occurred_at is not null
+    order by received_at, telemetry_event_id
+    limit $7
+  ), batch_checkpoint as (
+    select received_at, telemetry_event_id
+    from batch_events
+    order by received_at desc, telemetry_event_id desc
+    limit 1
+  ), touched as (
+    select distinct install_id_hash, activity_day
+    from batch_events
   ), source_events as (
     select
       event.telemetry_event_id,
@@ -845,14 +830,11 @@ function buildSourceAggregateSql(schema: string) {
           nullif(event.data_points #>> '{runtime,osPlatform}', ''),
           nullif(event.data_points #>> '{runtime,os_platform}', '')
         )
-      end as os_platform,
-      case event.schema_version
-        when '0.2.0' then nullif(event.payload ->> 'gmail_campaign_hash', '')
-      end as gmail_campaign_hash
+      end as os_platform
     from ${schema}.${CUSTOMER_USAGE_SOURCE_TABLE} event
-    where event.schema_version = any($3::text[])
-      and coalesce(nullif(event.build_channel, ''), 'production') = any($2::text[])
-      and (event.received_at, event.telemetry_event_id) <= ($4::timestamptz, $5::text)
+    where event.schema_version = any($5::text[])
+      and coalesce(nullif(event.build_channel, ''), 'production') = any($6::text[])
+      and (event.received_at, event.telemetry_event_id) <= ($3::timestamptz, $4::text)
       and event.install_id_hash ~ '^[0-9a-f]{64}$'
       and event.occurred_at is not null
       and exists (
@@ -1017,10 +999,7 @@ function buildSourceAggregateSql(schema: string) {
         order by occurred_at desc, telemetry_event_id desc
       ) filter (where os_platform is not null))[1] as platform,
       (array_agg(app_version order by occurred_at desc, telemetry_event_id desc)
-        filter (where app_version is not null))[1] as app_version,
-      coalesce(array_agg(distinct lower(gmail_campaign_hash)) filter (
-        where gmail_campaign_hash ~ '^[0-9A-Fa-f]{64}$'
-      ), '{}') as gmail_campaign_hashes
+        filter (where app_version is not null))[1] as app_version
     from projected
     group by install_id_hash, activity_day
   ), daily_downloads as (
@@ -1057,11 +1036,101 @@ function buildSourceAggregateSql(schema: string) {
     coalesce(downloads.download_pending_count, 0)::bigint as download_pending_count,
     coalesce(downloads.download_unknown_count, 0)::bigint as download_unknown_count,
     activity.platform, activity.app_version,
-    coalesce(activity.gmail_campaign_hashes, '{}') as gmail_campaign_hashes
+    checkpoint.received_at as checkpoint_received_at,
+    checkpoint.telemetry_event_id as checkpoint_telemetry_event_id
   from days
   left join daily_activity activity using (install_id_hash, activity_day)
   left join daily_downloads downloads using (install_id_hash, activity_day)
+  cross join batch_checkpoint checkpoint
   order by days.install_id_hash, days.activity_day`;
+}
+
+async function ensureAnonymousCustomerInstall(
+  client: PoolClient,
+  schema: string,
+  licenseNamespace: LicenseNamespace,
+  row: CustomerUsageDailyAggregate,
+  now: Date,
+) {
+  const lifecycle = aggregateLifecycleBounds(row);
+  const updateExisting = () => client.query(
+    `update ${schema}.sidestream_customer_installs
+     set first_seen_at = least(first_seen_at, $3),
+         last_seen_at = greatest(last_seen_at, $4),
+         platform = coalesce($5, platform),
+         app_version = coalesce($6, app_version)
+     where license_namespace = $1 and install_id_hash = $2
+     returning profile_id`,
+    [
+      licenseNamespace,
+      row.installIdHash,
+      lifecycle.firstSeenAt,
+      lifecycle.lastSeenAt,
+      row.platform,
+      row.appVersion,
+    ],
+  );
+  if ((await updateExisting()).rowCount) return;
+
+  // This is the same namespace lock used by profile merges. Rechecking after
+  // acquiring it makes first telemetry sighting converge on one live profile;
+  // a conflicting install insert aborts this transaction before its checkpoint.
+  await client.query("select pg_advisory_xact_lock(hashtext($1))", [
+    `sidestream_customer_profile_merge:${licenseNamespace}`,
+  ]);
+  if ((await updateExisting()).rowCount) return;
+
+  const profile = await client.query(
+    `insert into ${schema}.sidestream_customer_profiles (
+       license_namespace, platform_summary, app_version_summary,
+       first_seen_at, last_activity_at, created_at, updated_at
+     ) values ($1, $2, $3, $4, $5, $6, $6)
+     returning id`,
+    [
+      licenseNamespace,
+      row.platform,
+      row.appVersion,
+      lifecycle.firstSeenAt,
+      lifecycle.lastSeenAt,
+      now,
+    ],
+  );
+  const profileId = requiredString(profile.rows[0]?.id, "anonymous profile id", 36);
+  await client.query(
+    `insert into ${schema}.sidestream_customer_installs (
+       profile_id, license_namespace, install_id_hash, platform, app_version,
+       first_seen_at, last_seen_at
+     ) values ($1, $2, $3, $4, $5, $6, $7)`,
+    [
+      profileId,
+      licenseNamespace,
+      row.installIdHash,
+      row.platform,
+      row.appVersion,
+      lifecycle.firstSeenAt,
+      lifecycle.lastSeenAt,
+    ],
+  );
+}
+
+function aggregateLifecycleBounds(row: CustomerUsageDailyAggregate) {
+  const bucketStart = new Date(`${row.activityDay}T00:00:00.000Z`);
+  const timestamps = [
+    row.firstAppUseAt,
+    row.lastAppUseAt,
+    row.firstDownloadAttemptAt,
+    row.lastDownloadAttemptAt,
+    row.firstDownloadSuccessAt,
+    row.lastDownloadSuccessAt,
+  ].filter((value): value is Date => value !== null);
+  if (timestamps.length === 0) {
+    return { firstSeenAt: bucketStart, lastSeenAt: bucketStart };
+  }
+  const milliseconds = timestamps.map((value) => value.getTime());
+  return {
+    firstSeenAt: new Date(Math.min(...milliseconds)),
+    lastSeenAt: new Date(Math.max(...milliseconds)),
+  };
 }
 
 async function upsertDailyAggregate(
@@ -1072,6 +1141,13 @@ async function upsertDailyAggregate(
   checkpoint: CustomerUsageHighWater,
   now: Date,
 ) {
+  await ensureAnonymousCustomerInstall(
+    client,
+    schema,
+    licenseNamespace,
+    row,
+    now,
+  );
   const result = await client.query(
     `insert into ${schema}.sidestream_customer_usage_daily (
        license_namespace, install_id_hash, activity_day,
@@ -1081,15 +1157,11 @@ async function upsertDailyAggregate(
        active_event_count, download_attempt_count, download_outcome_count,
        download_success_count, download_failure_count, download_cancelled_count,
        download_pending_count, download_unknown_count, platform, app_version,
-       gmail_campaign_hashes, source_watermark_received_at,
+       source_watermark_received_at,
        source_watermark_telemetry_event_id, refreshed_at
      )
      select $1, $2, $3::date, $4, $5, $6, $7, $8, $9,
-       $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20::text[], $21, $22, $23
-     where exists (
-       select 1 from ${schema}.sidestream_customer_installs
-       where license_namespace = $1 and install_id_hash = $2
-     )
+       $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22
      on conflict (license_namespace, install_id_hash, activity_day) do update set
        first_app_use_at = excluded.first_app_use_at,
        last_app_use_at = excluded.last_app_use_at,
@@ -1107,7 +1179,6 @@ async function upsertDailyAggregate(
        download_unknown_count = excluded.download_unknown_count,
        platform = excluded.platform,
        app_version = excluded.app_version,
-       gmail_campaign_hashes = excluded.gmail_campaign_hashes,
        source_watermark_received_at = excluded.source_watermark_received_at,
        source_watermark_telemetry_event_id = excluded.source_watermark_telemetry_event_id,
        refreshed_at = excluded.refreshed_at`,
@@ -1131,7 +1202,6 @@ async function upsertDailyAggregate(
       row.downloadUnknownCount,
       row.platform,
       row.appVersion,
-      [...row.gmailCampaignHashes],
       checkpoint.receivedAt,
       checkpoint.telemetryEventId,
       now,
@@ -1208,15 +1278,6 @@ async function runClientTransaction<T>(client: PoolClient, callback: () => Promi
     await client.query("rollback").catch(() => {});
     throw error;
   }
-}
-
-function uniqueTouchedDays(rows: readonly SourceBatchRow[]) {
-  const values = new Map<string, { installIdHash: string; activityDay: string }>();
-  for (const row of rows) {
-    const key = `${row.installIdHash}:${row.activityDay}`;
-    values.set(key, { installIdHash: row.installIdHash, activityDay: row.activityDay });
-  }
-  return [...values.values()];
 }
 
 function highWaterFromRow(row: QueryRow): CustomerUsageHighWater {

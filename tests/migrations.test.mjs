@@ -73,8 +73,6 @@ test("Customer usage migration stores private UTC aggregates without raw telemet
   assert.match(migration, /primary key \(license_namespace, install_id_hash, activity_day\)/);
   assert.match(migration, /checkpoint_received_at timestamptz/);
   assert.match(migration, /checkpoint_telemetry_event_id text/);
-  assert.match(migration, /gmail_campaign_hashes text\[\]/);
-  assert.match(migration, /Aggregate Gmail campaign attribution only/);
   assert.match(migration, /enable row level security/);
   for (const column of [
     "first_app_use_at",
@@ -102,6 +100,7 @@ test("Customer usage migration stores private UTC aggregates without raw telemet
   }
   assert.doesNotMatch(migration, /\bjsonb?\b/i);
   assert.doesNotMatch(migration, /search[_ ]?(?:text|query)|user[_ ]?agent|ip_address|url|title/i);
+  assert.doesNotMatch(migration, /gmail_campaign_hash/i);
 });
 
 test("Customer commerce migration keeps money currency-separated and entitlement-independent", async () => {

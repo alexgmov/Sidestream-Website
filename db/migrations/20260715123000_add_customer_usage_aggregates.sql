@@ -2,9 +2,7 @@
 --
 -- Raw telemetry events and their payload/data_points objects remain in the
 -- telemetry database. The website stores only replaceable UTC user-day
--- buckets plus a bounded-overlap checkpoint. Gmail campaign hashes are coarse
--- attribution values only: they are never identity evidence, never unique,
--- and never referenced by a profile or install foreign key.
+-- buckets plus a bounded-overlap checkpoint.
 
 alter table public.sidestream_customer_profiles
   add column if not exists first_app_use_at timestamptz,
@@ -88,7 +86,6 @@ create table public.sidestream_customer_usage_daily (
   download_unknown_count bigint not null,
   platform text,
   app_version text,
-  gmail_campaign_hashes text[] not null default '{}',
   source_watermark_received_at timestamptz not null,
   source_watermark_telemetry_event_id text not null,
   refreshed_at timestamptz not null,
@@ -189,8 +186,6 @@ create table public.sidestream_customer_usage_sync_state (
 
 comment on table public.sidestream_customer_usage_daily is
   'Replaceable UTC user-day aggregates copied from the read-only telemetry source; contains no raw event objects or behavioral text.';
-comment on column public.sidestream_customer_usage_daily.gmail_campaign_hashes is
-  'Aggregate Gmail campaign attribution only; never customer identity or merge evidence.';
 comment on table public.sidestream_customer_usage_sync_state is
   'Bounded-overlap high-water checkpoint ordered by received_at and telemetry_event_id.';
 
