@@ -4,12 +4,19 @@ import { isIP } from "node:net";
 import type { Pool, PoolClient } from "pg";
 import Stripe from "stripe";
 import {
+  buildCheckoutCompletionUrl,
   canBindActivationAccount,
+  CHECKOUT_SESSION_PLACEHOLDER,
+  type CheckoutIntentKind,
   type CredentialDeviceScope,
+  createCheckoutIntentToken,
   createClaimCsrfToken,
   deriveActivationTokenPair,
   deriveRefreshRotationTokens,
+  getCheckoutSessionIdempotencyKey,
+  getStripeCustomerIdempotencyKey,
   getStripeCheckoutWindow,
+  getStripePriceIdempotencyKey,
   isActivationClaimReplay,
   needsLegacyLicenseCompatibility,
   isActivationTokenReplayAllowed,
@@ -17,6 +24,7 @@ import {
   matchesDeviceHash,
   safeEqual,
   sanitizeAccountNextPath,
+  validateCheckoutIntentToken,
   validateActivationClaimPost,
   validateClaimCsrfToken,
   verifyPaidCheckoutSession,
@@ -61,6 +69,8 @@ const LEGACY_LICENSE_TOKEN_TTL_DAYS = 365;
 const REFRESH_TOKEN_TTL_DAYS = 365;
 const ACTIVATION_RECONCILIATION_COOLDOWN_SECONDS = 5;
 const ACTIVATION_CLAIM_CSRF_TTL_SECONDS = 10 * 60;
+const CHECKOUT_INTENT_CSRF_TTL_SECONDS = 10 * 60;
+const CHECKOUT_INTENT_TTL_HOURS = 24;
 const ACTIVATION_TOKEN_REPLAY_SECONDS = 10 * 60;
 const MAX_BODY_BYTES = 64 * 1024;
 const DEVICE_POLICY_MODE_ENV = "SIDESTREAM_DEVICE_POLICY_MODE";
@@ -116,6 +126,31 @@ export type LicenseSummary = {
   graceUntil: string;
   features: Record<string, unknown>;
 };
+
+export type CheckoutIntentConfirmation = {
+  intentId: string;
+  browserToken: string;
+  signedToken: string;
+  signedTokenExpiresAt: string;
+  intentExpiresAt: string;
+  kind: CheckoutIntentKind;
+  activationKey: string;
+  state: string;
+  hasCheckoutSession: boolean;
+};
+
+export type CheckoutIntentResult =
+  | {
+      ok: true;
+      url: string;
+      reused: boolean;
+    }
+  | {
+      ok: false;
+      statusCode: number;
+      error: string;
+      code: string;
+    };
 
 export type ConfirmAccountDeviceTransferOptions = {
   accountId: string;
@@ -612,7 +647,652 @@ export function publicSessionPayload(session: AccountSession | null) {
   };
 }
 
-export async function findOrCreateStripeCustomer(session: AccountSession) {
+type CheckoutIntentRow = {
+  id: string;
+  intent_kind: CheckoutIntentKind;
+  account_id: string | null;
+  activation_session_id: string | null;
+  state: string;
+  attempt: number;
+  stripe_customer_id: string | null;
+  stripe_checkout_session_id: string | null;
+  stripe_checkout_url: string | null;
+  stripe_price_id: string | null;
+  stripe_product_id: string | null;
+  stripe_session_expires_at: Date | string | null;
+  expires_at: Date | string;
+  activation_key: string | null;
+  activation_expires_at: Date | string | null;
+  activation_checkout_session_id: string | null;
+};
+
+export async function createCheckoutIntentConfirmation(options: {
+  activationKey?: string;
+  session?: AccountSession | null;
+  now?: Date;
+}): Promise<CheckoutIntentConfirmation | null> {
+  if (options.session?.license.active) return null;
+
+  const now = options.now || new Date();
+  const activationKey = cleanString(options.activationKey, 160);
+  const kind: CheckoutIntentKind = activationKey
+    ? "activation"
+    : options.session ? "account" : "anonymous";
+  const intentId = randomUUID();
+  const browserToken = randomToken(32);
+  const expiresAt = addHours(now, CHECKOUT_INTENT_TTL_HOURS);
+  const accountId = options.session?.accountId || null;
+  const result = activationKey
+    ? await query<{ id: string }>(
+        `
+          insert into public.sidestream_checkout_intents (
+            id, intent_kind, browser_token_hash, account_id,
+            activation_session_id, state, attempt, expires_at,
+            created_at, updated_at
+          )
+          select $1::uuid, 'activation', $2, $3::uuid, a.id,
+            'pending', 0, $4::timestamptz, $5::timestamptz, $5::timestamptz
+          from public.sidestream_activation_sessions a
+          where a.activation_key = $6
+            and a.expires_at > $5::timestamptz
+            and a.completed_at is null
+            and a.device_id_hash is not null
+            and a.account_id is null
+            and a.status = 'pending'
+          returning id
+        `,
+        [
+          intentId,
+          hashToken(browserToken),
+          accountId,
+          expiresAt.toISOString(),
+          now.toISOString(),
+          activationKey,
+        ],
+      )
+    : await query<{ id: string }>(
+        `
+          insert into public.sidestream_checkout_intents (
+            id, intent_kind, browser_token_hash, account_id,
+            activation_session_id, state, attempt, expires_at,
+            created_at, updated_at
+          ) values (
+            $1::uuid, $2, $3, $4::uuid, null, 'pending', 0,
+            $5::timestamptz, $6::timestamptz, $6::timestamptz
+          )
+          returning id
+        `,
+        [
+          intentId,
+          kind,
+          hashToken(browserToken),
+          accountId,
+          expiresAt.toISOString(),
+          now.toISOString(),
+        ],
+      );
+  if (!result.rows[0]) return null;
+
+  return buildCheckoutIntentConfirmation({
+    intentId,
+    browserToken,
+    intentExpiresAt: expiresAt,
+    kind,
+    activationKey,
+    state: "pending",
+    hasCheckoutSession: false,
+    now,
+  });
+}
+
+export async function resumeCheckoutIntentConfirmation(options: {
+  browserToken: string;
+  session?: AccountSession | null;
+  now?: Date;
+}): Promise<CheckoutIntentConfirmation | null> {
+  const browserToken = cleanString(options.browserToken, 160);
+  if (!browserToken) return null;
+  const now = options.now || new Date();
+  const result = await query<CheckoutIntentRow>(
+    `
+      select ci.id, ci.intent_kind, ci.account_id, ci.activation_session_id,
+        ci.state, ci.attempt, ci.stripe_customer_id,
+        ci.stripe_checkout_session_id, ci.stripe_checkout_url,
+        ci.stripe_price_id, ci.stripe_product_id,
+        ci.stripe_session_expires_at, ci.expires_at,
+        a.activation_key, a.expires_at as activation_expires_at,
+        a.stripe_checkout_session_id as activation_checkout_session_id
+      from public.sidestream_checkout_intents ci
+      left join public.sidestream_activation_sessions a
+        on a.id = ci.activation_session_id
+      where ci.browser_token_hash = $1
+        and ci.expires_at > $2::timestamptz
+      limit 1
+    `,
+    [hashToken(browserToken), now.toISOString()],
+  );
+  const row = result.rows[0];
+  if (!row) return null;
+  if (row.account_id && row.account_id !== options.session?.accountId) return null;
+  if (
+    row.intent_kind === "activation" &&
+    (!row.activation_key ||
+      !row.activation_expires_at ||
+      new Date(row.activation_expires_at).getTime() <= now.getTime())
+  ) return null;
+
+  return buildCheckoutIntentConfirmation({
+    intentId: row.id,
+    browserToken,
+    intentExpiresAt: new Date(row.expires_at),
+    kind: row.intent_kind,
+    activationKey: row.activation_key || "",
+    state: row.state,
+    hasCheckoutSession: Boolean(row.stripe_checkout_session_id),
+    now,
+  });
+}
+
+export function validateCheckoutIntentConfirmation(options: {
+  intentId: string;
+  browserToken: string;
+  signedToken: string;
+  now?: Date;
+}) {
+  return validateCheckoutIntentToken({
+    intentId: options.intentId,
+    browserToken: options.browserToken,
+    token: options.signedToken,
+    nowSeconds: Math.floor((options.now || new Date()).getTime() / 1_000),
+    secret: getPrivateServerSecret(),
+  });
+}
+
+export async function createOrReuseCheckoutSession(options: {
+  intentId: string;
+  browserToken: string;
+  session: AccountSession | null;
+  baseUrl: string;
+  rotateCancelledSession?: boolean;
+}): Promise<CheckoutIntentResult> {
+  const now = new Date();
+  const browserTokenHash = hashToken(options.browserToken);
+  return withPgClient(async (client) => {
+    await client.query("begin");
+    try {
+      const selected = await client.query<CheckoutIntentRow>(
+        `
+          select ci.id, ci.intent_kind, ci.account_id,
+            ci.activation_session_id, ci.state, ci.attempt,
+            ci.stripe_customer_id, ci.stripe_checkout_session_id,
+            ci.stripe_checkout_url, ci.stripe_price_id,
+            ci.stripe_product_id, ci.stripe_session_expires_at,
+            ci.expires_at, a.activation_key,
+            a.expires_at as activation_expires_at,
+            a.stripe_checkout_session_id as activation_checkout_session_id
+          from public.sidestream_checkout_intents ci
+          left join public.sidestream_activation_sessions a
+            on a.id = ci.activation_session_id
+          where ci.id = $1::uuid
+            and ci.browser_token_hash = $2
+          for update of ci
+        `,
+        [options.intentId, browserTokenHash],
+      );
+      const row = selected.rows[0];
+      if (!row) {
+        return commitCheckoutIntentResult(client, checkoutIntentError(
+          409,
+          "Checkout confirmation expired",
+          "intent_expired",
+        ));
+      }
+      if (new Date(row.expires_at).getTime() <= now.getTime()) {
+        await client.query(
+          `
+            update public.sidestream_checkout_intents
+            set state = 'expired', updated_at = $2::timestamptz
+            where id = $1
+          `,
+          [row.id, now.toISOString()],
+        );
+        return commitCheckoutIntentResult(client, checkoutIntentError(
+          409,
+          "Checkout confirmation expired",
+          "intent_expired",
+        ));
+      }
+      if (row.account_id && row.account_id !== options.session?.accountId) {
+        return commitCheckoutIntentResult(client, checkoutIntentError(
+          403,
+          "Checkout confirmation does not belong to this account",
+          "intent_account_mismatch",
+        ));
+      }
+      if (options.session?.license.active) {
+        return commitCheckoutIntentResult(client, checkoutIntentError(
+          409,
+          "Sidestream Pro is already active. Open your account or use Restore Purchase.",
+          "active_license",
+        ));
+      }
+
+      let attempt = Number(row.attempt) || 0;
+      let replacementSessionId = "";
+      let activationKey = row.activation_key || "";
+      let activationExpiresAt = row.activation_expires_at
+        ? new Date(row.activation_expires_at)
+        : null;
+
+      if (row.activation_session_id) {
+        await client.query("select pg_advisory_xact_lock(hashtext($1))", [
+          `checkout_activation:${row.activation_session_id}`,
+        ]);
+        const activation = await client.query<{
+          activation_key: string;
+          expires_at: Date | string;
+          stripe_checkout_session_id: string | null;
+          stripe_checkout_price_id: string | null;
+          stripe_checkout_product_id: string | null;
+        }>(
+          `
+            select activation_key, expires_at, stripe_checkout_session_id,
+              stripe_checkout_price_id, stripe_checkout_product_id
+            from public.sidestream_activation_sessions
+            where id = $1
+              and expires_at > $2::timestamptz
+              and completed_at is null
+              and device_id_hash is not null
+              and account_id is null
+              and status = 'pending'
+            for update
+          `,
+          [row.activation_session_id, now.toISOString()],
+        );
+        const lockedActivation = activation.rows[0];
+        if (!lockedActivation) {
+          return commitCheckoutIntentResult(client, checkoutIntentError(
+            409,
+            "Activation expired or unavailable",
+            "activation_unavailable",
+          ));
+        }
+        activationKey = lockedActivation.activation_key;
+        activationExpiresAt = new Date(lockedActivation.expires_at);
+
+        const attachedSessionId = lockedActivation.stripe_checkout_session_id || "";
+        if (attachedSessionId) {
+          const attachedIntent = await client.query<{
+            state: string;
+            attempt: number;
+            stripe_customer_id: string | null;
+            stripe_checkout_url: string | null;
+            stripe_price_id: string | null;
+            stripe_product_id: string | null;
+            stripe_session_expires_at: Date | string | null;
+          }>(
+            `
+              select state, attempt, stripe_customer_id, stripe_checkout_url,
+                stripe_price_id, stripe_product_id, stripe_session_expires_at
+              from public.sidestream_checkout_intents
+              where stripe_checkout_session_id = $1
+              order by updated_at desc
+              limit 1
+            `,
+            [attachedSessionId],
+          );
+          const attached = attachedIntent.rows[0];
+          attempt = Math.max(attempt, Number(attached?.attempt) || 0);
+          if (attached?.state === "completed") {
+            const completionUrl = buildCheckoutCompletionUrl(
+              options.baseUrl,
+              activationKey,
+            ).replace(CHECKOUT_SESSION_PLACEHOLDER, attachedSessionId);
+            return commitCheckoutIntentResult(client, {
+              ok: true,
+              url: completionUrl,
+              reused: true,
+            });
+          }
+
+          const attachedExpiresAt = attached?.stripe_session_expires_at
+            ? new Date(attached.stripe_session_expires_at).getTime()
+            : 0;
+          if (
+            !options.rotateCancelledSession &&
+            attached?.stripe_checkout_url &&
+            attachedExpiresAt > now.getTime()
+          ) {
+            await attachExistingSessionToCheckoutIntent(client, row.id, {
+              sessionId: attachedSessionId,
+              url: attached.stripe_checkout_url,
+              customerId: attached.stripe_customer_id || "",
+              priceId: attached.stripe_price_id || "",
+              productId: attached.stripe_product_id || "",
+              expiresAt: new Date(attachedExpiresAt),
+              attempt,
+            });
+            return commitCheckoutIntentResult(client, {
+              ok: true,
+              url: attached.stripe_checkout_url,
+              reused: true,
+            });
+          }
+
+          if (!attached?.stripe_checkout_url || attachedExpiresAt <= now.getTime()) {
+            const stripeSession = await getStripe().checkout.sessions.retrieve(
+              attachedSessionId,
+              {},
+              getStripeRequestOptions(),
+            );
+            if (stripeSession.status === "complete") {
+              const completionUrl = buildCheckoutCompletionUrl(
+                options.baseUrl,
+                activationKey,
+              ).replace(CHECKOUT_SESSION_PLACEHOLDER, attachedSessionId);
+              return commitCheckoutIntentResult(client, {
+                ok: true,
+                url: completionUrl,
+                reused: true,
+              });
+            }
+            if (
+              !options.rotateCancelledSession &&
+              stripeSession.status === "open" &&
+              stripeSession.url
+            ) {
+              await attachExistingSessionToCheckoutIntent(client, row.id, {
+                sessionId: stripeSession.id,
+                url: stripeSession.url,
+                customerId: normalizeStripeId(stripeSession.customer),
+                priceId: lockedActivation.stripe_checkout_price_id ||
+                  cleanString(stripeSession.metadata?.sidestream_price_id, 160),
+                productId: lockedActivation.stripe_checkout_product_id ||
+                  getSidestreamProProductId(),
+                expiresAt: new Date(stripeSession.expires_at * 1_000),
+                attempt,
+              });
+              return commitCheckoutIntentResult(client, {
+                ok: true,
+                url: stripeSession.url,
+                reused: true,
+              });
+            }
+            if (stripeSession.status === "open") {
+              await expireCheckoutSession(stripeSession.id, row.id, attempt);
+            }
+          } else if (options.rotateCancelledSession) {
+            await expireCheckoutSession(attachedSessionId, row.id, attempt);
+          }
+          replacementSessionId = attachedSessionId;
+          attempt += 1;
+        }
+      } else if (row.stripe_checkout_session_id) {
+        const sessionExpiresAt = row.stripe_session_expires_at
+          ? new Date(row.stripe_session_expires_at).getTime()
+          : 0;
+        if (
+          row.state === "open" &&
+          row.stripe_checkout_url &&
+          sessionExpiresAt > now.getTime() &&
+          !options.rotateCancelledSession
+        ) {
+          return commitCheckoutIntentResult(client, {
+            ok: true,
+            url: row.stripe_checkout_url,
+            reused: true,
+          });
+        }
+        if (row.state === "completed") {
+          const completionUrl = buildCheckoutCompletionUrl(options.baseUrl)
+            .replace(CHECKOUT_SESSION_PLACEHOLDER, row.stripe_checkout_session_id);
+          return commitCheckoutIntentResult(client, {
+            ok: true,
+            url: completionUrl,
+            reused: true,
+          });
+        }
+        if (sessionExpiresAt > now.getTime() && options.rotateCancelledSession) {
+          await expireCheckoutSession(row.stripe_checkout_session_id, row.id, attempt);
+        }
+        replacementSessionId = row.stripe_checkout_session_id;
+        attempt += 1;
+      }
+
+      if (row.intent_kind === "account" && !options.session) {
+        return commitCheckoutIntentResult(client, checkoutIntentError(
+          401,
+          "Authentication required",
+          "authentication_required",
+        ));
+      }
+
+      const stripePriceId = await getSidestreamProPriceId();
+      const stripeProductId = getSidestreamProProductId();
+      const stripeCustomerId = row.intent_kind === "account" && options.session
+        ? await findOrCreateStripeCustomer(options.session, client)
+        : "";
+      const cancelUrl = new URL("/api/checkout/start", options.baseUrl);
+      cancelUrl.searchParams.set("checkout", "cancelled");
+      cancelUrl.searchParams.set("intent", options.browserToken);
+      const metadata: Record<string, string> = {
+        sidestream_plan: SIDESTREAM_PRO_PLAN_KEY,
+        sidestream_price_id: stripePriceId,
+        sidestream_checkout_intent_id: row.id,
+      };
+      if (row.intent_kind === "account" && options.session) {
+        metadata.sidestream_account_id = options.session.accountId;
+      }
+      if (activationKey) metadata.sidestream_activation_key = activationKey;
+
+      // Anonymous Checkout cannot safely infer prior ownership from an email
+      // that Stripe has not collected and verified yet. Intent idempotency
+      // prevents retry duplicates; it does not prevent cross-browser purchases.
+      const checkoutWindow = activationExpiresAt
+        ? getStripeCheckoutWindow(
+            activationExpiresAt.getTime(),
+            CHECKOUT_CLAIM_GRACE_SECONDS,
+          )
+        : null;
+      if (
+        checkoutWindow &&
+        checkoutWindow.checkoutExpiresAt * 1_000 < now.getTime() + 31 * 60 * 1_000
+      ) {
+        return commitCheckoutIntentResult(client, checkoutIntentError(
+          409,
+          "Activation does not have enough time remaining for Checkout",
+          "activation_window_too_short",
+        ));
+      }
+      const checkoutParams: Stripe.Checkout.SessionCreateParams = {
+        mode: "payment",
+        ...(stripeCustomerId ? { customer: stripeCustomerId } : {}),
+        ...(!stripeCustomerId ? { customer_creation: "always" as const } : {}),
+        line_items: [{ price: stripePriceId, quantity: 1 }],
+        payment_method_types: ["card"],
+        allow_promotion_codes: true,
+        billing_address_collection: "auto",
+        success_url: buildCheckoutCompletionUrl(options.baseUrl, activationKey),
+        cancel_url: cancelUrl.toString(),
+        ...(checkoutWindow ? { expires_at: checkoutWindow.checkoutExpiresAt } : {}),
+        client_reference_id: activationKey || options.session?.accountId || row.id,
+        custom_text: {
+          submit: { message: "One-time payment. No subscription." },
+        },
+        invoice_creation: {
+          enabled: true,
+          invoice_data: { metadata },
+        },
+        metadata,
+        payment_intent_data: { metadata },
+      };
+      const checkoutSession = await getStripe().checkout.sessions.create(
+        checkoutParams,
+        {
+          ...getStripeRequestOptions(),
+          idempotencyKey: getCheckoutSessionIdempotencyKey({
+            kind: row.intent_kind,
+            intentId: row.id,
+            activationKey,
+            attempt,
+          }),
+        },
+      );
+      if (!checkoutSession.url) {
+        throw new Error("Stripe did not return a Checkout URL");
+      }
+
+      if (activationKey && checkoutWindow) {
+        const attached = await attachCheckoutSessionToActivation({
+          activationKey,
+          checkoutSessionId: checkoutSession.id,
+          priceId: stripePriceId,
+          productId: stripeProductId,
+          checkoutExpiresAt: checkoutSession.expires_at || checkoutWindow.checkoutExpiresAt,
+          claimGraceUntil: checkoutWindow.claimGraceUntil,
+          replaceCheckoutSessionId: replacementSessionId || undefined,
+          runner: client,
+        });
+        if (!attached) throw new Error("Could not attach Checkout to activation");
+      }
+
+      await client.query(
+        `
+          update public.sidestream_checkout_intents
+          set state = 'open', attempt = $2, stripe_customer_id = $3,
+            stripe_checkout_session_id = $4, stripe_checkout_url = $5,
+            stripe_price_id = $6, stripe_product_id = $7,
+            stripe_session_expires_at = to_timestamp($8),
+            confirmed_at = coalesce(confirmed_at, $9::timestamptz),
+            last_error_code = null, updated_at = $9::timestamptz
+          where id = $1
+        `,
+        [
+          row.id,
+          attempt,
+          stripeCustomerId || null,
+          checkoutSession.id,
+          checkoutSession.url,
+          stripePriceId,
+          stripeProductId,
+          checkoutSession.expires_at,
+          now.toISOString(),
+        ],
+      );
+      await client.query("commit");
+      return { ok: true, url: checkoutSession.url, reused: false };
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    }
+  });
+}
+
+function buildCheckoutIntentConfirmation(options: {
+  intentId: string;
+  browserToken: string;
+  intentExpiresAt: Date;
+  kind: CheckoutIntentKind;
+  activationKey: string;
+  state: string;
+  hasCheckoutSession: boolean;
+  now: Date;
+}): CheckoutIntentConfirmation {
+  const signedTokenExpiresAt = addSeconds(
+    options.now,
+    CHECKOUT_INTENT_CSRF_TTL_SECONDS,
+  );
+  return {
+    intentId: options.intentId,
+    browserToken: options.browserToken,
+    signedToken: createCheckoutIntentToken({
+      intentId: options.intentId,
+      browserToken: options.browserToken,
+      expiresAtSeconds: Math.floor(signedTokenExpiresAt.getTime() / 1_000),
+      secret: getPrivateServerSecret(),
+    }),
+    signedTokenExpiresAt: signedTokenExpiresAt.toISOString(),
+    intentExpiresAt: options.intentExpiresAt.toISOString(),
+    kind: options.kind,
+    activationKey: options.activationKey,
+    state: options.state,
+    hasCheckoutSession: options.hasCheckoutSession,
+  };
+}
+
+async function attachExistingSessionToCheckoutIntent(
+  client: PoolClient,
+  intentId: string,
+  session: {
+    sessionId: string;
+    url: string;
+    customerId: string;
+    priceId: string;
+    productId: string;
+    expiresAt: Date;
+    attempt: number;
+  },
+) {
+  await client.query(
+    `
+      update public.sidestream_checkout_intents
+      set state = 'open', attempt = $2, stripe_customer_id = $3,
+        stripe_checkout_session_id = $4, stripe_checkout_url = $5,
+        stripe_price_id = $6, stripe_product_id = $7,
+        stripe_session_expires_at = $8::timestamptz,
+        updated_at = now()
+      where id = $1
+    `,
+    [
+      intentId,
+      session.attempt,
+      session.customerId || null,
+      session.sessionId,
+      session.url,
+      session.priceId,
+      session.productId,
+      session.expiresAt.toISOString(),
+    ],
+  );
+}
+
+async function expireCheckoutSession(
+  sessionId: string,
+  intentId: string,
+  attempt: number,
+) {
+  await getStripe().checkout.sessions.expire(
+    sessionId,
+    {},
+    {
+      ...getStripeRequestOptions(),
+      idempotencyKey: `sidestream_expire_${createHash("sha256")
+        .update(`${intentId}:${attempt}:${sessionId}`)
+        .digest("hex")}`,
+    },
+  );
+}
+
+async function commitCheckoutIntentResult(
+  client: PoolClient,
+  result: CheckoutIntentResult,
+) {
+  await client.query("commit");
+  return result;
+}
+
+function checkoutIntentError(
+  statusCode: number,
+  error: string,
+  code: string,
+): CheckoutIntentResult {
+  return { ok: false, statusCode, error, code };
+}
+
+export async function findOrCreateStripeCustomer(
+  session: AccountSession,
+  runner: Pick<Pool | PoolClient, "query"> = getPool(),
+) {
   if (session.stripeCustomerId) {
     try {
       const customer = await getStripe().customers.retrieve(
@@ -628,20 +1308,29 @@ export async function findOrCreateStripeCustomer(session: AccountSession) {
     }
   }
 
-  return createStripeCustomerForSession(session);
+  return createStripeCustomerForSession(session, runner);
 }
 
-async function createStripeCustomerForSession(session: AccountSession) {
+async function createStripeCustomerForSession(
+  session: AccountSession,
+  runner: Pick<Pool | PoolClient, "query">,
+) {
   const stripe = getStripe();
-  const customer = await stripe.customers.create({
-    email: session.email,
-    name: session.name || undefined,
-    metadata: {
-      sidestream_account_id: session.accountId,
+  const customer = await stripe.customers.create(
+    {
+      email: session.email,
+      name: session.name || undefined,
+      metadata: {
+        sidestream_account_id: session.accountId,
+      },
     },
-  });
+    {
+      ...getStripeRequestOptions(),
+      idempotencyKey: getStripeCustomerIdempotencyKey(session.accountId),
+    },
+  );
 
-  await query(
+  await runner.query(
     `
       update public.sidestream_accounts
       set stripe_customer_id = $2, updated_at = now()
@@ -839,7 +1528,10 @@ async function createSidestreamProPriceId(productId: string) {
           sidestream_plan: SIDESTREAM_PRO_PLAN_KEY,
         },
       },
-      getStripeRequestOptions(),
+      {
+        ...getStripeRequestOptions(),
+        idempotencyKey: getStripePriceIdempotencyKey(productId),
+      },
     );
 
     return price.id;
@@ -1172,14 +1864,23 @@ export async function attachCheckoutSessionToActivation(options: {
   productId: string;
   checkoutExpiresAt: number;
   claimGraceUntil: string;
+  // Supplying this is reserved for the Checkout-intent worker while it holds
+  // the activation advisory lock and only after Stripe reports terminal/expired
+  // or the worker has explicitly expired the prior Session.
+  replaceCheckoutSessionId?: string;
+  runner?: Pick<Pool | PoolClient, "query">;
 }) {
-  const result = await query<{ id: string }>(
+  const runner = options.runner || getPool();
+  const result = await runner.query<{ id: string }>(
     `
       update public.sidestream_activation_sessions
       set stripe_checkout_session_id = $2,
           stripe_checkout_price_id = $3,
           stripe_checkout_product_id = $4,
-          checkout_attached_at = coalesce(checkout_attached_at, now()),
+          checkout_attached_at = case
+            when stripe_checkout_session_id = $2 then coalesce(checkout_attached_at, now())
+            else now()
+          end,
           stripe_checkout_expires_at = to_timestamp($5),
           checkout_claim_grace_until = $6::timestamptz,
           updated_at = now()
@@ -1198,6 +1899,11 @@ export async function attachCheckoutSessionToActivation(options: {
             and stripe_checkout_expires_at = to_timestamp($5)
             and checkout_claim_grace_until = $6::timestamptz
           )
+          or (
+            $7::text is not null
+            and $7 <> $2
+            and stripe_checkout_session_id = $7
+          )
         )
       returning id
     `,
@@ -1208,6 +1914,7 @@ export async function attachCheckoutSessionToActivation(options: {
       options.productId,
       options.checkoutExpiresAt,
       options.claimGraceUntil,
+      options.replaceCheckoutSessionId || null,
     ],
   );
   return Boolean(result.rows[0]);
@@ -1880,9 +2587,10 @@ export async function fulfillCheckoutSession(
     return { fulfilled: true as const, activationBound: false };
   }
 
-  let expectedPriceId = activationKey
-    ? cleanString(checkoutSession.metadata?.sidestream_price_id, 160)
-    : await getSidestreamProPriceId();
+  let expectedPriceId = cleanString(
+    checkoutSession.metadata?.sidestream_price_id,
+    160,
+  );
   let expectedProductId = getSidestreamProProductId();
   let activationId = "";
 
@@ -2008,6 +2716,15 @@ export async function fulfillCheckoutSession(
         );
         activationBound = Boolean(bound.rows[0]);
       }
+
+      await client.query(
+        `
+          update public.sidestream_checkout_intents
+          set state = 'completed', stripe_customer_id = $2, updated_at = now()
+          where stripe_checkout_session_id = $1
+        `,
+        [checkoutSessionId, customerId],
+      );
 
       await client.query("commit");
       return { fulfilled: true as const, activationBound };
@@ -3853,7 +4570,7 @@ function shouldUseSecureCookies(request: IncomingMessage) {
   return getBaseUrl(request).startsWith("https://");
 }
 
-function getClientIp(request: IncomingMessage) {
+export function getClientIp(request: IncomingMessage) {
   const candidates = [
     firstHeaderValue(request.headers["x-forwarded-for"]).split(",")[0],
     firstHeaderValue(request.headers["x-real-ip"]),

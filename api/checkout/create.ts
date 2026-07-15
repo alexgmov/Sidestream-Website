@@ -1,36 +1,32 @@
 import type { ServerResponse } from "node:http";
-import type Stripe from "stripe";
 import {
-  attachCheckoutSessionToActivation,
   cleanString,
-  findOrCreateStripeCustomer,
-  fulfillCheckoutSession,
-  getActivationCheckoutContext,
+  createOrReuseCheckoutSession,
   getBaseUrl,
-  getSidestreamProProductId,
-  getSidestreamProPriceId,
-  getStripe,
-  getStripeRequestOptions,
+  getClientIp,
+  getSession,
   methodNotAllowed,
   readRequestBody,
   redirect,
-  requireSession,
   sendJson,
-  SIDESTREAM_PRO_PLAN_KEY,
+  validateCheckoutIntentConfirmation,
   type AccountRequest,
 } from "../_lib/account.js";
+import { validateCheckoutIntentPost } from "../_lib/entitlement.js";
 import {
-  buildCheckoutCompletionUrl,
-  getActivationCheckoutIdempotencyKey,
-} from "../_lib/entitlement.js";
+  applyRateLimitHeaders,
+  consumeRateLimit,
+  sendRateLimitExceeded,
+} from "../_lib/rate-limit.js";
 
 type CheckoutPayload = {
   activationKey?: unknown;
+  checkoutIntentId?: unknown;
+  checkoutIntent?: unknown;
+  intentToken?: unknown;
   intent?: unknown;
+  rotate?: unknown;
 };
-
-const CHECKOUT_PROMISE_TEXT =
-  "One-time payment. No subscription.";
 
 export default async function handler(
   request: AccountRequest,
@@ -39,8 +35,18 @@ export default async function handler(
   const method = (request.method || "POST").toUpperCase();
   if (method !== "POST") return methodNotAllowed(response, "POST");
 
-  const session = await requireSession(request, response);
-  if (!session) return;
+  const baseUrl = getBaseUrl(request);
+  if (!validateCheckoutIntentPost({
+    requestOrigin: firstHeaderValue(request.headers.origin),
+    expectedOrigin: baseUrl,
+    fetchSite: firstHeaderValue(request.headers["sec-fetch-site"]),
+    contentType: firstHeaderValue(request.headers["content-type"]),
+  })) {
+    return sendJson(response, 403, {
+      error: "Invalid Checkout confirmation",
+      code: "csrf_rejected",
+    });
+  }
 
   let checkoutRequest: Awaited<ReturnType<typeof readCheckoutRequest>>;
   try {
@@ -49,143 +55,90 @@ export default async function handler(
     return sendJson(response, 400, { error: "Invalid Checkout request" });
   }
   const { payload, browserForm } = checkoutRequest;
-  const activationKey = cleanString(payload.activationKey, 160);
+  const intentId = cleanString(payload.checkoutIntentId, 80);
+  const browserToken = cleanString(payload.checkoutIntent, 160);
+  const signedToken = cleanString(payload.intentToken, 500);
+  const legacyActivationKey = cleanString(payload.activationKey, 160);
   if (
     browserForm &&
-    (!activationKey || cleanString(payload.intent, 32) !== "purchase")
+    legacyActivationKey &&
+    !intentId &&
+    !browserToken &&
+    !signedToken &&
+    cleanString(payload.intent, 32) === "purchase"
   ) {
-    return sendJson(response, 400, { error: "Invalid purchase confirmation" });
+    // The pre-intent restore page can still submit its historical form, but
+    // this branch performs no Stripe or account mutation. It only moves the
+    // browser to the signed confirmation GET used by 1.0.12/1.0.13 links.
+    const confirmationUrl = new URL("/api/checkout/start", baseUrl);
+    confirmationUrl.searchParams.set("activation", legacyActivationKey);
+    return redirect(response, confirmationUrl.toString());
   }
-  const activation = activationKey
-    ? await getActivationCheckoutContext(activationKey)
-    : null;
-  if (activationKey && !activation) {
-    return sendJson(response, 409, { error: "Activation expired or unavailable" });
-  }
-
-  if (activationKey && session.license.active) {
-    const restoreUrl = new URL("/api/activation/claim", getBaseUrl(request));
-    restoreUrl.searchParams.set("activation", activationKey);
-    return sendCheckoutDestination(response, browserForm, restoreUrl.toString());
-  }
-
-  const stripe = getStripe();
-  const baseUrl = getBaseUrl(request);
-  if (activation?.checkoutSessionId) {
-    const attachedSession = await stripe.checkout.sessions.retrieve(
-      activation.checkoutSessionId,
-      {},
-      getStripeRequestOptions(),
-    );
-    if (attachedSession.status === "complete") {
-      await fulfillCheckoutSession(attachedSession.id, activationKey);
-      return sendCheckoutDestination(
-        response,
-        browserForm,
-        `${baseUrl}/thank-you.html?checkout=success&activation=${encodeURIComponent(activationKey)}`,
-      );
-    }
-    if (attachedSession.status === "open" && attachedSession.url) {
-      return sendCheckoutDestination(response, browserForm, attachedSession.url);
-    }
-    return sendJson(response, 409, { error: "Attached Checkout Session is unavailable" });
-  }
-
-  const stripeCustomerId = activationKey
-    ? ""
-    : await findOrCreateStripeCustomer(session);
-  const stripePriceId = await getSidestreamProPriceId();
-  const stripeProductId = getSidestreamProProductId();
-  const cancelUrl = new URL("/upgrade.html", baseUrl);
-  const metadata: Record<string, string> = {
-    sidestream_plan: SIDESTREAM_PRO_PLAN_KEY,
-    sidestream_price_id: stripePriceId,
-  };
-  if (!activationKey) metadata.sidestream_account_id = session.accountId;
-
-  cancelUrl.searchParams.set("checkout", "cancelled");
-  if (activationKey) {
-    cancelUrl.searchParams.set("activation", activationKey);
-    metadata.sidestream_activation_key = activationKey;
-  }
-  const checkoutParams: Stripe.Checkout.SessionCreateParams = {
-    mode: "payment",
-    ...(stripeCustomerId ? { customer: stripeCustomerId } : {}),
-    ...(!stripeCustomerId ? { customer_creation: "always" as const } : {}),
-    line_items: [{ price: stripePriceId, quantity: 1 }],
-    payment_method_types: ["card"],
-    allow_promotion_codes: true,
-    billing_address_collection: "auto",
-    success_url: buildCheckoutCompletionUrl(baseUrl, activationKey),
-    cancel_url: cancelUrl.toString(),
-    ...(activation ? { expires_at: activation.checkoutExpiresAt } : {}),
-    client_reference_id: activationKey || session.accountId,
-    custom_text: {
-      submit: {
-        message: CHECKOUT_PROMISE_TEXT,
-      },
-    },
-    invoice_creation: {
-      enabled: true,
-      invoice_data: {
-        metadata,
-      },
-    },
-    metadata,
-    payment_intent_data: {
-      metadata,
-    },
-  };
-
-  const checkoutSession = await stripe.checkout.sessions.create(
-    checkoutParams,
-    {
-      ...getStripeRequestOptions(),
-      ...(activationKey
-        ? { idempotencyKey: getActivationCheckoutIdempotencyKey(activationKey) }
-        : {}),
-    },
-  );
-
-  if (activationKey && activation) {
-    const attached = await attachCheckoutSessionToActivation({
-      activationKey,
-      checkoutSessionId: checkoutSession.id,
-      priceId: stripePriceId,
-      productId: stripeProductId,
-      checkoutExpiresAt: checkoutSession.expires_at || activation.checkoutExpiresAt,
-      claimGraceUntil: activation.claimGraceUntil,
+  if (
+    !/^[0-9a-f-]{36}$/i.test(intentId) ||
+    !browserToken ||
+    !signedToken ||
+    cleanString(payload.intent, 32) !== "purchase" ||
+    !validateCheckoutIntentConfirmation({
+      intentId,
+      browserToken,
+      signedToken,
+    })
+  ) {
+    return sendJson(response, 403, {
+      error: "Checkout confirmation expired or invalid",
+      code: "csrf_rejected",
+      confirmationUrl: "/upgrade.html",
     });
-    if (!attached) {
-      const winner = await getActivationCheckoutContext(activationKey);
-      if (winner?.checkoutSessionId) {
-        const winnerSession = await stripe.checkout.sessions.retrieve(
-          winner.checkoutSessionId,
-          {},
-          getStripeRequestOptions(),
-        );
-        if (winnerSession.status === "open" && winnerSession.url) {
-          return sendCheckoutDestination(response, browserForm, winnerSession.url);
-        }
-      }
-      if (checkoutSession.status === "open") {
-        await stripe.checkout.sessions.expire(checkoutSession.id).catch(() => undefined);
-      }
-      return sendJson(response, 409, { error: "Could not attach Checkout to activation" });
-    }
   }
 
-  if (!checkoutSession.url) {
-    return sendJson(response, 502, { error: "Stripe did not return a Checkout URL" });
+  const session = await getSession(request);
+  if (session?.license.active) {
+    return sendJson(response, 409, {
+      error: "Sidestream Pro is already active. Open your account or use Restore Purchase.",
+      code: "active_license",
+      accountUrl: "/account.html",
+      restoreUrl: "/api/activation/claim",
+    });
   }
-  return sendCheckoutDestination(response, browserForm, checkoutSession.url);
+
+  const rateLimit = await consumeRateLimit({
+    scope: "checkout:create",
+    dimensions: [
+      { name: "intent", value: intentId, limit: 8 },
+      { name: "ip", value: getClientIp(request) || "unknown-client", limit: 20 },
+    ],
+    windowSeconds: 15 * 60,
+  });
+  if (!rateLimit.allowed) return sendRateLimitExceeded(response, rateLimit);
+  applyRateLimitHeaders(response, rateLimit);
+
+  // The locked intent worker owns attachCheckoutSessionToActivation and the
+  // getActivationCheckoutIdempotencyKey namespace. No caller-controlled
+  // activation tuple reaches Stripe from this handler.
+  const result = await createOrReuseCheckoutSession({
+    intentId,
+    browserToken,
+    session,
+    baseUrl,
+    rotateCancelledSession: cleanString(payload.rotate, 32) === "cancelled",
+  });
+  if (!result.ok) {
+    return sendJson(response, result.statusCode, {
+      error: result.error,
+      code: result.code,
+      ...(result.code === "active_license"
+        ? { accountUrl: "/account.html", restoreUrl: "/api/activation/claim" }
+        : {}),
+    });
+  }
+  return browserForm
+    ? redirect(response, result.url)
+    : sendJson(response, 200, { url: result.url, reused: result.reused });
 }
 
 async function readCheckoutRequest(request: AccountRequest) {
-  const rawContentType = request.headers["content-type"];
-  const contentType = (Array.isArray(rawContentType)
-    ? rawContentType[0]
-    : rawContentType || "").toLowerCase();
+  const contentType = firstHeaderValue(request.headers["content-type"]).toLowerCase();
   const body = await readRequestBody(request);
   if (contentType.startsWith("application/x-www-form-urlencoded")) {
     const form = new URLSearchParams(body);
@@ -193,7 +146,11 @@ async function readCheckoutRequest(request: AccountRequest) {
       browserForm: true,
       payload: {
         activationKey: form.get("activationKey"),
+        checkoutIntentId: form.get("checkoutIntentId"),
+        checkoutIntent: form.get("checkoutIntent"),
+        intentToken: form.get("intentToken"),
         intent: form.get("intent"),
+        rotate: form.get("rotate"),
       } satisfies CheckoutPayload,
     };
   }
@@ -204,12 +161,6 @@ async function readCheckoutRequest(request: AccountRequest) {
   };
 }
 
-function sendCheckoutDestination(
-  response: ServerResponse,
-  browserForm: boolean,
-  url: string,
-) {
-  return browserForm
-    ? redirect(response, url)
-    : sendJson(response, 200, { url });
+function firstHeaderValue(value: string | string[] | undefined) {
+  return Array.isArray(value) ? value[0] || "" : value || "";
 }
