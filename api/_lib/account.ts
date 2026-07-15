@@ -515,14 +515,10 @@ export async function clearWebSession(
 
 export async function getSession(
   request: IncomingMessage,
-  options: { reconcileStripeEvents?: boolean } = {},
+  _options: { reconcileStripeEvents?: boolean } = {},
 ): Promise<AccountSession | null> {
   const token = getCookie(request, SESSION_COOKIE);
   if (!token) return null;
-
-  if (options.reconcileStripeEvents !== false) {
-    await processUnprocessedStripeEvents();
-  }
 
   const result = await query<{
     account_id: string;
@@ -1720,98 +1716,28 @@ export async function verifyLicenseToken(
   });
 }
 
-export async function recordStripeEvent(
-  event: Stripe.Event,
-  rawPayload: string,
-) {
-  const result = await query<{ event_id: string }>(
-    `
-      insert into public.sidestream_stripe_events (
-        event_id,
-        event_type,
-        stripe_created_at,
-        payload,
-        raw_payload,
-        received_at,
-        created_at,
-        updated_at
-      )
-      values ($1, $2, to_timestamp($3), $4::jsonb, $5, now(), now(), now())
-      on conflict (event_id) do update set
-        payload = excluded.payload,
-        raw_payload = excluded.raw_payload,
-        received_at = now(),
-        updated_at = now()
-      where public.sidestream_stripe_events.processed_at is null
-      returning event_id
-    `,
-    [
-      event.id,
-      event.type,
-      event.created || Math.floor(Date.now() / 1000),
-      JSON.stringify(event),
-      rawPayload,
-    ],
-  );
-
-  return Boolean(result.rows[0]);
-}
-
-export async function markStripeEventProcessed(eventId: string) {
-  await query(
-    `
-      update public.sidestream_stripe_events
-      set processed_at = now(), updated_at = now()
-      where event_id = $1
-    `,
-    [eventId],
-  );
-}
-
-export async function processUnprocessedStripeEvents(limit = 10) {
-  const result = await query<{
-    event_id: string;
-    event_type: string;
-    payload: Stripe.Event;
-  }>(
-    `
-      select event_id, event_type, payload
-      from public.sidestream_stripe_events
-      where processed_at is null
-      order by created_at asc
-      limit $1
-    `,
-    [limit],
-  );
-
-  for (const row of result.rows) {
-    switch (row.event_type) {
-      case "checkout.session.completed":
-        await upsertLicenseFromCheckoutSession(row.payload.data.object);
-        break;
-      case "customer.subscription.created":
-      case "customer.subscription.updated":
-      case "customer.subscription.deleted":
-        await upsertLicenseFromSubscription(row.payload.data.object);
-        break;
-      default:
-        break;
-    }
-    await markStripeEventProcessed(row.event_id);
-  }
-}
-
 export async function upsertLicenseFromSubscription(
   subscriptionPayload: unknown,
   accountIdHint?: string,
+  stripeEvent?: { eventId: string; created: number },
 ) {
   const subscription = subscriptionPayload as Record<string, any>;
   const customerId = normalizeStripeId(subscription.customer);
   const subscriptionId = normalizeStripeId(subscription.id);
-  if (!customerId || !subscriptionId) return;
+  if (!customerId || !subscriptionId) {
+    return { fulfilled: false as const, reason: "missing_subscription_identity" };
+  }
+
+  const stripeEventId = stripeEvent ? cleanString(stripeEvent.eventId, 255) : "";
+  const stripeEventCreatedAt = stripeEvent && Number.isFinite(stripeEvent.created)
+    ? new Date(stripeEvent.created * 1_000).toISOString()
+    : null;
+  if (stripeEvent && (!stripeEventId || !stripeEventCreatedAt)) {
+    throw new TypeError("Stripe event ordering requires an event ID and creation time");
+  }
 
   const accountId = accountIdHint || await findOrCreateAccountForStripeCustomer(customerId);
-  if (!accountId) return;
+  if (!accountId) return { fulfilled: false as const, reason: "missing_account" };
 
   await query(
     `
@@ -1838,7 +1764,7 @@ export async function upsertLicenseFromSubscription(
     customer_portal: true,
   };
 
-  await query(
+  const result = await query<{ id: string }>(
     `
       insert into public.sidestream_licenses (
         account_id,
@@ -1850,10 +1776,15 @@ export async function upsertLicenseFromSubscription(
         cancel_at_period_end,
         grace_until,
         features,
+        stripe_state_event_created_at,
+        stripe_state_event_id,
         created_at,
         updated_at
       )
-      values ($1, $2, $3, $4, $5, $6::timestamptz, $7, $8::timestamptz, $9::jsonb, now(), now())
+      values (
+        $1, $2, $3, $4, $5, $6::timestamptz, $7, $8::timestamptz, $9::jsonb,
+        $10::timestamptz, $11, now(), now()
+      )
       on conflict (stripe_subscription_id) do update set
         account_id = excluded.account_id,
         stripe_customer_id = excluded.stripe_customer_id,
@@ -1871,7 +1802,23 @@ export async function upsertLicenseFromSubscription(
             )
           else '{}'::jsonb
         end,
+        stripe_state_event_created_at = coalesce(
+          excluded.stripe_state_event_created_at,
+          sidestream_licenses.stripe_state_event_created_at
+        ),
+        stripe_state_event_id = coalesce(
+          excluded.stripe_state_event_id,
+          sidestream_licenses.stripe_state_event_id
+        ),
         updated_at = now()
+      where excluded.stripe_state_event_created_at is null
+        or sidestream_licenses.stripe_state_event_created_at is null
+        or excluded.stripe_state_event_created_at > sidestream_licenses.stripe_state_event_created_at
+        or (
+          excluded.stripe_state_event_created_at = sidestream_licenses.stripe_state_event_created_at
+          and excluded.stripe_state_event_id >= coalesce(sidestream_licenses.stripe_state_event_id, '')
+        )
+      returning id
     `,
     [
       accountId,
@@ -1883,8 +1830,13 @@ export async function upsertLicenseFromSubscription(
       cancelAtPeriodEnd,
       graceUntil,
       JSON.stringify(features),
+      stripeEventCreatedAt,
+      stripeEventId || null,
     ],
   );
+  return result.rows[0]
+    ? { fulfilled: true as const, applied: true as const }
+    : { fulfilled: true as const, applied: false as const, reason: "stale_event" };
 }
 
 export async function upsertLicenseFromCheckoutSession(
@@ -1923,7 +1875,8 @@ export async function fulfillCheckoutSession(
       return { fulfilled: false as const, reason: "invalid_subscription_checkout" };
     }
     const subscription = await getStripe().subscriptions.retrieve(subscriptionId);
-    await upsertLicenseFromSubscription(subscription);
+    const subscriptionResult = await upsertLicenseFromSubscription(subscription);
+    if (!subscriptionResult.fulfilled) return subscriptionResult;
     return { fulfilled: true as const, activationBound: false };
   }
 
