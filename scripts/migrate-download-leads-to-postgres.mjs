@@ -1,277 +1,385 @@
-import { get, list } from "@vercel/blob";
-import crypto from "node:crypto";
-import fs from "node:fs";
-import { readFile } from "node:fs/promises";
-import path from "node:path";
-import { Pool } from "pg";
+import assert from "node:assert/strict";
+import { pathToFileURL } from "node:url";
 
-const DEFAULT_PREFIX = "sidestream/download-leads";
-const MIGRATION_PATHS = [
-  "db/migrations/20260626120000_add_sidestream_download_leads.sql",
-  "db/migrations/20260626123000_add_download_lead_ip_and_drop_storage_targets.sql",
-].map((migrationPath) => path.resolve(migrationPath));
+const DEFAULT_BATCH_SIZE = 25;
+const MAX_BATCH_SIZE = 100;
+const DEFAULT_MAX_PAGES = 100;
+const MAX_PAGES = 10_000;
+const DEFAULT_TIMEOUT_MS = 20_000;
+const REPLAY_ROUTE = "/api/internal/download-leads/replay";
+const REPLAY_SECRET_ENV = "SIDESTREAM_DOWNLOAD_LEADS_REPLAY_SECRET";
 
-loadEnvFile(process.env.SIDESTREAM_ENV_FILE);
-loadEnvFile(process.env.SIDESTREAM_DB_ENV_FILE);
-preferBlobReadWriteTokenForLocalMigration();
-
-const prefix = (process.env.SIDESTREAM_DOWNLOAD_LEADS_BLOB_PREFIX || DEFAULT_PREFIX).replace(/^\/+|\/+$/g, "");
-const dryRun = process.argv.includes("--dry-run");
-const applySchema = process.argv.includes("--apply-schema");
-const dumpRows = process.argv.includes("--dump");
-const POSTGRES_URL_ENV_NAMES = [
-  "SIDESTREAM_POSTGRES_URL",
-  "SIDESTREAM_POSTGRES_PRISMA_URL",
-  "SIDESTREAM_POSTGRES_URL_NON_POOLING",
-  "POSTGRES_URL",
-  "POSTGRES_PRISMA_URL",
-  "POSTGRES_URL_NON_POOLING",
-];
-
-if (!getPostgresConnectionString()) {
-  fail(`Missing Postgres connection string. Set one of: ${POSTGRES_URL_ENV_NAMES.join(", ")}`);
+class ReplayCliError extends Error {
+  constructor(code) {
+    super(code);
+    this.name = "ReplayCliError";
+    this.code = code;
+  }
 }
 
-const pool = createPool();
+export function parseArguments(argv) {
+  const options = {
+    selfTest: false,
+    batchSize: DEFAULT_BATCH_SIZE,
+    maxPages: DEFAULT_MAX_PAGES,
+    disposition: "preserve",
+    endpoint: "",
+    legacyApplySchemaRequested: false,
+  };
 
-try {
-  if (applySchema) {
-    for (const migrationPath of MIGRATION_PATHS) {
-      const sql = await readFile(migrationPath, "utf8");
-      if (dryRun) {
-        console.log(`[dry-run] would apply schema from ${migrationPath}`);
-      } else {
-        await pool.query(sql);
-        console.log(`Applied schema from ${migrationPath}`);
-      }
+  for (let index = 0; index < argv.length; index += 1) {
+    const argument = argv[index];
+    if (argument === "--self-test") {
+      options.selfTest = true;
+    } else if (argument === "--delete-after-commit") {
+      options.disposition = "delete";
+    } else if (argument === "--preserve") {
+      options.disposition = "preserve";
+    } else if (argument === "--apply-schema") {
+      options.legacyApplySchemaRequested = true;
+    } else if (argument === "--batch-size") {
+      options.batchSize = parseBoundedInteger(
+        argv[++index],
+        "invalid_batch_size",
+        1,
+        MAX_BATCH_SIZE,
+      );
+    } else if (argument.startsWith("--batch-size=")) {
+      options.batchSize = parseBoundedInteger(
+        argument.slice("--batch-size=".length),
+        "invalid_batch_size",
+        1,
+        MAX_BATCH_SIZE,
+      );
+    } else if (argument === "--max-pages") {
+      options.maxPages = parseBoundedInteger(
+        argv[++index],
+        "invalid_max_pages",
+        1,
+        MAX_PAGES,
+      );
+    } else if (argument.startsWith("--max-pages=")) {
+      options.maxPages = parseBoundedInteger(
+        argument.slice("--max-pages=".length),
+        "invalid_max_pages",
+        1,
+        MAX_PAGES,
+      );
+    } else if (argument === "--endpoint") {
+      options.endpoint = requireOptionValue(argv[++index], "missing_endpoint");
+    } else if (argument.startsWith("--endpoint=")) {
+      options.endpoint = requireOptionValue(
+        argument.slice("--endpoint=".length),
+        "missing_endpoint",
+      );
+    } else {
+      throw new ReplayCliError("unknown_option");
     }
   }
 
-  const blobs = await listLeadBlobs(prefix);
-  console.log(`Found ${blobs.length} lead blob(s) under ${prefix}`);
-
-  let migrated = 0;
-  let skipped = 0;
-  for (const blob of blobs) {
-    const lead = await readLeadBlob(blob.pathname);
-    if (!lead?.email) {
-      skipped += 1;
-      console.warn(`Skipped ${blob.pathname}: missing email`);
-      continue;
-    }
-
-    if (dryRun) {
-      migrated += 1;
-      console.log(`[dry-run] would migrate ${lead.email} from ${blob.pathname}`);
-      continue;
-    }
-
-    await upsertLead({
-      leadKey: lead.leadKey || leadKeyFromPathname(blob.pathname),
-      email: normalizeEmail(lead.email),
-      capturedAt: normalizeIso(lead.capturedAt) || blob.uploadedAt.toISOString(),
-      page: cleanString(lead.page, 240),
-      source: cleanString(lead.source, 300),
-      referrer: cleanString(lead.referrer, 500),
-      userAgent: cleanString(lead.userAgent, 500),
-      ipAddress: cleanString(lead.ipAddress, 80),
-      blobPathname: blob.pathname,
-      context: {
-        source: "download_email_gate",
-        migratedFrom: "vercel_blob",
-        blobUploadedAt: blob.uploadedAt.toISOString(),
-      },
-    });
-    migrated += 1;
-  }
-
-  console.log(`Migrated ${migrated} lead(s); skipped ${skipped}.`);
-
-  if (dumpRows) {
-    const rows = await fetchRows();
-    console.log(JSON.stringify(rows, null, 2));
-  }
-} finally {
-  await pool.end();
+  return options;
 }
 
-async function listLeadBlobs(blobPrefix) {
-  const blobs = [];
+export async function runReplay(options, dependencies = {}) {
+  const environment = dependencies.environment || process.env;
+  const fetchImpl = dependencies.fetchImpl || fetch;
+  const timeoutMs = dependencies.timeoutMs || DEFAULT_TIMEOUT_MS;
+  const endpoint = resolveReplayEndpoint(options.endpoint, environment);
+  const secret = String(environment[REPLAY_SECRET_ENV] || "").trim();
+  if (secret.length < 32) throw new ReplayCliError("missing_replay_secret");
+  if (options.legacyApplySchemaRequested) {
+    throw new ReplayCliError("apply_schema_removed_use_db_migrate");
+  }
+
+  const totals = emptyTotals();
   let cursor;
+  let hasMore = true;
 
-  do {
-    const page = await list({ prefix: blobPrefix, cursor, limit: 1000 });
-    blobs.push(...page.blobs.filter((blob) => blob.pathname.endsWith(".json")));
-    cursor = page.cursor;
-  } while (cursor);
+  while (hasMore && totals.pages < options.maxPages) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    let response;
+    try {
+      response = await fetchImpl(endpoint, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${secret}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          cursor,
+          limit: options.batchSize,
+          disposition: options.disposition,
+        }),
+        signal: controller.signal,
+      });
+    } catch (error) {
+      throw new ReplayCliError(error?.name === "AbortError" ? "request_timeout" : "request_failed");
+    } finally {
+      clearTimeout(timeout);
+    }
 
-  return blobs.sort((a, b) => a.pathname.localeCompare(b.pathname));
-}
+    if (!response || !response.ok) {
+      const status = Number(response?.status || 0);
+      throw new ReplayCliError(
+        status >= 400 && status <= 599 ? `replay_http_${status}` : "invalid_response",
+      );
+    }
 
-async function readLeadBlob(pathname) {
-  const result = await get(pathname, { access: "private", useCache: false });
-  if (!result || result.statusCode !== 200 || !result.stream) return null;
+    let body;
+    try {
+      body = await response.json();
+    } catch {
+      throw new ReplayCliError("invalid_response_json");
+    }
+    const page = validateReplayResponse(body);
+    totals.pages += 1;
+    for (const key of Object.keys(page.summary)) totals[key] += page.summary[key];
 
-  const text = await new Response(result.stream).text();
-  return JSON.parse(text);
-}
-
-async function upsertLead(lead) {
-  await pool.query(
-    `
-      insert into public.sidestream_download_leads (
-        lead_key,
-        email,
-        email_hash,
-        captured_at,
-        source_page,
-        cta_source,
-        referrer,
-        user_agent,
-        ip_address,
-        migrated_from_blob_pathname,
-        context,
-        created_at,
-        updated_at
-      )
-      values ($1, $2, $3, $4::timestamptz, $5, $6, $7, $8, $9::inet, $10, $11::jsonb, now(), now())
-      on conflict (lead_key) do update set
-        email = excluded.email,
-        email_hash = excluded.email_hash,
-        captured_at = excluded.captured_at,
-        source_page = excluded.source_page,
-        cta_source = excluded.cta_source,
-        referrer = excluded.referrer,
-        user_agent = excluded.user_agent,
-        ip_address = excluded.ip_address,
-        migrated_from_blob_pathname = excluded.migrated_from_blob_pathname,
-        context = public.sidestream_download_leads.context || excluded.context,
-        updated_at = now()
-    `,
-    [
-      lead.leadKey,
-      lead.email,
-      hashEmail(lead.email),
-      lead.capturedAt,
-      lead.page || null,
-      lead.source || null,
-      lead.referrer || null,
-      lead.userAgent || null,
-      lead.ipAddress || null,
-      lead.blobPathname,
-      JSON.stringify(lead.context),
-    ],
-  );
-}
-
-async function fetchRows() {
-  const result = await pool.query(`
-    select
-      email,
-      captured_at,
-      ip_address::text,
-      source_page,
-      cta_source,
-      referrer
-    from public.sidestream_download_leads
-    order by captured_at asc, created_at asc
-  `);
-  return result.rows;
-}
-
-function createPool() {
-  const connectionString = normalizeConnectionString(getPostgresConnectionString());
-  return new Pool({
-    connectionString,
-    max: Number(process.env.POSTGRES_POOL_MAX || 1),
-    idleTimeoutMillis: 10_000,
-    connectionTimeoutMillis: 5_000,
-    ssl: shouldUseSsl(connectionString) ? { rejectUnauthorized: false } : false,
-  });
-}
-
-function getPostgresConnectionString() {
-  for (const name of POSTGRES_URL_ENV_NAMES) {
-    const value = process.env[name]?.trim();
-    if (value && !value.includes("[YOUR-") && value !== "changeme") {
-      return value;
+    hasMore = page.hasMore;
+    if (hasMore) {
+      if (!page.nextCursor || page.nextCursor === cursor) {
+        throw new ReplayCliError("invalid_replay_cursor");
+      }
+      cursor = page.nextCursor;
     }
   }
 
-  return "";
+  totals.truncated = hasMore;
+  totals.partialFailures =
+    totals.malformed +
+      totals.unmapped +
+      totals.readFailed +
+      totals.databaseFailed +
+      totals.deleteFailed >
+    0;
+  return totals;
 }
 
-function normalizeConnectionString(connectionString) {
+export function resolveReplayEndpoint(explicitEndpoint, environment = process.env) {
+  const configured = String(
+    explicitEndpoint ||
+      environment.SIDESTREAM_DOWNLOAD_LEADS_REPLAY_URL ||
+      environment.SIDESTREAM_BASE_URL ||
+      "",
+  ).trim();
+  if (!configured) throw new ReplayCliError("missing_endpoint");
+
+  let url;
   try {
-    const url = new URL(connectionString);
-    if (/^(prefer|require)$/i.test(url.searchParams.get("sslmode") || "")) {
-      url.searchParams.delete("sslmode");
-    }
-    return url.toString();
+    url = new URL(configured);
   } catch {
-    return connectionString;
+    throw new ReplayCliError("invalid_endpoint");
   }
+  if (url.username || url.password || url.search || url.hash) {
+    throw new ReplayCliError("invalid_endpoint");
+  }
+  const isLocal = ["localhost", "127.0.0.1", "::1"].includes(url.hostname);
+  if (url.protocol !== "https:" && !(isLocal && url.protocol === "http:")) {
+    throw new ReplayCliError("insecure_endpoint");
+  }
+  if (url.pathname === "/" || url.pathname === "") url.pathname = REPLAY_ROUTE;
+  if (url.pathname !== REPLAY_ROUTE) throw new ReplayCliError("invalid_endpoint_path");
+  return url.toString();
 }
 
-function shouldUseSsl(connectionString) {
-  if (process.env.POSTGRES_SSL === "0") return false;
-  if (/sslmode=(disable|false)/i.test(connectionString)) return false;
-  return !/localhost|127\.0\.0\.1|::1/.test(connectionString);
+function validateReplayResponse(value) {
+  if (!value || typeof value !== "object" || value.ok !== true) {
+    throw new ReplayCliError("invalid_response_shape");
+  }
+  const hasMore = value.hasMore;
+  const nextCursor = value.nextCursor;
+  if (typeof hasMore !== "boolean") throw new ReplayCliError("invalid_response_shape");
+  if (
+    nextCursor !== null &&
+    (typeof nextCursor !== "string" || nextCursor.length < 1 || nextCursor.length > 1_024)
+  ) {
+    throw new ReplayCliError("invalid_response_shape");
+  }
+  if (hasMore !== Boolean(nextCursor)) throw new ReplayCliError("invalid_response_shape");
+
+  const expectedKeys = [
+    "listed",
+    "mapped",
+    "replayed",
+    "idempotent",
+    "malformed",
+    "unmapped",
+    "readFailed",
+    "databaseFailed",
+    "deleted",
+    "deleteFailed",
+  ];
+  if (!value.summary || typeof value.summary !== "object") {
+    throw new ReplayCliError("invalid_response_shape");
+  }
+  const summary = {};
+  for (const key of expectedKeys) {
+    const count = value.summary[key];
+    if (!Number.isSafeInteger(count) || count < 0) {
+      throw new ReplayCliError("invalid_response_shape");
+    }
+    summary[key] = count;
+  }
+  return { hasMore, nextCursor, summary };
 }
 
-function normalizeEmail(email) {
-  return String(email || "").trim().toLowerCase();
+function emptyTotals() {
+  return {
+    pages: 0,
+    listed: 0,
+    mapped: 0,
+    replayed: 0,
+    idempotent: 0,
+    malformed: 0,
+    unmapped: 0,
+    readFailed: 0,
+    databaseFailed: 0,
+    deleted: 0,
+    deleteFailed: 0,
+    truncated: false,
+    partialFailures: false,
+  };
 }
 
-function normalizeIso(value) {
-  const timestamp = Date.parse(String(value || ""));
-  return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : null;
+function parseBoundedInteger(value, code, minimum, maximum) {
+  if (typeof value !== "string" || !/^\d+$/.test(value)) throw new ReplayCliError(code);
+  const number = Number(value);
+  if (!Number.isSafeInteger(number) || number < minimum || number > maximum) {
+    throw new ReplayCliError(code);
+  }
+  return number;
 }
 
-function cleanString(value, maxLength) {
-  if (typeof value !== "string") return "";
-  return value.trim().slice(0, maxLength).replace(/[\u0000-\u001f\u007f]/g, "");
+function requireOptionValue(value, code) {
+  if (typeof value !== "string" || !value.trim()) throw new ReplayCliError(code);
+  return value.trim();
 }
 
-function hashEmail(email) {
-  const secret = process.env.SIDESTREAM_LEAD_HASH_SECRET ||
-    getPostgresConnectionString() ||
-    "sidestream-download-leads-dev-salt";
-  return crypto.createHmac("sha256", secret).update(email).digest("hex");
+async function selfTest() {
+  const secret = "replay-self-test-secret-that-is-long-enough";
+  const requests = [];
+  const summaries = [
+    {
+      listed: 3,
+      mapped: 2,
+      replayed: 1,
+      idempotent: 1,
+      malformed: 0,
+      unmapped: 1,
+      readFailed: 0,
+      databaseFailed: 0,
+      deleted: 0,
+      deleteFailed: 0,
+    },
+    {
+      listed: 1,
+      mapped: 1,
+      replayed: 1,
+      idempotent: 0,
+      malformed: 0,
+      unmapped: 0,
+      readFailed: 0,
+      databaseFailed: 0,
+      deleted: 1,
+      deleteFailed: 0,
+    },
+  ];
+  const fetchImpl = async (_url, request) => {
+    requests.push(JSON.parse(request.body));
+    const index = requests.length - 1;
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        ok: true,
+        summary: summaries[index],
+        nextCursor: index === 0 ? "cursor-2" : null,
+        hasMore: index === 0,
+      }),
+    };
+  };
+  const options = parseArguments([
+    "--batch-size=10",
+    "--max-pages",
+    "3",
+    "--delete-after-commit",
+  ]);
+  const result = await runReplay(options, {
+    fetchImpl,
+    environment: {
+      SIDESTREAM_BASE_URL: "https://sidestream.example",
+      [REPLAY_SECRET_ENV]: secret,
+    },
+  });
+  assert.equal(requests.length, 2);
+  assert.deepEqual(requests[0], {
+    limit: 10,
+    disposition: "delete",
+  });
+  assert.deepEqual(requests[1], {
+    cursor: "cursor-2",
+    limit: 10,
+    disposition: "delete",
+  });
+  assert.equal(result.pages, 2);
+  assert.equal(result.listed, 4);
+  assert.equal(result.replayed, 2);
+  assert.equal(result.idempotent, 1);
+  assert.equal(result.unmapped, 1);
+  assert.equal(result.deleted, 1);
+  assert.equal(result.partialFailures, true);
+  assert.throws(() => parseArguments(["--batch-size=101"]), /invalid_batch_size/);
+  assert.throws(
+    () => resolveReplayEndpoint("http://sidestream.example"),
+    /insecure_endpoint/,
+  );
+  await assert.rejects(
+    runReplay(parseArguments([]), {
+      environment: {
+        SIDESTREAM_BASE_URL: "https://sidestream.example",
+        [REPLAY_SECRET_ENV]: secret,
+      },
+      fetchImpl: async () => ({
+        ok: false,
+        status: 500,
+        json: async () => ({ sensitiveBody: "must-not-be-read" }),
+      }),
+    }),
+    /replay_http_500/,
+  );
+  return { assertions: 14, pages: result.pages };
 }
 
-function leadKeyFromPathname(pathname) {
-  return `vercel_blob:${pathname}`;
-}
-
-function preferBlobReadWriteTokenForLocalMigration() {
-  if (process.env.SIDESTREAM_USE_BLOB_OIDC === "1") return;
-  if (!process.env.BLOB_READ_WRITE_TOKEN) return;
-
-  delete process.env.VERCEL_OIDC_TOKEN;
-}
-
-function loadEnvFile(filePath) {
-  if (!filePath) return;
-
-  const absolutePath = path.resolve(filePath);
-  let text = "";
+async function main() {
+  let options;
   try {
-    text = fs.readFileSync(absolutePath, "utf8");
+    options = parseArguments(process.argv.slice(2));
+    if (options.selfTest) {
+      const result = await selfTest();
+      console.log(JSON.stringify({
+        event: "download_lead_replay_self_test",
+        outcome: "passed",
+        ...result,
+      }));
+      return;
+    }
+    const result = await runReplay(options);
+    console.log(JSON.stringify({
+      event: "download_lead_replay_cli",
+      outcome: result.truncated || result.partialFailures ? "incomplete" : "complete",
+      ...result,
+    }));
+    if (result.truncated || result.partialFailures) process.exitCode = 1;
   } catch (error) {
-    fail(`Could not read env file ${absolutePath}: ${error.message}`);
-  }
-
-  for (const line of text.split(/\r?\n/)) {
-    const match = line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)=(.*)\s*$/);
-    if (!match) continue;
-    const [, key, rawValue] = match;
-    if (process.env[key]) continue;
-    process.env[key] = rawValue.trim().replace(/^['"]|['"]$/g, "");
+    console.error(JSON.stringify({
+      event: "download_lead_replay_cli",
+      outcome: "failed",
+      code: error instanceof ReplayCliError ? error.code : "unexpected_error",
+    }));
+    process.exitCode = 1;
   }
 }
 
-function fail(message) {
-  console.error(message);
-  process.exit(1);
-}
+const entryUrl = process.argv[1] ? pathToFileURL(process.argv[1]).href : "";
+if (import.meta.url === entryUrl) await main();
