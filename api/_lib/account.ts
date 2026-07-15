@@ -56,6 +56,11 @@ import {
   resolveLicenseEnvironment,
   type ResolvedLicenseEnvironment,
 } from "./license-environment.js";
+import {
+  attachCustomerIdentity,
+  normalizeCustomerIdentityInput,
+  type CustomerIdentityInput,
+} from "./customer-identity.js";
 import { loadLicenseWriteConfiguration } from "./maintenance.js";
 import {
   getOptionalRuntimePostgresConnectionString,
@@ -1764,41 +1769,67 @@ export async function createActivationSession(
     appVersion?: unknown;
     buildChannel?: unknown;
     source?: unknown;
+    installIdHash?: unknown;
+    supportCode?: unknown;
+    installerReceiptIdHash?: unknown;
   },
+  environmentInput?: ResolvedLicenseEnvironment,
 ) {
+  const environment = requireMatchingLicenseEnvironment(environmentInput);
+  const identity = normalizeCustomerIdentityInput(payload);
   const activationKey = randomToken(24);
   const expiresAt = addHours(new Date(), ACTIVATION_TTL_HOURS);
   const deviceId = cleanString(payload.deviceId, 240);
   if (!deviceId) throw new Error("Missing device ID");
 
-  await query(
-    `
-      insert into public.sidestream_activation_sessions (
-        activation_key,
-        device_id_hash,
-        app_version,
-        build_channel,
-        source,
-        ip_address,
-        user_agent,
-        status,
-        expires_at,
-        created_at,
-        updated_at
-      )
-      values ($1, $2, $3, $4, $5, $6::inet, $7, 'pending', $8::timestamptz, now(), now())
-    `,
-    [
-      activationKey,
-      hashPrivateIdentifier(deviceId),
-      cleanString(payload.appVersion, 80) || null,
-      cleanString(payload.buildChannel, 80) || null,
-      cleanString(payload.source, 120) || "plugin",
-      getClientIp(request) || null,
-      cleanString(request.headers["user-agent"], 500) || null,
-      expiresAt.toISOString(),
-    ],
-  );
+  await withPgClient(async (client) => {
+    await client.query("begin");
+    try {
+      const inserted = await client.query<{ id: string }>(
+        `
+          insert into public.sidestream_activation_sessions (
+            activation_key,
+            device_id_hash,
+            app_version,
+            build_channel,
+            source,
+            ip_address,
+            user_agent,
+            status,
+            expires_at,
+            created_at,
+            updated_at
+          )
+          values ($1, $2, $3, $4, $5, $6::inet, $7, 'pending', $8::timestamptz, now(), now())
+          returning id
+        `,
+        [
+          activationKey,
+          hashPrivateIdentifier(deviceId),
+          cleanString(payload.appVersion, 80) || null,
+          cleanString(payload.buildChannel, 80) || null,
+          cleanString(payload.source, 120) || "plugin",
+          getClientIp(request) || null,
+          cleanString(request.headers["user-agent"], 500) || null,
+          expiresAt.toISOString(),
+        ],
+      );
+      const activationId = inserted.rows[0]?.id;
+      if (!activationId) throw new Error("Activation insert did not return an ID");
+
+      await attachCustomerIdentity(client, {
+        environment,
+        identity,
+        activationId,
+        appVersion: payload.appVersion,
+        source: "activation_start",
+      });
+      await client.query("commit");
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    }
+  });
 
   return {
     activationKey,
@@ -1967,11 +1998,18 @@ export async function getActivationClaimContext(activationKey: string) {
 export async function claimActivationToAccount(
   activationKey: string,
   accountId: string,
+  options: {
+    environment?: ResolvedLicenseEnvironment;
+    identity?: unknown;
+  } = {},
 ) {
+  const environment = requireMatchingLicenseEnvironment(options.environment);
+  const identity = normalizeCustomerIdentityInput(options.identity);
   return withPgClient(async (client) => {
     await client.query("begin");
     try {
       const selected = await client.query<{
+        id: string;
         account_id: string | null;
         status: string;
         completed_at: Date | string | null;
@@ -1979,6 +2017,7 @@ export async function claimActivationToAccount(
       }>(
         `
           select
+            id,
             account_id,
             status,
             completed_at,
@@ -2001,6 +2040,13 @@ export async function claimActivationToAccount(
         status: row.status,
         expired: row.expired,
       })) {
+        await attachCustomerIdentity(client, {
+          environment,
+          identity,
+          activationId: row.id,
+          accountId,
+          source: "activation_claim",
+        });
         await client.query("commit");
         return { claimed: true as const };
       }
@@ -2032,6 +2078,14 @@ export async function claimActivationToAccount(
         await client.query("rollback");
         return { claimed: false as const, reason: "conflict" as const };
       }
+
+      await attachCustomerIdentity(client, {
+        environment,
+        identity,
+        activationId: updated.rows[0].id,
+        accountId,
+        source: "activation_claim",
+      });
 
       await client.query("commit");
       return { claimed: true as const };
@@ -2079,9 +2133,11 @@ export async function getActivationStatus(
     skipReconciliation?: boolean;
     environment?: ResolvedLicenseEnvironment;
     platform?: unknown;
+    identity?: unknown;
   } = {},
 ) {
   const environment = requireMatchingLicenseEnvironment(options.environment);
+  const identity = normalizeCustomerIdentityInput(options.identity);
   const result = await query<{
     activation_id: string;
     app_version: string | null;
@@ -2184,6 +2240,21 @@ export async function getActivationStatus(
     return { status: "expired" as const };
   }
 
+  // A later client may provide stable anonymous associations even when the
+  // activation was started by an older client. Persist those associations
+  // after the activation/device check, without making them device authority.
+  if (Object.keys(identity).length > 0) {
+    await attachCustomerIdentityTransaction({
+      environment,
+      identity,
+      activationId: row.activation_id,
+      accountId: row.account_id,
+      platform: options.platform,
+      appVersion: row.app_version,
+      source: "activation_status",
+    });
+  }
+
   const license = buildLicenseSummary({
     status: row.license_status,
     planKey: row.plan_key,
@@ -2230,6 +2301,15 @@ export async function getActivationStatus(
       ACTIVATION_TOKEN_REPLAY_SECONDS,
     )
   ) {
+    await attachCustomerIdentityTransaction({
+      environment,
+      identity,
+      activationId: row.activation_id,
+      accountId: row.account_id,
+      platform: options.platform,
+      appVersion: row.app_version,
+      source: "activation_status",
+    });
     return { status: "completed" as const, license };
   }
 
@@ -2247,6 +2327,7 @@ export async function getActivationStatus(
     accessTokenTtlDays: legacyClient
       ? LEGACY_LICENSE_TOKEN_TTL_DAYS
       : LICENSE_TOKEN_TTL_DAYS,
+    identity,
   });
 
   if (!issued.issued && issued.code) {
@@ -2296,8 +2377,10 @@ export async function verifyLicenseToken(
   licenseToken: string,
   deviceId: string,
   environmentInput?: ResolvedLicenseEnvironment,
+  identityInput?: unknown,
 ) {
   const environment = requireMatchingLicenseEnvironment(environmentInput);
+  const identity = normalizeCustomerIdentityInput(identityInput);
   const tokenHash = hashToken(licenseToken);
   const deviceIdHash = deviceId ? hashPrivateIdentifier(deviceId) : "";
   const accountLookup = await query<{ account_id: string }>(
@@ -2322,6 +2405,7 @@ export async function verifyLicenseToken(
       const selected = await client.query<{
         token_id: string;
         account_id: string;
+        activation_session_id: string | null;
         expires_at: Date | string;
         revoked_at: Date | string | null;
         created_at: Date | string;
@@ -2340,6 +2424,7 @@ export async function verifyLicenseToken(
           select
             t.id as token_id,
             t.account_id,
+            t.activation_session_id,
             t.expires_at,
             t.revoked_at,
             t.created_at,
@@ -2414,6 +2499,15 @@ export async function verifyLicenseToken(
         await client.query("commit");
         return { active: false as const, status: "invalid", code: "revoked" as const };
       }
+
+      await attachCustomerIdentity(client, {
+        environment,
+        identity,
+        activationId: row.activation_session_id,
+        accountId: row.account_id,
+        appVersion: row.activation_app_version,
+        source: "license_verify",
+      });
 
       const legacyTokenExpiresAt = needsLegacyLicenseCompatibility(row.activation_app_version)
         ? addDays(new Date(), LEGACY_LICENSE_TOKEN_TTL_DAYS).toISOString()
@@ -3731,6 +3825,22 @@ async function withPgClient<T>(callback: (client: PoolClient) => Promise<T>) {
   }
 }
 
+async function attachCustomerIdentityTransaction(
+  options: Parameters<typeof attachCustomerIdentity>[1],
+) {
+  return withPgClient(async (client) => {
+    await client.query("begin");
+    try {
+      const result = await attachCustomerIdentity(client, options);
+      await client.query("commit");
+      return result;
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    }
+  });
+}
+
 async function findBillingResource(
   resourceKey: string,
   client?: PoolClient,
@@ -4643,6 +4753,7 @@ async function issueLicenseTokenPair(options: {
   buildChannel?: unknown;
   previouslyIssuedAt?: Date | string | null;
   accessTokenTtlDays?: number;
+  identity: CustomerIdentityInput;
 }) {
   if (!options.deviceId) throw new Error("Cannot issue a device-less refresh credential");
 
@@ -4670,6 +4781,16 @@ async function issueLicenseTokenPair(options: {
         await client.query("commit");
         return { issued: false as const, code: binding.code };
       }
+
+      await attachCustomerIdentity(client, {
+        environment,
+        identity: options.identity,
+        activationId: options.activationId,
+        accountId: options.accountId,
+        platform: options.platform,
+        appVersion: options.appVersion,
+        source: "activation_status",
+      });
 
       await client.query("select pg_advisory_xact_lock(hashtext($1))", [
         `activation_token:${options.activationId}`,
@@ -4825,12 +4946,14 @@ export async function refreshLicenseToken(
   refreshToken: string,
   deviceId: string,
   environmentInput?: ResolvedLicenseEnvironment,
+  identityInput?: unknown,
 ) {
   if (!refreshToken || !deviceId) {
     return { active: false as const, status: "invalid", code: "invalid_token" as const };
   }
 
   const environment = requireMatchingLicenseEnvironment(environmentInput);
+  const identity = normalizeCustomerIdentityInput(identityInput);
   const refreshTokenHash = hashToken(refreshToken);
   const deviceIdHash = hashPrivateIdentifier(deviceId);
   const accountLookup = await query<{ account_id: string }>(
@@ -5024,6 +5147,14 @@ export async function refreshLicenseToken(
           await client.query("rollback");
           return { active: false as const, status: "invalid", code: "invalid_token" as const };
         }
+        await attachCustomerIdentity(client, {
+          environment,
+          identity,
+          activationId: replayRow.activation_session_id,
+          accountId: replayRow.account_id,
+          appVersion: replayRow.activation_app_version,
+          source: "license_refresh",
+        });
         await client.query("commit");
         return {
           active: true as const,
@@ -5091,6 +5222,15 @@ export async function refreshLicenseToken(
           REFRESH_RETRY_GRACE_SECONDS,
         ],
       );
+
+      await attachCustomerIdentity(client, {
+        environment,
+        identity,
+        activationId: credential.activation_session_id,
+        accountId: credential.account_id,
+        appVersion: credential.activation_app_version,
+        source: "license_refresh",
+      });
 
       await client.query("commit");
       return {
