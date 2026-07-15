@@ -33,6 +33,8 @@ const CONTROLLED_ENV_NAMES = [
   "POSTGRES_POOL_MAX",
   "SIDESTREAM_LICENSE_HASH_SECRET",
   "SIDESTREAM_DEVICE_POLICY_MODE",
+  "SIDESTREAM_LEGACY_SUBSCRIPTION_PRICE_IDS",
+  "SIDESTREAM_LEGACY_SUBSCRIPTION_PRODUCT_IDS",
   "STRIPE_SECRET_KEY",
   "STRIPE_WEBHOOK_SECRET",
   "VERCEL_OIDC_TOKEN",
@@ -84,12 +86,17 @@ test("single-device entitlement transactions hold in disposable Postgres", {
         "sidestream_account_sessions",
         "sidestream_accounts",
         "sidestream_activation_sessions",
+        "sidestream_api_rate_limits",
         "sidestream_billing_resources",
+        "sidestream_checkout_intents",
         "sidestream_device_transfers",
+        "sidestream_download_lead_idempotency",
+        "sidestream_download_lead_replay_receipts",
         "sidestream_download_leads",
         "sidestream_installer_requests",
         "sidestream_license_tokens",
         "sidestream_licenses",
+        "sidestream_schema_migrations",
         "sidestream_stripe_events",
       ]);
 
@@ -103,7 +110,7 @@ test("single-device entitlement transactions hold in disposable Postgres", {
         `,
         [schema],
       );
-      assert.equal(rls.rows.length, 11);
+      assert.equal(rls.rows.length, 16);
       assert.equal(rls.rows.every((row) => row.relrowsecurity), true);
     });
 
@@ -624,6 +631,8 @@ test("single-device entitlement transactions hold in disposable Postgres", {
         payment_status: "paid",
         customer: "cus_exact_fulfillment",
         payment_intent: "pi_exact_fulfillment",
+        amount_total: 999,
+        currency: "usd",
         subscription: null,
         customer_details: {
           email: fulfillmentFixture.email,
@@ -679,6 +688,38 @@ test("single-device entitlement transactions hold in disposable Postgres", {
             },
           },
         },
+        paymentIntents: {
+          async retrieve(paymentIntentId) {
+            assert.equal(paymentIntentId, "pi_exact_fulfillment");
+            return {
+              id: paymentIntentId,
+              customer: "cus_exact_fulfillment",
+              amount_received: 999,
+              currency: "usd",
+              status: "succeeded",
+              latest_charge: "ch_exact_fulfillment",
+            };
+          },
+        },
+        charges: {
+          async retrieve(chargeId) {
+            assert.equal(chargeId, "ch_exact_fulfillment");
+            return {
+              id: chargeId,
+              customer: "cus_exact_fulfillment",
+              payment_intent: "pi_exact_fulfillment",
+              currency: "usd",
+              amount_refunded: 0,
+              paid: true,
+              disputed: false,
+            };
+          },
+        },
+        disputes: {
+          async list() {
+            return { data: [], has_more: false };
+          },
+        },
       });
       const fulfilled = await accountModule.fulfillCheckoutSession(
         "cs_exact_fulfillment",
@@ -715,12 +756,40 @@ test("single-device entitlement transactions hold in disposable Postgres", {
       const subscriptionFixture = await seedAccount(databasePool, schema, {
         features: { singleDevicePolicy: supportPolicy },
       });
+      process.env.SIDESTREAM_LEGACY_SUBSCRIPTION_PRICE_IDS = "price_LegacyIntegration";
+      process.env.SIDESTREAM_LEGACY_SUBSCRIPTION_PRODUCT_IDS = "prod_LegacyIntegration";
+      accountModule.__setIntegrationStripeClient({
+        prices: {
+          async retrieve(priceId) {
+            assert.equal(priceId, "price_LegacyIntegration");
+            return {
+              id: priceId,
+              active: true,
+              type: "recurring",
+              product: "prod_LegacyIntegration",
+              recurring: { interval: "month", interval_count: 1, usage_type: "licensed" },
+              currency: "usd",
+              unit_amount: 999,
+            };
+          },
+        },
+        products: {
+          async retrieve(productId) {
+            assert.equal(productId, "prod_LegacyIntegration");
+            return { id: productId, active: true, deleted: false };
+          },
+        },
+      });
       await accountModule.upsertLicenseFromSubscription({
         id: subscriptionFixture.subscriptionId,
         customer: "cus_subscription_replay",
         status: "active",
-        items: { data: [{ price: { lookup_key: "sidestream_pro" } }] },
+        items: {
+          data: [{ price: "price_LegacyIntegration", quantity: 1 }],
+          has_more: false,
+        },
       }, subscriptionFixture.accountId);
+      accountModule.__setIntegrationStripeClient(null);
       const subscriptionFeatures = await licenseFeatures(
         databasePool,
         schema,
@@ -740,12 +809,25 @@ test("single-device entitlement transactions hold in disposable Postgres", {
           features: { singleDevicePolicy: supportPolicy },
         },
       );
-      await accountModule.__upsertLicenseFromOneTimeCheckoutSession({
+      const oneTimeUpsert = await accountModule.__upsertLicenseFromOneTimeCheckoutSession({
         accountId: checkoutFixture.accountId,
-        customerId: "cus_checkout_replay",
+        customerId: checkoutLicense.customerId,
         checkoutSessionId: "cs_support_replay",
-        paymentIntentId: "pi_support_replay",
+        paymentFacts: {
+          paymentIntentId: "pi_support_replay",
+          chargeId: "ch_support_replay",
+          customerId: checkoutLicense.customerId,
+          amountPaid: 999,
+          amountRefunded: 0,
+          currency: "usd",
+          paymentProven: true,
+          disputeStatus: "none",
+        },
+        noPaymentRequired: false,
+        currency: "usd",
+        eventWatermark: null,
       }, databasePool);
+      assert.equal(oneTimeUpsert.fulfilled, true);
       const checkoutFeatures = await licenseFeatures(
         databasePool,
         schema,
@@ -859,10 +941,28 @@ async function applyFullMigrationChain(pool, schema) {
 }
 
 async function loadAccountModuleForSchema(schema) {
+  const temporaryModuleDirectory = await mkdtemp(
+    join(repositoryRoot, "tests", ".single-device-postgres-"),
+  );
+  const postgresUrl = pathToFileURL(
+    join(repositoryRoot, "api", "_lib", "postgres.ts"),
+  ).href;
+  let maintenanceSource = rewritePublicSchema(
+    await readFile(join(repositoryRoot, "api", "_lib", "maintenance.ts"), "utf8"),
+    schema,
+  );
+  maintenanceSource = maintenanceSource.replaceAll(
+    JSON.stringify("./postgres.js"),
+    JSON.stringify(postgresUrl),
+  );
+  const maintenancePath = join(temporaryModuleDirectory, "maintenance-under-test.ts");
+  await writeFile(maintenancePath, maintenanceSource, { mode: 0o600 });
   const sourceImports = {
     "./entitlement.js": pathToFileURL(join(repositoryRoot, "api", "_lib", "entitlement.ts")).href,
     "./device-policy.js": pathToFileURL(join(repositoryRoot, "api", "_lib", "device-policy.ts")).href,
     "./license-environment.js": pathToFileURL(join(repositoryRoot, "api", "_lib", "license-environment.ts")).href,
+    "./maintenance.js": pathToFileURL(maintenancePath).href,
+    "./postgres.js": postgresUrl,
   };
   // Runtime SQL deliberately qualifies `public`; rewrite only a disposable
   // source copy so the real transaction functions target this run's schema.
@@ -874,10 +974,7 @@ async function loadAccountModuleForSchema(schema) {
   }
   source += `
 export async function __closeIntegrationPool() {
-  if (pool) {
-    await pool.end();
-    pool = null;
-  }
+  await getPostgresPool().end();
 }
 export function __setIntegrationStripeClient(value: Stripe | null) {
   stripeClient = value;
@@ -885,9 +982,6 @@ export function __setIntegrationStripeClient(value: Stripe | null) {
 export { upsertLicenseFromOneTimeCheckoutSession as __upsertLicenseFromOneTimeCheckoutSession };
 `;
 
-  const temporaryModuleDirectory = await mkdtemp(
-    join(repositoryRoot, "tests", ".single-device-postgres-"),
-  );
   const modulePath = join(temporaryModuleDirectory, "account-under-test.ts");
   await writeFile(modulePath, source, { mode: 0o600 });
   const accountModule = await import(`${pathToFileURL(modulePath).href}?schema=${schema}`);
@@ -963,6 +1057,7 @@ async function seedAccount(pool, schema, options = {}) {
 
 async function seedLicense(pool, schema, accountId, options = {}) {
   const suffix = randomBytes(8).toString("hex");
+  const customerId = `cus_${suffix}`;
   const subscriptionId = options.subscriptionId === null
     ? null
     : options.subscriptionId || `sub_${suffix}`;
@@ -976,24 +1071,32 @@ async function seedLicense(pool, schema, accountId, options = {}) {
         stripe_payment_intent_id,
         plan_key,
         status,
+        entitlement_status,
+        status_reason,
+        revoked_at,
         features,
         created_at,
         updated_at
-      ) values ($1, $2, $3, $4, $5, 'sidestream_pro', $6, $7::jsonb, now(), $8::timestamptz)
+      ) values (
+        $1, $2, $3, $4, $5, 'sidestream_pro', $6, $7,
+        'integration_fixture', case when $7 = 'revoked' then now() else null end,
+        $8::jsonb, now(), $9::timestamptz
+      )
       returning id
     `,
     [
       accountId,
-      `cus_${suffix}`,
+      customerId,
       subscriptionId,
       options.checkoutSessionId || null,
       options.paymentIntentId || null,
       options.status || "active",
+      options.entitlementStatus || (options.status === "canceled" ? "revoked" : "active"),
       JSON.stringify(options.features || {}),
       (options.updatedAt || new Date()).toISOString(),
     ],
   );
-  return { licenseId: result.rows[0].id, subscriptionId };
+  return { licenseId: result.rows[0].id, subscriptionId, customerId };
 }
 
 async function seedActivation(pool, schema, fixture, options) {

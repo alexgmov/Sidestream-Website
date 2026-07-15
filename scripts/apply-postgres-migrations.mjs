@@ -119,6 +119,12 @@ export function classifyMigrationState(migrations, ledgerRows) {
   }));
 }
 
+export function migrationSqlForTransaction(sql) {
+  const trimmed = sql.trim();
+  const wrapped = /^begin\s*;\s*([\s\S]*?)\s*commit\s*;$/i.exec(trimmed);
+  return wrapped ? `${wrapped[1].trim()}\n` : sql;
+}
+
 export function selectMigrationDatabase(environment = process.env) {
   for (const environmentVariable of [
     ...DIRECT_DATABASE_ENV_NAMES,
@@ -260,7 +266,7 @@ async function applyPendingMigrations(client, migrations) {
     const startedAt = process.hrtime.bigint();
     await client.query("begin");
     try {
-      await client.query(migration.sql);
+      await client.query(migrationSqlForTransaction(migration.sql));
       const durationMs = Number((process.hrtime.bigint() - startedAt) / 1_000_000n);
       await client.query(
         `

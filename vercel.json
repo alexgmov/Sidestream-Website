@@ -5,6 +5,20 @@
   "buildCommand": "npm run build",
   "devCommand": "npm run dev -- --host 127.0.0.1 --port $PORT",
   "outputDirectory": "dist",
+  "crons": [
+    {
+      "path": "/api/internal/stripe-events/process",
+      "schedule": "*/5 * * * *"
+    },
+    {
+      "path": "/api/internal/download-leads/replay",
+      "schedule": "*/10 * * * *"
+    },
+    {
+      "path": "/api/internal/maintenance",
+      "schedule": "13 4 * * *"
+    }
+  ],
   "redirects": [
     {
       "source": "/index.html",

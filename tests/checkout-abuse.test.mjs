@@ -504,6 +504,45 @@ class RecordingStripe {
         default_price: "price_checkout_test",
       }),
     };
+    this.paymentIntents = {
+      retrieve: async (paymentIntentId) => {
+        this.reads.push({ operation: "paymentIntents.retrieve", paymentIntentId });
+        const session = [...this.#sessions.values()].find(
+          (candidate) => candidate.payment_intent === paymentIntentId,
+        );
+        if (!session) throw new Error(`Unknown Stripe test PaymentIntent ${paymentIntentId}`);
+        return {
+          id: paymentIntentId,
+          customer: session.customer,
+          amount_received: 999,
+          currency: "usd",
+          status: "succeeded",
+          latest_charge: `ch_${paymentIntentId.slice(3)}`,
+        };
+      },
+    };
+    this.charges = {
+      retrieve: async (chargeId) => {
+        this.reads.push({ operation: "charges.retrieve", chargeId });
+        const paymentIntentId = `pi_${chargeId.slice(3)}`;
+        const session = [...this.#sessions.values()].find(
+          (candidate) => candidate.payment_intent === paymentIntentId,
+        );
+        if (!session) throw new Error(`Unknown Stripe test Charge ${chargeId}`);
+        return {
+          id: chargeId,
+          customer: session.customer,
+          payment_intent: paymentIntentId,
+          currency: "usd",
+          amount_refunded: 0,
+          paid: true,
+          disputed: false,
+        };
+      },
+    };
+    this.disputes = {
+      list: async () => ({ data: [], has_more: false }),
+    };
     this.checkout = {
       sessions: {
         create: async (params, options = {}) => {
@@ -522,6 +561,8 @@ class RecordingStripe {
             customer_details: null,
             customer_email: null,
             payment_intent: `pi_${id}`,
+            amount_total: 999,
+            currency: "usd",
             subscription: null,
             expires_at: expiresAt,
             metadata: { ...(params.metadata || {}) },
@@ -695,6 +736,12 @@ async function loadRuntimeModules() {
         join(repositoryRoot, "api", "_lib", "postgres.ts"),
       ).href,
     };
+    imports["./maintenance.js"] = pathToFileURL(await writeAdaptedModule(
+      temporaryModuleDirectory,
+      "maintenance",
+      join(repositoryRoot, "api", "_lib", "maintenance.ts"),
+      { "./postgres.js": imports["./postgres.js"] },
+    )).href;
     let source = await readFile(
       join(repositoryRoot, "api", "_lib", "account.ts"),
       "utf8",
@@ -713,6 +760,13 @@ export function __setCheckoutAbuseStripeClient(value: Stripe | null) {
     await rm(temporaryModuleDirectory, { recursive: true, force: true });
     throw error;
   }
+}
+
+async function writeAdaptedModule(directory, name, sourcePath, replacements) {
+  const source = replaceImports(await readFile(sourcePath, "utf8"), replacements);
+  const destination = join(directory, `${name}-under-test.ts`);
+  await writeFile(destination, source, { mode: 0o600 });
+  return destination;
 }
 
 function replaceImports(source, imports) {

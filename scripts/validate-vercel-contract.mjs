@@ -1,0 +1,167 @@
+#!/usr/bin/env node
+
+import { access, readFile, readdir } from "node:fs/promises";
+import path from "node:path";
+import { pathToFileURL } from "node:url";
+
+const REPOSITORY_ROOT = path.resolve(".");
+const INTERNAL_CRONS = Object.freeze([
+  {
+    path: "/api/internal/stripe-events/process",
+    schedule: "*/5 * * * *",
+    source: "api/internal/stripe-events/process.ts",
+  },
+  {
+    path: "/api/internal/download-leads/replay",
+    schedule: "*/10 * * * *",
+    source: "api/internal/download-leads/replay.ts",
+  },
+  {
+    path: "/api/internal/maintenance",
+    schedule: "13 4 * * *",
+    source: "api/internal/maintenance.ts",
+  },
+]);
+
+const RELEASE_SOURCES = Object.freeze([
+  "api/download.ts",
+  "api/releases/latest.ts",
+  "api/_lib/release-manifest.ts",
+  "data/release-manifest.json",
+  "data/release-manifest.windows.json",
+]);
+
+export async function validateVercelContract(root = REPOSITORY_ROOT) {
+  const vercelPath = path.join(root, "vercel.json");
+  const vercel = JSON.parse(await readFile(vercelPath, "utf8"));
+  const configuredCrons = Array.isArray(vercel.crons) ? vercel.crons : [];
+  requireCondition(
+    configuredCrons.length === INTERNAL_CRONS.length,
+    `vercel.json must configure exactly ${INTERNAL_CRONS.length} protected internal crons`,
+  );
+
+  for (const expected of INTERNAL_CRONS) {
+    const configured = configuredCrons.find((cron) => cron?.path === expected.path);
+    requireCondition(Boolean(configured), `Missing Vercel cron ${expected.path}`);
+    requireCondition(
+      configured.schedule === expected.schedule,
+      `Unexpected schedule for ${expected.path}`,
+    );
+
+    const source = await readFile(path.join(root, expected.source), "utf8");
+    requireCondition(/CRON_SECRET/.test(source), `${expected.source} must use CRON_SECRET`);
+    requireCondition(/authorization/i.test(source), `${expected.source} must inspect authorization`);
+    requireCondition(/Bearer /.test(source), `${expected.source} must require Bearer auth`);
+    requireCondition(
+      /(?:method|toUpperCase\(\))\s*!==\s*"GET"/.test(source),
+      `${expected.source} must explicitly admit Vercel Cron GET`,
+    );
+    requireCondition(
+      !/SIDESTREAM_(?:DOWNLOAD_LEADS_REPLAY|STRIPE_EVENTS_PROCESS|MAINTENANCE)_SECRET/.test(source),
+      `${expected.source} must not introduce a second scheduler secret`,
+    );
+  }
+
+  const internalRouteFiles = await listTypeScriptFiles(path.join(root, "api", "internal"));
+  const expectedRouteFiles = INTERNAL_CRONS.map((cron) => cron.source).sort();
+  const actualRouteFiles = internalRouteFiles
+    .map((filename) => path.relative(root, filename).split(path.sep).join("/"))
+    .sort();
+  requireCondition(
+    JSON.stringify(actualRouteFiles) === JSON.stringify(expectedRouteFiles),
+    `Every api/internal route must be represented by a protected cron: ${actualRouteFiles.join(", ")}`,
+  );
+
+  const authTestSource = await readFile(path.join(root, "tests/vercel-contract.test.mjs"), "utf8");
+  for (const expected of INTERNAL_CRONS) {
+    requireCondition(
+      authTestSource.includes(expected.path),
+      `Missing auth coverage marker for ${expected.path}`,
+    );
+  }
+  requireCondition(
+    authTestSource.includes("missing and incorrect CRON_SECRET"),
+    "Cron contract tests must cover missing and incorrect authorization",
+  );
+  requireCondition(
+    authTestSource.includes("GET-only Vercel cron routes"),
+    "Cron contract tests must cover the allowed method surface",
+  );
+
+  for (const filename of RELEASE_SOURCES) {
+    await access(path.join(root, filename));
+  }
+  const [downloadSource, releasesSource, sharedReleaseSource] = await Promise.all([
+    readFile(path.join(root, "api/download.ts"), "utf8"),
+    readFile(path.join(root, "api/releases/latest.ts"), "utf8"),
+    readFile(path.join(root, "api/_lib/release-manifest.ts"), "utf8"),
+  ]);
+  requireCondition(
+    downloadSource.includes('from "./_lib/release-manifest.js"'),
+    "/api/download must use the shared release resolver",
+  );
+  requireCondition(
+    releasesSource.includes('from "../_lib/release-manifest.js"'),
+    "/api/releases/latest must use the shared release resolver",
+  );
+  requireCondition(
+    sharedReleaseSource.includes('"release-manifest.json"') &&
+      sharedReleaseSource.includes('"release-manifest.windows.json"'),
+    "The release resolver must include both manifest source files",
+  );
+
+  const [macManifest, windowsManifest] = await Promise.all([
+    readJson(path.join(root, "data/release-manifest.json")),
+    readJson(path.join(root, "data/release-manifest.windows.json")),
+  ]);
+  requireCondition(
+    macManifest?.artifact?.url === "https://sidestream.tv/api/download",
+    "The Mac manifest must point to /api/download",
+  );
+  requireCondition(
+    windowsManifest?.artifact?.url ===
+      "https://sidestream.tv/api/download?platform=win32-x64",
+    "The Windows manifest must point to the platform-scoped download route",
+  );
+  await access(path.join(root, "scripts/verify-vercel-build.mjs"));
+
+  return {
+    crons: INTERNAL_CRONS.length,
+    internalRoutes: actualRouteFiles.length,
+    releaseEndpoints: 2,
+  };
+}
+
+async function listTypeScriptFiles(directory) {
+  const files = [];
+  const entries = await readdir(directory, { withFileTypes: true });
+  for (const entry of entries) {
+    const entryPath = path.join(directory, entry.name);
+    if (entry.isDirectory()) files.push(...await listTypeScriptFiles(entryPath));
+    else if (entry.isFile() && entry.name.endsWith(".ts")) files.push(entryPath);
+  }
+  return files;
+}
+
+async function readJson(filename) {
+  return JSON.parse(await readFile(filename, "utf8"));
+}
+
+function requireCondition(condition, message) {
+  if (!condition) throw new Error(message);
+}
+
+async function main() {
+  const result = await validateVercelContract();
+  console.log(
+    `PASS: Vercel contract covers ${result.crons} crons, ${result.internalRoutes} internal routes, and ${result.releaseEndpoints} release endpoints.`,
+  );
+}
+
+const entryUrl = process.argv[1] ? pathToFileURL(path.resolve(process.argv[1])).href : "";
+if (import.meta.url === entryUrl) {
+  main().catch((error) => {
+    console.error(error instanceof Error ? error.message : error);
+    process.exitCode = 1;
+  });
+}

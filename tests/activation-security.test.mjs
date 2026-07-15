@@ -83,6 +83,45 @@ test("activation, claim, Checkout, and credential invariants execute against Pos
           },
         },
       },
+      paymentIntents: {
+        async retrieve(paymentIntentId) {
+          const session = [...checkoutSessions.values()].find(
+            (candidate) => candidate.payment_intent === paymentIntentId,
+          );
+          if (!session) throw new Error(`Unexpected PaymentIntent retrieval: ${paymentIntentId}`);
+          return {
+            id: paymentIntentId,
+            customer: session.customer,
+            amount_received: 999,
+            currency: "usd",
+            status: "succeeded",
+            latest_charge: `ch_${paymentIntentId.slice(3)}`,
+          };
+        },
+      },
+      charges: {
+        async retrieve(chargeId) {
+          const paymentIntentId = `pi_${chargeId.slice(3)}`;
+          const session = [...checkoutSessions.values()].find(
+            (candidate) => candidate.payment_intent === paymentIntentId,
+          );
+          if (!session) throw new Error(`Unexpected Charge retrieval: ${chargeId}`);
+          return {
+            id: chargeId,
+            customer: session.customer,
+            payment_intent: paymentIntentId,
+            currency: "usd",
+            amount_refunded: 0,
+            paid: true,
+            disputed: false,
+          };
+        },
+      },
+      disputes: {
+        async list() {
+          return { data: [], has_more: false };
+        },
+      },
     });
 
     await t.test("attacker-link and signed-in restore GETs are strictly read-only", async () => {
@@ -754,19 +793,25 @@ async function loadRuntimeModules() {
   );
   try {
     const helperImports = {
-    "./entitlement.js": pathToFileURL(
-      join(repositoryRoot, "api", "_lib", "entitlement.ts"),
-    ).href,
-    "./device-policy.js": pathToFileURL(
-      join(repositoryRoot, "api", "_lib", "device-policy.ts"),
-    ).href,
-    "./license-environment.js": pathToFileURL(
-      join(repositoryRoot, "api", "_lib", "license-environment.ts"),
-    ).href,
-    "./postgres.js": pathToFileURL(
-      join(repositoryRoot, "api", "_lib", "postgres.ts"),
-    ).href,
-  };
+      "./entitlement.js": pathToFileURL(
+        join(repositoryRoot, "api", "_lib", "entitlement.ts"),
+      ).href,
+      "./device-policy.js": pathToFileURL(
+        join(repositoryRoot, "api", "_lib", "device-policy.ts"),
+      ).href,
+      "./license-environment.js": pathToFileURL(
+        join(repositoryRoot, "api", "_lib", "license-environment.ts"),
+      ).href,
+      "./postgres.js": pathToFileURL(
+        join(repositoryRoot, "api", "_lib", "postgres.ts"),
+      ).href,
+    };
+    helperImports["./maintenance.js"] = await writeRouteModule(
+      temporaryModuleDirectory,
+      "maintenance",
+      join(repositoryRoot, "api", "_lib", "maintenance.ts"),
+      { "./postgres.js": helperImports["./postgres.js"] },
+    );
     let accountSource = await readFile(accountSourcePath, "utf8");
     accountSource = replaceImports(accountSource, helperImports);
     accountSource += `
@@ -852,8 +897,8 @@ async function seedAccount(pool, label) {
     `
       insert into public.sidestream_licenses (
         account_id, stripe_customer_id, stripe_subscription_id,
-        stripe_checkout_session_id, plan_key, status, features
-      ) values ($1, $2, null, $3, 'sidestream_pro', 'active', '{}'::jsonb)
+        stripe_checkout_session_id, plan_key, status, entitlement_status, features
+      ) values ($1, $2, null, $3, 'sidestream_pro', 'active', 'active', '{}'::jsonb)
       returning id
     `,
     [accountId, `cus_${label}`, `cs_license_${label}`],
@@ -961,6 +1006,8 @@ function checkoutSession(label, activationKey, buyer = null) {
       name: label,
     },
     payment_intent: `pi_${label}`,
+    amount_total: 999,
+    currency: "usd",
     subscription: null,
     metadata: {
       sidestream_plan: "sidestream_pro",

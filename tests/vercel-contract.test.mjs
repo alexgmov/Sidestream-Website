@@ -1,0 +1,223 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { loadInjectedModule } from "./helpers/handler-loader.mjs";
+import { invokeHandler } from "./helpers/http.mjs";
+import { validateVercelContract } from "../scripts/validate-vercel-contract.mjs";
+
+const CRON_SECRET = "integration-cron-secret";
+const INTERNAL_CRON_PATHS = Object.freeze([
+  "/api/internal/stripe-events/process",
+  "/api/internal/download-leads/replay",
+  "/api/internal/maintenance",
+]);
+
+const modules = await loadCronModules();
+
+test("the static Vercel contract includes every protected cron and both release routes", async () => {
+  const result = await validateVercelContract();
+  assert.deepEqual(result, {
+    crons: 3,
+    internalRoutes: 3,
+    releaseEndpoints: 2,
+  });
+});
+
+test("missing and incorrect CRON_SECRET authorization is rejected by every internal route", async () => {
+  const previousSecret = process.env.CRON_SECRET;
+  try {
+    process.env.CRON_SECRET = CRON_SECRET;
+    for (const route of createRoutes()) {
+      for (const authorization of [undefined, "Bearer incorrect-cron-secret"]) {
+        const result = await invokeHandler(route.handler, {
+          method: "GET",
+          url: route.path,
+          headers: authorization ? { authorization } : {},
+        });
+        assert.equal(result.response.statusCode, 401, route.path);
+      }
+      assert.equal(route.work(), 0, route.path);
+    }
+
+    delete process.env.CRON_SECRET;
+    for (const route of createRoutes()) {
+      const result = await invokeHandler(route.handler, {
+        method: "GET",
+        url: route.path,
+        headers: { authorization: `Bearer ${CRON_SECRET}` },
+      });
+      assert.equal(result.response.statusCode, 503, route.path);
+      assert.equal(route.work(), 0, route.path);
+    }
+  } finally {
+    restoreEnvironment("CRON_SECRET", previousSecret);
+  }
+});
+
+test("GET-only Vercel cron routes stay bounded while lead replay retains protected manual POST", async () => {
+  const previousSecret = process.env.CRON_SECRET;
+  try {
+    process.env.CRON_SECRET = CRON_SECRET;
+    const routes = createRoutes({ includeReplayBlob: true });
+    for (const route of routes) {
+      const result = await invokeHandler(route.handler, {
+        method: "GET",
+        url: route.path,
+        headers: { authorization: `Bearer ${CRON_SECRET}` },
+      });
+      assert.equal(result.response.statusCode, 200, route.path);
+      assert.equal(route.work(), 1, route.path);
+    }
+
+    for (const route of routes.filter((candidate) => candidate.path !== INTERNAL_CRON_PATHS[1])) {
+      const result = await invokeHandler(route.handler, {
+        method: "POST",
+        url: route.path,
+        headers: { authorization: `Bearer ${CRON_SECRET}` },
+      });
+      assert.equal(result.response.statusCode, 405, route.path);
+      assert.equal(result.response.getHeader("allow"), "GET", route.path);
+    }
+
+    const replay = routes.find((route) => route.path === INTERNAL_CRON_PATHS[1]);
+    const invalidMethod = await invokeHandler(replay.handler, {
+      method: "PUT",
+      url: replay.path,
+      headers: { authorization: `Bearer ${CRON_SECRET}` },
+    });
+    assert.equal(invalidMethod.response.statusCode, 405);
+    assert.equal(invalidMethod.response.getHeader("allow"), "GET, POST");
+    assert.deepEqual(replay.pageInput(), {
+      prefix: "sidestream/download-leads/",
+      cursor: undefined,
+      limit: 25,
+    });
+    assert.equal(replay.deleted(), 1);
+  } finally {
+    restoreEnvironment("CRON_SECRET", previousSecret);
+  }
+});
+
+function createRoutes(options = {}) {
+  let stripeRuns = 0;
+  let maintenanceRuns = 0;
+  let replayRuns = 0;
+  let replayDeletes = 0;
+  let replayPageInput = null;
+  const blob = {
+    pathname: "sidestream/download-leads/lead_v1_test.json",
+    etag: "test-etag",
+    size: 2,
+    uploadedAt: new Date("2026-07-14T00:00:00.000Z"),
+  };
+
+  return [
+    {
+      path: INTERNAL_CRON_PATHS[0],
+      handler: modules.stripe.createStripeEventProcessHandler({
+        drainQueue: async () => {
+          stripeRuns += 1;
+          return { claimed: 0, processed: 0, ignored: 0, retryable: 0, deadLetter: 0 };
+        },
+      }),
+      work: () => stripeRuns,
+    },
+    {
+      path: INTERNAL_CRON_PATHS[1],
+      handler: modules.replay.createDownloadLeadReplayHandler({
+        listPage: async (input) => {
+          replayRuns += 1;
+          replayPageInput = input;
+          return {
+            blobs: options.includeReplayBlob ? [blob] : [],
+            hasMore: false,
+          };
+        },
+        readBlob: async () => "{}",
+        transaction: async (callback) => callback({}),
+        upsertLead: async () => ({ outcome: "inserted" }),
+        deleteBlob: async () => {
+          replayDeletes += 1;
+        },
+        log: () => {},
+      }),
+      work: () => replayRuns,
+      deleted: () => replayDeletes,
+      pageInput: () => replayPageInput,
+    },
+    {
+      path: INTERNAL_CRON_PATHS[2],
+      handler: modules.maintenance.createMaintenanceHandler({
+        getConfiguration: () => ({}),
+        runJob: async () => {
+          maintenanceRuns += 1;
+          return {
+            outcome: "completed",
+            durationMs: 1,
+            batchSize: 25,
+            hasMore: false,
+            counts: {},
+          };
+        },
+        log: () => {},
+        clock: () => 0,
+      }),
+      work: () => maintenanceRuns,
+    },
+  ];
+}
+
+async function loadCronModules() {
+  class DownloadLeadConfigurationError extends Error {}
+  class DownloadLeadValidationError extends Error {
+    constructor(code, message) {
+      super(message);
+      this.code = code;
+    }
+  }
+  const [stripe, replay, maintenance] = await Promise.all([
+    loadInjectedModule(new URL("../api/internal/stripe-events/process.ts", import.meta.url), {
+      "../../_lib/stripe-events.js": {
+        drainStripeEventQueue: async () => {
+          throw new Error("The test must inject a queue drain");
+        },
+      },
+    }),
+    loadInjectedModule(new URL("../api/internal/download-leads/replay.ts", import.meta.url), {
+      "@vercel/blob": {
+        del: async () => {},
+        get: async () => null,
+        list: async () => ({ blobs: [], hasMore: false }),
+      },
+      "../../_lib/download-leads.js": {
+        classifyLeadBlobPathname: () => "canonical-v2",
+        createReplayReceiptHash: () => "a".repeat(64),
+        DownloadLeadConfigurationError,
+        DownloadLeadValidationError,
+        getDownloadLeadBlobPrefix: () => "sidestream/download-leads",
+        getDownloadLeadHashSecret: () => "lead-test-secret-that-is-long-enough",
+        getDeterministicLeadBlobPathname: () =>
+          "sidestream/download-leads/lead_v1_test.json",
+        MAX_REPLAY_BLOB_BYTES: 16 * 1024,
+        parseReplayBlob: () => ({ leadKey: "lead_v1_test" }),
+        upsertCanonicalDownloadLead: async () => ({ outcome: "inserted" }),
+      },
+      "../../_lib/postgres.js": {
+        withPostgresTransaction: async (callback) => callback({}),
+      },
+    }),
+    loadInjectedModule(new URL("../api/internal/maintenance.ts", import.meta.url), {
+      "../_lib/maintenance.js": {
+        loadMaintenanceConfiguration: () => ({}),
+        runMaintenanceJob: async () => {
+          throw new Error("The test must inject a maintenance job");
+        },
+      },
+    }),
+  ]);
+  return { stripe, replay, maintenance };
+}
+
+function restoreEnvironment(name, value) {
+  if (value === undefined) delete process.env[name];
+  else process.env[name] = value;
+}

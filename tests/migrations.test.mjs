@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   classifyMigrationState,
   loadMigrationFiles,
+  migrationSqlForTransaction,
   parseMigrationArguments,
   selectMigrationDatabase,
   validateMigrationFiles,
@@ -35,7 +36,7 @@ function knownBaselineSnapshot(rowSecurityEnabled = false) {
 
 test("migration files are ordered, checksummed, and append-only baseline files are pinned", async () => {
   const migrations = validateMigrationFiles(await loadMigrationFiles());
-  assert.equal(migrations.length, 11);
+  assert.equal(migrations.length, 18);
   assert.deepEqual(
     migrations.map((migration) => migration.filename),
     [...migrations.map((migration) => migration.filename)].sort(),
@@ -45,6 +46,17 @@ test("migration files are ordered, checksummed, and append-only baseline files a
   assert.ok(migrations.some((migration) =>
     migration.filename === "20260713200000_add_api_operational_controls.sql"
   ));
+  for (const filename of [
+    "20260713201000_enforce_activation_credential_invariants.sql",
+    "20260713202000_harden_stripe_event_processing.sql",
+    "20260713203000_add_checkout_intents.sql",
+    "20260713204000_add_entitlement_lifecycle.sql",
+    "20260713205000_harden_download_leads.sql",
+    "20260713206000_add_maintenance_indexes.sql",
+    "20260714200000_remove_redundant_download_lead_key_unique.sql",
+  ]) {
+    assert.ok(migrations.some((migration) => migration.filename === filename));
+  }
 });
 
 test("ledger classification reports pending files and rejects every checksum mismatch", async () => {
@@ -129,12 +141,20 @@ test("runner holds one global lock and persists each ledger row with its migrati
   const lock = source.indexOf('client.query("select pg_advisory_lock(hashtext($1))"');
   const loop = source.indexOf("for (const migration of statuses.filter");
   const begin = source.indexOf('client.query("begin")', loop);
-  const sql = source.indexOf("client.query(migration.sql)", begin);
+  const sql = source.indexOf(
+    "client.query(migrationSqlForTransaction(migration.sql))",
+    begin,
+  );
   const ledger = source.indexOf(`insert into \${MIGRATION_LEDGER}`, sql);
   const commit = source.indexOf('client.query("commit")', ledger);
   assert.ok(lock >= 0 && loop > lock && begin > loop && sql > begin && ledger > sql && commit > ledger);
   assert.match(source, /Migration checksum drift detected/);
   assert.match(source, /explicit --baseline/);
+  assert.equal(
+    migrationSqlForTransaction("begin;\nselect 1;\ncommit;"),
+    "select 1;\n",
+  );
+  assert.equal(migrationSqlForTransaction("select 1;"), "select 1;");
 });
 
 test("operational migration defines the immutable ledger contract and supporting indexes", async () => {

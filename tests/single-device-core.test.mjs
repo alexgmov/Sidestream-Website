@@ -196,7 +196,7 @@ test("account core serializes every credential path on the account namespace", a
   assert.match(source, /sidestream_device_policy_observation/);
 
   const activeLicenseOrder = source.indexOf(
-    "case when l.status in ('active', 'trialing') then 0 else 1 end",
+    "when l.entitlement_status = 'active'",
   );
   const issuance = source.indexOf("const issued = await issueLicenseTokenPair");
   assert.ok(activeLicenseOrder >= 0 && activeLicenseOrder < issuance);
