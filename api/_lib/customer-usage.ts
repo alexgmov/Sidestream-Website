@@ -926,8 +926,36 @@ function buildSourceAggregateSql(schema: string) {
         'premiere_import_completed'
       )
     group by download_key
-  ), terminals as (
-    select download_key, has_terminal,
+  ), adoption_links as (
+    select distinct download_key as user_download_key, speculative_download_key
+    from projected
+    where download_key is not null
+      and speculative_download_key is not null
+      and download_id not like 'speculative-%'
+      and speculative_download_id like 'speculative-%'
+  ), request_terminal_facts as (
+    select request.install_id_hash, request.activity_day, request.requested_at,
+      request.telemetry_event_id, request.app_version,
+      bool_or(coalesce(fact.has_finalization, false)) as has_finalization,
+      bool_or(coalesce(fact.finalized_delivered, false)) as finalized_delivered,
+      bool_or(coalesce(fact.finalized_cancelled, false)) as finalized_cancelled,
+      bool_or(coalesce(fact.finalized_import_failed, false)) as finalized_import_failed,
+      bool_or(coalesce(fact.finalized_failed, false)) as finalized_failed,
+      bool_or(coalesce(fact.legacy_completed, false)) as legacy_completed,
+      bool_or(coalesce(fact.legacy_failed, false)) as legacy_failed,
+      bool_or(coalesce(fact.legacy_cancelled, false)) as legacy_cancelled,
+      max(fact.legacy_import_failed_at) as legacy_import_failed_at,
+      max(fact.legacy_import_completed_at) as legacy_import_completed_at,
+      bool_or(coalesce(fact.has_terminal, false)) as has_terminal
+    from accepted_requests request
+    left join adoption_links adoption on adoption.user_download_key = request.download_key
+    left join terminal_facts fact
+      on fact.download_key = request.download_key
+      or fact.download_key = adoption.speculative_download_key
+    group by request.install_id_hash, request.activity_day, request.requested_at,
+      request.telemetry_event_id, request.app_version
+  ), request_outcomes as (
+    select install_id_hash, activity_day, requested_at, app_version,
       case
         when has_finalization then case
           when finalized_cancelled then 'cancelled'
@@ -943,36 +971,10 @@ function buildSourceAggregateSql(schema: string) {
         when legacy_completed then 'success'
         when legacy_cancelled then 'cancelled'
         when legacy_failed then 'failure'
-        else null
-      end as outcome
-    from terminal_facts
-  ), adoption_links as (
-    select distinct download_key as user_download_key, speculative_download_key
-    from projected
-    where download_key is not null
-      and speculative_download_key is not null
-      and download_id not like 'speculative-%'
-      and speculative_download_id like 'speculative-%'
-  ), request_outcomes as (
-    select request.install_id_hash, request.activity_day, request.requested_at,
-      request.app_version,
-      case
-        when bool_or(coalesce(direct.outcome = 'success', false)
-          or coalesce(adopted.outcome = 'success', false)) then 'success'
-        when bool_or(coalesce(direct.outcome = 'cancelled', false)
-          or coalesce(adopted.outcome = 'cancelled', false)) then 'cancelled'
-        when bool_or(coalesce(direct.outcome = 'failure', false)
-          or coalesce(adopted.outcome = 'failure', false)) then 'failure'
-        when bool_or(coalesce(direct.has_terminal, false)
-          or coalesce(adopted.has_terminal, false)) then null
+        when has_terminal then null
         else 'pending'
       end as outcome
-    from accepted_requests request
-    left join terminals direct on direct.download_key = request.download_key
-    left join adoption_links adoption on adoption.user_download_key = request.download_key
-    left join terminals adopted on adopted.download_key = adoption.speculative_download_key
-    group by request.install_id_hash, request.activity_day, request.requested_at,
-      request.telemetry_event_id, request.app_version
+    from request_terminal_facts
   ), daily_activity as (
     select install_id_hash, activity_day,
       min(occurred_at) filter (
@@ -1070,7 +1072,23 @@ async function ensureAnonymousCustomerInstall(
       row.appVersion,
     ],
   );
-  if ((await updateExisting()).rowCount) return;
+  const existing = await updateExisting();
+  if (existing.rowCount) {
+    const profileId = requiredString(
+      existing.rows[0]?.profile_id,
+      "existing install profile id",
+      36,
+    );
+    await ensureInstallIdentityLink(
+      client,
+      schema,
+      licenseNamespace,
+      row.installIdHash,
+      profileId,
+      now,
+    );
+    return;
+  }
 
   // This is the same namespace lock used by profile merges. Rechecking after
   // acquiring it makes first telemetry sighting converge on one live profile;
@@ -1078,7 +1096,23 @@ async function ensureAnonymousCustomerInstall(
   await client.query("select pg_advisory_xact_lock(hashtext($1))", [
     `sidestream_customer_profile_merge:${licenseNamespace}`,
   ]);
-  if ((await updateExisting()).rowCount) return;
+  const lockedExisting = await updateExisting();
+  if (lockedExisting.rowCount) {
+    const profileId = requiredString(
+      lockedExisting.rows[0]?.profile_id,
+      "existing install profile id",
+      36,
+    );
+    await ensureInstallIdentityLink(
+      client,
+      schema,
+      licenseNamespace,
+      row.installIdHash,
+      profileId,
+      now,
+    );
+    return;
+  }
 
   const profile = await client.query(
     `insert into ${schema}.sidestream_customer_profiles (
@@ -1111,6 +1145,45 @@ async function ensureAnonymousCustomerInstall(
       lifecycle.lastSeenAt,
     ],
   );
+  await ensureInstallIdentityLink(
+    client,
+    schema,
+    licenseNamespace,
+    row.installIdHash,
+    profileId,
+    now,
+  );
+}
+
+async function ensureInstallIdentityLink(
+  client: PoolClient,
+  schema: string,
+  licenseNamespace: LicenseNamespace,
+  installIdHash: string,
+  profileId: string,
+  now: Date,
+) {
+  const inserted = await client.query(
+    `insert into ${schema}.sidestream_customer_identity_links (
+       profile_id, license_namespace, link_type, link_value, created_at
+     ) values ($1, $2, 'install_identity_hash', $3, $4)
+     on conflict (license_namespace, link_type, link_value) do nothing
+     returning profile_id`,
+    [profileId, licenseNamespace, installIdHash, now],
+  );
+  if (inserted.rowCount) return;
+
+  const existing = await client.query(
+    `select profile_id
+     from ${schema}.sidestream_customer_identity_links
+     where license_namespace = $1
+       and link_type = 'install_identity_hash'
+       and link_value = $2`,
+    [licenseNamespace, installIdHash],
+  );
+  if (existing.rows[0]?.profile_id !== profileId) {
+    throw new Error("Telemetry install identity conflicts with its customer profile");
+  }
 }
 
 function aggregateLifecycleBounds(row: CustomerUsageDailyAggregate) {

@@ -18,6 +18,7 @@ const targetMigrations = [
 ];
 const INSTALL_HASH = "a".repeat(64);
 const UNMAPPED_INSTALL_HASH = "b".repeat(64);
+const CONTRADICTORY_INSTALL_HASH = "c".repeat(64);
 const BULK_EVENT_COUNT = 120;
 const {
   buildTelemetryPoolOptions,
@@ -127,6 +128,7 @@ test("daily usage sync is read-only, resumable, idempotent, and UTC-windowed", {
     );
     await seedInitialTelemetry(adminPool, quotedSource);
     let unseenProfileId = "";
+    let unseenSnapshot;
 
     await t.test("source aggregate egress stays bucket-bounded and crash retry converges", async () => {
       let crashed = false;
@@ -250,15 +252,35 @@ test("daily usage sync is read-only, resumable, idempotent, and UTC-windowed", {
 
     });
 
+    await t.test("linked authoritative failure overrides adopted legacy success", async () => {
+      const result = await adminPool.query(
+        `select download_attempt_count, download_outcome_count,
+           download_success_count, download_failure_count
+         from ${quotedTarget}.sidestream_customer_usage_daily
+         where license_namespace = 'test' and install_id_hash = $1
+           and activity_day = date '2026-11-01'`,
+        [CONTRADICTORY_INSTALL_HASH],
+      );
+      assert.deepEqual(result.rows[0], {
+        download_attempt_count: "1",
+        download_outcome_count: "1",
+        download_success_count: "0",
+        download_failure_count: "1",
+      });
+    });
+
     await t.test("first telemetry for an unseen install creates one anonymous profile", async () => {
       const unseen = await installUsage(adminPool, quotedTarget, UNMAPPED_INSTALL_HASH);
       unseenProfileId = unseen.profile_id;
+      unseenSnapshot = unseen;
       assert.match(unseenProfileId, /^[0-9a-f-]{36}$/);
       assert.deepEqual(unseen, {
         profile_id: unseenProfileId,
         profile_count: 1,
         install_count: 1,
+        identity_link_count: 1,
         bucket_count: 1,
+        checkpoint_count: 1,
         download_attempt_count: "1",
         download_pending_count: "1",
         usage_install_count: "1",
@@ -326,9 +348,9 @@ test("daily usage sync is read-only, resumable, idempotent, and UTC-windowed", {
       );
       assert.equal(outsideBucket.rows.length, 0);
       assert.deepEqual(await syncState(adminPool, quotedTarget), checkpointBefore);
-      assert.equal(
-        (await installUsage(adminPool, quotedTarget, UNMAPPED_INSTALL_HASH)).profile_id,
-        unseenProfileId,
+      assert.deepEqual(
+        await installUsage(adminPool, quotedTarget, UNMAPPED_INSTALL_HASH),
+        unseenSnapshot,
       );
     });
 
@@ -534,6 +556,28 @@ async function seedInitialTelemetry(pool, quotedSource) {
       eventScope: "download",
       payload: { download_id: "download-job-8" },
     }),
+    event("event-023a", "download_requested", "2026-11-01T18:06:30Z", {
+      installHash: CONTRADICTORY_INSTALL_HASH,
+      payload: {
+        download_id: "direct-authoritative-failure",
+        speculative_download_id: "speculative-legacy-success",
+        download_trigger: "result_row",
+      },
+    }),
+    event("event-023b", "download_completed", "2026-11-01T18:06:31Z", {
+      installHash: CONTRADICTORY_INSTALL_HASH,
+      eventScope: "download",
+      payload: { download_id: "speculative-legacy-success" },
+    }),
+    event("event-023c", "download_attempt_finalized", "2026-11-01T18:06:32Z", {
+      installHash: CONTRADICTORY_INSTALL_HASH,
+      eventScope: "app",
+      payload: {
+        download_id: "direct-authoritative-failure",
+        file_delivered: false,
+        user_outcome: "download_failed",
+      },
+    }),
     event("event-024", "download_requested", "2026-11-01T18:07:00Z", {
       payload: { download_id: "download-job-9", download_trigger: "result_row" },
     }),
@@ -635,9 +679,16 @@ async function installUsage(pool, quotedSchema, installHash) {
        (select count(*)::int from ${quotedSchema}.sidestream_customer_installs install_count
         where install_count.license_namespace = install.license_namespace
           and install_count.install_id_hash = install.install_id_hash) as install_count,
+       (select count(*)::int from ${quotedSchema}.sidestream_customer_identity_links identity_link
+        where identity_link.profile_id = install.profile_id
+          and identity_link.license_namespace = install.license_namespace
+          and identity_link.link_type = 'install_identity_hash'
+          and identity_link.link_value = install.install_id_hash) as identity_link_count,
        (select count(*)::int from ${quotedSchema}.sidestream_customer_usage_daily day
         where day.license_namespace = install.license_namespace
           and day.install_id_hash = install.install_id_hash) as bucket_count,
+       (select count(*)::int from ${quotedSchema}.sidestream_customer_usage_sync_state checkpoint
+        where checkpoint.license_namespace = install.license_namespace) as checkpoint_count,
        profile.download_attempt_count, profile.download_pending_count,
        profile.usage_install_count
      from ${quotedSchema}.sidestream_customer_installs install
