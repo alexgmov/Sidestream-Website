@@ -5,6 +5,11 @@ reviewed implementation and the human gates required to release it. It is not
 evidence that a production migration, Stripe configuration change, Vercel WAF
 rule, deployment, or cutover has occurred.
 
+This document is the sole production migration, baseline, backfill, cutover, and
+application-rollback procedure. It supersedes the older migration/cutover prose
+in `docs/single-device-entitlements.md`; use that document only for device-domain
+behavior, privacy, and support actions.
+
 ## Contract at a glance
 
 - Public reads and redirects remain server-owned. Runtime handlers never run
@@ -47,7 +52,7 @@ and JSON responses are `no-store`.
 | `/api/billing/receipt` | `POST` | Authenticated `200 {"url":"..."}` for the latest owned charge receipt | `401` unauthenticated, `403` customer mismatch, `404` no purchase/receipt URL, Stripe failure is a server `500` |
 | `/api/stripe/webhook` | `POST` | `200 {"received":true}` after durable insert; duplicate acknowledgment also includes `"duplicate":true` | `400` missing/invalid signature; an unhandled durable-storage failure is a server `500` and must be retried by Stripe |
 | `/api/activation/start` | `POST` | `200` with `activationKey`, 24-hour `expiresAt`, `upgradeUrl`, and `restoreUrl` | `400 invalid_request` for missing device; an unexpected dependency failure is a server `500` |
-| `/api/activation/status` | `POST` | `200` state payload: `pending`, `pending_payment`, `active`, `completed`, `not_found`, `device_mismatch`, `expired`, `transfer_required`, `transfer_limit_reached`, `device_replaced`, or `device_deactivated` | A parsed JSON body missing valid `activationKey` or `deviceId` returns `400 invalid_request`; invalid JSON/body-read failure currently escapes as an unshaped platform `5xx`, not `400`; `503` environment unavailable |
+| `/api/activation/status` | `POST` | `200` state payload: `pending`, `pending_payment`, `active`, `completed`, `not_found`, `device_mismatch`, `expired`, `transfer_required`, `transfer_limit_reached`, `device_replaced`, or `device_deactivated` | A parsed non-null JSON value missing valid `activationKey` or `deviceId` returns `400 invalid_request`; valid JSON `null`, malformed JSON, and body-read failures currently escape as an unshaped platform `5xx`, not `400`; `503` environment unavailable |
 | `/api/activation/claim` | `GET` / `POST` | GET is read-only sign-in/confirmation HTML; same-origin CSRF-valid POST restores/reconnects/transfers | `400` invalid/transfer intent; `401` sign-in required; `403` inactive or CSRF; `409` unavailable, binding changed, transfer limit, or claim conflict; `503` environment unavailable |
 | `/api/license/verify` | `POST` | `200` current credential result | `400 invalid_request`; `401 invalid_token`, `revoked`, `device_mismatch`, `device_replaced`, or `device_deactivated`; `403 license_inactive`; `503` retryable environment failure |
 | `/api/license/refresh` | `POST` | `200` atomically rotated access/refresh pair; predecessor replay is deterministic for two minutes | Same stable `400`/`401`/`403`/`503` classes as verify |
@@ -59,8 +64,9 @@ and JSON responses are `no-store`.
 | `/api/internal/maintenance` | `GET` | `200 {"ok":true,"outcome":"completed"|"locked","durationMs":n,"batchSize":n,"hasMore":boolean,"counts":{...}}` | `401 unauthorized`, `503 maintenance_unavailable`, `500 maintenance_failed` |
 
 Browser/account behavior and device support procedures are expanded in
-`docs/single-device-entitlements.md`. None of those reads processes the Stripe
-event queue.
+`docs/single-device-entitlements.md`, but its production migration/cutover prose
+is superseded by this runbook. None of those reads processes the Stripe event
+queue.
 
 ### Platform matrix
 
@@ -253,7 +259,7 @@ supports `Idempotency-Key` up to 128 characters. Atomic Postgres rate limits are
 5 per email and 20 per IP per 10 minutes. Only HMACs of limiter dimensions and
 idempotency material are stored.
 
-When Postgres is unavailable, the route writes a deterministic private Blob
+When an otherwise-valid capture cannot use Postgres, the route writes a deterministic private Blob
 under `SIDESTREAM_DOWNLOAD_LEADS_BLOB_PREFIX` (default
 `sidestream/download-leads`). It merges with ETag compare-and-swap for at most
 five attempts and rejects Blob bodies over 16 KiB. Because the database limiter
@@ -368,137 +374,198 @@ diagnosis.
 No item below has been executed merely because this runbook exists. Record the
 operator, timestamp, target, command output, and approval for each gate.
 
-1. **Review the integrated diff.** Confirm only reviewed hardening commits are
-   present; compare API methods, `vercel.json`, migration checksums, manifests,
-   and this runbook. Stop on unexplained drift. Before any production database
-   mutation, pin and preserve a schema-compatible rollback artifact. Migration
-   `20260714200000_remove_redundant_download_lead_key_unique.sql` removes the
-   unique constraint required by the pre-hardening `c34ef25` writer's
-   `ON CONFLICT (lead_key)`, so that deployment is not rollback-safe: healthy
-   Postgres lead writes fail and every request degrades to Blob fallback. The
-   minimum application commit compatible with that constraint removal is
-   `d134ef8`, which writes with `ON CONFLICT (email, cta_source)`. Use the fully
-   integrated `c93bc09` or a later reviewed descendant for the rollback
-   artifact, not merely any older deployment. In an isolated checkout, build it
-   with `npx vercel@latest build`, run `npm run verify:vercel-build`, and run the
-   API plus `SIDESTREAM_TEST_POSTGRES_URL` integration suites against a
-   disposable database containing the complete migration chain. Smoke a lead
-   capture with healthy Postgres and verify the database row commits without a
-   `queued` Blob-fallback response. Record the exact commit, build-output
-   checksum/location, and evidence; cutover is blocked without this artifact.
-2. **Take and verify a database backup.** Use the approved direct production URL
-   and `pg_dump` into access-controlled storage. Record a checksum and run
-   `pg_restore --list` (or the equivalent provider restore verification). Do not
-   put the URL or backup in the repository.
-3. **Inspect migration state and baseline.** With an ignored env file containing
-   the reviewed direct `SIDESTREAM_POSTGRES_URL_NON_POOLING`, run:
+1. **Review the integrated release and create a real fallback gate.** Pin the
+   release commit and inspect its API methods, `vercel.json`, migration checksums,
+   manifests, and this runbook. Stop on unexplained drift. Before any production
+   mutation, build and preserve a second application artifact from an explicitly
+   reviewed fallback commit. It must be runtime-distinct from the release, not
+   merely a different commit containing documentation changes. Record evidence
+   that this check exits nonzero and review the listed runtime files:
 
    ```bash
-   SIDESTREAM_DB_ENV_FILE=/secure/prod-direct.env npm run db:migrate -- --status
-   SIDESTREAM_DB_ENV_FILE=/secure/prod-direct.env npm run db:migrate -- --validate
+   git diff --quiet "$FALLBACK_SHA" "$RELEASE_SHA" -- api vercel.json package.json
+   git diff --name-only "$FALLBACK_SHA" "$RELEASE_SHA" -- api vercel.json package.json
    ```
 
-   If status explicitly requires a baseline, independently compare the catalog
-   and backup, then run the exact verifier from a secret-manager shell that
-   exports the reviewed direct URL:
-
-   ```bash
-   node scripts/verify-migration-baseline.mjs --json
-   SIDESTREAM_DB_ENV_FILE=/secure/prod-direct.env npm run db:migrate -- --baseline
-   ```
-
-   Re-run `--status`; never baseline to silence an unexplained mismatch. The
-   verifier must recognize a named pre-20260713 profile and list the expected
-   applied/pending filenames before `--baseline` is allowed.
-4. **Apply pending migrations through the direct URL.** Ensure the migration
-   process is using the non-pooling URL, then run
-   `SIDESTREAM_DB_ENV_FILE=/secure/prod-direct.env npm run db:migrate`. Re-run
-   `--status` and retain the applied filename/checksum evidence.
-5. **Inventory and converge legacy subscriptions.** Keep both allowlists empty
-   for the first read-only pass:
+   Apply the release's complete checksummed migration chain to a disposable
+   database, then test the fallback build against that already-migrated database.
+   Require its handler/type/build proof plus a healthy-Postgres lead capture that
+   commits one canonical `(email, cta_source)` row and does not return `queued`.
+   Run `npx vercel@latest build` for the fallback and retain the exact commit,
+   build-output checksum/location, full-chain status, and smoke evidence.
+   Migration `20260714200000_remove_redundant_download_lead_key_unique.sql` makes
+   the pre-hardening `c34ef25` writer unsafe: an otherwise-valid capture that
+   reaches its `ON CONFLICT (lead_key)` statement fails after that constraint is
+   removed and can enter Blob fallback without consuming the database limiter.
+   The current docs branch has no pre-qualified fallback: `c93bc09..HEAD` changes
+   only `README.md` and this file, so `c93bc09` is the same hardened runtime, not
+   an application rollback. Production mutation is blocked until a genuinely
+   distinct fallback passes this full-chain gate.
+2. **Qualify the release in Preview/Test.** Deploy the reviewed release to an
+   exact allowlisted Test host with its own disposable/test Postgres database and
+   Stripe test-mode resources. Configure the bounded pool, HMAC secrets,
+   retention/lifecycle values, and a Test `CRON_SECRET`; do not reuse production
+   data or credentials. Configure the Test Stripe endpoint with the exact event
+   list above and its test signing secret. Confirm license-environment isolation.
+3. **Prove Preview/Test before touching production.** Run
+   `npx vercel@latest build`, then `npm run verify:vercel-build`. Also run
+   `npm run test:api`, `npm run test:postgres-integration`, `npm run typecheck`,
+   `npm run build`, `node scripts/assert-no-runtime-ddl.mjs`, and
+   `node scripts/validate-vercel-contract.mjs`. Exercise every internal route
+   with missing, wrong, and correct auth without logging `CRON_SECRET`. Complete
+   the signed confirmation POST, Stripe test-mode Checkout, webhook, activation,
+   authorization, refund, and dispute lifecycle only on this Preview/Test target.
+   Require zero dead letters; because no recovery tool exists, any Preview/Test
+   dead letter blocks promotion.
+4. **Install and prove the lead WAF before production schema change.** Match exact
+   path `/api/download-lead` and method `POST`; apply a per-source-IP block/rate
+   limit no looser than 20 requests per 10 minutes, or the closest stricter Vercel
+   window, and exclude internal replay. First prove the rule on Preview, including
+   an edge rejection while its database is unavailable, then enable and verify
+   the identical production rule before continuing. Keep this rate limit after
+   cutover; it bounds the Blob path when Postgres cannot consume its atomic
+   limiter.
+5. **Prepare production configuration without enabling new work.** Confirm the
+   Vercel plan supports the five- and ten-minute cron frequencies. Configure one
+   16-512 character printable non-space ASCII `CRON_SECRET` (prefer a
+   secret-manager-generated 64-character hexadecimal token), the pooled runtime
+   URL, reviewed pool budget, stable HMAC secrets, exact one-time Product/Price,
+   lifecycle values, and bounded retention. Keep the direct URL out of runtime.
+   Leave the three cron schedules/background drains paused and do not expand the
+   live Stripe endpoint onto the old application. In a secret-manager shell using
+   the live Stripe key and reviewed direct database URL, run the legacy
+   subscription audit read-only with both allowlists empty:
 
    ```bash
    node scripts/audit-legacy-subscriptions.mjs --read-only \
      --database-url-env SIDESTREAM_POSTGRES_URL_NON_POOLING
    ```
 
-   Review every Product and Price. Set the exact approved Product/Price IDs in
-   the two allowlists, rerun read-only, then apply the eligible backfill and
-   quarantine explicitly:
+   Review every Product and Price in live mode, choose exact IDs, configure both
+   allowlists, and rerun read-only. Do not wildcard, infer, or copy IDs from Test.
+   Prepare the live webhook endpoint's exact event list and signing secret, but
+   keep delivery paused until the maintenance gate below.
+6. **Take and verify a fresh database backup.** Use the approved direct production
+   URL and `pg_dump` into access-controlled storage. Record its checksum and run
+   `pg_restore --list`, or the provider's equivalent restore verification. Do not
+   put the URL or backup in the repository.
+7. **Inspect migration and baseline state read-only.** With an ignored env file
+   containing the reviewed direct `SIDESTREAM_POSTGRES_URL_NON_POOLING`, run:
 
    ```bash
-   node scripts/audit-legacy-subscriptions.mjs --apply \
-     --database-url-env SIDESTREAM_POSTGRES_URL_NON_POOLING \
-     --confirm APPLY-LEGACY-SUBSCRIPTIONS
+   SIDESTREAM_DB_ENV_FILE=/secure/prod-direct.env npm run db:migrate -- --status
+   SIDESTREAM_DB_ENV_FILE=/secure/prod-direct.env npm run db:migrate -- --validate
+   SIDESTREAM_DB_ENV_FILE=/secure/prod-direct.env npm run db:migrate -- --dry-run
    ```
 
-   Run read-only again and retain counts. Do not wildcard, infer, or copy an ID
-   from the wrong Stripe mode.
-6. **Configure secrets and bounded settings.** Confirm the selected Vercel plan
-   supports the five- and ten-minute cron frequencies. Set one 16-512 character
-   printable non-space ASCII `CRON_SECRET` (prefer a secret-manager-generated
-   64-character hexadecimal token), a production pooled runtime URL, the
-   reviewed pool budget, stable HMAC secrets, Product/Price allowlists,
-   lifecycle settings, and bounded retention values. Keep the direct URL out of
-   normal runtime configuration.
-7. **Configure the Stripe endpoint.** Point it at `/api/stripe/webhook`, set the
-   correct live signing secret, and subscribe to the exact event list above.
-   Send signed test-mode events only to the test target first.
-8. **Deploy to Preview/Test.** Use a distinct test database and Stripe mode;
-   verify license-environment host restrictions. Do not promote yet.
-9. **Run build and handler proof.** Run `npx vercel@latest build`, then
-   `npm run verify:vercel-build`. Also run `npm run test:api`,
-   `npm run test:postgres-integration`, `npm run typecheck`, `npm run build`,
-   `node scripts/assert-no-runtime-ddl.mjs`, and
-   `node scripts/validate-vercel-contract.mjs`. Exercise each internal route with
-   missing, wrong, and correct auth without logging the secret. Require zero
-   Stripe dead letters in Preview/Test; no recovery tool exists, so any dead
-   letter blocks promotion.
-10. **Configure the desired Vercel WAF rule for lead ingestion.** Match exact
-    path `/api/download-lead` and method `POST`; apply a per-source-IP block/rate
-    limit no looser than 20 requests per 10 minutes (or the closest stricter
-    Vercel window). Exclude internal replay. Verify a Preview request receives an
-    edge rejection before relying on Blob fallback under database failure.
-11. **Promote the reviewed Preview build to production.** Record the deployment
-    ID and keep the exact pre-qualified, schema-compatible rollback artifact
-    from step 1 available. Do not substitute a pre-`d134ef8` deployment.
-12. **Run bounded release and API smoke tests.** Run
-    `node scripts/smoke-release-endpoints.mjs --base-url "$DEPLOY_BASE_URL"` and
-    test confirmation GET, confirmed test-mode Checkout, activation, authorization,
-    lead capture, and protected cron auth. Use `HEAD`/range requests; do not pull
-    full installers just to check metadata.
-13. **Inspect convergence.** Check pending/retry/dead Stripe counts and oldest
-    age, entitlement states/watermarks, lead fallback/replay summaries including
-    unmapped records, maintenance output, database pool health, and release
-    platform parity before declaring cutover complete. A dead letter blocks
-    completion because the current repository cannot reset or replay it.
+   If status requires a baseline, independently compare the catalog and backup,
+   then run `node scripts/verify-migration-baseline.mjs --json` from the reviewed
+   direct-URL shell. The verifier must recognize a named pre-20260713 profile and
+   list the expected applied/pending files. Do not run the mutating `--baseline`
+   yet, and never baseline merely to silence drift.
+8. **Enter a write-maintenance window.** Announce the window, pause Stripe webhook
+   delivery, keep all three crons/background drains disabled, and use reviewed
+   edge/maintenance routing to stop every state-mutating `/api/*` request from
+   reaching the old deployment. At minimum this includes lead ingestion,
+   Checkout create/complete, OAuth callback/logout, billing, webhook, activation,
+   claim, license, and device mutations. Release manifest reads and bounded
+   download metadata may remain available. Confirm `POST /api/download-lead` is
+   blocked at the edge, wait for old in-flight writes to drain, and verify that
+   no old function invocation remains before changing schema.
+9. **Execute migration, convergence, promotion, and immediate smoke as one
+   uninterrupted gate.** Do not reopen public writes anywhere inside this step.
+
+   1. If and only if step 7 proved a baseline is required, run the explicit
+      baseline now, then re-run status:
+
+      ```bash
+      SIDESTREAM_DB_ENV_FILE=/secure/prod-direct.env npm run db:migrate -- --baseline
+      SIDESTREAM_DB_ENV_FILE=/secure/prod-direct.env npm run db:migrate -- --status
+      ```
+
+   2. Apply every pending migration through the direct URL and retain the exact
+      filename/checksum output:
+
+      ```bash
+      SIDESTREAM_DB_ENV_FILE=/secure/prod-direct.env npm run db:migrate
+      SIDESTREAM_DB_ENV_FILE=/secure/prod-direct.env npm run db:migrate -- --status
+      ```
+
+   3. With the exact reviewed live Product/Price allowlists, apply the legacy
+      subscription backfill/quarantine, then rerun it read-only and retain counts:
+
+      ```bash
+      node scripts/audit-legacy-subscriptions.mjs --apply \
+        --database-url-env SIDESTREAM_POSTGRES_URL_NON_POOLING \
+        --confirm APPLY-LEGACY-SUBSCRIPTIONS
+      node scripts/audit-legacy-subscriptions.mjs --read-only \
+        --database-url-env SIDESTREAM_POSTGRES_URL_NON_POOLING
+      ```
+
+   4. While live webhook delivery remains paused, configure its signing secret
+      and the exact Checkout completion, refund, dispute, and allowlisted legacy
+      subscription events listed above. Promote the exact Preview-qualified
+      release build to production and record the deployment ID. Do not rebuild a
+      different artifact at promotion time.
+   5. Smoke the promoted application while public writes remain blocked. Run
+      `node scripts/smoke-release-endpoints.mjs --base-url "$DEPLOY_BASE_URL"`;
+      it uses bounded manifest GETs and download HEADs, never full installers.
+      Through an operator-only maintenance bypass, submit one synthetic valid lead
+      and require `200 {"ok":true}` without `queued`, then verify its canonical
+      Postgres row. Check `GET /api/auth/session`, a non-mutating not-found
+      activation status, and missing/wrong protected-route auth. A production
+      Checkout smoke is limited to `GET /api/checkout/start`, confirmation-page
+      inspection, and a read-only Stripe resource check. From a secret-manager
+      shell, retrieve the configured Product and Price with the Stripe SDK; require
+      both resources to report `livemode=true`, require the Price to be active,
+      one-time USD 999, and require it to belong to the active Product. Print only
+      the mode and resource IDs, never the key. Confirm the GET created no Stripe
+      Customer, Price, or Checkout Session. Do not submit a test-mode Checkout to
+      the production base URL, and do not complete a live charge merely for this
+      smoke.
+   6. Before reopening traffic, inspect migration status, entitlement states and
+      watermarks, pending/retry/dead Stripe counts and oldest age, lead fallback
+      and replay summaries including unmapped records, pool health, and release
+      platform parity. Any dead letter, queued canary lead, schema drift, release
+      mismatch, or missing fallback artifact fails this gate and triggers the
+      rollback/fix-forward procedure below while maintenance remains active.
+10. **Reopen in controlled order and inspect convergence.** Remove the broad
+    write-maintenance block while retaining the exact lead rate limit. Resume the
+    live Stripe endpoint and then the Stripe processor, lead replay, and
+    maintenance schedules one at a time, checking each bounded result before the
+    next. Recheck pending/retry/dead counts, oldest-event age, entitlement
+    watermarks, fallback backlog, unmapped records, maintenance counts, pool use,
+    Checkout/rate-limit counts, and platform parity. A dead letter blocks cutover
+    completion because the repository cannot reset or replay it.
 
 ## Forward-compatible rollback
 
 Rollback is application-forward, not a destructive schema reversal:
 
-1. Pause the three Vercel cron schedules or make their routes unavailable to the
-   scheduler. Pause Stripe endpoint delivery when the webhook `waitUntil`
-   background drain must also stop. Stripe retains undelivered webhook attempts,
-   and local nonterminal ledger rows remain claimable after recovery; existing
-   `dead_letter` rows remain terminal because no reset/replay tool exists.
-2. Promote only the exact rollback artifact pre-qualified in cutover step 1 and
-   verify its recorded commit/build identity. It must be `d134ef8` or later with
-   respect to the final lead schema; the reviewed full-integration choice is
-   `c93bc09` or a later descendant. Keep the migrated database and migration
-   ledger in place. Do not use `c34ef25` or another generic prior deployment:
-   after the `lead_key` unique constraint is removed, its Postgres upsert fails,
-   all lead captures fall back to Blob, and the database rate limit is bypassed.
-   If the pre-qualified artifact is unavailable, application rollback is
-   blocked: leave crons/background drains paused, keep the lead WAF active, and
-   fix forward rather than claiming a successful rollback.
+1. Re-enter the write-maintenance window before changing application code. Pause
+   live Stripe delivery and all three cron schedules/background drains, block
+   state-mutating API traffic, preserve the lead WAF rate limit, and wait for
+   in-flight writes to drain. Stripe retains undelivered attempts; nonterminal
+   ledger rows remain claimable later. Existing `dead_letter` rows remain
+   terminal because no reset/replay tool exists.
+2. Promote only the exact runtime-distinct fallback artifact qualified in cutover
+   step 1, and verify its recorded commit and build checksum before promotion.
+   Keep the migrated database and checksummed ledger in place. Neither `c34ef25`
+   nor `c93bc09` is an eligible fallback for this release: the former is
+   incompatible with the final lead constraint, while the latter is the same
+   hardened runtime beneath the docs-only release commits. If the qualified
+   artifact is absent, production mutation should never have begun; if it is
+   unexpectedly unavailable after mutation, leave maintenance and drains paused,
+   keep the WAF active, and fix forward rather than claiming a rollback.
 3. Set device policy to `observe` if enforcement is causing false denials. This
    does not resurrect explicitly revoked/replaced credentials.
-4. Do **not** run down migrations, delete the ledger, drop new tables/columns,
-   reverse a backfill, or restore over new production writes. Refund, dispute,
-   quarantine, replay-receipt, and redaction history must survive rollback.
-5. Continue read-only monitoring. Fix forward, redeploy Preview, re-run contract
-   and smoke proof, then re-enable Stripe delivery and crons one at a time while
-   watching oldest-event age, dead letters, fallback backlog, and pool use. Do
-   not call a dead letter replayed unless separately reviewed recovery tooling
-   was implemented, tested, and actually used.
+4. Do **not** run down migrations, delete or rewrite the ledger, drop new
+   tables/columns, reverse a backfill/quarantine, or restore over later production
+   writes. Refund, dispute, replay-receipt, redaction, and watermark history must
+   survive application rollback.
+5. Run the bounded release smoke and the fallback artifact's pre-recorded API
+   canaries while writes remain blocked. Continue read-only queue, entitlement,
+   lead, release, and pool monitoring. Fix forward through Preview/Test, then
+   remove the broad maintenance rule and re-enable Stripe delivery and each cron
+   one at a time. Do not call a dead letter replayed unless separately reviewed
+   recovery tooling was implemented, tested, and actually used.
