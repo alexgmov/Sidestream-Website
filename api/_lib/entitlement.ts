@@ -36,6 +36,82 @@ export type CheckoutVerification =
   | { ok: true }
   | { ok: false; reason: string };
 
+export const CANONICAL_PAID_PLAN_KEYS = [
+  "sidestream_pro",
+  "sidestream_unlimited",
+] as const;
+
+export type EntitlementStatus = "active" | "suspended" | "revoked" | "unknown";
+
+export type CanonicalOneTimePaymentFacts = Readonly<{
+  paymentIntentId: string;
+  chargeId: string;
+  customerId: string;
+  amountPaid: number;
+  amountRefunded: number;
+  currency: string;
+  paymentProven: boolean;
+  disputeStatus: string;
+}>;
+
+export type StoredOneTimeEntitlementState = Readonly<{
+  paymentIntentId?: string | null;
+  chargeId?: string | null;
+  customerId?: string | null;
+  entitlementStatus?: EntitlementStatus | null;
+  statusReason?: string | null;
+  stripeEventCreatedAtMs?: number | null;
+  stripeEventId?: string | null;
+}>;
+
+export type StripeLifecycleEventWatermark = Readonly<{
+  createdAtMs: number;
+  eventId: string;
+}>;
+
+export type OneTimeEntitlementTransition =
+  | Readonly<{ apply: false; reason: string }>
+  | Readonly<{
+      apply: true;
+      entitlementStatus: Exclude<EntitlementStatus, "unknown">;
+      statusReason: string;
+      revokeCredentials: boolean;
+    }>;
+
+export type LegacySubscriptionLike = Readonly<{
+  items?: {
+    data?: readonly Readonly<{
+      quantity?: unknown;
+      price?: unknown;
+    }>[];
+    has_more?: unknown;
+  } | null;
+}>;
+
+export type LegacyPriceLike = Readonly<{
+  id?: unknown;
+  active?: unknown;
+  type?: unknown;
+  currency?: unknown;
+  unit_amount?: unknown;
+  product?: unknown;
+  recurring?: {
+    interval?: unknown;
+    interval_count?: unknown;
+    usage_type?: unknown;
+  } | null;
+}>;
+
+export type LegacyProductLike = Readonly<{
+  id?: unknown;
+  active?: unknown;
+  deleted?: unknown;
+}>;
+
+export type LegacySubscriptionVerification =
+  | Readonly<{ ok: true; priceId: string; productId: string }>
+  | Readonly<{ ok: false; reason: string }>;
+
 export function buildCheckoutCompletionUrl(
   baseUrl: string,
   activationKey = "",
@@ -223,6 +299,208 @@ export function verifyPaidCheckoutSession(
   }
 
   return { ok: true };
+}
+
+export function parseStripeIdAllowlist(value: unknown, prefix: "price" | "prod") {
+  const raw = typeof value === "string" ? value : "";
+  const ids = raw
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter((entry) => new RegExp(`^${prefix}_[A-Za-z0-9]+$`).test(entry));
+  return Object.freeze([...new Set(ids)]);
+}
+
+export function verifyLegacySubscriptionEntitlement(
+  subscription: LegacySubscriptionLike,
+  price: LegacyPriceLike,
+  product: LegacyProductLike,
+  allowlist: {
+    priceIds: readonly string[];
+    productIds: readonly string[];
+  },
+): LegacySubscriptionVerification {
+  const items = subscription.items?.data || [];
+  if (items.length !== 1 || subscription.items?.has_more !== false) {
+    return { ok: false, reason: "invalid_subscription_items" };
+  }
+  if (items[0].quantity !== 1) {
+    return { ok: false, reason: "invalid_subscription_quantity" };
+  }
+
+  const itemPriceId = stringId(items[0].price);
+  const priceId = stringId(price.id);
+  const productId = stringId(product.id);
+  const priceProductId = stringId(price.product);
+  if (!priceId || itemPriceId !== priceId) {
+    return { ok: false, reason: "subscription_price_mismatch" };
+  }
+  if (!productId || priceProductId !== productId) {
+    return { ok: false, reason: "subscription_product_mismatch" };
+  }
+  if (!allowlist.priceIds.includes(priceId)) {
+    return { ok: false, reason: "price_not_allowed" };
+  }
+  if (!allowlist.productIds.includes(productId)) {
+    return { ok: false, reason: "product_not_allowed" };
+  }
+  if (price.active !== true || product.active !== true || product.deleted === true) {
+    return { ok: false, reason: "inactive_billing_resource" };
+  }
+  if (
+    price.type !== "recurring" ||
+    price.recurring?.interval !== "month" ||
+    price.recurring?.interval_count !== 1 ||
+    price.recurring?.usage_type !== "licensed"
+  ) {
+    return { ok: false, reason: "invalid_recurring_shape" };
+  }
+  if (
+    typeof price.currency !== "string" ||
+    !/^[a-z]{3}$/.test(price.currency) ||
+    typeof price.unit_amount !== "number" ||
+    !Number.isSafeInteger(price.unit_amount) ||
+    price.unit_amount <= 0
+  ) {
+    return { ok: false, reason: "invalid_price_terms" };
+  }
+
+  return { ok: true, priceId, productId };
+}
+
+export function isCanonicalLicenseEntitlementUsable(options: {
+  planKey?: string | null;
+  entitlementStatus?: string | null;
+}) {
+  return options.entitlementStatus === "active" &&
+    CANONICAL_PAID_PLAN_KEYS.includes(
+      (options.planKey || "") as typeof CANONICAL_PAID_PLAN_KEYS[number],
+    );
+}
+
+export function canonicalLicenseEntitlementRank(options: {
+  planKey?: string | null;
+  entitlementStatus?: string | null;
+}) {
+  return isCanonicalLicenseEntitlementUsable(options) ? 0 : 1;
+}
+
+export function shouldApplyStripeEventWatermark(
+  current: StripeLifecycleEventWatermark | null,
+  next: StripeLifecycleEventWatermark,
+) {
+  if (
+    !Number.isFinite(next.createdAtMs) ||
+    next.createdAtMs < 0 ||
+    !next.eventId
+  ) {
+    return false;
+  }
+  if (!current) return true;
+  if (next.createdAtMs !== current.createdAtMs) {
+    return next.createdAtMs > current.createdAtMs;
+  }
+  return next.eventId > current.eventId;
+}
+
+export function planOneTimeEntitlementTransition(options: {
+  stored: StoredOneTimeEntitlementState;
+  facts: CanonicalOneTimePaymentFacts;
+  event: StripeLifecycleEventWatermark | null;
+}): OneTimeEntitlementTransition {
+  const paymentIntentId = options.facts.paymentIntentId.trim();
+  const chargeId = options.facts.chargeId.trim();
+  const customerId = options.facts.customerId.trim();
+  if (
+    !paymentIntentId ||
+    !chargeId ||
+    !customerId ||
+    !Number.isSafeInteger(options.facts.amountPaid) ||
+    options.facts.amountPaid < 0 ||
+    !Number.isSafeInteger(options.facts.amountRefunded) ||
+    options.facts.amountRefunded < 0 ||
+    !/^[a-z]{3}$/.test(options.facts.currency)
+  ) {
+    return { apply: false, reason: "invalid_payment_facts" };
+  }
+  if (
+    options.stored.paymentIntentId &&
+    options.stored.paymentIntentId !== paymentIntentId
+  ) {
+    return { apply: false, reason: "payment_intent_mismatch" };
+  }
+  if (options.stored.chargeId && options.stored.chargeId !== chargeId) {
+    return { apply: false, reason: "charge_mismatch" };
+  }
+  if (options.stored.customerId && options.stored.customerId !== customerId) {
+    return { apply: false, reason: "payment_customer_mismatch" };
+  }
+
+  const currentWatermark = options.stored.stripeEventCreatedAtMs !== null &&
+      options.stored.stripeEventCreatedAtMs !== undefined &&
+      options.stored.stripeEventId
+    ? {
+        createdAtMs: options.stored.stripeEventCreatedAtMs,
+        eventId: options.stored.stripeEventId,
+      }
+    : null;
+  if (
+    options.event &&
+    !shouldApplyStripeEventWatermark(currentWatermark, options.event)
+  ) {
+    return { apply: false, reason: "stale_event" };
+  }
+
+  const previousReason = options.stored.statusReason || "";
+  if (previousReason === "dispute_lost") {
+    return inactiveOneTimeTransition("dispute_lost", "revoked");
+  }
+  if (previousReason === "full_refund") {
+    return inactiveOneTimeTransition("full_refund", "revoked");
+  }
+  if (
+    options.facts.amountPaid > 0 &&
+    options.facts.amountRefunded >= options.facts.amountPaid
+  ) {
+    return inactiveOneTimeTransition("full_refund", "revoked");
+  }
+
+  const disputeStatus = options.facts.disputeStatus.trim().toLowerCase();
+  if (disputeStatus === "lost") {
+    return inactiveOneTimeTransition("dispute_lost", "revoked");
+  }
+  if (disputeStatus && disputeStatus !== "won" && disputeStatus !== "none") {
+    return inactiveOneTimeTransition("dispute_open", "suspended");
+  }
+  if (previousReason === "dispute_open" && disputeStatus !== "won") {
+    return inactiveOneTimeTransition("dispute_open", "suspended");
+  }
+  if (!options.facts.paymentProven) {
+    return inactiveOneTimeTransition("payment_not_paid", "revoked");
+  }
+
+  const statusReason = disputeStatus === "won"
+    ? "dispute_won"
+    : options.facts.amountRefunded > 0
+    ? "partial_refund"
+    : "payment_paid";
+  return {
+    apply: true,
+    entitlementStatus: "active",
+    statusReason,
+    revokeCredentials: false,
+  };
+}
+
+function inactiveOneTimeTransition(
+  statusReason: string,
+  entitlementStatus: "suspended" | "revoked",
+): OneTimeEntitlementTransition {
+  return {
+    apply: true,
+    entitlementStatus,
+    statusReason,
+    revokeCredentials: true,
+  };
 }
 
 export function sanitizeAccountNextPath(value: unknown) {
