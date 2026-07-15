@@ -84,8 +84,8 @@ test("Checkout, PaymentIntent, charge, and invoice normalize without floating mo
       currency: "usd",
     },
   )));
-  assert.equal(paymentIntent.paymentKey, "charge:ch_payment");
-  assert.equal(charge.paymentKey, "charge:ch_payment");
+  assert.equal(paymentIntent.paymentKey, "payment_intent:pi_payment");
+  assert.equal(charge.paymentKey, "payment_intent:pi_payment");
   assert.equal(paymentIntent.paidAt, "2024-07-03T09:48:30.000Z");
   assert.equal(paymentIntent.objectCreatedAt, "2024-07-03T09:46:50.000Z");
   assert.equal(paymentIntent.timestampSource, "stripe_event");
@@ -107,11 +107,15 @@ test("Checkout, PaymentIntent, charge, and invoice normalize without floating mo
       },
       payments: {
         data: [{
-          type: "payment",
+          id: "inpay_renewal",
+          object: "invoice_payment",
+          status: "paid",
+          amount_paid: 999,
+          currency: "eur",
+          invoice: "in_renewal",
           payment: {
             type: "payment_intent",
             payment_intent: "pi_renewal",
-            charge: "ch_renewal",
           },
         }],
       },
@@ -127,13 +131,22 @@ test("Checkout, PaymentIntent, charge, and invoice normalize without floating mo
     },
   )));
   assert.equal(invoice.commerceModel, "subscription");
-  assert.equal(invoice.paymentKey, "charge:ch_renewal");
+  assert.equal(invoice.paymentKey, "invoice:in_renewal");
   assert.equal(invoice.discountMinor, 100);
   assert.equal(invoice.taxMinor, 50);
   assert.equal(invoice.timestampSource, "stripe_status_transition");
   assert.equal(invoice.billingPeriodStart, "2024-06-21T20:00:00.000Z");
   assert.equal(invoice.billingPeriodEnd, "2024-07-21T20:00:00.000Z");
-  assert.ok(invoice.aliases.some((alias) => alias.aliasId === "pi_renewal"));
+  assert.deepEqual(invoice.invoicePayments, [{
+    invoicePaymentId: "inpay_renewal",
+    invoiceId: "in_renewal",
+    status: "paid",
+    amountPaidMinor: 999,
+    currency: "eur",
+    instrumentType: "payment_intent",
+    instrumentId: "pi_renewal",
+  }]);
+  assert.equal(invoice.aliases.some((alias) => alias.aliasId === "pi_renewal"), false);
   assert.ok(invoice.identityEvidence.some((evidence) =>
     evidence.linkType === "stripe_subscription" && evidence.linkValue === "sub_customer"
   ));
@@ -202,7 +215,7 @@ test("zero-cost and explicit manual commerce remain upgrades without invented pa
 
   const manual = only(normalizeCustomerCommerceEvent(stripeEvent(
     "evt_manual",
-    "customer.balance_transaction.created",
+    "customer_cash_balance_transaction.created",
     1_730_000_100,
     {
       id: "cbtxn_manual",
@@ -261,6 +274,16 @@ test("refund failures and every dispute terminal class preserve the correct mone
     .refundedMinor, 400);
   assert.equal(refund("evt_refund_failed", "refund.failed", "failed", 1_740_000_200)
     .refundedMinor, 0);
+  const chargeRefundUpdated = refund(
+    "evt_charge_refund_updated",
+    "charge.refund.updated",
+    "succeeded",
+    1_740_000_300,
+  );
+  assert.equal(chargeRefundUpdated.sourceObjectType, "refund");
+  assert.equal(chargeRefundUpdated.factKind, "refund");
+  assert.equal(chargeRefundUpdated.grossPaidMinor, 0);
+  assert.equal(chargeRefundUpdated.refundedMinor, 400);
 
   for (const [status, disputed, inquiry] of [
     ["needs_response", 999, 0],
@@ -289,6 +312,82 @@ test("refund failures and every dispute terminal class preserve the correct mone
     assert.equal(dispute.inquiryMinor, inquiry, status);
     assert.equal(dispute.netPaidMinor, 0);
   }
+});
+
+test("current InvoicePayment edges retain allocation state without aliasing invoice graphs", () => {
+  const invoice = only(normalizeCustomerCommerceEvent(stripeEvent(
+    "evt_current_invoice_payments",
+    "invoice.paid",
+    1_744_000_000,
+    {
+      id: "in_current_payments",
+      object: "invoice",
+      paid: true,
+      status: "paid",
+      amount_paid: 1000,
+      amount_paid_off_stripe: 200,
+      currency: "usd",
+      payments: {
+        data: [
+          {
+            id: "inpay_current_paid",
+            object: "invoice_payment",
+            status: "paid",
+            amount_paid: 800,
+            currency: "usd",
+            invoice: "in_current_payments",
+            payment: {
+              type: "payment_intent",
+              payment_intent: "pi_current_paid",
+            },
+          },
+          {
+            id: "inpay_current_open",
+            object: "invoice_payment",
+            status: "open",
+            amount_paid: null,
+            currency: "usd",
+            invoice: "in_current_payments",
+            payment: { type: "charge", charge: "ch_current_open" },
+          },
+        ],
+      },
+      status_transitions: { paid_at: 1_743_999_990 },
+    },
+  )));
+
+  assert.equal(invoice.grossPaidMinor, 800);
+  assert.equal(invoice.offStripePaidMinor, 200);
+  assert.equal(invoice.source, "manual_metadata");
+  assert.equal(invoice.paymentKey, "invoice:in_current_payments");
+  assert.deepEqual(invoice.invoicePayments, [
+    {
+      invoicePaymentId: "inpay_current_paid",
+      invoiceId: "in_current_payments",
+      status: "paid",
+      amountPaidMinor: 800,
+      currency: "usd",
+      instrumentType: "payment_intent",
+      instrumentId: "pi_current_paid",
+    },
+    {
+      invoicePaymentId: "inpay_current_open",
+      invoiceId: "in_current_payments",
+      status: "open",
+      amountPaidMinor: 0,
+      currency: "usd",
+      instrumentType: "charge",
+      instrumentId: "ch_current_open",
+    },
+  ]);
+  assert.deepEqual(invoice.aliases, [{ aliasType: "invoice", aliasId: "in_current_payments" }]);
+  assert.ok(invoice.identityEvidence.some((evidence) =>
+    evidence.linkType === "stripe_payment_intent" &&
+    evidence.linkValue === "pi_current_paid"
+  ));
+  assert.equal(invoice.identityEvidence.some((evidence) =>
+    evidence.linkValue === "ch_current_open"
+  ), false);
 });
 
 test("legacy invoice fields remain compatible without joining subscription renewals", () => {
@@ -356,7 +455,7 @@ test("minor units require a real ISO currency and never accept fractional values
     "evt_no_currency",
     "charge.succeeded",
     1_750_000_000,
-    { id: "ch_bad", paid: true, amount: 999, status: "succeeded" },
+    { id: "ch_bad", paid: true, amount_captured: 999, status: "succeeded" },
   )), (error) => {
     assert.ok(error instanceof CustomerCommerceNormalizationError);
     assert.equal(error.code, "currency_required_for_money");
@@ -366,7 +465,7 @@ test("minor units require a real ISO currency and never accept fractional values
     "evt_fraction",
     "charge.succeeded",
     1_750_000_000,
-    { id: "ch_bad", paid: true, amount: 9.99, currency: "usd", status: "succeeded" },
+    { id: "ch_bad", paid: true, amount_captured: 9.99, currency: "usd", status: "succeeded" },
   )), /invalid_minor_unit_amount/);
 });
 

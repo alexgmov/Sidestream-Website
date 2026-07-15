@@ -381,8 +381,10 @@ test("Stripe events use a durable claimed queue with bounded retry and protected
           customer: "cus_queue_money",
           payment_intent: "pi_queue_money",
           paid: true,
+          captured: true,
           status: "succeeded",
           amount: 999,
+          amount_captured: 999,
           amount_refunded: 0,
           currency: "usd",
         },
@@ -432,6 +434,88 @@ test("Stripe events use a durable claimed queue with bounded retry and protected
         )).rows[0].count,
         1,
       );
+    });
+
+    await t.test("charge.refund.updated routes its Refund object as one adjustment", async () => {
+      await resetEvents(pool);
+      const profile = await pool.query(
+        `insert into public.sidestream_customer_profiles (license_namespace)
+         values ('test') returning id`,
+      );
+      await pool.query(
+        `insert into public.sidestream_customer_identity_links (
+           profile_id, license_namespace, link_type, link_value
+         ) values
+           ($1, 'test', 'stripe_customer', 'cus_charge_refund_updated'),
+           ($1, 'test', 'stripe_payment_intent', 'pi_charge_refund_updated')`,
+        [profile.rows[0].id],
+      );
+      const charge = stripeEvent(
+        "evt_charge_refund_updated_charge",
+        "charge.succeeded",
+        1_700_004_550,
+        {
+          id: "ch_charge_refund_updated",
+          customer: "cus_charge_refund_updated",
+          payment_intent: "pi_charge_refund_updated",
+          paid: true,
+          captured: true,
+          status: "succeeded",
+          amount_captured: 999,
+          currency: "usd",
+        },
+      );
+      const refund = stripeEvent(
+        "evt_charge_refund_updated_refund",
+        "charge.refund.updated",
+        1_700_004_560,
+        {
+          id: "re_charge_refund_updated",
+          object: "refund",
+          charge: "ch_charge_refund_updated",
+          payment_intent: "pi_charge_refund_updated",
+          status: "succeeded",
+          amount: 300,
+          currency: "usd",
+        },
+      );
+      for (const event of [charge, refund]) {
+        await runtime.stripeEvents.recordStripeEvent(event, JSON.stringify(event), query);
+      }
+      assert.deepEqual(await runtime.stripeEvents.drainStripeEventQueue({
+        batchSize: 2,
+        createClaimToken: () => "00000000-0000-4000-8000-000000000017",
+        query,
+        log: () => {},
+      }), {
+        claimed: 2,
+        processed: 2,
+        ignored: 0,
+        retryable: 0,
+        deadLetter: 0,
+      });
+      assert.deepEqual((await pool.query(
+        `select source_object_type, fact_kind, gross_paid_minor, refunded_minor
+         from public.sidestream_customer_commerce_materializations
+         where source_object_id = 're_charge_refund_updated'`,
+      )).rows[0], {
+        source_object_type: "refund",
+        fact_kind: "refund",
+        gross_paid_minor: "0",
+        refunded_minor: "300",
+      });
+      assert.deepEqual((await pool.query(
+        `select gross_paid_minor, refunded_minor, net_paid_minor,
+           paid_transaction_count
+         from public.sidestream_customer_money_totals
+         where profile_id = $1 and currency = 'usd'`,
+        [profile.rows[0].id],
+      )).rows[0], {
+        gross_paid_minor: "999",
+        refunded_minor: "300",
+        net_paid_minor: "699",
+        paid_transaction_count: "1",
+      });
     });
 
     await t.test("commerce failure preserves entitlement order and retries money independently", async () => {
@@ -544,9 +628,14 @@ test("Stripe events use a durable claimed queue with bounded retry and protected
          from public.sidestream_customer_money_totals where profile_id = $1 and currency = 'usd'`,
         [profile.rows[0].id],
       );
-      assert.deepEqual(total.rows[0], {
+      assert.equal(total.rows.length, 0);
+      assert.deepEqual((await pool.query(
+        `select gross_paid_minor, source_object_type
+         from public.sidestream_customer_commerce_materializations
+         where source_object_id = 'cs_commerce_isolation'`,
+      )).rows[0], {
         gross_paid_minor: "500",
-        net_paid_minor: "500",
+        source_object_type: "checkout_session",
       });
     });
 

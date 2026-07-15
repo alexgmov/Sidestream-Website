@@ -33,6 +33,16 @@ export type CustomerCommerceIdentityEvidence = Readonly<{
   linkValue: string;
 }>;
 
+export type CustomerCommerceInvoicePayment = Readonly<{
+  invoicePaymentId: string;
+  invoiceId: string;
+  status: string;
+  amountPaidMinor: number;
+  currency: string | null;
+  instrumentType: "payment_intent" | "charge";
+  instrumentId: string;
+}>;
+
 export type CustomerCommerceObservation = Readonly<{
   licenseNamespace: CustomerCommerceNamespace;
   eventId: string;
@@ -47,6 +57,7 @@ export type CustomerCommerceObservation = Readonly<{
   grossPaidMinor: number;
   discountMinor: number;
   taxMinor: number;
+  offStripePaidMinor: number;
   refundedMinor: number;
   disputedMinor: number;
   inquiryMinor: number;
@@ -67,6 +78,7 @@ export type CustomerCommerceObservation = Readonly<{
   paymentKey: string;
   aliases: readonly CustomerCommerceAlias[];
   identityEvidence: readonly CustomerCommerceIdentityEvidence[];
+  invoicePayments: readonly CustomerCommerceInvoicePayment[];
 }>;
 
 type CustomerCommerceQueryResult = Readonly<{
@@ -128,6 +140,9 @@ export function normalizeCustomerCommerceEvent(
   const eventCreatedAt = unixTimestamp(event.created, "event_created");
   const type = event.type;
 
+  if (type === "charge.refund.updated") {
+    return normalizeRefund(event, object, trustedNamespace, eventCreatedAt, sourceObjectId);
+  }
   if (type.startsWith("checkout.session.")) {
     return normalizeCheckout(event, object, trustedNamespace, eventCreatedAt, sourceObjectId);
   }
@@ -152,7 +167,10 @@ export function normalizeCustomerCommerceEvent(
   if (type.startsWith("customer.discount.") || type.startsWith("discount.")) {
     return normalizeDiscount(event, object, trustedNamespace, eventCreatedAt, sourceObjectId);
   }
-  if (type.startsWith("customer.balance_transaction.")) {
+  if (
+    type.startsWith("customer_cash_balance_transaction.") ||
+    type.startsWith("customer.balance_transaction.")
+  ) {
     return normalizeManualAdjustment(
       event,
       object,
@@ -231,6 +249,7 @@ function normalizeCheckout(
     grossPaidMinor: gross,
     discountMinor: discount,
     taxMinor: tax,
+    offStripePaidMinor: 0,
     refundedMinor: 0,
     disputedMinor: 0,
     inquiryMinor: 0,
@@ -251,7 +270,7 @@ function normalizePaymentIntent(
   const state = stringValue(object.status) || paymentIntentEventState(event.type);
   const successful = state === "succeeded";
   const successTransition = event.type === "payment_intent.succeeded";
-  const gross = successful ? moneyOrFallback(object.amount_received, object.amount) : 0;
+  const gross = successful ? money(object.amount_received) : 0;
   const currency = monetaryCurrency(object.currency, gross);
   const explicitModel = metadataModel(object);
   const timing = eventTiming(object, eventCreatedAt, successTransition);
@@ -270,6 +289,7 @@ function normalizePaymentIntent(
     grossPaidMinor: gross,
     discountMinor: 0,
     taxMinor: 0,
+    offStripePaidMinor: 0,
     refundedMinor: 0,
     disputedMinor: 0,
     inquiryMinor: 0,
@@ -292,7 +312,7 @@ function normalizeCharge(
     object.captured !== false;
   const successTransition = event.type === "charge.succeeded" ||
     event.type === "charge.captured";
-  const gross = successful ? moneyOrFallback(object.amount_captured, object.amount) : 0;
+  const gross = successful ? money(object.amount_captured) : 0;
   const refunded = successful ? Math.min(gross, money(object.amount_refunded)) : 0;
   const currency = monetaryCurrency(object.currency, gross, refunded);
   const explicitModel = metadataModel(object);
@@ -312,6 +332,7 @@ function normalizeCharge(
     grossPaidMinor: gross,
     discountMinor: 0,
     taxMinor: 0,
+    offStripePaidMinor: 0,
     refundedMinor: refunded,
     disputedMinor: 0,
     inquiryMinor: 0,
@@ -348,6 +369,7 @@ function normalizeRefund(
     grossPaidMinor: 0,
     discountMinor: 0,
     taxMinor: 0,
+    offStripePaidMinor: 0,
     refundedMinor: refunded,
     disputedMinor: 0,
     inquiryMinor: 0,
@@ -387,6 +409,7 @@ function normalizeDispute(
     grossPaidMinor: 0,
     discountMinor: 0,
     taxMinor: 0,
+    offStripePaidMinor: 0,
     refundedMinor: 0,
     disputedMinor: disputed,
     inquiryMinor: inquiry,
@@ -409,7 +432,11 @@ function normalizeInvoice(
     event.type === "invoice.payment_succeeded";
   const successTransition = event.type === "invoice.paid" ||
     event.type === "invoice.payment_succeeded";
-  const gross = successful ? money(object.amount_paid) : 0;
+  const amountPaid = successful ? money(object.amount_paid) : 0;
+  const offStripePaid = successful
+    ? Math.min(amountPaid, money(object.amount_paid_off_stripe))
+    : 0;
+  const gross = amountPaid - offStripePaid;
   const discount = successful
     ? Math.max(money(object.amount_discount), sumAmounts(object.total_discount_amounts))
     : 0;
@@ -417,9 +444,9 @@ function normalizeInvoice(
     ? Math.max(money(object.amount_tax), sumAmounts(object.total_tax_amounts),
       sumAmounts(object.total_taxes))
     : 0;
-  const currency = monetaryCurrency(object.currency, gross, discount, tax);
+  const currency = monetaryCurrency(object.currency, gross, discount, tax, offStripePaid);
   const explicitModel = metadataModel(object);
-  const zeroCost = successful && gross === 0;
+  const zeroCost = successful && amountPaid === 0;
   const subscriptionId = invoiceSubscriptionId(object);
   const timing = invoiceTiming(object, eventCreatedAt);
   return [observation({
@@ -437,17 +464,19 @@ function normalizeInvoice(
     grossPaidMinor: gross,
     discountMinor: discount,
     taxMinor: tax,
+    offStripePaidMinor: offStripePaid,
     refundedMinor: 0,
     disputedMinor: 0,
     inquiryMinor: 0,
     paidAt: successful && successTransition && gross > 0 ? timing.effectiveAt : null,
     upgradedAt: successful && successTransition ? timing.effectiveAt : null,
     timing,
-    source: explicitModel || object.paid_out_of_band === true
+    source: explicitModel || offStripePaid > 0 || object.paid_out_of_band === true
       ? "manual_metadata"
       : "stripe_object",
     billingPeriodStart: optionalUnixTimestamp(object.period_start),
     billingPeriodEnd: optionalUnixTimestamp(object.period_end),
+    invoicePayments: currentInvoicePayments(object, sourceObjectId),
   })];
 }
 
@@ -476,6 +505,7 @@ function normalizeSubscription(
     grossPaidMinor: 0,
     discountMinor: 0,
     taxMinor: 0,
+    offStripePaidMinor: 0,
     refundedMinor: 0,
     disputedMinor: 0,
     inquiryMinor: 0,
@@ -510,6 +540,7 @@ function normalizeDiscount(
     grossPaidMinor: 0,
     discountMinor: 0,
     taxMinor: 0,
+    offStripePaidMinor: 0,
     refundedMinor: 0,
     disputedMinor: 0,
     inquiryMinor: 0,
@@ -543,6 +574,7 @@ function normalizeManualAdjustment(
     grossPaidMinor: 0,
     discountMinor: 0,
     taxMinor: 0,
+    offStripePaidMinor: 0,
     refundedMinor: 0,
     disputedMinor: 0,
     inquiryMinor: 0,
@@ -556,6 +588,7 @@ function normalizeManualAdjustment(
 type ObservationInput = Omit<CustomerCommerceObservation,
   "licenseNamespace" | "eventId" | "eventType" | "netPaidMinor" |
   "paymentKey" | "aliases" | "identityEvidence" |
+  "invoicePayments" |
   "objectCreatedAt" | "effectiveAt" | "timestampSource" | "sourceConfidence" |
   "billingPeriodStart" | "billingPeriodEnd"
 > & Readonly<{
@@ -565,6 +598,7 @@ type ObservationInput = Omit<CustomerCommerceObservation,
   timing: CommerceTiming;
   billingPeriodStart?: string | null;
   billingPeriodEnd?: string | null;
+  invoicePayments?: readonly CustomerCommerceInvoicePayment[];
 }>;
 
 function observation(input: ObservationInput): CustomerCommerceObservation {
@@ -584,6 +618,7 @@ function observation(input: ObservationInput): CustomerCommerceObservation {
     grossPaidMinor: input.grossPaidMinor,
     discountMinor: input.discountMinor,
     taxMinor: input.taxMinor,
+    offStripePaidMinor: input.offStripePaidMinor,
     refundedMinor: input.refundedMinor,
     disputedMinor: input.disputedMinor,
     inquiryMinor: input.inquiryMinor,
@@ -603,6 +638,7 @@ function observation(input: ObservationInput): CustomerCommerceObservation {
     paymentKey,
     aliases,
     identityEvidence: identityEvidence(input.sourceObjectType, input.sourceObjectId, input.object),
+    invoicePayments: input.invoicePayments || Object.freeze([]),
   });
 }
 
@@ -676,7 +712,10 @@ function commerceAliases(
   addAlias(aliases, "charge", object.latest_charge);
   addAlias(aliases, "invoice", object.invoice);
   addAlias(aliases, "checkout_session", object.checkout_session);
-  for (const payment of invoicePayments(object)) {
+  // Current InvoicePayment rows are allocation edges, not alias equivalence.
+  // Only the legacy embedded shape is read here for backwards-compatible
+  // conflict detection; current rows are persisted separately below.
+  for (const payment of legacyInvoicePayments(object)) {
     addAlias(aliases, "payment_intent", payment.payment_intent);
     addAlias(aliases, "charge", payment.charge);
   }
@@ -692,7 +731,12 @@ function identityEvidence(
   addEvidence(evidence, "stripe_customer", object.customer);
   addEvidence(evidence, "stripe_payment_intent", object.payment_intent);
   addEvidence(evidence, "stripe_subscription", invoiceSubscriptionId(object));
-  for (const payment of invoicePayments(object)) {
+  for (const payment of currentInvoicePayments(object, sourceObjectId)) {
+    if (payment.status === "paid" && payment.instrumentType === "payment_intent") {
+      addEvidence(evidence, "stripe_payment_intent", payment.instrumentId);
+    }
+  }
+  for (const payment of legacyInvoicePayments(object)) {
     addEvidence(evidence, "stripe_payment_intent", payment.payment_intent);
   }
   if (sourceObjectType === "checkout_session") {
@@ -744,8 +788,8 @@ function preferredPaymentKey(aliases: readonly CustomerCommerceAlias[]) {
 
 function aliasPriority(type: string) {
   return ({
-    charge: 0,
-    payment_intent: 1,
+    payment_intent: 0,
+    charge: 1,
     invoice: 2,
     checkout_session: 3,
     refund: 5,
@@ -796,19 +840,53 @@ function money(value: unknown) {
   return amount;
 }
 
-function moneyOrFallback(primary: unknown, fallback: unknown) {
-  return primary === null || primary === undefined ? money(fallback) : money(primary);
-}
-
 function sumAmounts(value: unknown) {
   if (!Array.isArray(value)) return 0;
   return value.reduce((total, item) => total + money(recordValue(item).amount), 0);
 }
 
-function invoicePayments(object: Record<string, unknown>) {
+function legacyInvoicePayments(object: Record<string, unknown>) {
   const data = recordValue(object.payments).data;
   if (!Array.isArray(data)) return [];
-  return data.map((entry) => recordValue(recordValue(entry).payment));
+  return data
+    .map(recordValue)
+    .filter((entry) => !boundedId(entry.id) && entry.object !== "invoice_payment")
+    .map((entry) => recordValue(entry.payment));
+}
+
+function currentInvoicePayments(
+  object: Record<string, unknown>,
+  invoiceId: string,
+): readonly CustomerCommerceInvoicePayment[] {
+  const data = recordValue(object.payments).data;
+  if (!Array.isArray(data)) return Object.freeze([]);
+  const invoiceCurrency = stringValue(object.currency).toLowerCase();
+  const payments: CustomerCommerceInvoicePayment[] = [];
+  for (const value of data) {
+    const row = recordValue(value);
+    const invoicePaymentId = boundedId(row.id);
+    if (!invoicePaymentId) continue;
+    const payment = recordValue(row.payment);
+    const paymentIntentId = boundedId(payment.payment_intent);
+    const chargeId = paymentIntentId ? "" : boundedId(payment.charge);
+    const instrumentType = paymentIntentId
+      ? "payment_intent"
+      : chargeId ? "charge" : null;
+    const instrumentId = paymentIntentId || chargeId;
+    if (!instrumentType || !instrumentId) continue;
+    const amountPaidMinor = money(row.amount_paid);
+    const currency = monetaryCurrency(row.currency || invoiceCurrency, amountPaidMinor);
+    payments.push(Object.freeze({
+      invoicePaymentId,
+      invoiceId: boundedId(row.invoice) || invoiceId,
+      status: boundedState(stringValue(row.status) || "unknown"),
+      amountPaidMinor,
+      currency,
+      instrumentType,
+      instrumentId,
+    }));
+  }
+  return Object.freeze(payments);
 }
 
 function invoiceSubscriptionId(object: Record<string, unknown>) {

@@ -48,6 +48,7 @@ create table public.sidestream_customer_commerce_materializations (
   gross_paid_minor bigint not null default 0,
   discount_minor bigint not null default 0,
   tax_minor bigint not null default 0,
+  off_stripe_paid_minor bigint not null default 0,
   refunded_minor bigint not null default 0,
   disputed_minor bigint not null default 0,
   inquiry_minor bigint not null default 0,
@@ -96,6 +97,7 @@ create table public.sidestream_customer_commerce_materializations (
     gross_paid_minor >= 0
     and discount_minor >= 0
     and tax_minor >= 0
+    and off_stripe_paid_minor >= 0
     and refunded_minor >= 0
     and disputed_minor >= 0
     and inquiry_minor >= 0
@@ -110,6 +112,7 @@ create table public.sidestream_customer_commerce_materializations (
         gross_paid_minor = 0
         and discount_minor = 0
         and tax_minor = 0
+        and off_stripe_paid_minor = 0
         and refunded_minor = 0
         and disputed_minor = 0
         and inquiry_minor = 0
@@ -210,6 +213,59 @@ create table public.sidestream_customer_commerce_aliases (
 create index sidestream_customer_commerce_aliases_payment_key_idx
   on public.sidestream_customer_commerce_aliases (license_namespace, payment_key);
 
+create table public.sidestream_customer_commerce_invoice_payments (
+  license_namespace text not null,
+  invoice_payment_id text not null,
+  invoice_id text not null,
+  status text not null,
+  amount_paid_minor bigint not null,
+  currency text,
+  instrument_type text not null,
+  instrument_id text not null,
+  event_id text not null,
+  event_created_at timestamptz not null,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  primary key (license_namespace, invoice_payment_id),
+  constraint sidestream_customer_commerce_invoice_payments_namespace_valid check (
+    license_namespace in ('production', 'test')
+  ),
+  constraint sidestream_customer_commerce_invoice_payments_status_valid check (
+    char_length(status) between 1 and 80
+  ),
+  constraint sidestream_customer_commerce_invoice_payments_amount_valid check (
+    amount_paid_minor >= 0
+    and (currency is not null or amount_paid_minor = 0)
+  ),
+  constraint sidestream_customer_commerce_invoice_payments_currency_valid check (
+    currency is null or currency ~ '^[a-z]{3}$'
+  ),
+  constraint sidestream_customer_commerce_invoice_payments_instrument_valid check (
+    instrument_type in ('payment_intent', 'charge')
+  ),
+  constraint sidestream_customer_commerce_invoice_payments_bounded check (
+    char_length(invoice_payment_id) between 1 and 200
+    and char_length(invoice_id) between 1 and 200
+    and char_length(instrument_id) between 1 and 200
+    and char_length(event_id) between 1 and 255
+  )
+);
+
+create index sidestream_customer_commerce_invoice_payments_invoice_idx
+  on public.sidestream_customer_commerce_invoice_payments (
+    license_namespace,
+    invoice_id,
+    status
+  );
+
+create index sidestream_customer_commerce_invoice_payments_instrument_idx
+  on public.sidestream_customer_commerce_invoice_payments (
+    license_namespace,
+    instrument_type,
+    instrument_id,
+    status
+  );
+
 create table public.sidestream_customer_money_totals (
   profile_id uuid not null,
   license_namespace text not null,
@@ -278,8 +334,8 @@ immutable
 strict
 as $$
   select case split_part(candidate, ':', 1)
-    when 'charge' then 0
-    when 'payment_intent' then 1
+    when 'payment_intent' then 0
+    when 'charge' then 1
     when 'invoice' then 2
     when 'checkout_session' then 3
     when 'refund' then 5
@@ -323,30 +379,196 @@ begin
     last_upgraded_at,
     materialized_at
   )
-  with payment_groups as (
+  with ranked_instruments as (
+    select
+      fact.*,
+      row_number() over (
+        partition by fact.profile_id, fact.currency, fact.payment_key
+        order by
+          case fact.source_object_type
+            when 'payment_intent' then 0
+            when 'charge' then 1
+            else 2
+          end,
+          fact.event_created_at desc,
+          fact.event_id desc,
+          fact.source_object_id desc
+      ) as authority_rank
+    from public.sidestream_customer_commerce_materializations fact
+    where fact.license_namespace = target_namespace
+      and fact.profile_id is not null
+      and fact.currency is not null
+      and fact.fact_kind = 'payment'
+      and fact.source_object_type in ('payment_intent', 'charge')
+  ),
+  instrument_payments as (
+    select * from ranked_instruments where authority_rank = 1
+  ),
+  direct_attribution as (
     select
       fact.profile_id,
       fact.currency,
       fact.payment_key,
-      max(fact.gross_paid_minor) as gross_paid_minor,
       max(fact.discount_minor) as discount_minor,
       max(fact.tax_minor) as tax_minor,
-      max(fact.refunded_minor) as reported_refunded_minor,
-      min(fact.first_paid_at) as first_paid_at,
-      max(fact.last_paid_at) as last_paid_at,
-      min(fact.first_upgraded_at) as first_upgraded_at,
-      max(fact.last_upgraded_at) as last_upgraded_at,
-      case
-        when bool_or(fact.commerce_model = 'subscription') then 'subscription'
-        when count(distinct fact.commerce_model) = 1 then min(fact.commerce_model)
-        else 'mixed'
-      end as commerce_model
+      max(fact.refunded_minor) filter (
+        where fact.source_object_type = 'charge'
+      ) as reported_refunded_minor,
+      bool_or(fact.commerce_model = 'subscription') as is_subscription,
+      count(distinct fact.commerce_model) as model_count,
+      min(fact.commerce_model) as sole_model
     from public.sidestream_customer_commerce_materializations fact
     where fact.license_namespace = target_namespace
       and fact.profile_id is not null
       and fact.currency is not null
       and fact.fact_kind = 'payment'
     group by fact.profile_id, fact.currency, fact.payment_key
+  ),
+  invoice_edge_base as (
+    select
+      payment.profile_id,
+      payment.currency,
+      payment.payment_key,
+      invoice.id as invoice_fact_id,
+      edge.invoice_payment_id,
+      edge.amount_paid_minor,
+      invoice.discount_minor,
+      invoice.tax_minor,
+      invoice.commerce_model,
+      sum(edge.amount_paid_minor) over (
+        partition by edge.license_namespace, edge.invoice_id, edge.currency
+      ) as invoice_instrument_total,
+      row_number() over (
+        partition by edge.license_namespace, edge.invoice_id, edge.currency
+        order by edge.invoice_payment_id
+      ) as allocation_rank
+    from public.sidestream_customer_commerce_invoice_payments edge
+    join public.sidestream_customer_commerce_aliases alias
+      on alias.license_namespace = edge.license_namespace
+      and alias.alias_type = edge.instrument_type
+      and alias.alias_id = edge.instrument_id
+    join instrument_payments payment
+      on payment.payment_key = alias.payment_key
+      and payment.currency = edge.currency
+    join public.sidestream_customer_commerce_materializations invoice
+      on invoice.license_namespace = edge.license_namespace
+      and invoice.source_object_type = 'invoice'
+      and invoice.source_object_id = edge.invoice_id
+      and invoice.profile_id = payment.profile_id
+      and invoice.currency = payment.currency
+      and not invoice.identity_conflict
+    where edge.license_namespace = target_namespace
+      and edge.status = 'paid'
+      and edge.amount_paid_minor > 0
+  ),
+  invoice_edge_floor as (
+    select
+      base.*,
+      (base.discount_minor * base.amount_paid_minor) /
+        base.invoice_instrument_total as allocated_discount_floor,
+      (base.tax_minor * base.amount_paid_minor) /
+        base.invoice_instrument_total as allocated_tax_floor
+    from invoice_edge_base base
+    where base.invoice_instrument_total > 0
+  ),
+  invoice_edge_allocations as (
+    select
+      floor.profile_id,
+      floor.currency,
+      floor.payment_key,
+      floor.commerce_model,
+      floor.allocated_discount_floor + case when floor.allocation_rank = 1 then
+        floor.discount_minor - sum(floor.allocated_discount_floor) over (
+          partition by floor.invoice_fact_id
+        ) else 0 end as allocated_discount_minor,
+      floor.allocated_tax_floor + case when floor.allocation_rank = 1 then
+        floor.tax_minor - sum(floor.allocated_tax_floor) over (
+          partition by floor.invoice_fact_id
+        ) else 0 end as allocated_tax_minor
+    from invoice_edge_floor floor
+  ),
+  invoice_attribution as (
+    select
+      profile_id,
+      currency,
+      payment_key,
+      sum(allocated_discount_minor) as discount_minor,
+      sum(allocated_tax_minor) as tax_minor,
+      bool_or(commerce_model = 'subscription') as is_subscription,
+      count(distinct commerce_model) as model_count,
+      min(commerce_model) as sole_model
+    from invoice_edge_allocations
+    group by profile_id, currency, payment_key
+  ),
+  instrument_groups as (
+    select
+      payment.profile_id,
+      payment.currency,
+      payment.payment_key,
+      payment.gross_paid_minor,
+      greatest(
+        coalesce(direct.discount_minor, 0),
+        coalesce(invoice.discount_minor, 0)
+      ) as discount_minor,
+      greatest(
+        coalesce(direct.tax_minor, 0),
+        coalesce(invoice.tax_minor, 0)
+      ) as tax_minor,
+      coalesce(direct.reported_refunded_minor, 0) as reported_refunded_minor,
+      payment.first_paid_at,
+      payment.last_paid_at,
+      payment.first_upgraded_at,
+      payment.last_upgraded_at,
+      case
+        when coalesce(invoice.is_subscription, false)
+          or coalesce(direct.is_subscription, false) then 'subscription'
+        when coalesce(invoice.model_count, 0) > 1
+          or coalesce(direct.model_count, 0) > 1 then 'mixed'
+        else coalesce(invoice.sole_model, direct.sole_model, payment.commerce_model)
+      end as commerce_model
+    from instrument_payments payment
+    left join direct_attribution direct
+      on direct.profile_id = payment.profile_id
+      and direct.currency = payment.currency
+      and direct.payment_key = payment.payment_key
+    left join invoice_attribution invoice
+      on invoice.profile_id = payment.profile_id
+      and invoice.currency = payment.currency
+      and invoice.payment_key = payment.payment_key
+  ),
+  comped_groups as (
+    select
+      fact.profile_id,
+      fact.currency,
+      fact.payment_key,
+      0::bigint as gross_paid_minor,
+      max(fact.discount_minor) as discount_minor,
+      max(fact.tax_minor) as tax_minor,
+      0::bigint as reported_refunded_minor,
+      min(fact.first_paid_at) as first_paid_at,
+      max(fact.last_paid_at) as last_paid_at,
+      min(fact.first_upgraded_at) as first_upgraded_at,
+      max(fact.last_upgraded_at) as last_upgraded_at,
+      'comped'::text as commerce_model
+    from public.sidestream_customer_commerce_materializations fact
+    where fact.license_namespace = target_namespace
+      and fact.profile_id is not null
+      and fact.currency is not null
+      and fact.fact_kind = 'payment'
+      and fact.commerce_model = 'comped'
+      and fact.gross_paid_minor = 0
+      and not exists (
+        select 1 from instrument_payments instrument
+        where instrument.profile_id = fact.profile_id
+          and instrument.currency = fact.currency
+          and instrument.payment_key = fact.payment_key
+      )
+    group by fact.profile_id, fact.currency, fact.payment_key
+  ),
+  payment_groups as (
+    select * from instrument_groups
+    union all
+    select * from comped_groups
   ),
   refund_groups as (
     select profile_id, currency, payment_key, sum(refunded_minor) as refunded_minor
@@ -452,23 +674,24 @@ begin
       or profile.commerce_synced_at is not null
     );
 
-  with profile_payment_models as (
-    select
-      fact.profile_id,
-      fact.payment_key,
-      case
-        when bool_or(fact.commerce_model = 'subscription') then 'subscription'
-        when count(distinct fact.commerce_model) = 1 then min(fact.commerce_model)
-        else 'mixed'
-      end as commerce_model
+  with profile_relationship_models as (
+    select total.profile_id, total.commerce_model
+    from public.sidestream_customer_money_totals total
+    where total.license_namespace = target_namespace
+    union all
+    select fact.profile_id, fact.commerce_model
     from public.sidestream_customer_commerce_materializations fact
     where fact.license_namespace = target_namespace
       and fact.profile_id is not null
       and fact.fact_kind = 'payment'
-    group by fact.profile_id, fact.payment_key
-  ),
-  profile_relationship_models as (
-    select profile_id, commerce_model from profile_payment_models
+      and fact.source_object_type = 'checkout_session'
+      and not exists (
+        select 1
+        from public.sidestream_customer_commerce_materializations instrument
+        where instrument.license_namespace = fact.license_namespace
+          and instrument.payment_key = fact.payment_key
+          and instrument.source_object_type in ('payment_intent', 'charge')
+      )
     union all
     select fact.profile_id, fact.commerce_model
     from public.sidestream_customer_commerce_materializations fact
@@ -496,7 +719,26 @@ begin
     from public.sidestream_customer_commerce_materializations fact
     where fact.license_namespace = target_namespace
       and fact.profile_id is not null
-      and fact.fact_kind in ('payment', 'subscription', 'manual')
+      and (
+        fact.fact_kind in ('subscription', 'manual')
+        or (
+          fact.fact_kind = 'payment'
+          and (
+            fact.source_object_type in ('payment_intent', 'charge')
+            or (fact.commerce_model = 'comped' and fact.gross_paid_minor = 0)
+            or (
+              fact.source_object_type = 'checkout_session'
+              and not exists (
+                select 1
+                from public.sidestream_customer_commerce_materializations instrument
+                where instrument.license_namespace = fact.license_namespace
+                  and instrument.payment_key = fact.payment_key
+                  and instrument.source_object_type in ('payment_intent', 'charge')
+              )
+            )
+          )
+        )
+      )
     group by fact.profile_id
   ),
   profile_facts as (
@@ -525,6 +767,138 @@ begin
 end;
 $$;
 
+create or replace function public.sidestream_customer_commerce_reconcile_namespace(
+  target_namespace text,
+  allow_conflict_clear boolean default false
+)
+returns void
+language plpgsql
+as $$
+begin
+  if target_namespace not in ('production', 'test') then
+    raise exception 'Invalid Customer commerce namespace' using errcode = '23514';
+  end if;
+  perform pg_advisory_xact_lock(
+    hashtext('sidestream_customer_commerce:' || target_namespace)
+  );
+
+  with direct_evidence_profiles as (
+    select
+      fact.payment_key,
+      profile.id as profile_id,
+      link.link_type in (
+        'stripe_checkout_session',
+        'stripe_payment_intent',
+        'stripe_subscription'
+      ) as is_strong
+    from public.sidestream_customer_commerce_materializations fact
+    join lateral jsonb_array_elements(fact.identity_evidence) evidence on true
+    join public.sidestream_customer_identity_links link
+      on link.license_namespace = fact.license_namespace
+      and link.link_type = evidence->>'linkType'
+      and link.link_value = evidence->>'linkValue'
+    join public.sidestream_customer_profiles profile
+      on profile.id = link.profile_id
+      and profile.license_namespace = link.license_namespace
+      and profile.merged_into is null
+    where fact.license_namespace = target_namespace
+  ),
+  allocation_evidence_profiles as (
+    select
+      alias.payment_key,
+      profile.id as profile_id,
+      link.link_type in (
+        'stripe_checkout_session',
+        'stripe_payment_intent',
+        'stripe_subscription'
+      ) as is_strong
+    from public.sidestream_customer_commerce_invoice_payments edge
+    join public.sidestream_customer_commerce_aliases alias
+      on alias.license_namespace = edge.license_namespace
+      and alias.alias_type = edge.instrument_type
+      and alias.alias_id = edge.instrument_id
+    join public.sidestream_customer_commerce_materializations invoice
+      on invoice.license_namespace = edge.license_namespace
+      and invoice.source_object_type = 'invoice'
+      and invoice.source_object_id = edge.invoice_id
+    join lateral jsonb_array_elements(invoice.identity_evidence) evidence on true
+    join public.sidestream_customer_identity_links link
+      on link.license_namespace = invoice.license_namespace
+      and link.link_type = evidence->>'linkType'
+      and link.link_value = evidence->>'linkValue'
+    join public.sidestream_customer_profiles profile
+      on profile.id = link.profile_id
+      and profile.license_namespace = link.license_namespace
+      and profile.merged_into is null
+    where edge.license_namespace = target_namespace
+      and edge.status = 'paid'
+  ),
+  evidence_profiles as (
+    select * from direct_evidence_profiles
+    union all
+    select * from allocation_evidence_profiles
+  ),
+  existing_owners as (
+    select payment_key, profile_id, false as is_strong
+    from public.sidestream_customer_commerce_materializations
+    where license_namespace = target_namespace
+      and profile_id is not null
+  ),
+  candidates as (
+    select payment_key, profile_id, is_strong, false as is_owner
+    from evidence_profiles
+    union all
+    select payment_key, profile_id, is_strong, true as is_owner
+    from existing_owners
+  ),
+  candidate_rollup as (
+    select
+      payment_key,
+      count(distinct profile_id)::integer as profile_count,
+      count(distinct profile_id) filter (where is_strong)::integer as strong_count,
+      count(distinct profile_id) filter (where is_owner)::integer as owner_count,
+      (array_agg(distinct profile_id order by profile_id))[1] as sole_profile
+    from candidates
+    group by payment_key
+  ),
+  fact_rollup as (
+    select
+      payment_key,
+      bool_or(identity_conflict) as had_conflict
+    from public.sidestream_customer_commerce_materializations
+    where license_namespace = target_namespace
+    group by payment_key
+  ),
+  resolution as (
+    select
+      fact.payment_key,
+      coalesce(candidate.profile_count, 0) > 1
+        or (fact.had_conflict and not allow_conflict_clear) as has_conflict,
+      case
+        when coalesce(candidate.profile_count, 0) > 1
+          or (fact.had_conflict and not allow_conflict_clear) then null
+        when candidate.profile_count = 1
+          and (candidate.strong_count = 1 or candidate.owner_count = 1)
+          then candidate.sole_profile
+        else null
+      end as profile_id
+    from fact_rollup fact
+    left join candidate_rollup candidate using (payment_key)
+  )
+  update public.sidestream_customer_commerce_materializations fact
+  set profile_id = resolution.profile_id,
+      identity_conflict = resolution.has_conflict,
+      updated_at = now()
+  from resolution
+  where fact.license_namespace = target_namespace
+    and fact.payment_key = resolution.payment_key
+    and (
+      fact.profile_id is distinct from resolution.profile_id
+      or fact.identity_conflict is distinct from resolution.has_conflict
+    );
+end;
+$$;
+
 create or replace function public.sidestream_customer_commerce_apply(
   observations jsonb
 )
@@ -533,6 +907,7 @@ language plpgsql
 as $$
 declare
   item jsonb;
+  edge jsonb;
   item_namespace text;
   target_namespace text;
   canonical_key text;
@@ -748,6 +1123,7 @@ begin
       gross_paid_minor,
       discount_minor,
       tax_minor,
+      off_stripe_paid_minor,
       refunded_minor,
       disputed_minor,
       inquiry_minor,
@@ -787,6 +1163,7 @@ begin
       (item->>'grossPaidMinor')::bigint,
       (item->>'discountMinor')::bigint,
       (item->>'taxMinor')::bigint,
+      (item->>'offStripePaidMinor')::bigint,
       (item->>'refundedMinor')::bigint,
       (item->>'disputedMinor')::bigint,
       (item->>'inquiryMinor')::bigint,
@@ -850,6 +1227,8 @@ begin
           else public.sidestream_customer_commerce_materializations.discount_minor end,
         tax_minor = case when is_newer then excluded.tax_minor
           else public.sidestream_customer_commerce_materializations.tax_minor end,
+        off_stripe_paid_minor = case when is_newer then excluded.off_stripe_paid_minor
+          else public.sidestream_customer_commerce_materializations.off_stripe_paid_minor end,
         refunded_minor = case when is_newer then excluded.refunded_minor
           else public.sidestream_customer_commerce_materializations.refunded_minor end,
         disputed_minor = case when is_newer then excluded.disputed_minor
@@ -971,30 +1350,86 @@ begin
         payment_key = canonical_key,
         identity_evidence = case when is_newer then excluded.identity_evidence
           else public.sidestream_customer_commerce_materializations.identity_evidence end,
-        identity_conflict = case when is_newer then excluded.identity_conflict
-          else public.sidestream_customer_commerce_materializations.identity_conflict end,
+        identity_conflict =
+          public.sidestream_customer_commerce_materializations.identity_conflict
+          or excluded.identity_conflict,
         updated_at = now();
+
+    for edge in select value from jsonb_array_elements(
+      coalesce(item->'invoicePayments', '[]'::jsonb)
+    ) loop
+      if edge->>'status' = 'paid' then
+        insert into public.sidestream_customer_commerce_aliases (
+          license_namespace,
+          alias_type,
+          alias_id,
+          payment_key,
+          first_event_id,
+          created_at,
+          updated_at
+        ) values (
+          target_namespace,
+          edge->>'instrumentType',
+          edge->>'instrumentId',
+          (edge->>'instrumentType') || ':' || (edge->>'instrumentId'),
+          item->>'eventId',
+          now(),
+          now()
+        ) on conflict (license_namespace, alias_type, alias_id) do nothing;
+      end if;
+
+      insert into public.sidestream_customer_commerce_invoice_payments (
+        license_namespace,
+        invoice_payment_id,
+        invoice_id,
+        status,
+        amount_paid_minor,
+        currency,
+        instrument_type,
+        instrument_id,
+        event_id,
+        event_created_at,
+        created_at,
+        updated_at
+      ) values (
+        target_namespace,
+        edge->>'invoicePaymentId',
+        edge->>'invoiceId',
+        edge->>'status',
+        (edge->>'amountPaidMinor')::bigint,
+        nullif(edge->>'currency', ''),
+        edge->>'instrumentType',
+        edge->>'instrumentId',
+        item->>'eventId',
+        (item->>'eventCreatedAt')::timestamptz,
+        now(),
+        now()
+      )
+      on conflict (license_namespace, invoice_payment_id) do update
+      set invoice_id = excluded.invoice_id,
+          status = excluded.status,
+          amount_paid_minor = excluded.amount_paid_minor,
+          currency = excluded.currency,
+          instrument_type = excluded.instrument_type,
+          instrument_id = excluded.instrument_id,
+          event_id = excluded.event_id,
+          event_created_at = excluded.event_created_at,
+          updated_at = now()
+      where public.sidestream_customer_commerce_invoice_payments.event_created_at
+          < excluded.event_created_at
+        or (
+          public.sidestream_customer_commerce_invoice_payments.event_created_at
+            = excluded.event_created_at
+          and public.sidestream_customer_commerce_invoice_payments.event_id
+            < excluded.event_id
+        );
+    end loop;
   end loop;
 
-  -- A later alias-bearing object can attach refund/dispute facts that arrived
-  -- first and had only a charge reference.
-  with one_owner as (
-    select payment_key, (array_agg(distinct profile_id))[1] as profile_id
-    from public.sidestream_customer_commerce_materializations
-    where license_namespace = target_namespace
-      and profile_id is not null
-    group by payment_key
-    having count(distinct profile_id) = 1
-  )
-  update public.sidestream_customer_commerce_materializations fact
-  set profile_id = owner.profile_id,
-      updated_at = now()
-  from one_owner owner
-  where fact.license_namespace = target_namespace
-    and fact.payment_key = owner.payment_key
-    and fact.profile_id is null
-    and not fact.identity_conflict;
-
+  perform public.sidestream_customer_commerce_reconcile_namespace(
+    target_namespace,
+    false
+  );
   perform public.sidestream_customer_commerce_refresh_namespace(target_namespace);
   return jsonb_build_object(
     'applied', applied_count,
@@ -1012,39 +1447,11 @@ begin
   perform pg_advisory_xact_lock(
     hashtext('sidestream_customer_commerce:' || new.license_namespace)
   );
-  with unambiguous_owner as (
-    select
-      fact.id as fact_id,
-      (array_agg(distinct profile.id))[1] as profile_id
-    from public.sidestream_customer_commerce_materializations fact
-    join lateral jsonb_array_elements(fact.identity_evidence) evidence on true
-    join public.sidestream_customer_identity_links link
-      on link.license_namespace = fact.license_namespace
-      and link.link_type = evidence->>'linkType'
-      and link.link_value = evidence->>'linkValue'
-    join public.sidestream_customer_profiles profile
-      on profile.id = link.profile_id
-      and profile.license_namespace = link.license_namespace
-      and profile.merged_into is null
-    where fact.license_namespace = new.license_namespace
-      and fact.profile_id is null
-    group by fact.id
-    having count(distinct profile.id) = 1
-      and bool_or(link.link_type in (
-        'stripe_checkout_session',
-        'stripe_payment_intent',
-        'stripe_subscription'
-      ))
-  )
-  update public.sidestream_customer_commerce_materializations fact
-  set profile_id = owner.profile_id,
-      identity_conflict = false,
-      updated_at = now()
-  from unambiguous_owner owner
-  where fact.id = owner.fact_id;
-  if found then
-    perform public.sidestream_customer_commerce_refresh_namespace(new.license_namespace);
-  end if;
+  perform public.sidestream_customer_commerce_reconcile_namespace(
+    new.license_namespace,
+    false
+  );
+  perform public.sidestream_customer_commerce_refresh_namespace(new.license_namespace);
   return new;
 end;
 $$;
@@ -1068,6 +1475,10 @@ begin
         updated_at = now()
     where license_namespace = new.license_namespace
       and profile_id = new.id;
+    perform public.sidestream_customer_commerce_reconcile_namespace(
+      new.license_namespace,
+      true
+    );
     perform public.sidestream_customer_commerce_refresh_namespace(new.license_namespace);
   end if;
   return new;
@@ -1083,6 +1494,8 @@ comment on table public.sidestream_customer_commerce_materializations is
   'Mutable latest-state money materializations keyed by Stripe source object. sidestream_stripe_events durably preserves insert-only event_id, event_type, and stripe_created_at; its processing state is mutable and payload fields may be redacted. This table is not entitlement truth.';
 comment on table public.sidestream_customer_money_totals is
   'Materialized money totals separated by customer profile, namespace, and ISO currency.';
+comment on table public.sidestream_customer_commerce_invoice_payments is
+  'Current Stripe InvoicePayment allocation edges. Paid edges attribute invoice classification without merging the many-to-many invoice/instrument graph.';
 comment on column public.sidestream_customer_commerce_materializations.source_confidence is
   'Confidence for the latest source-object timing. Verified canonical dates and legacy-inferred support dates are stored separately.';
 comment on column public.sidestream_customer_commerce_materializations.first_inferred_upgraded_at is
@@ -1090,13 +1503,17 @@ comment on column public.sidestream_customer_commerce_materializations.first_inf
 
 alter table public.sidestream_customer_commerce_materializations enable row level security;
 alter table public.sidestream_customer_commerce_aliases enable row level security;
+alter table public.sidestream_customer_commerce_invoice_payments enable row level security;
 alter table public.sidestream_customer_money_totals enable row level security;
 
 revoke all on table public.sidestream_customer_commerce_materializations from public;
 revoke all on table public.sidestream_customer_commerce_aliases from public;
+revoke all on table public.sidestream_customer_commerce_invoice_payments from public;
 revoke all on table public.sidestream_customer_money_totals from public;
 revoke all on function public.sidestream_customer_commerce_key_priority(text) from public;
 revoke all on function public.sidestream_customer_commerce_refresh_namespace(text) from public;
+revoke all on function public.sidestream_customer_commerce_reconcile_namespace(text, boolean)
+  from public;
 revoke all on function public.sidestream_customer_commerce_apply(jsonb) from public;
 revoke all on function public.sidestream_customer_commerce_identity_attach() from public;
 revoke all on function public.sidestream_customer_commerce_profile_merge() from public;
@@ -1113,6 +1530,10 @@ begin
       );
       execute format(
         'revoke all on table public.sidestream_customer_commerce_aliases from %I',
+        api_role
+      );
+      execute format(
+        'revoke all on table public.sidestream_customer_commerce_invoice_payments from %I',
         api_role
       );
       execute format(
