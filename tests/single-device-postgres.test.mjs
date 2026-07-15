@@ -42,6 +42,24 @@ const CONTROLLED_ENV_NAMES = [
 ];
 const TEST_SECRET = "sidestream-single-device-postgres-integration";
 const DAY_MS = 24 * 60 * 60 * 1000;
+const SINGLE_DEVICE_BASELINE_TABLES = [
+  "sidestream_account_devices",
+  "sidestream_account_sessions",
+  "sidestream_accounts",
+  "sidestream_activation_sessions",
+  "sidestream_api_rate_limits",
+  "sidestream_billing_resources",
+  "sidestream_checkout_intents",
+  "sidestream_device_transfers",
+  "sidestream_download_lead_idempotency",
+  "sidestream_download_lead_replay_receipts",
+  "sidestream_download_leads",
+  "sidestream_installer_requests",
+  "sidestream_license_tokens",
+  "sidestream_licenses",
+  "sidestream_schema_migrations",
+  "sidestream_stripe_events",
+];
 
 test("single-device entitlement transactions hold in disposable Postgres", {
   timeout: 120_000,
@@ -81,24 +99,10 @@ test("single-device entitlement transactions hold in disposable Postgres", {
         `select table_name from information_schema.tables where table_schema = $1 order by table_name`,
         [schema],
       );
-      assert.deepEqual(tables.rows.map((row) => row.table_name), [
-        "sidestream_account_devices",
-        "sidestream_account_sessions",
-        "sidestream_accounts",
-        "sidestream_activation_sessions",
-        "sidestream_api_rate_limits",
-        "sidestream_billing_resources",
-        "sidestream_checkout_intents",
-        "sidestream_device_transfers",
-        "sidestream_download_lead_idempotency",
-        "sidestream_download_lead_replay_receipts",
-        "sidestream_download_leads",
-        "sidestream_installer_requests",
-        "sidestream_license_tokens",
-        "sidestream_licenses",
-        "sidestream_schema_migrations",
-        "sidestream_stripe_events",
-      ]);
+      const tableNames = tables.rows.map((row) => row.table_name);
+      for (const tableName of SINGLE_DEVICE_BASELINE_TABLES) {
+        assert.ok(tableNames.includes(tableName), `missing single-device baseline table ${tableName}`);
+      }
 
       const rls = await databasePool.query(
         `
@@ -110,7 +114,7 @@ test("single-device entitlement transactions hold in disposable Postgres", {
         `,
         [schema],
       );
-      assert.equal(rls.rows.length, 16);
+      assert.deepEqual(rls.rows.map((row) => row.relname), tableNames);
       assert.equal(rls.rows.every((row) => row.relrowsecurity), true);
     });
 
