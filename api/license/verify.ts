@@ -11,6 +11,9 @@ import {
 type LicenseVerifyPayload = {
   licenseToken?: unknown;
   deviceId?: unknown;
+  installIdHash?: unknown;
+  supportCode?: unknown;
+  installerReceiptIdHash?: unknown;
 };
 
 export default async function handler(
@@ -29,6 +32,13 @@ export default async function handler(
   if (!deviceId) {
     return sendJson(response, 400, { error: "Missing device ID", code: "invalid_request" });
   }
+  const identity = readCustomerIdentityFields(payload);
+  if (!identity) {
+    return sendJson(response, 400, {
+      error: "Invalid customer identity",
+      code: "invalid_customer_identity",
+    });
+  }
 
   const environment = resolveRequestLicenseEnvironment(request);
   if (!environment) {
@@ -39,10 +49,38 @@ export default async function handler(
     });
   }
 
-  const verified = await verifyLicenseToken(licenseToken, deviceId, environment);
+  const verified = await verifyLicenseToken(
+    licenseToken,
+    deviceId,
+    environment,
+    identity,
+  );
   if (!verified.active) {
     const statusCode = verified.code === "license_inactive" ? 403 : 401;
     return sendJson(response, statusCode, verified);
   }
   return sendJson(response, 200, verified);
+}
+
+function readCustomerIdentityFields(payload: LicenseVerifyPayload) {
+  const installIdHash = readOptionalIdentity(payload.installIdHash, /^[0-9a-f]{64}$/);
+  const supportCode = readOptionalIdentity(
+    payload.supportCode,
+    /^SIDE-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}$/,
+  );
+  const installerReceiptIdHash = readOptionalIdentity(
+    payload.installerReceiptIdHash,
+    /^[0-9a-f]{64}$/,
+  );
+  if ([installIdHash, supportCode, installerReceiptIdHash].includes(null)) return null;
+  return {
+    ...(installIdHash ? { installIdHash } : {}),
+    ...(supportCode ? { supportCode } : {}),
+    ...(installerReceiptIdHash ? { installerReceiptIdHash } : {}),
+  };
+}
+
+function readOptionalIdentity(value: unknown, pattern: RegExp): string | null | undefined {
+  if (value === undefined || value === null || value === "") return undefined;
+  return typeof value === "string" && pattern.test(value) ? value : null;
 }

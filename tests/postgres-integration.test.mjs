@@ -491,6 +491,12 @@ export async function query() { throw new Error("Inject a Postgres query into qu
     source: "api/_lib/maintenance.ts",
     replacements: { "./postgres.js": postgresStubUrl },
   });
+  const customerIdentityUrl = await writeSchemaModule({
+    schema,
+    temporaryDirectory,
+    name: "customer-identity",
+    source: "api/_lib/customer-identity.ts",
+  });
   const accountUrl = await writeSchemaModule({
     schema,
     temporaryDirectory,
@@ -503,6 +509,7 @@ export async function query() { throw new Error("Inject a Postgres query into qu
         "../api/_lib/license-environment.ts",
         import.meta.url,
       ).href,
+      "./customer-identity.js": customerIdentityUrl,
       "./maintenance.js": maintenanceUrl,
       "./postgres.js": postgresStubUrl,
     },

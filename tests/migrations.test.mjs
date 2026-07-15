@@ -36,7 +36,7 @@ function knownBaselineSnapshot(rowSecurityEnabled = false) {
 
 test("migration files are ordered, checksummed, and append-only baseline files are pinned", async () => {
   const migrations = validateMigrationFiles(await loadMigrationFiles());
-  assert.equal(migrations.length, 19);
+  assert.equal(migrations.length, 20);
   assert.deepEqual(
     migrations.map((migration) => migration.filename),
     [...migrations.map((migration) => migration.filename)].sort(),
@@ -55,6 +55,7 @@ test("migration files are ordered, checksummed, and append-only baseline files a
     "20260713206000_add_maintenance_indexes.sql",
     "20260714200000_remove_redundant_download_lead_key_unique.sql",
     "20260715120000_add_customer_360_core.sql",
+    "20260715121000_add_customer_identity_links.sql",
   ]) {
     assert.ok(migrations.some((migration) => migration.filename === filename));
   }

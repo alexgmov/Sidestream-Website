@@ -961,10 +961,26 @@ async function loadAccountModuleForSchema(schema) {
   );
   const maintenancePath = join(temporaryModuleDirectory, "maintenance-under-test.ts");
   await writeFile(maintenancePath, maintenanceSource, { mode: 0o600 });
+  const customerIdentityPath = join(
+    temporaryModuleDirectory,
+    "customer-identity-under-test.ts",
+  );
+  await writeFile(
+    customerIdentityPath,
+    rewritePublicSchema(
+      await readFile(
+        join(repositoryRoot, "api", "_lib", "customer-identity.ts"),
+        "utf8",
+      ),
+      schema,
+    ),
+    { mode: 0o600 },
+  );
   const sourceImports = {
     "./entitlement.js": pathToFileURL(join(repositoryRoot, "api", "_lib", "entitlement.ts")).href,
     "./device-policy.js": pathToFileURL(join(repositoryRoot, "api", "_lib", "device-policy.ts")).href,
     "./license-environment.js": pathToFileURL(join(repositoryRoot, "api", "_lib", "license-environment.ts")).href,
+    "./customer-identity.js": pathToFileURL(customerIdentityPath).href,
     "./maintenance.js": pathToFileURL(maintenancePath).href,
     "./postgres.js": postgresUrl,
   };
