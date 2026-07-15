@@ -206,6 +206,32 @@ function assertReportKeys(report) {
     Object.keys(report).sort(),
     ["checkpoint", "components", "inputDigest", "mode", "namespace", "summary"],
   );
+  if (report.mode === "apply") {
+    assert.deepEqual(report.summary.compatibilityAliasScopes, {
+      processedThisRun: "currentRun.processedComponents",
+      orphanComponents: "checkpointedUnresolved.orphanComponents",
+      conflictComponents: "checkpointedUnresolved.conflictComponents",
+      writes: "currentRun.writes",
+    });
+    assert.equal(
+      report.summary.checkpointedUnresolved.scope,
+      "checkpointedProcessedPlanPrefix",
+    );
+    assert.equal(
+      report.summary.checkpointedUnresolved.processedPlanPrefixComponents,
+      report.checkpoint.nextComponentIndex,
+    );
+    assert.equal(
+      report.summary.orphanComponents,
+      report.summary.checkpointedUnresolved.orphanComponents,
+    );
+    assert.equal(
+      report.summary.conflictComponents,
+      report.summary.checkpointedUnresolved.conflictComponents,
+    );
+    assert.equal(report.summary.processedThisRun, report.summary.currentRun.processedComponents);
+    assert.equal(report.summary.writes, report.summary.currentRun.writes);
+  }
   const resumedActionableReports = report.checkpoint?.resumedActionableReports || [];
   assert.ok(Array.isArray(resumedActionableReports));
   assert.equal(Object.hasOwn(report.checkpoint.outcomes, "actionableReports"), false);

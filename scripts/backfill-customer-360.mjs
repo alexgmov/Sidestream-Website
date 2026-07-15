@@ -862,14 +862,27 @@ function summarizeApplyResults(plan, results, startingCheckpoint, currentCheckpo
   const outcomes = currentCheckpoint.outcomes;
   const currentRun = summarizeCurrentRun(results);
   const actionableReports = outcomes.actionableReports;
+  const checkpointedUnresolved = Object.freeze({
+    scope: "checkpointedProcessedPlanPrefix",
+    processedPlanPrefixComponents: currentCheckpoint.nextComponentIndex,
+    orphanComponents: actionableReports.filter(({ status }) => status === "orphan").length,
+    conflictComponents: actionableReports.filter(({ status }) => status === "conflict").length,
+  });
   return Object.freeze({
     records: plan.records.length,
     components: plan.components.length,
     resumedAtComponent: startingCheckpoint.nextComponentIndex,
     processedThisRun: currentRun.processedComponents,
-    orphanComponents: actionableReports.filter(({ status }) => status === "orphan").length,
-    conflictComponents: actionableReports.filter(({ status }) => status === "conflict").length,
+    orphanComponents: checkpointedUnresolved.orphanComponents,
+    conflictComponents: checkpointedUnresolved.conflictComponents,
     writes: currentRun.writes,
+    compatibilityAliasScopes: Object.freeze({
+      processedThisRun: "currentRun.processedComponents",
+      orphanComponents: "checkpointedUnresolved.orphanComponents",
+      conflictComponents: "checkpointedUnresolved.conflictComponents",
+      writes: "currentRun.writes",
+    }),
+    checkpointedUnresolved,
     currentRun,
   });
 }

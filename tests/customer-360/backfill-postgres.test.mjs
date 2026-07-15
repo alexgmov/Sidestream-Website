@@ -240,7 +240,20 @@ test("test-only Customer 360 apply is atomic, resumable, idempotent, and private
       assert.equal(resumed.summary.currentRun.processedComponents, 1);
       assert.equal(resumed.summary.processedThisRun, 1);
       assert.equal(resumed.summary.conflictComponents, 1);
+      assert.equal(resumed.summary.currentRun.conflictComponents, 0);
       assert.equal(resumed.summary.currentRun.unchangedComponents, 1);
+      assert.deepEqual(resumed.summary.compatibilityAliasScopes, {
+        processedThisRun: "currentRun.processedComponents",
+        orphanComponents: "checkpointedUnresolved.orphanComponents",
+        conflictComponents: "checkpointedUnresolved.conflictComponents",
+        writes: "currentRun.writes",
+      });
+      assert.deepEqual(resumed.summary.checkpointedUnresolved, {
+        scope: "checkpointedProcessedPlanPrefix",
+        processedPlanPrefixComponents: 2,
+        orphanComponents: 0,
+        conflictComponents: 1,
+      });
       assert.equal(persistedCheckpoint.outcomes.conflictComponents, 1);
       assert.deepEqual(
         resumed.checkpoint.resumedActionableReports,
