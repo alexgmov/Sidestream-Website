@@ -56,6 +56,7 @@ import {
   resolveLicenseEnvironment,
   type ResolvedLicenseEnvironment,
 } from "./license-environment.js";
+import { loadLicenseWriteConfiguration } from "./maintenance.js";
 import {
   getOptionalRuntimePostgresConnectionString,
   getPostgresPool,
@@ -2257,6 +2258,7 @@ export async function getActivationStatus(
   }
 
   if (issued.issued) {
+    const { licenseWriteThrottleSeconds } = loadLicenseWriteConfiguration();
     await query(
       `
         update public.sidestream_activation_sessions
@@ -2265,8 +2267,14 @@ export async function getActivationStatus(
             status = 'linked',
             updated_at = now()
         where id = $1
+          and (
+            license_id is distinct from $2::uuid
+            or completed_at is null
+            or status <> 'linked'
+            or updated_at <= now() - ($3::bigint * interval '1 second')
+          )
       `,
-      [row.activation_id, row.license_id],
+      [row.activation_id, row.license_id, licenseWriteThrottleSeconds],
     );
   }
 
@@ -2410,31 +2418,51 @@ export async function verifyLicenseToken(
       const legacyTokenExpiresAt = needsLegacyLicenseCompatibility(row.activation_app_version)
         ? addDays(new Date(), LEGACY_LICENSE_TOKEN_TTL_DAYS).toISOString()
         : "";
+      const {
+        legacyTokenRenewalThresholdDays,
+        licenseWriteThrottleSeconds,
+      } = loadLicenseWriteConfiguration();
       const updated = await client.query<{ expires_at: Date | string }>(
         `
           update public.sidestream_license_tokens
-          set last_seen_at = now(),
+          set last_seen_at = case
+                when last_seen_at is null
+                  or last_seen_at <= now() - ($3::bigint * interval '1 second')
+                  then now()
+                else last_seen_at
+              end,
               expires_at = case
-                when $2::timestamptz is not null then greatest(expires_at, $2::timestamptz)
+                when $2::timestamptz is not null
+                  and expires_at <= now() + ($4::bigint * interval '1 day')
+                  then greatest(expires_at, $2::timestamptz)
                 else expires_at
               end,
               updated_at = now()
           where id = $1
             and revoked_at is null
+            and (
+              last_seen_at is null
+              or last_seen_at <= now() - ($3::bigint * interval '1 second')
+              or (
+                $2::timestamptz is not null
+                and expires_at <= now() + ($4::bigint * interval '1 day')
+              )
+            )
           returning expires_at
         `,
-        [row.token_id, legacyTokenExpiresAt || null],
+        [
+          row.token_id,
+          legacyTokenExpiresAt || null,
+          licenseWriteThrottleSeconds,
+          legacyTokenRenewalThresholdDays,
+        ],
       );
-      if (!updated.rows[0]) {
-        await client.query("rollback");
-        return { active: false as const, status: "invalid", code: "revoked" as const };
-      }
 
       await client.query("commit");
       return {
         active: true as const,
         status: license.status,
-        tokenExpiresAt: toIsoString(updated.rows[0].expires_at),
+        tokenExpiresAt: toIsoString(updated.rows[0]?.expires_at || row.expires_at),
         license,
       };
     } catch (error) {
@@ -4094,6 +4122,7 @@ async function lockAccountDeviceBinding(
   }
 
   if (bindingMatches && options.touchLastSeen !== false) {
+    const { licenseWriteThrottleSeconds } = loadLicenseWriteConfiguration();
     await client.query(
       `
         update public.sidestream_account_devices
@@ -4103,12 +4132,14 @@ async function lockAccountDeviceBinding(
             build_channel = coalesce($4, build_channel)
         where id = $1
           and revoked_at is null
+          and last_seen_at <= now() - ($5::bigint * interval '1 second')
       `,
       [
         activeDevice.id,
         normalizeDevicePlatform(options.platform),
         normalizeRegistryAppVersion(options.appVersion),
         getLicenseDiagnosticMetadata({ buildChannel: options.buildChannel }).buildChannel,
+        licenseWriteThrottleSeconds,
       ],
     );
   }
@@ -4400,6 +4431,7 @@ export async function authorizeLicenseDownload(options: {
         );
       }
 
+      const { licenseWriteThrottleSeconds } = loadLicenseWriteConfiguration();
       const touched = await client.query(
         `
           update public.sidestream_license_tokens
@@ -4410,14 +4442,33 @@ export async function authorizeLicenseDownload(options: {
             and revoked_at is null
             and expires_at > now()
             and refresh_expires_at > now()
+            and (
+              last_seen_at is null
+              or last_seen_at <= now() - ($3::bigint * interval '1 second')
+            )
         `,
-        [credential.token_id, tokenHash],
+        [credential.token_id, tokenHash, licenseWriteThrottleSeconds],
       );
-      if (touched.rowCount !== 1) {
-        await client.query("rollback");
-        return deniedDownloadAuthorization(
-          DEVICE_POLICY_ERROR_CODES.DEVICE_DEACTIVATED,
+      if (touched.rowCount === 0) {
+        const stillCurrent = await client.query(
+          `
+            select 1
+            from public.sidestream_license_tokens
+            where id = $1
+              and token_hash = $2
+              and refresh_token_hash is not null
+              and revoked_at is null
+              and expires_at > now()
+              and refresh_expires_at > now()
+          `,
+          [credential.token_id, tokenHash],
         );
+        if (stillCurrent.rowCount !== 1) {
+          await client.query("rollback");
+          return deniedDownloadAuthorization(
+            DEVICE_POLICY_ERROR_CODES.DEVICE_DEACTIVATED,
+          );
+        }
       }
       await client.query(
         `
@@ -4427,8 +4478,14 @@ export async function authorizeLicenseDownload(options: {
             and account_id = $2
             and license_namespace = $3
             and revoked_at is null
+            and last_seen_at <= now() - ($4::bigint * interval '1 second')
         `,
-        [binding.activeDeviceId, credential.account_id, environment.namespace],
+        [
+          binding.activeDeviceId,
+          credential.account_id,
+          environment.namespace,
+          licenseWriteThrottleSeconds,
+        ],
       );
 
       await client.query("commit");
@@ -4669,20 +4726,24 @@ async function issueLicenseTokenPair(options: {
           !row.revoked_at &&
           replayTokens
         ) {
-          const extended = await client.query<{ expires_at: Date | string }>(
-            `
-              update public.sidestream_license_tokens
-              set expires_at = greatest(expires_at, $2::timestamptz), updated_at = now()
-              where id = $1
-                and revoked_at is null
-              returning expires_at
-            `,
-            [row.token_id, tokenExpiresAt],
-          );
-          if (!extended.rows[0]) {
-            await client.query("rollback");
-            return { issued: false as const, code: "revoked" as const };
-          }
+          const legacyReplay = options.accessTokenTtlDays ===
+            LEGACY_LICENSE_TOKEN_TTL_DAYS;
+          const { legacyTokenRenewalThresholdDays } =
+            loadLicenseWriteConfiguration();
+          const extended = legacyReplay
+            ? await client.query<{ expires_at: Date | string }>(
+              `
+                update public.sidestream_license_tokens
+                set expires_at = greatest(expires_at, $2::timestamptz),
+                    updated_at = now()
+                where id = $1
+                  and revoked_at is null
+                  and expires_at <= now() + ($3::bigint * interval '1 day')
+                returning expires_at
+              `,
+              [row.token_id, tokenExpiresAt, legacyTokenRenewalThresholdDays],
+            )
+            : { rows: [] };
           await client.query("commit");
           return {
             issued: true as const,
