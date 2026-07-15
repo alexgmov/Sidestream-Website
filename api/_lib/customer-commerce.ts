@@ -436,7 +436,7 @@ function normalizeInvoice(
   const offStripePaid = successful
     ? Math.min(amountPaid, money(object.amount_paid_off_stripe))
     : 0;
-  const gross = amountPaid - offStripePaid;
+  const gross = amountPaid;
   const discount = successful
     ? Math.max(money(object.amount_discount), sumAmounts(object.total_discount_amounts))
     : 0;

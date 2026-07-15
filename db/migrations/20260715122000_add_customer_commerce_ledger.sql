@@ -98,6 +98,7 @@ create table public.sidestream_customer_commerce_materializations (
     and discount_minor >= 0
     and tax_minor >= 0
     and off_stripe_paid_minor >= 0
+    and off_stripe_paid_minor <= gross_paid_minor
     and refunded_minor >= 0
     and disputed_minor >= 0
     and inquiry_minor >= 0
@@ -272,6 +273,7 @@ create table public.sidestream_customer_money_totals (
   currency text not null,
   commerce_model text not null,
   gross_paid_minor bigint not null,
+  off_stripe_paid_minor bigint not null default 0,
   discount_minor bigint not null,
   tax_minor bigint not null,
   refunded_minor bigint not null,
@@ -300,6 +302,8 @@ create table public.sidestream_customer_money_totals (
   ),
   constraint sidestream_customer_money_totals_nonnegative check (
     gross_paid_minor >= 0
+    and off_stripe_paid_minor >= 0
+    and off_stripe_paid_minor <= gross_paid_minor
     and discount_minor >= 0
     and tax_minor >= 0
     and refunded_minor >= 0
@@ -365,6 +369,7 @@ begin
     currency,
     commerce_model,
     gross_paid_minor,
+    off_stripe_paid_minor,
     discount_minor,
     tax_minor,
     refunded_minor,
@@ -411,6 +416,7 @@ begin
       fact.payment_key,
       max(fact.discount_minor) as discount_minor,
       max(fact.tax_minor) as tax_minor,
+      max(fact.off_stripe_paid_minor) as off_stripe_paid_minor,
       max(fact.refunded_minor) filter (
         where fact.source_object_type = 'charge'
       ) as reported_refunded_minor,
@@ -434,6 +440,7 @@ begin
       edge.amount_paid_minor,
       invoice.discount_minor,
       invoice.tax_minor,
+      invoice.off_stripe_paid_minor,
       invoice.commerce_model,
       sum(edge.amount_paid_minor) over (
         partition by edge.license_namespace, edge.invoice_id, edge.currency
@@ -467,7 +474,9 @@ begin
       (base.discount_minor * base.amount_paid_minor) /
         base.invoice_instrument_total as allocated_discount_floor,
       (base.tax_minor * base.amount_paid_minor) /
-        base.invoice_instrument_total as allocated_tax_floor
+        base.invoice_instrument_total as allocated_tax_floor,
+      (base.off_stripe_paid_minor * base.amount_paid_minor) /
+        base.invoice_instrument_total as allocated_off_stripe_floor
     from invoice_edge_base base
     where base.invoice_instrument_total > 0
   ),
@@ -484,7 +493,11 @@ begin
       floor.allocated_tax_floor + case when floor.allocation_rank = 1 then
         floor.tax_minor - sum(floor.allocated_tax_floor) over (
           partition by floor.invoice_fact_id
-        ) else 0 end as allocated_tax_minor
+        ) else 0 end as allocated_tax_minor,
+      floor.allocated_off_stripe_floor + case when floor.allocation_rank = 1 then
+        floor.off_stripe_paid_minor - sum(floor.allocated_off_stripe_floor) over (
+          partition by floor.invoice_fact_id
+        ) else 0 end as allocated_off_stripe_minor
     from invoice_edge_floor floor
   ),
   invoice_attribution as (
@@ -494,6 +507,7 @@ begin
       payment_key,
       sum(allocated_discount_minor) as discount_minor,
       sum(allocated_tax_minor) as tax_minor,
+      sum(allocated_off_stripe_minor) as off_stripe_paid_minor,
       bool_or(commerce_model = 'subscription') as is_subscription,
       count(distinct commerce_model) as model_count,
       min(commerce_model) as sole_model
@@ -505,7 +519,14 @@ begin
       payment.profile_id,
       payment.currency,
       payment.payment_key,
-      payment.gross_paid_minor,
+      payment.gross_paid_minor + greatest(
+        coalesce(direct.off_stripe_paid_minor, 0),
+        coalesce(invoice.off_stripe_paid_minor, 0)
+      ) as gross_paid_minor,
+      greatest(
+        coalesce(direct.off_stripe_paid_minor, 0),
+        coalesce(invoice.off_stripe_paid_minor, 0)
+      ) as off_stripe_paid_minor,
       greatest(
         coalesce(direct.discount_minor, 0),
         coalesce(invoice.discount_minor, 0)
@@ -536,12 +557,80 @@ begin
       and invoice.currency = payment.currency
       and invoice.payment_key = payment.payment_key
   ),
+  ranked_fallbacks as (
+    select
+      fact.*,
+      row_number() over (
+        partition by fact.profile_id, fact.currency, fact.payment_key
+        order by
+          case fact.source_object_type
+            when 'invoice' then 0
+            when 'checkout_session' then 1
+            else 2
+          end,
+          fact.event_created_at desc,
+          fact.event_id desc,
+          fact.source_object_id desc
+      ) as fallback_rank
+    from public.sidestream_customer_commerce_materializations fact
+    where fact.license_namespace = target_namespace
+      and fact.profile_id is not null
+      and fact.currency is not null
+      and fact.fact_kind = 'payment'
+      and fact.gross_paid_minor > 0
+      and fact.source_object_type in ('checkout_session', 'invoice')
+      and not exists (
+        select 1
+        from instrument_payments instrument
+        where instrument.profile_id = fact.profile_id
+          and instrument.currency = fact.currency
+          and instrument.payment_key = fact.payment_key
+          and instrument.gross_paid_minor > 0
+      )
+      and (
+        fact.source_object_type <> 'invoice'
+        or not exists (
+          select 1
+          from public.sidestream_customer_commerce_invoice_payments edge
+          join public.sidestream_customer_commerce_aliases alias
+            on alias.license_namespace = edge.license_namespace
+            and alias.alias_type = edge.instrument_type
+            and alias.alias_id = edge.instrument_id
+          join instrument_payments instrument
+            on instrument.payment_key = alias.payment_key
+            and instrument.currency = edge.currency
+            and instrument.gross_paid_minor > 0
+          where edge.license_namespace = fact.license_namespace
+            and edge.invoice_id = fact.source_object_id
+            and edge.status = 'paid'
+        )
+      )
+  ),
+  fallback_groups as (
+    select
+      fact.profile_id,
+      fact.currency,
+      fact.payment_key,
+      fact.gross_paid_minor,
+      fact.off_stripe_paid_minor,
+      fact.discount_minor,
+      fact.tax_minor,
+      fact.refunded_minor as reported_refunded_minor,
+      fact.first_paid_at,
+      fact.last_paid_at,
+      fact.first_upgraded_at,
+      fact.last_upgraded_at,
+      fact.commerce_model
+    from ranked_fallbacks fact
+    where fact.fallback_rank = 1
+  ),
   comped_groups as (
     select
       fact.profile_id,
       fact.currency,
       fact.payment_key,
       0::bigint as gross_paid_minor,
+      0::bigint as off_stripe_paid_minor,
       max(fact.discount_minor) as discount_minor,
       max(fact.tax_minor) as tax_minor,
       0::bigint as reported_refunded_minor,
@@ -566,7 +655,18 @@ begin
     group by fact.profile_id, fact.currency, fact.payment_key
   ),
   payment_groups as (
-    select * from instrument_groups
+    select instrument.*
+    from instrument_groups instrument
+    where instrument.gross_paid_minor > 0
+      or not exists (
+        select 1
+        from fallback_groups fallback
+        where fallback.profile_id = instrument.profile_id
+          and fallback.currency = instrument.currency
+          and fallback.payment_key = instrument.payment_key
+      )
+    union all
+    select * from fallback_groups
     union all
     select * from comped_groups
   ),
@@ -600,6 +700,7 @@ begin
       payment.payment_key,
       payment.commerce_model,
       payment.gross_paid_minor,
+      payment.off_stripe_paid_minor,
       payment.discount_minor,
       payment.tax_minor,
       greatest(
@@ -631,6 +732,7 @@ begin
       else 'mixed'
     end,
     sum(payment.gross_paid_minor),
+    sum(payment.off_stripe_paid_minor),
     sum(payment.discount_minor),
     sum(payment.tax_minor),
     sum(payment.refunded_minor),
@@ -734,6 +836,37 @@ begin
                 where instrument.license_namespace = fact.license_namespace
                   and instrument.payment_key = fact.payment_key
                   and instrument.source_object_type in ('payment_intent', 'charge')
+                  and instrument.gross_paid_minor > 0
+              )
+            )
+            or (
+              fact.source_object_type = 'invoice'
+              and fact.gross_paid_minor > 0
+              and not exists (
+                select 1
+                from public.sidestream_customer_commerce_materializations instrument
+                where instrument.license_namespace = fact.license_namespace
+                  and instrument.payment_key = fact.payment_key
+                  and instrument.source_object_type in ('payment_intent', 'charge')
+                  and instrument.gross_paid_minor > 0
+              )
+              and not exists (
+                select 1
+                from public.sidestream_customer_commerce_invoice_payments edge
+                join public.sidestream_customer_commerce_aliases alias
+                  on alias.license_namespace = edge.license_namespace
+                  and alias.alias_type = edge.instrument_type
+                  and alias.alias_id = edge.instrument_id
+                join public.sidestream_customer_commerce_materializations instrument
+                  on instrument.license_namespace = edge.license_namespace
+                  and instrument.payment_key = alias.payment_key
+                  and instrument.currency = edge.currency
+                  and instrument.fact_kind = 'payment'
+                  and instrument.source_object_type in ('payment_intent', 'charge')
+                  and instrument.gross_paid_minor > 0
+                where edge.license_namespace = fact.license_namespace
+                  and edge.invoice_id = fact.source_object_id
+                  and edge.status = 'paid'
               )
             )
           )
@@ -1493,7 +1626,7 @@ for each row execute function public.sidestream_customer_commerce_profile_merge(
 comment on table public.sidestream_customer_commerce_materializations is
   'Mutable latest-state money materializations keyed by Stripe source object. sidestream_stripe_events durably preserves insert-only event_id, event_type, and stripe_created_at; its processing state is mutable and payload fields may be redacted. This table is not entitlement truth.';
 comment on table public.sidestream_customer_money_totals is
-  'Materialized money totals separated by customer profile, namespace, and ISO currency.';
+  'Materialized money totals separated by customer profile, namespace, and ISO currency. Gross includes every settled customer minor unit; off_stripe_paid_minor is an explicit subset of gross.';
 comment on table public.sidestream_customer_commerce_invoice_payments is
   'Current Stripe InvoicePayment allocation edges. Paid edges attribute invoice classification without merging the many-to-many invoice/instrument graph.';
 comment on column public.sidestream_customer_commerce_materializations.source_confidence is

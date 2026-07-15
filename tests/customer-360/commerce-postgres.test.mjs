@@ -94,6 +94,19 @@ test("Customer commerce materializes idempotent per-currency Stripe money truth"
       );
       assert.match(description.rows[0].description, /Mutable latest-state money materializations/);
       assert.match(description.rows[0].description, /sidestream_stripe_events/);
+      const totalColumns = await pool.query(
+        `select column_name, data_type, is_nullable, column_default
+         from information_schema.columns
+         where table_schema = $1 and table_name = 'sidestream_customer_money_totals'
+           and column_name = 'off_stripe_paid_minor'`,
+        [schema],
+      );
+      assert.deepEqual(totalColumns.rows, [{
+        column_name: "off_stripe_paid_minor",
+        data_type: "bigint",
+        is_nullable: "NO",
+        column_default: "0",
+      }]);
     });
 
     const profile = await seedProfile(pool, quotedSchema, "test", "2026-01-01T00:00:00Z");
@@ -808,6 +821,245 @@ test("Customer commerce materializes idempotent per-currency Stripe money truth"
       });
     });
 
+    await t.test("paid Checkout remains one fallback transaction without an instrument", async () => {
+      const checkoutProfile = await seedProfile(
+        pool,
+        quotedSchema,
+        "test",
+        "2026-01-02T00:10:00Z",
+        null,
+      );
+      await seedLinks(pool, quotedSchema, checkoutProfile.id, "test", [[
+        "stripe_checkout_session",
+        "cs_paid_fallback",
+      ]]);
+      await materializeCustomerCommerceEvent(stripeEvent(
+        "evt_paid_checkout_fallback",
+        "checkout.session.completed",
+        1_806_050_000,
+        {
+          id: "cs_paid_fallback",
+          object: "checkout.session",
+          mode: "payment",
+          payment_status: "paid",
+          amount_total: 999,
+          currency: "usd",
+        },
+      ), query);
+
+      assert.deepEqual(
+        await fallbackMoneyTotal(pool, quotedSchema, checkoutProfile.id, "usd"),
+        {
+          gross_paid_minor: "999",
+          off_stripe_paid_minor: "0",
+          net_paid_minor: "999",
+          paid_transaction_count: "1",
+        },
+      );
+      const dates = (await pool.query(
+        `select first_paid_at, last_paid_at, first_upgraded_at, last_upgraded_at
+         from ${quotedSchema}.sidestream_customer_profiles where id = $1`,
+        [checkoutProfile.id],
+      )).rows[0];
+      for (const value of Object.values(dates)) {
+        assert.equal(value.toISOString(), "2027-03-26T08:33:20.000Z");
+      }
+    });
+
+    await t.test("paid Invoice fallback is atomically replaced by its later instrument", async () => {
+      const invoiceProfile = await seedProfile(
+        pool,
+        quotedSchema,
+        "test",
+        "2026-01-02T00:20:00Z",
+        null,
+      );
+      await seedLinks(pool, quotedSchema, invoiceProfile.id, "test", [[
+        "stripe_payment_intent",
+        "pi_invoice_fallback",
+      ]]);
+      await materializeCustomerCommerceEvent(stripeEvent(
+        "evt_paid_invoice_fallback",
+        "invoice.paid",
+        1_806_060_000,
+        {
+          id: "in_paid_fallback",
+          object: "invoice",
+          paid: true,
+          status: "paid",
+          amount_paid: 500,
+          amount_paid_off_stripe: 0,
+          currency: "eur",
+          payments: { data: [invoicePayment({
+            id: "inpay_paid_fallback",
+            invoiceId: "in_paid_fallback",
+            paymentIntentId: "pi_invoice_fallback",
+            amountPaid: 500,
+            currency: "eur",
+          })] },
+          status_transitions: { paid_at: 1_806_059_990 },
+        },
+      ), query);
+
+      const expected = {
+        gross_paid_minor: "500",
+        off_stripe_paid_minor: "0",
+        net_paid_minor: "500",
+        paid_transaction_count: "1",
+      };
+      assert.deepEqual(
+        await fallbackMoneyTotal(pool, quotedSchema, invoiceProfile.id, "eur"),
+        expected,
+      );
+      const fallbackDates = (await pool.query(
+        `select first_paid_at, last_paid_at, first_upgraded_at, last_upgraded_at
+         from ${quotedSchema}.sidestream_customer_profiles where id = $1`,
+        [invoiceProfile.id],
+      )).rows[0];
+      for (const value of Object.values(fallbackDates)) {
+        assert.equal(value.toISOString(), "2027-03-26T11:19:50.000Z");
+      }
+
+      await materializeCustomerCommerceEvent(stripeEvent(
+        "evt_later_invoice_charge",
+        "charge.succeeded",
+        1_806_060_050,
+        {
+          id: "ch_invoice_fallback",
+          object: "charge",
+          payment_intent: "pi_invoice_fallback",
+          paid: true,
+          captured: true,
+          status: "succeeded",
+          amount: 500,
+          amount_captured: 500,
+          currency: "eur",
+        },
+      ), query);
+      assert.deepEqual(
+        await fallbackMoneyTotal(pool, quotedSchema, invoiceProfile.id, "eur"),
+        expected,
+      );
+
+      await materializeCustomerCommerceEvent(stripeEvent(
+        "evt_later_invoice_instrument",
+        "payment_intent.succeeded",
+        1_806_060_100,
+        {
+          id: "pi_invoice_fallback",
+          object: "payment_intent",
+          status: "succeeded",
+          amount: 500,
+          amount_received: 500,
+          currency: "eur",
+        },
+      ), query);
+      assert.deepEqual(
+        await fallbackMoneyTotal(pool, quotedSchema, invoiceProfile.id, "eur"),
+        expected,
+      );
+    });
+
+    await t.test("off-Stripe paid money stays an explicit subset of gross", async () => {
+      const offStripeProfile = await seedProfile(
+        pool,
+        quotedSchema,
+        "test",
+        "2026-01-02T00:30:00Z",
+        null,
+      );
+      await seedLinks(pool, quotedSchema, offStripeProfile.id, "test", [[
+        "stripe_subscription",
+        "sub_fully_off_stripe",
+      ]]);
+      await materializeCustomerCommerceEvent(stripeEvent(
+        "evt_fully_off_stripe_total",
+        "invoice.paid",
+        1_806_070_000,
+        {
+          id: "in_fully_off_stripe_total",
+          object: "invoice",
+          paid: true,
+          status: "paid",
+          amount_paid: 700,
+          amount_paid_off_stripe: 700,
+          paid_out_of_band: true,
+          currency: "gbp",
+          parent: {
+            type: "subscription_details",
+            subscription_details: { subscription: "sub_fully_off_stripe" },
+          },
+          payments: { data: [] },
+          status_transitions: { paid_at: 1_806_069_990 },
+        },
+      ), query);
+      assert.deepEqual(
+        await fallbackMoneyTotal(pool, quotedSchema, offStripeProfile.id, "gbp"),
+        {
+          gross_paid_minor: "700",
+          off_stripe_paid_minor: "700",
+          net_paid_minor: "700",
+          paid_transaction_count: "1",
+        },
+      );
+
+      const mixedProfile = await seedProfile(
+        pool,
+        quotedSchema,
+        "test",
+        "2026-01-02T00:40:00Z",
+        null,
+      );
+      await seedLinks(pool, quotedSchema, mixedProfile.id, "test", [[
+        "stripe_payment_intent",
+        "pi_mixed_off_stripe",
+      ]]);
+      await materializeCustomerCommerceEvent(stripeEvent(
+        "evt_mixed_off_stripe_invoice",
+        "invoice.paid",
+        1_806_080_000,
+        {
+          id: "in_mixed_off_stripe",
+          object: "invoice",
+          paid: true,
+          status: "paid",
+          amount_paid: 1000,
+          amount_paid_off_stripe: 200,
+          currency: "usd",
+          payments: { data: [invoicePayment({
+            id: "inpay_mixed_off_stripe",
+            invoiceId: "in_mixed_off_stripe",
+            paymentIntentId: "pi_mixed_off_stripe",
+            amountPaid: 800,
+            currency: "usd",
+          })] },
+          status_transitions: { paid_at: 1_806_079_990 },
+        },
+      ), query);
+      await materializeCustomerCommerceEvent(stripeEvent(
+        "evt_mixed_off_stripe_pi",
+        "payment_intent.succeeded",
+        1_806_080_100,
+        {
+          id: "pi_mixed_off_stripe",
+          object: "payment_intent",
+          status: "succeeded",
+          amount: 800,
+          amount_received: 800,
+          currency: "usd",
+        },
+      ), query);
+      assert.deepEqual(
+        await fallbackMoneyTotal(pool, quotedSchema, mixedProfile.id, "usd"),
+        {
+          gross_paid_minor: "1000",
+          off_stripe_paid_minor: "200",
+          net_paid_minor: "1000",
+          paid_transaction_count: "1",
+        },
+      );
+    });
+
     await t.test("paid InvoicePayment edges preserve a two-by-two allocation graph", async () => {
       const allocationProfile = await seedProfile(
         pool,
@@ -1409,6 +1661,18 @@ async function moneyTotal(pool, quotedSchema, profileId, currency) {
     `select commerce_model, gross_paid_minor, discount_minor, tax_minor,
        refunded_minor, disputed_minor, inquiry_minor, net_paid_minor, paid_transaction_count,
        comped_transaction_count
+     from ${quotedSchema}.sidestream_customer_money_totals
+     where profile_id = $1 and currency = $2`,
+    [profileId, currency],
+  );
+  assert.equal(result.rows.length, 1);
+  return result.rows[0];
+}
+
+async function fallbackMoneyTotal(pool, quotedSchema, profileId, currency) {
+  const result = await pool.query(
+    `select gross_paid_minor, off_stripe_paid_minor, net_paid_minor,
+       paid_transaction_count
      from ${quotedSchema}.sidestream_customer_money_totals
      where profile_id = $1 and currency = $2`,
     [profileId, currency],

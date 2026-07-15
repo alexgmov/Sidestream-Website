@@ -101,6 +101,10 @@ test("Customer commerce migration keeps money currency-separated and entitlement
   assert.doesNotMatch(migration, /max\(fact\.gross_paid_minor\)/i);
   assert.match(migration, /source_object_type in \('payment_intent', 'charge'\)/);
   assert.match(migration, /edge\.status = 'paid'/);
+  assert.match(migration, /off_stripe_paid_minor bigint not null default 0/);
+  assert.match(migration, /off_stripe_paid_minor <= gross_paid_minor/);
+  assert.match(migration, /ranked_fallbacks as/);
+  assert.match(migration, /fact\.source_object_type in \('checkout_session', 'invoice'\)/);
   assert.match(migration, /sidestream_customer_commerce_reconcile_namespace/);
   assert.match(migration, /fact\.had_conflict and not allow_conflict_clear/);
 });

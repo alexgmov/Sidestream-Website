@@ -356,8 +356,9 @@ test("current InvoicePayment edges retain allocation state without aliasing invo
     },
   )));
 
-  assert.equal(invoice.grossPaidMinor, 800);
+  assert.equal(invoice.grossPaidMinor, 1000);
   assert.equal(invoice.offStripePaidMinor, 200);
+  assert.equal(invoice.netPaidMinor, 1000);
   assert.equal(invoice.source, "manual_metadata");
   assert.equal(invoice.paymentKey, "invoice:in_current_payments");
   assert.deepEqual(invoice.invoicePayments, [
@@ -388,6 +389,27 @@ test("current InvoicePayment edges retain allocation state without aliasing invo
   assert.equal(invoice.identityEvidence.some((evidence) =>
     evidence.linkValue === "ch_current_open"
   ), false);
+
+  const fullyOffStripe = only(normalizeCustomerCommerceEvent(stripeEvent(
+    "evt_fully_off_stripe",
+    "invoice.paid",
+    1_744_000_100,
+    {
+      id: "in_fully_off_stripe",
+      object: "invoice",
+      paid: true,
+      status: "paid",
+      amount_paid: 700,
+      amount_paid_off_stripe: 700,
+      paid_out_of_band: true,
+      currency: "gbp",
+      payments: { data: [] },
+      status_transitions: { paid_at: 1_744_000_090 },
+    },
+  )));
+  assert.equal(fullyOffStripe.grossPaidMinor, 700);
+  assert.equal(fullyOffStripe.offStripePaidMinor, 700);
+  assert.equal(fullyOffStripe.netPaidMinor, 700);
 });
 
 test("legacy invoice fields remain compatible without joining subscription renewals", () => {

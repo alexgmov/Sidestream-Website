@@ -624,11 +624,17 @@ test("Stripe events use a durable claimed queue with bounded retry and protected
         terminal: true,
       });
       const total = await pool.query(
-        `select gross_paid_minor, net_paid_minor
+        `select gross_paid_minor, off_stripe_paid_minor, net_paid_minor,
+           paid_transaction_count
          from public.sidestream_customer_money_totals where profile_id = $1 and currency = 'usd'`,
         [profile.rows[0].id],
       );
-      assert.equal(total.rows.length, 0);
+      assert.deepEqual(total.rows[0], {
+        gross_paid_minor: "500",
+        off_stripe_paid_minor: "0",
+        net_paid_minor: "500",
+        paid_transaction_count: "1",
+      });
       assert.deepEqual((await pool.query(
         `select gross_paid_minor, source_object_type
          from public.sidestream_customer_commerce_materializations
