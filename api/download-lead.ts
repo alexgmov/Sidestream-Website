@@ -2,22 +2,24 @@ import { BlobError, put } from "@vercel/blob";
 import { createHmac, randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { isIP } from "node:net";
-import { Pool } from "pg";
+import {
+  isPostgresConfigured,
+  queryPostgres,
+  safePostgresErrorCode,
+} from "./_lib/postgres.js";
+import {
+  applyRateLimitHeaders,
+  consumeRateLimit,
+  sendRateLimitExceeded,
+} from "./_lib/rate-limit.js";
 
 const LEADS_PREFIX_ENV = "SIDESTREAM_DOWNLOAD_LEADS_BLOB_PREFIX";
 const DEFAULT_LEADS_PREFIX = "sidestream/download-leads";
 const DOWNLOAD_LEADS_TABLE = "public.sidestream_download_leads";
 const MAX_BODY_BYTES = 8 * 1024;
-const POSTGRES_URL_ENV_NAMES = [
-  "SIDESTREAM_POSTGRES_URL",
-  "SIDESTREAM_POSTGRES_PRISMA_URL",
-  "SIDESTREAM_POSTGRES_URL_NON_POOLING",
-  "POSTGRES_URL",
-  "POSTGRES_PRISMA_URL",
-  "POSTGRES_URL_NON_POOLING",
-];
-
-let pool: Pool | null = null;
+const LEAD_RATE_LIMIT_WINDOW_SECONDS = 10 * 60;
+const LEAD_RATE_LIMIT_PER_EMAIL = 5;
+const LEAD_RATE_LIMIT_PER_IP = 20;
 
 type LeadRequest = IncomingMessage & {
   method?: string;
@@ -54,6 +56,7 @@ export default async function handler(
 
   const now = new Date();
   const leadKey = randomUUID();
+  const ipAddress = getClientIp(request);
   const lead = {
     leadKey,
     email,
@@ -63,17 +66,43 @@ export default async function handler(
     source: cleanOptionalString(payload.source, 300),
     referrer: cleanOptionalString(request.headers.referer, 500),
     userAgent: cleanOptionalString(request.headers["user-agent"], 500),
-    ipAddress: getClientIp(request),
+    ipAddress,
   };
-  let postgresError = "";
+  let postgresFailed = false;
 
   if (isPostgresConfigured()) {
+    try {
+      const dimensions = [
+        { name: "email", value: email, limit: LEAD_RATE_LIMIT_PER_EMAIL },
+        ...(ipAddress
+          ? [{ name: "ip", value: ipAddress, limit: LEAD_RATE_LIMIT_PER_IP }]
+          : []),
+      ];
+      const rateLimit = await consumeRateLimit({
+        scope: "download-lead",
+        dimensions,
+        windowSeconds: LEAD_RATE_LIMIT_WINDOW_SECONDS,
+        now,
+      });
+      if (!rateLimit.allowed) return sendRateLimitExceeded(response, rateLimit);
+      applyRateLimitHeaders(response, rateLimit);
+    } catch (error) {
+      console.error(
+        "Sidestream download lead rate-limit check failed",
+        safePostgresErrorCode(error),
+      );
+      return sendJson(response, 503, { error: "Lead capture temporarily unavailable" });
+    }
+
     try {
       await recordPostgresLead(lead);
       return sendJson(response, 200, { ok: "true" });
     } catch (error) {
-      postgresError = error instanceof Error ? error.message : "Unknown Postgres error";
-      console.error("Sidestream download lead Postgres capture failed", postgresError);
+      postgresFailed = true;
+      console.error(
+        "Sidestream download lead Postgres capture failed",
+        safePostgresErrorCode(error),
+      );
     }
   }
 
@@ -93,7 +122,7 @@ export default async function handler(
 
       if (process.env.VERCEL_ENV === "development") {
         body.message = error.message;
-        if (postgresError) body.postgres = postgresError;
+        if (postgresFailed) body.postgres = "capture_failed";
       }
 
       return sendJson(response, 500, body);
@@ -116,11 +145,8 @@ async function recordPostgresLead(
     ipAddress: string;
   },
 ) {
-  const client = await getPool().connect();
-
-  try {
-    await client.query(
-      `
+  await queryPostgres(
+    `
         insert into ${DOWNLOAD_LEADS_TABLE} (
           lead_key,
           email,
@@ -147,78 +173,25 @@ async function recordPostgresLead(
           ip_address = excluded.ip_address,
           context = ${DOWNLOAD_LEADS_TABLE}.context || excluded.context,
           updated_at = now()
-      `,
-      [
-        lead.leadKey,
-        lead.email,
-        lead.emailHash,
-        lead.capturedAt,
-        lead.page || null,
-        lead.source || null,
-        lead.referrer || null,
-        lead.userAgent || null,
-        lead.ipAddress || null,
-        JSON.stringify({ source: "download_email_gate" }),
-      ],
-    );
-  } finally {
-    client.release();
-  }
-}
-
-function getPool() {
-  if (!pool) {
-    const connectionString = normalizeConnectionString(getPostgresConnectionString());
-    pool = new Pool({
-      connectionString,
-      max: Number(process.env.POSTGRES_POOL_MAX || 1),
-      idleTimeoutMillis: 10_000,
-      connectionTimeoutMillis: 5_000,
-      ssl: shouldUseSsl(connectionString) ? { rejectUnauthorized: false } : false,
-    });
-  }
-
-  return pool;
-}
-
-function isPostgresConfigured() {
-  return Boolean(getPostgresConnectionString());
-}
-
-function getPostgresConnectionString() {
-  for (const name of POSTGRES_URL_ENV_NAMES) {
-    const value = process.env[name]?.trim();
-    if (value && !value.includes("[YOUR-") && value !== "changeme") {
-      return value;
-    }
-  }
-
-  return "";
-}
-
-function normalizeConnectionString(connectionString: string) {
-  if (!connectionString) return "";
-
-  try {
-    const url = new URL(connectionString);
-    if (/^(prefer|require)$/i.test(url.searchParams.get("sslmode") || "")) {
-      url.searchParams.delete("sslmode");
-    }
-    return url.toString();
-  } catch {
-    return connectionString;
-  }
-}
-
-function shouldUseSsl(connectionString: string) {
-  if (process.env.POSTGRES_SSL === "0") return false;
-  if (/sslmode=(disable|false)/i.test(connectionString)) return false;
-  return !/localhost|127\.0\.0\.1|::1/.test(connectionString);
+    `,
+    [
+      lead.leadKey,
+      lead.email,
+      lead.emailHash,
+      lead.capturedAt,
+      lead.page || null,
+      lead.source || null,
+      lead.referrer || null,
+      lead.userAgent || null,
+      lead.ipAddress || null,
+      JSON.stringify({ source: "download_email_gate" }),
+    ],
+  );
 }
 
 function hashEmail(email: string) {
   const secret = process.env.SIDESTREAM_LEAD_HASH_SECRET ||
-    getPostgresConnectionString() ||
+    process.env.SIDESTREAM_RATE_LIMIT_HASH_SECRET ||
     "sidestream-download-leads-dev-salt";
   return createHmac("sha256", secret).update(email).digest("hex");
 }
