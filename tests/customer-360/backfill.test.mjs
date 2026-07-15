@@ -296,7 +296,7 @@ test("deterministic profile IDs and checkpoints bind resume to exact normalized 
   const input = [{ recordId: opaqueRecordId(80), activationId: ACTIVATION_A }];
   const plan = buildBackfillPlan(input, "test");
   const checkpoint = {
-    version: 2,
+    version: 3,
     namespace: "test",
     inputDigest: plan.inputDigest,
     nextComponentIndex: 1,
@@ -308,6 +308,7 @@ test("deterministic profile IDs and checkpoints bind resume to exact normalized 
       orphanComponents: 0,
       conflictComponents: 0,
       writes: 2,
+      actionableReports: [],
     },
   };
   const complete = buildDryRunReport(input, { namespace: "test", checkpoint });
@@ -331,14 +332,14 @@ test("deterministic profile IDs and checkpoints bind resume to exact normalized 
     () => buildDryRunReport(input, {
       namespace: "test",
       checkpoint: {
-        version: 1,
+        version: 2,
         namespace: "test",
         inputDigest: plan.inputDigest,
         nextComponentIndex: 1,
         processedRecords: 1,
       },
     }),
-    /Checkpoint does not match/,
+    /lossy/,
   );
 
   assert.throws(
@@ -348,6 +349,76 @@ test("deterministic profile IDs and checkpoints bind resume to exact normalized 
     }),
     Customer360BackfillError,
   );
+});
+
+test("v3 checkpoints retain only validated actionable prefix reports", () => {
+  const input = [
+    {
+      recordId: opaqueRecordId(90),
+      accountId: ACCOUNT_A,
+      installIdHash: INSTALL_A,
+    },
+    {
+      recordId: opaqueRecordId(91),
+      accountId: ACCOUNT_B,
+      installIdHash: INSTALL_A,
+    },
+    { recordId: opaqueRecordId(92) },
+  ];
+  const plan = buildBackfillPlan(input, "test");
+  const [conflict, orphan] = buildDryRunReport(input, { namespace: "test" }).components;
+  const reports = [
+    { ...conflict, writes: 0 },
+    { ...orphan, writes: 1 },
+  ];
+  const checkpoint = {
+    version: 3,
+    namespace: "test",
+    inputDigest: plan.inputDigest,
+    nextComponentIndex: 2,
+    processedRecords: 3,
+    outcomes: {
+      processedComponents: 2,
+      appliedComponents: 0,
+      unchangedComponents: 0,
+      orphanComponents: 1,
+      conflictComponents: 1,
+      writes: 1,
+      actionableReports: reports,
+    },
+  };
+
+  const complete = buildDryRunReport(input, { namespace: "test", checkpoint });
+  assert.deepEqual(complete.checkpoint.resumedActionableReports, reports);
+  assert.deepEqual(complete.components, []);
+  assertPrivacySafeReport(complete, [
+    ACCOUNT_A,
+    ACCOUNT_B,
+    INSTALL_A,
+    ...input.map(({ recordId }) => recordId),
+  ]);
+
+  for (const actionableReports of [
+    [],
+    [reports[0], reports[0]],
+    [{ ...reports[0], writes: 1 }, reports[1]],
+    [{ ...reports[0], recordCount: 1 }, reports[1]],
+    [{ ...reports[0], evidenceTypes: ["activation_record"] }, reports[1]],
+    [{ ...reports[0], componentRef: reports[1].componentRef }, reports[1]],
+    [{ ...reports[0], reason: "private@example.com" }, reports[1]],
+    [{ ...reports[0], email: "private@example.com" }, reports[1]],
+  ]) {
+    assert.throws(
+      () => buildDryRunReport(input, {
+        namespace: "test",
+        checkpoint: {
+          ...checkpoint,
+          outcomes: { ...checkpoint.outcomes, actionableReports },
+        },
+      }),
+      /Checkpoint does not match/,
+    );
+  }
 });
 
 function opaqueRecordId(value) {

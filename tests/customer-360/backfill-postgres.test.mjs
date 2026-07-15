@@ -94,10 +94,11 @@ test("test-only Customer 360 apply is atomic, resumable, idempotent, and private
           checkpoints.push(checkpoint);
         },
       });
-      assert.equal(applied.summary.processedComponents, 3);
+      assert.equal(applied.summary.currentRun.processedComponents, 3);
       assert.equal(applied.summary.orphanComponents, 2);
-      assert.equal(applied.summary.appliedComponents, 1);
+      assert.equal(applied.summary.currentRun.appliedComponents, 1);
       assert.equal(applied.summary.conflictComponents, 0);
+      assert.equal(applied.summary.writes, applied.summary.currentRun.writes);
       assert.equal(checkpoints.length, 3);
       assert.equal(checkpoints.at(-1).nextComponentIndex, 3);
       assert.equal(checkpoints.at(-1).processedRecords, 4);
@@ -149,9 +150,9 @@ test("test-only Customer 360 apply is atomic, resumable, idempotent, and private
       });
       const after = await databaseSnapshot(pool, quotedSchema);
       assert.deepEqual(after, before);
-      assert.equal(replay.summary.writes, 0);
-      assert.equal(replay.summary.unchangedComponents, 1);
-      assert.equal(replay.summary.orphanComponents, 2);
+      assert.equal(replay.summary.currentRun.writes, 0);
+      assert.equal(replay.summary.currentRun.unchangedComponents, 1);
+      assert.equal(replay.summary.currentRun.orphanComponents, 2);
     });
 
     await t.test("existing durable-owner conflict is quarantined with no writes or PII", async () => {
@@ -173,7 +174,7 @@ test("test-only Customer 360 apply is atomic, resumable, idempotent, and private
       const after = await databaseSnapshot(pool, quotedSchema);
       assert.deepEqual(after, before);
       assert.equal(report.summary.conflictComponents, 1);
-      assert.equal(report.summary.writes, 0);
+      assert.equal(report.summary.currentRun.writes, 0);
       assert.deepEqual(
         report.components.map(({ status, reason }) => [status, reason]),
         [["conflict", "existing_account_disagrees"]],
@@ -236,11 +237,28 @@ test("test-only Customer 360 apply is atomic, resumable, idempotent, and private
         },
       });
 
-      assert.equal(resumed.summary.processedComponents, 2);
+      assert.equal(resumed.summary.currentRun.processedComponents, 1);
       assert.equal(resumed.summary.processedThisRun, 1);
       assert.equal(resumed.summary.conflictComponents, 1);
-      assert.equal(resumed.summary.unchangedComponents, 1);
+      assert.equal(resumed.summary.currentRun.conflictComponents, 0);
+      assert.equal(resumed.summary.currentRun.unchangedComponents, 1);
+      assert.deepEqual(resumed.summary.compatibilityAliasScopes, {
+        processedThisRun: "currentRun.processedComponents",
+        orphanComponents: "checkpointedUnresolved.orphanComponents",
+        conflictComponents: "checkpointedUnresolved.conflictComponents",
+        writes: "currentRun.writes",
+      });
+      assert.deepEqual(resumed.summary.checkpointedUnresolved, {
+        scope: "checkpointedProcessedPlanPrefix",
+        processedPlanPrefixComponents: 2,
+        orphanComponents: 0,
+        conflictComponents: 1,
+      });
       assert.equal(persistedCheckpoint.outcomes.conflictComponents, 1);
+      assert.deepEqual(
+        resumed.checkpoint.resumedActionableReports,
+        persistedCheckpoint.outcomes.actionableReports,
+      );
       assertPrivacySafeReport(resumed, conflictReplayInput.map(({ recordId }) => recordId));
     });
 
@@ -293,8 +311,8 @@ test("test-only Customer 360 apply is atomic, resumable, idempotent, and private
           persistedCheckpoint = checkpoint;
         },
       });
-      assert.equal(resumed.summary.processedComponents, 3);
-      assert.equal(resumed.summary.writes, 5);
+      assert.equal(resumed.summary.currentRun.processedComponents, 3);
+      assert.equal(resumed.summary.currentRun.writes, 5);
       assert.equal(persistedCheckpoint.nextComponentIndex, 3);
       assert.equal(persistedCheckpoint.processedRecords, 3);
 
@@ -311,7 +329,7 @@ test("test-only Customer 360 apply is atomic, resumable, idempotent, and private
         schema,
         checkpoint: persistedCheckpoint,
       });
-      assert.equal(completedCheckpointRun.summary.processedComponents, 3);
+      assert.equal(completedCheckpointRun.summary.currentRun.processedComponents, 0);
       assert.equal(completedCheckpointRun.summary.processedThisRun, 0);
 
       const fullReplay = await runCustomer360Backfill({
@@ -321,7 +339,7 @@ test("test-only Customer 360 apply is atomic, resumable, idempotent, and private
         pool,
         schema,
       });
-      assert.equal(fullReplay.summary.writes, 0);
+      assert.equal(fullReplay.summary.currentRun.writes, 0);
       assert.deepEqual(await databaseSnapshot(pool, quotedSchema), completed);
     });
 
@@ -338,7 +356,7 @@ test("test-only Customer 360 apply is atomic, resumable, idempotent, and private
         schema,
       });
       assert.equal(orphanApply.summary.orphanComponents, 2);
-      assert.equal(orphanApply.summary.writes, 2);
+      assert.equal(orphanApply.summary.currentRun.writes, 2);
 
       const beforeBridge = await databaseSnapshot(pool, quotedSchema);
       const orphanProfileIds = orphanInput.map(({ recordId }) =>
@@ -366,9 +384,9 @@ test("test-only Customer 360 apply is atomic, resumable, idempotent, and private
       });
 
       assert.deepEqual(await databaseSnapshot(pool, quotedSchema), beforeBridge);
-      assert.equal(bridgeReport.summary.appliedComponents, 0);
+      assert.equal(bridgeReport.summary.currentRun.appliedComponents, 0);
       assert.equal(bridgeReport.summary.conflictComponents, 1);
-      assert.equal(bridgeReport.summary.writes, 0);
+      assert.equal(bridgeReport.summary.currentRun.writes, 0);
       assert.deepEqual(
         bridgeReport.components.map(({ status, reason, writes }) => [status, reason, writes]),
         [["conflict", "existing_evidence_disagrees", 0]],
@@ -387,7 +405,7 @@ test("test-only Customer 360 apply is atomic, resumable, idempotent, and private
       ];
       const plan = buildBackfillPlan(input, "test");
       const checkpoint = {
-        version: 2,
+        version: 3,
         namespace: "test",
         inputDigest: plan.inputDigest,
         nextComponentIndex: 1,
@@ -399,6 +417,14 @@ test("test-only Customer 360 apply is atomic, resumable, idempotent, and private
           orphanComponents: 1,
           conflictComponents: 0,
           writes: 1,
+          actionableReports: [{
+            componentRef: plan.components[0].componentRef,
+            status: "orphan",
+            reason: "no_durable_bridge",
+            recordCount: 1,
+            evidenceTypes: [],
+            writes: 1,
+          }],
         },
       };
       await assert.rejects(

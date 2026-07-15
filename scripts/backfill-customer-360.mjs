@@ -5,7 +5,7 @@ import { createHash } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-export const BACKFILL_CHECKPOINT_VERSION = 2;
+export const BACKFILL_CHECKPOINT_VERSION = 3;
 export const DEFAULT_BACKFILL_BATCH_SIZE = 100;
 
 export const DURABLE_EVIDENCE_FIELDS = Object.freeze({
@@ -59,6 +59,18 @@ const ALLOWED_RECORD_FIELDS = new Set([
   ...IGNORED_NON_IDENTITY_FIELDS,
 ]);
 const VALID_NAMESPACES = new Set(["production", "test"]);
+const ACTIONABLE_REPORT_KEYS = Object.freeze([
+  "componentRef",
+  "status",
+  "reason",
+  "recordCount",
+  "evidenceTypes",
+  "writes",
+]);
+const RUNTIME_CONFLICT_REASONS = new Set([
+  "existing_evidence_disagrees",
+  "existing_account_disagrees",
+]);
 
 export class Customer360BackfillError extends Error {
   constructor(message) {
@@ -196,6 +208,9 @@ export function buildBackfillPlan(input, namespace = "test") {
   const components = [...grouped.values()]
     .map((recordIndexes) => buildComponent(records, recordIndexes, namespace))
     .sort((left, right) => left.firstRecordIndex - right.firstRecordIndex);
+  if (new Set(components.map(({ componentRef }) => componentRef)).size !== components.length) {
+    throw new Customer360BackfillError("Backfill component references must be unique.");
+  }
   const digest = createHash("sha256")
     .update("sidestream-customer-360-backfill-input:v1\0")
     .update(namespace)
@@ -221,7 +236,11 @@ export function buildDryRunReport(input, { namespace = "test", checkpoint } = {}
     mode: "dry_run",
     namespace,
     inputDigest: plan.inputDigest,
-    checkpoint: safeCheckpointSummary(normalizedCheckpoint, plan),
+    checkpoint: safeCheckpointSummary(
+      normalizedCheckpoint,
+      plan,
+      normalizedCheckpoint.outcomes.actionableReports,
+    ),
     summary: summarizeComponents(plan, pending),
     components: Object.freeze(componentReports),
   });
@@ -381,7 +400,11 @@ export async function runCustomer360Backfill({
     mode: "apply",
     namespace,
     inputDigest: plan.inputDigest,
-    checkpoint: safeCheckpointSummary(currentCheckpoint, plan),
+    checkpoint: safeCheckpointSummary(
+      currentCheckpoint,
+      plan,
+      normalizedCheckpoint.outcomes.actionableReports,
+    ),
     summary: summarizeApplyResults(
       plan,
       results,
@@ -742,6 +765,11 @@ function normalizeCheckpoint(checkpoint, plan) {
       outcomes: emptyCheckpointOutcomes(),
     });
   }
+  if (isRecord(checkpoint) && checkpoint.version !== BACKFILL_CHECKPOINT_VERSION) {
+    throw new Customer360BackfillError(
+      "Older checkpoint versions are lossy and cannot be resumed; restart from reviewed input.",
+    );
+  }
   if (
     !isRecord(checkpoint) ||
     checkpoint.version !== BACKFILL_CHECKPOINT_VERSION ||
@@ -753,7 +781,7 @@ function normalizeCheckpoint(checkpoint, plan) {
     !Number.isSafeInteger(checkpoint.processedRecords) ||
     checkpoint.processedRecords < 0 ||
     checkpoint.processedRecords > plan.records.length ||
-    !validCheckpointOutcomes(checkpoint.outcomes, checkpoint.nextComponentIndex)
+    !validCheckpointOutcomes(checkpoint.outcomes, checkpoint.nextComponentIndex, plan)
   ) {
     throw new Customer360BackfillError(
       "Checkpoint does not match this namespace, input digest, or component boundary.",
@@ -775,7 +803,7 @@ function normalizeCheckpoint(checkpoint, plan) {
   });
 }
 
-function safeCheckpointSummary(checkpoint, plan) {
+function safeCheckpointSummary(checkpoint, plan, resumedActionableReports) {
   return Object.freeze({
     version: checkpoint.version,
     nextComponentIndex: checkpoint.nextComponentIndex,
@@ -783,7 +811,8 @@ function safeCheckpointSummary(checkpoint, plan) {
     processedRecords: checkpoint.processedRecords,
     recordCount: plan.records.length,
     complete: checkpoint.nextComponentIndex === plan.components.length,
-    outcomes: checkpoint.outcomes,
+    outcomes: safeCheckpointOutcomeCounts(checkpoint.outcomes),
+    resumedActionableReports: Object.freeze([...resumedActionableReports]),
   });
 }
 
@@ -831,17 +860,41 @@ function summarizeComponents(plan, pending) {
 
 function summarizeApplyResults(plan, results, startingCheckpoint, currentCheckpoint) {
   const outcomes = currentCheckpoint.outcomes;
+  const currentRun = summarizeCurrentRun(results);
+  const actionableReports = outcomes.actionableReports;
+  const checkpointedUnresolved = Object.freeze({
+    scope: "checkpointedProcessedPlanPrefix",
+    processedPlanPrefixComponents: currentCheckpoint.nextComponentIndex,
+    orphanComponents: actionableReports.filter(({ status }) => status === "orphan").length,
+    conflictComponents: actionableReports.filter(({ status }) => status === "conflict").length,
+  });
   return Object.freeze({
     records: plan.records.length,
     components: plan.components.length,
     resumedAtComponent: startingCheckpoint.nextComponentIndex,
-    processedComponents: outcomes.processedComponents,
-    processedThisRun: results.length,
-    appliedComponents: outcomes.appliedComponents,
-    unchangedComponents: outcomes.unchangedComponents,
-    orphanComponents: outcomes.orphanComponents,
-    conflictComponents: outcomes.conflictComponents,
-    writes: outcomes.writes,
+    processedThisRun: currentRun.processedComponents,
+    orphanComponents: checkpointedUnresolved.orphanComponents,
+    conflictComponents: checkpointedUnresolved.conflictComponents,
+    writes: currentRun.writes,
+    compatibilityAliasScopes: Object.freeze({
+      processedThisRun: "currentRun.processedComponents",
+      orphanComponents: "checkpointedUnresolved.orphanComponents",
+      conflictComponents: "checkpointedUnresolved.conflictComponents",
+      writes: "currentRun.writes",
+    }),
+    checkpointedUnresolved,
+    currentRun,
+  });
+}
+
+function summarizeCurrentRun(results) {
+  return Object.freeze({
+    processedComponents: results.length,
+    appliedComponents: results.filter((result) => result.status === "applied").length,
+    unchangedComponents: results.filter((result) => result.status === "unchanged").length,
+    orphanComponents: results.filter((result) => result.status === "orphan").length,
+    conflictComponents: results.filter((result) => result.status === "conflict").length,
+    writes: results.reduce((total, result) => total + result.writes, 0),
   });
 }
 
@@ -853,6 +906,7 @@ function emptyCheckpointOutcomes() {
     orphanComponents: 0,
     conflictComponents: 0,
     writes: 0,
+    actionableReports: Object.freeze([]),
   });
 }
 
@@ -869,12 +923,18 @@ function accumulateCheckpointOutcomes(previous, results) {
       results.filter((result) => result.status === "conflict").length,
     writes: previous.writes +
       results.reduce((total, result) => total + result.writes, 0),
+    actionableReports: Object.freeze([
+      ...previous.actionableReports,
+      ...results
+        .filter(({ status }) => status === "conflict" || status === "orphan")
+        .map((report) => freezeActionableReport(report)),
+    ]),
   });
 }
 
-function validCheckpointOutcomes(outcomes, nextComponentIndex) {
+function validCheckpointOutcomes(outcomes, nextComponentIndex, plan) {
   if (!isRecord(outcomes)) return false;
-  const keys = [
+  const countKeys = [
     "processedComponents",
     "appliedComponents",
     "unchangedComponents",
@@ -883,15 +943,54 @@ function validCheckpointOutcomes(outcomes, nextComponentIndex) {
     "writes",
   ];
   if (
-    Object.keys(outcomes).length !== keys.length ||
-    keys.some((key) => !Number.isSafeInteger(outcomes[key]) || outcomes[key] < 0)
+    Object.keys(outcomes).length !== countKeys.length + 1 ||
+    !Object.hasOwn(outcomes, "actionableReports") ||
+    countKeys.some((key) => !Number.isSafeInteger(outcomes[key]) || outcomes[key] < 0) ||
+    !Array.isArray(outcomes.actionableReports)
   ) {
     return false;
   }
   const statusTotal = outcomes.appliedComponents + outcomes.unchangedComponents +
     outcomes.orphanComponents + outcomes.conflictComponents;
-  return outcomes.processedComponents === nextComponentIndex &&
-    statusTotal === outcomes.processedComponents;
+  if (
+    outcomes.processedComponents !== nextComponentIndex ||
+    statusTotal !== outcomes.processedComponents
+  ) {
+    return false;
+  }
+
+  const processedComponents = plan.components.slice(0, nextComponentIndex);
+  const seenComponentRefs = new Set();
+  for (const report of outcomes.actionableReports) {
+    if (!validActionableReport(report)) return false;
+    const matches = processedComponents.filter(
+      ({ componentRef }) => componentRef === report.componentRef,
+    );
+    if (matches.length !== 1 || seenComponentRefs.has(report.componentRef)) return false;
+    seenComponentRefs.add(report.componentRef);
+    const [component] = matches;
+    if (
+      report.recordCount !== component.recordIndexes.length ||
+      !sameStringArray(report.evidenceTypes, component.evidenceTypes) ||
+      !reportMatchesComponentOutcome(report, component)
+    ) {
+      return false;
+    }
+  }
+
+  if (
+    outcomes.actionableReports.filter(({ status }) => status === "orphan").length !==
+      outcomes.orphanComponents ||
+    outcomes.actionableReports.filter(({ status }) => status === "conflict").length !==
+      outcomes.conflictComponents ||
+    outcomes.actionableReports.reduce((total, report) => total + report.writes, 0) >
+      outcomes.writes
+  ) {
+    return false;
+  }
+  return processedComponents
+    .filter(({ inputConflict, orphan }) => inputConflict || orphan)
+    .every(({ componentRef }) => seenComponentRefs.has(componentRef));
 }
 
 function freezeCheckpointOutcomes(outcomes) {
@@ -902,7 +1001,72 @@ function freezeCheckpointOutcomes(outcomes) {
     orphanComponents: outcomes.orphanComponents,
     conflictComponents: outcomes.conflictComponents,
     writes: outcomes.writes,
+    actionableReports: Object.freeze(
+      outcomes.actionableReports.map((report) => freezeActionableReport(report)),
+    ),
   });
+}
+
+function safeCheckpointOutcomeCounts(outcomes) {
+  // A commit can survive without its following checkpoint. These counters are
+  // checkpointed observations, not a claim about cumulative physical writes.
+  return Object.freeze({
+    processedComponents: outcomes.processedComponents,
+    appliedComponents: outcomes.appliedComponents,
+    unchangedComponents: outcomes.unchangedComponents,
+    orphanComponents: outcomes.orphanComponents,
+    conflictComponents: outcomes.conflictComponents,
+    writes: outcomes.writes,
+  });
+}
+
+function validActionableReport(report) {
+  if (
+    !isRecord(report) ||
+    Object.keys(report).length !== ACTIONABLE_REPORT_KEYS.length ||
+    ACTIONABLE_REPORT_KEYS.some((key) => !Object.hasOwn(report, key)) ||
+    typeof report.componentRef !== "string" ||
+    !/^component_[0-9a-f]{16}$/.test(report.componentRef) ||
+    (report.status !== "conflict" && report.status !== "orphan") ||
+    typeof report.reason !== "string" ||
+    !Number.isSafeInteger(report.recordCount) ||
+    report.recordCount < 1 ||
+    !Array.isArray(report.evidenceTypes) ||
+    !report.evidenceTypes.every((value) =>
+      Object.values(DURABLE_EVIDENCE_FIELDS).includes(value)) ||
+    !Number.isSafeInteger(report.writes) ||
+    report.writes < 0 ||
+    (report.status === "conflict" && report.writes !== 0)
+  ) {
+    return false;
+  }
+  return true;
+}
+
+function reportMatchesComponentOutcome(report, component) {
+  if (component.inputConflict) {
+    return report.status === "conflict" && report.reason === "input_accounts_disagree";
+  }
+  if (component.orphan) {
+    return report.status === "orphan" && report.reason === "no_durable_bridge";
+  }
+  return report.status === "conflict" && RUNTIME_CONFLICT_REASONS.has(report.reason);
+}
+
+function freezeActionableReport(report) {
+  return Object.freeze({
+    componentRef: report.componentRef,
+    status: report.status,
+    reason: report.reason,
+    recordCount: report.recordCount,
+    evidenceTypes: Object.freeze([...report.evidenceTypes]),
+    writes: report.writes,
+  });
+}
+
+function sameStringArray(left, right) {
+  return left.length === right.length &&
+    left.every((value, index) => value === right[index]);
 }
 
 function evidenceKey(evidence) {
