@@ -218,15 +218,40 @@ claims require `terminal_at is null`, and ignored/processed rows have
 fixed. The repository currently has no historical audit/reconciliation tool.
 
 Production remains blocked until a separately owned implementation supplies a
-tested, idempotent tool that scans the complete relevant historical ledger,
-identifies every affected event by exact event ID and type, re-derives canonical
-Stripe truth, performs only watermark-safe reconciliation, and retains the input
-event-ID set, before/after outcome, and resulting watermark. The gate may instead
-close with retained evidence that proves no historical row was affected. Manual
-updates to event status, `terminal_at`, payload, entitlement state, credentials,
-or watermarks are forbidden. This documentation-only step does not invent that
-capability, and the at-most-72-hour maintenance-window enumeration later in this
-runbook is not a substitute for it.
+tested, idempotent tool that scans the complete relevant Stripe account history
+and local ledger, identifies every affected event by exact event ID and type,
+re-derives canonical Stripe truth, performs only watermark-safe reconciliation,
+and retains the input event-ID set, before/after outcome, and resulting
+entitlement watermark. An initial full scan before maintenance is only
+provisional. It must retain an inclusive `HISTORICAL_LIFECYCLE_SCAN_WATERMARK`,
+the complete exact-ID/type input manifest and checksum, source bounds/counts,
+authenticated target evidence, canonical outcomes, and each resulting
+`stripe_state_event_created_at` / `stripe_state_event_id` pair. A bare maximum
+Stripe event ID or `stripe_created_at` is not a safe cursor: event IDs are not
+sortable clocks, and an older event can be delivered after the scan. A delta must
+therefore be derived by exact manifest comparison, or the tool must repeat the
+complete scan under a stable snapshot.
+
+That provisional scan cannot close the blocker while the known-bad artifact can
+still accept and terminalize another lifecycle event. At the explicit point in
+step 9 after the deny is proved active and every old in-flight invocation/write
+has drained, the tool must run a final canonical full scan or exact
+manifest-derived delta. It must cover every refund/dispute lifecycle ID through
+the deny boundary, including every lifecycle ID in `PREDRAIN_EVENT_IDS` and every
+transition-window ID accepted or observed after the provisional scan. Retain the
+final exact-ID manifest/checksum and `HISTORICAL_LIFECYCLE_DENY_WATERMARK`, repair
+affected terminal `processed`/`ignored` history through the reviewed idempotent
+reconciler, prove canonical entitlement state plus each resulting entitlement
+watermark, and prove an immediate second run is a no-op. A terminal queue status
+is transport evidence, not canonical lifecycle evidence. The gate may instead
+close only with the same final post-deny evidence proving no affected history.
+Any missing ID, unstable snapshot, watermark regression, late through-boundary
+ID, or canonical mismatch blocks step 10 and reopening.
+
+Manual updates to event status, `terminal_at`, payload, entitlement state,
+credentials, or watermarks are forbidden. This documentation-only step does not
+invent the required tool, and the at-most-72-hour maintenance-window enumeration
+later in this runbook is not a substitute for either phase of this gate.
 
 Legacy subscriptions are fail-closed. Eligibility requires an exact Product in
 `SIDESTREAM_LEGACY_SUBSCRIPTION_PRODUCT_IDS` and exact Price in
@@ -1952,6 +1977,28 @@ credentials.
    webhook allowance. If the matrix cannot be activated atomically from the
    reviewed disabled state, production remains blocked.
 
+   Only now, after the deny is proved active and the old artifact's in-flight
+   writes and processors have drained, may the historical lifecycle gate at the
+   start of this runbook close. Freeze the complete exact transition-ID manifest,
+   then run the separately implemented and Preview/Test-proved historical tool in
+   canonical full-scan or exact manifest-derived delta mode. Its input must cover
+   every refund/dispute lifecycle event through the deny boundary: the provisional
+   scan manifest at `HISTORICAL_LIFECYCLE_SCAN_WATERMARK`, every lifecycle ID in
+   `PREDRAIN_EVENT_IDS`, and every lifecycle ID accepted or observed between that
+   scan and the proved deny/drain. Event-ID ordering or a bounded created-time
+   query cannot substitute for the exact set comparison.
+
+   Retain the final input manifest/checksum, source counts, authenticated target,
+   `HISTORICAL_LIFECYCLE_DENY_WATERMARK`, before/after outcomes, canonical
+   entitlement states, and resulting `stripe_state_event_created_at` /
+   `stripe_state_event_id` pairs. Require an immediate idempotency rerun to report
+   no changes. A `processed` or `ignored` queue row does not close this gate: the
+   reviewed tool must reconcile terminal history independently of the queue's
+   conflict-ignore/`terminal_at` path. If a through-boundary ID appears after the
+   retained final snapshot, repeat the final audit/reconciliation from the last
+   retained manifest; if coverage, canonical state, or the no-op proof is
+   incomplete, keep maintenance active and do not enter step 10.
+
    With that deny proved active, and only after the lifecycle implementation
    blockers have already passed Preview/Test, apply any pre-reviewed live
    event-selection change needed to reach the exact required list. Record the
@@ -2324,6 +2371,17 @@ credentials.
     API's 30-day full-payload window, or if reviewed tooling cannot deliver every
     unioned ID, production remains blocked.
 
+    For every refund/dispute lifecycle ID at or before step 9's retained deny
+    boundary, also prove membership and canonical outcome in the final historical
+    lifecycle receipt; a local `processed`/`ignored` row and `2xx` delivery are not
+    substitutes. Any lifecycle event first created or observed after that boundary
+    must be handled by the fixed artifact and have its canonical entitlement state
+    plus resulting watermark retained here. If account enumeration reveals a
+    through-boundary ID missing from the final historical manifest, return to the
+    post-deny full/delta gate, extend the exact manifest without moving either
+    watermark or boundary forward, rerun reconciliation to a no-op, and keep all
+    non-webhook writes denied.
+
     Calculate and retain each event's creation time before relying on a resend.
     Live automatic attempts stop after at most three days; Dashboard/Workbench
     Resend stops after 15 days; `stripe events resend` stops after 30 days.
@@ -2360,7 +2418,12 @@ credentials.
     globally disabled and public writes denied. Sequentially, never concurrently:
 
     1. Record the final zero-nonterminal and zero-dead Stripe processor/query
-       evidence from step 11.
+       evidence from step 11. Reverify that the final post-deny historical
+       lifecycle receipt covers every exact lifecycle ID through the retained
+       deny boundary, including lifecycle IDs from `PREDRAIN_EVENT_IDS` and the
+       transition window, and proves canonical entitlement state, resulting
+       watermarks, and a no-op idempotency rerun. Queue terminality alone does not
+       authorize reopening.
     2. Invoke protected GET lead replay through the operator bypass until
        `hasMore=false`; require no malformed, unmapped, read, database, or delete
        failures and record the fallback disposition.
@@ -2392,12 +2455,15 @@ fallback is application-forward, not a destructive schema reversal:
 
    - If cutover or incident maintenance is already active, preserve the earliest
      recorded maintenance start, `STRIPE_EVENT_WINDOW_GTE`, boundary event IDs,
+     `HISTORICAL_LIFECYCLE_SCAN_WATERMARK`, final historical manifest/watermark,
      exact retained/unioned ID sets, two-hour cap, 24-hour escalation, and 48-hour
      hard-abort timestamp. Keep cron disabled, the live Stripe destination
      enabled, and the already-reviewed deny/allow state in place. Extend evidence
      only by adding newly observed IDs and a later inclusive end; never move the
      start forward, restart a timer, or create a replacement window merely because
-     fallback begins.
+     fallback begins. If the final post-deny historical lifecycle gate has not yet
+     passed, complete it after old in-flight drain before fallback promotion or
+     reopening; a previous provisional scan is insufficient.
    - If no maintenance window is active, priority 6 must remain disabled while the
      currently serving compatible artifact receives the webhook. Repeat step 9's
      complete paginated Workbench drain and local all-nonterminal drain: every
@@ -2407,7 +2473,10 @@ fallback is application-forward, not a destructive schema reversal:
      new boundary and timers, disable cron, and atomically activate the reviewed
      deny with the Stripe reconciliation allow disabled. If the serving artifact
      cannot complete that drain, do not deny first; keep/restore the narrowly
-     reviewed webhook path and fix forward.
+     reviewed webhook path and fix forward. After the deny is active and old
+     in-flight work drains, repeat step 9's final historical full/delta audit and
+     idempotent reconciliation through this new deny boundary before promoting or
+     reopening.
 
    In both branches, never disable the destination as a drain mechanism. Retain
    the same three-day automatic, 15-day Dashboard, and 30-day CLI resend ceilings
