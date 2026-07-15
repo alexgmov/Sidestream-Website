@@ -5,6 +5,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
+  BACKFILL_CHECKPOINT_VERSION,
   DURABLE_EVIDENCE_FIELDS,
   IGNORED_NON_IDENTITY_FIELDS,
   buildBackfillPlan,
@@ -46,6 +47,7 @@ const FORBIDDEN_SQL_SIGNALS = [
 ];
 
 export async function verifyCustomer360Backfill() {
+  assert.equal(BACKFILL_CHECKPOINT_VERSION, 3);
   assert.deepEqual(DURABLE_EVIDENCE_FIELDS, EXPECTED_DURABLE_FIELDS);
   for (const field of [
     "email",
@@ -204,7 +206,11 @@ function assertReportKeys(report) {
     Object.keys(report).sort(),
     ["checkpoint", "components", "inputDigest", "mode", "namespace", "summary"],
   );
-  for (const component of report.components) {
+  const resumedActionableReports = report.checkpoint?.resumedActionableReports || [];
+  assert.ok(Array.isArray(resumedActionableReports));
+  assert.equal(Object.hasOwn(report.checkpoint.outcomes, "actionableReports"), false);
+  const actionableRefs = new Set();
+  for (const component of [...report.components, ...resumedActionableReports]) {
     const allowed = new Set([
       "componentRef",
       "status",
@@ -221,6 +227,21 @@ function assertReportKeys(report) {
     for (const evidenceType of component.evidenceTypes) {
       assert.ok(Object.values(DURABLE_EVIDENCE_FIELDS).includes(evidenceType));
     }
+    if (component.status === "conflict" || component.status === "orphan") {
+      assert.equal(actionableRefs.has(component.componentRef), false);
+      actionableRefs.add(component.componentRef);
+    }
+  }
+  for (const retained of resumedActionableReports) {
+    assert.deepEqual(
+      Object.keys(retained).sort(),
+      ["componentRef", "evidenceTypes", "reason", "recordCount", "status", "writes"],
+    );
+    assert.ok(retained.status === "conflict" || retained.status === "orphan");
+    assert.equal(typeof retained.reason, "string");
+    assert.ok(Number.isSafeInteger(retained.recordCount) && retained.recordCount > 0);
+    assert.ok(Number.isSafeInteger(retained.writes) && retained.writes >= 0);
+    if (retained.status === "conflict") assert.equal(retained.writes, 0);
   }
 }
 
