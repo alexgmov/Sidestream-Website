@@ -4,30 +4,73 @@ import { spawn } from "node:child_process";
 import { readdir } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import {
+  CUSTOMER_360_NON_POSTGRES_TESTS,
+  CUSTOMER_360_POSTGRES_TESTS,
+} from "./run-customer-360-tests.mjs";
 
 const TESTS_DIRECTORY = path.resolve("tests");
-const POSTGRES_ONLY_TESTS = new Set([
+const ROOT_POSTGRES_ONLY_TESTS = new Set([
   "postgres-integration.test.mjs",
   "single-device-postgres.test.mjs",
 ]);
+const CUSTOMER_360_POSTGRES_ONLY_TESTS = new Set(CUSTOMER_360_POSTGRES_TESTS);
+const CUSTOMER_360_CLASSIFIED_TESTS = new Set([
+  ...CUSTOMER_360_NON_POSTGRES_TESTS,
+  ...CUSTOMER_360_POSTGRES_TESTS,
+]);
 
 export async function listApiTestFiles(directory = TESTS_DIRECTORY) {
-  const filenames = (await readdir(directory))
-    .filter((filename) => filename.endsWith(".test.mjs"))
-    .sort();
-  const unknownPostgresTests = filenames.filter((filename) =>
-    filename.includes("postgres") &&
-    !POSTGRES_ONLY_TESTS.has(filename) &&
-    filename !== "postgres-config.test.mjs"
+  const files = await listTestFiles(directory);
+  const relativeFiles = files.map((filename) => normalizeRelativePath(
+    path.relative(directory, filename),
+  ));
+  const customer360Files = relativeFiles.filter((filename) =>
+    filename.startsWith("customer-360/")
+  );
+  const unclassifiedCustomer360 = customer360Files.filter((filename) =>
+    !CUSTOMER_360_CLASSIFIED_TESTS.has(filename)
+  );
+  if (unclassifiedCustomer360.length > 0) {
+    throw new Error(
+      `Classify new Customer 360 tests explicitly: ${unclassifiedCustomer360.join(", ")}`,
+    );
+  }
+
+  const unknownPostgresTests = relativeFiles.filter((filename) =>
+    path.basename(filename).includes("postgres") &&
+    filename !== "postgres-config.test.mjs" &&
+    !ROOT_POSTGRES_ONLY_TESTS.has(filename) &&
+    !CUSTOMER_360_POSTGRES_ONLY_TESTS.has(filename)
   );
   if (unknownPostgresTests.length > 0) {
     throw new Error(
       `Classify new Postgres tests explicitly: ${unknownPostgresTests.join(", ")}`,
     );
   }
-  const selected = filenames.filter((filename) => !POSTGRES_ONLY_TESTS.has(filename));
+
+  const selected = files.filter((filename, index) => {
+    const relative = relativeFiles[index];
+    return !ROOT_POSTGRES_ONLY_TESTS.has(relative) &&
+      !CUSTOMER_360_POSTGRES_ONLY_TESTS.has(relative);
+  });
   if (selected.length === 0) throw new Error("No API test suites were discovered");
-  return selected.map((filename) => path.join(directory, filename));
+  return selected;
+}
+
+async function listTestFiles(directory) {
+  const entries = await readdir(directory, { withFileTypes: true });
+  const files = [];
+  for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
+    const target = path.join(directory, entry.name);
+    if (entry.isDirectory()) files.push(...await listTestFiles(target));
+    else if (entry.isFile() && entry.name.endsWith(".test.mjs")) files.push(target);
+  }
+  return files;
+}
+
+function normalizeRelativePath(filename) {
+  return filename.split(path.sep).join("/");
 }
 
 async function main() {
@@ -39,7 +82,7 @@ async function main() {
     ...files,
   ], {
     cwd: process.cwd(),
-    env: process.env,
+    env: { ...process.env, TZ: "America/Los_Angeles" },
     stdio: "inherit",
   });
   const exitCode = await new Promise((resolve, reject) => {
