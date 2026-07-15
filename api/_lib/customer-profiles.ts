@@ -586,18 +586,20 @@ function mergeCandidate(row: LockedProfileRow): MergeCandidate {
 }
 
 function compareMergeOrder(left: MergeCandidate, right: MergeCandidate): number {
-  const leftTime = Date.parse(left.createdAt);
-  const rightTime = Date.parse(right.createdAt);
-  if (Number.isFinite(leftTime) && Number.isFinite(rightTime) && leftTime !== rightTime) {
-    return leftTime - rightTime;
-  }
   const preciseTimestamp = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}$/;
+  // Postgres returns UTC timestamps in this fixed-width suffix-less form.
+  // Lexical order preserves microseconds without local-time parsing.
   if (
     preciseTimestamp.test(left.createdAt) &&
     preciseTimestamp.test(right.createdAt) &&
     left.createdAt !== right.createdAt
   ) {
     return left.createdAt < right.createdAt ? -1 : 1;
+  }
+  const leftTime = Date.parse(left.createdAt);
+  const rightTime = Date.parse(right.createdAt);
+  if (Number.isFinite(leftTime) && Number.isFinite(rightTime) && leftTime !== rightTime) {
+    return leftTime - rightTime;
   }
   if (left.id < right.id) return -1;
   if (left.id > right.id) return 1;
