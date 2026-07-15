@@ -63,7 +63,9 @@ test("Customer commerce materializes idempotent per-currency Stripe money truth"
            and column_name in (
              'gross_paid_minor', 'discount_minor', 'tax_minor', 'refunded_minor',
              'disputed_minor', 'inquiry_minor', 'net_paid_minor', 'currency',
-             'source_confidence', 'identity_conflict'
+             'source_confidence', 'identity_conflict',
+             'first_inferred_paid_at', 'last_inferred_paid_at',
+             'first_inferred_upgraded_at', 'last_inferred_upgraded_at'
            ) order by column_name`,
         [schema],
       );
@@ -71,9 +73,13 @@ test("Customer commerce materializes idempotent per-currency Stripe money truth"
         { column_name: "currency", data_type: "text" },
         { column_name: "discount_minor", data_type: "bigint" },
         { column_name: "disputed_minor", data_type: "bigint" },
+        { column_name: "first_inferred_paid_at", data_type: "timestamp with time zone" },
+        { column_name: "first_inferred_upgraded_at", data_type: "timestamp with time zone" },
         { column_name: "gross_paid_minor", data_type: "bigint" },
         { column_name: "identity_conflict", data_type: "boolean" },
         { column_name: "inquiry_minor", data_type: "bigint" },
+        { column_name: "last_inferred_paid_at", data_type: "timestamp with time zone" },
+        { column_name: "last_inferred_upgraded_at", data_type: "timestamp with time zone" },
         { column_name: "net_paid_minor", data_type: "bigint" },
         { column_name: "refunded_minor", data_type: "bigint" },
         { column_name: "source_confidence", data_type: "text" },
@@ -182,6 +188,224 @@ test("Customer commerce materializes idempotent per-currency Stripe money truth"
         [profile.id],
       );
       assert.equal(paymentFacts.rows[0].count, 3);
+    });
+
+    await t.test("customer identity alone cannot scope unrelated money to Sidestream", async () => {
+      const scopedProfile = await seedProfile(
+        pool,
+        quotedSchema,
+        "test",
+        "2026-01-01T01:00:00Z",
+        null,
+      );
+      await seedLinks(pool, quotedSchema, scopedProfile.id, "test", [
+        ["stripe_customer", "cus_product_scope"],
+        ["stripe_checkout_session", "cs_sidestream_scope"],
+        ["stripe_payment_intent", "pi_sidestream_scope"],
+      ]);
+
+      await materializeCustomerCommerceEvent(stripeEvent(
+        "evt_unrelated_product_charge",
+        "charge.succeeded",
+        1_800_000_300,
+        {
+          id: "ch_unrelated_product",
+          customer: "cus_product_scope",
+          payment_intent: "pi_unrelated_product",
+          paid: true,
+          captured: true,
+          status: "succeeded",
+          amount_captured: 400,
+          currency: "nzd",
+        },
+      ), query);
+      assert.deepEqual((await pool.query(
+        `select profile_id, identity_conflict
+         from ${quotedSchema}.sidestream_customer_commerce_materializations
+         where source_object_id = 'ch_unrelated_product'`,
+      )).rows[0], { profile_id: null, identity_conflict: false });
+      assert.equal((await pool.query(
+        `select count(*)::int as count
+         from ${quotedSchema}.sidestream_customer_money_totals
+         where profile_id = $1 and currency = 'nzd'`,
+        [scopedProfile.id],
+      )).rows[0].count, 0);
+
+      const scopedEvents = [
+        stripeEvent("evt_scope_checkout", "checkout.session.completed", 1_800_000_310, {
+          id: "cs_sidestream_scope",
+          customer: "cus_product_scope",
+          payment_intent: "pi_sidestream_scope",
+          mode: "payment",
+          payment_status: "paid",
+          amount_total: 1200,
+          currency: "nzd",
+          total_details: { amount_discount: 100, amount_tax: 150 },
+        }),
+        stripeEvent("evt_scope_pi", "payment_intent.succeeded", 1_800_000_320, {
+          id: "pi_sidestream_scope",
+          customer: "cus_product_scope",
+          latest_charge: "ch_sidestream_scope",
+          status: "succeeded",
+          amount_received: 1200,
+          currency: "nzd",
+        }),
+        stripeEvent("evt_scope_charge", "charge.succeeded", 1_800_000_330, {
+          id: "ch_sidestream_scope",
+          customer: "cus_product_scope",
+          payment_intent: "pi_sidestream_scope",
+          paid: true,
+          captured: true,
+          status: "succeeded",
+          amount_captured: 1200,
+          currency: "nzd",
+        }),
+        stripeEvent("evt_scope_invoice", "invoice.paid", 1_800_000_340, {
+          id: "in_sidestream_scope",
+          customer: "cus_product_scope",
+          payments: {
+            data: [{
+              type: "payment",
+              payment: {
+                type: "payment_intent",
+                payment_intent: "pi_sidestream_scope",
+                charge: "ch_sidestream_scope",
+              },
+            }],
+          },
+          paid: true,
+          status: "paid",
+          amount_paid: 1200,
+          currency: "nzd",
+          total_discount_amounts: [{ amount: 100 }],
+          total_tax_amounts: [{ amount: 150 }],
+          status_transitions: { paid_at: 1_800_000_335 },
+        }),
+      ];
+      for (const event of scopedEvents) {
+        await materializeCustomerCommerceEvent(event, query);
+      }
+
+      assert.deepEqual(await moneyTotal(pool, quotedSchema, scopedProfile.id, "nzd"), {
+        commerce_model: "one_time",
+        gross_paid_minor: "1200",
+        discount_minor: "100",
+        tax_minor: "150",
+        refunded_minor: "0",
+        disputed_minor: "0",
+        inquiry_minor: "0",
+        net_paid_minor: "1200",
+        paid_transaction_count: "1",
+        comped_transaction_count: "0",
+      });
+      const scopedRows = await pool.query(
+        `select count(*)::int as count, count(distinct payment_key)::int as payment_keys
+         from ${quotedSchema}.sidestream_customer_commerce_materializations
+         where profile_id = $1 and source_object_id = any($2::text[])`,
+        [
+          scopedProfile.id,
+          [
+            "cs_sidestream_scope",
+            "pi_sidestream_scope",
+            "ch_sidestream_scope",
+            "in_sidestream_scope",
+          ],
+        ],
+      );
+      assert.deepEqual(scopedRows.rows[0], { count: 4, payment_keys: 1 });
+    });
+
+    await t.test("successful update snapshots cannot advance paid or upgraded dates", async () => {
+      const cases = [
+        {
+          suffix: "pi_transition",
+          successType: "payment_intent.succeeded",
+          updateType: "payment_intent.updated",
+          successAt: 1_800_000_500,
+          object: {
+            id: "pi_transition",
+            created: 1_800_000_000,
+            customer: "cus_pi_transition",
+            latest_charge: "ch_pi_transition",
+            status: "succeeded",
+            amount_received: 650,
+            currency: "usd",
+          },
+        },
+        {
+          suffix: "charge_transition",
+          successType: "charge.succeeded",
+          updateType: "charge.updated",
+          successAt: 1_800_000_600,
+          object: {
+            id: "ch_charge_transition",
+            created: 1_800_000_010,
+            customer: "cus_charge_transition",
+            payment_intent: "pi_charge_transition",
+            paid: true,
+            captured: true,
+            status: "succeeded",
+            amount_captured: 700,
+            amount_refunded: 0,
+            currency: "usd",
+          },
+        },
+      ];
+
+      for (const item of cases) {
+        const transitionProfile = await seedProfile(
+          pool,
+          quotedSchema,
+          "test",
+          new Date((item.successAt - 10) * 1000).toISOString(),
+          null,
+        );
+        const paymentIntentId = item.suffix === "pi_transition"
+          ? item.object.id
+          : item.object.payment_intent;
+        await seedLinks(pool, quotedSchema, transitionProfile.id, "test", [
+          ["stripe_customer", item.object.customer],
+          ["stripe_payment_intent", paymentIntentId],
+        ]);
+        await materializeCustomerCommerceEvent(stripeEvent(
+          `evt_${item.suffix}_succeeded`,
+          item.successType,
+          item.successAt,
+          item.object,
+        ), query);
+        await materializeCustomerCommerceEvent(stripeEvent(
+          `evt_${item.suffix}_later_update`,
+          item.updateType,
+          item.successAt + 1_000,
+          {
+            ...item.object,
+            metadata: { support_note: "post-payment update" },
+            amount_refunded: item.object.amount_refunded === undefined
+              ? undefined
+              : 100,
+          },
+        ), query);
+
+        const expected = new Date(item.successAt * 1000).toISOString();
+        const storedDates = await pool.query(
+          `select first_paid_at, last_paid_at, first_upgraded_at, last_upgraded_at
+           from ${quotedSchema}.sidestream_customer_profiles where id = $1`,
+          [transitionProfile.id],
+        );
+        assert.deepEqual(
+          Object.fromEntries(Object.entries(storedDates.rows[0]).map(([key, value]) => [
+            key,
+            value?.toISOString() || null,
+          ])),
+          {
+            first_paid_at: expected,
+            last_paid_at: expected,
+            first_upgraded_at: expected,
+            last_upgraded_at: expected,
+          },
+          item.suffix,
+        );
+      }
     });
 
     await t.test("failed, partial, and full refunds are watermark-correct", async () => {
@@ -293,6 +517,10 @@ test("Customer commerce materializes idempotent per-currency Stripe money truth"
     });
 
     await t.test("zero-cost, recurring renewal/cancel, and currencies remain distinct", async () => {
+      await seedLinks(pool, quotedSchema, profile.id, "test", [
+        ["stripe_checkout_session", "cs_comped"],
+        ["stripe_payment_intent", "pi_eur"],
+      ]);
       await materializeCustomerCommerceEvent(stripeEvent(
         "evt_comped",
         "checkout.session.completed",
@@ -399,6 +627,7 @@ test("Customer commerce materializes idempotent per-currency Stripe money truth"
           id: "ch_eur",
           created: 1_805_000_090,
           customer: "cus_primary",
+          payment_intent: "pi_eur",
           paid: true,
           status: "succeeded",
           amount: 500,
@@ -483,6 +712,7 @@ test("Customer commerce materializes idempotent per-currency Stripe money truth"
       );
       await seedLinks(pool, quotedSchema, capturedProfile.id, "test", [
         ["stripe_customer", "cus_partial_capture"],
+        ["stripe_payment_intent", "pi_partial_capture"],
       ]);
       await materializeCustomerCommerceEvent(stripeEvent(
         "evt_partial_capture",
@@ -492,6 +722,7 @@ test("Customer commerce materializes idempotent per-currency Stripe money truth"
           id: "ch_partial_capture",
           created: 1_806_000_000,
           customer: "cus_partial_capture",
+          payment_intent: "pi_partial_capture",
           paid: true,
           captured: true,
           status: "succeeded",
@@ -590,7 +821,7 @@ test("Customer commerce materializes idempotent per-currency Stripe money truth"
       );
     });
 
-    await t.test("legacy-inferred dates stay on materialization but not canonical profile", async () => {
+    await t.test("later verified timing cannot launder legacy-inferred dates", async () => {
       const legacyProfile = await seedProfile(
         pool,
         quotedSchema,
@@ -600,6 +831,7 @@ test("Customer commerce materializes idempotent per-currency Stripe money truth"
       );
       await seedLinks(pool, quotedSchema, legacyProfile.id, "test", [
         ["stripe_customer", "cus_legacy_date"],
+        ["stripe_subscription", "sub_legacy_date"],
       ]);
       await materializeCustomerCommerceEvent(stripeEvent(
         "evt_legacy_date",
@@ -619,14 +851,15 @@ test("Customer commerce materializes idempotent per-currency Stripe money truth"
         },
       ), query);
       const materialization = await pool.query(
-        `select source_confidence, first_upgraded_at, effective_at
+        `select source_confidence, first_upgraded_at, first_inferred_upgraded_at,
+           effective_at
          from ${quotedSchema}.sidestream_customer_commerce_materializations
          where source_object_id = 'sub_legacy_date'`,
       );
       assert.equal(materialization.rows[0].source_confidence, "legacy_inferred");
-      assert.ok(materialization.rows[0].first_upgraded_at);
+      assert.equal(materialization.rows[0].first_upgraded_at, null);
       assert.equal(
-        materialization.rows[0].first_upgraded_at.toISOString(),
+        materialization.rows[0].first_inferred_upgraded_at.toISOString(),
         materialization.rows[0].effective_at.toISOString(),
       );
       const canonical = await pool.query(
@@ -641,6 +874,58 @@ test("Customer commerce materializes idempotent per-currency Stripe money truth"
         last_paid_at: null,
         first_upgraded_at: null,
         last_upgraded_at: null,
+      });
+
+      await materializeCustomerCommerceEvent(stripeEvent(
+        "evt_verified_date",
+        "customer.subscription.created",
+        1_808_000_100,
+        {
+          id: "sub_legacy_date",
+          created: 1_808_000_100,
+          customer: "cus_legacy_date",
+          status: "active",
+          items: {
+            data: [{
+              id: "si_legacy_date",
+              current_period_start: 1_808_000_100,
+              current_period_end: 1_810_592_100,
+            }],
+          },
+        },
+      ), query);
+      const verified = await pool.query(
+        `select source_confidence, first_upgraded_at, last_upgraded_at,
+           first_inferred_upgraded_at, last_inferred_upgraded_at
+         from ${quotedSchema}.sidestream_customer_commerce_materializations
+         where source_object_id = 'sub_legacy_date'`,
+      );
+      assert.deepEqual({
+        source_confidence: verified.rows[0].source_confidence,
+        first_upgraded_at: verified.rows[0].first_upgraded_at.toISOString(),
+        last_upgraded_at: verified.rows[0].last_upgraded_at.toISOString(),
+        first_inferred_upgraded_at:
+          verified.rows[0].first_inferred_upgraded_at.toISOString(),
+        last_inferred_upgraded_at:
+          verified.rows[0].last_inferred_upgraded_at.toISOString(),
+      }, {
+        source_confidence: "verified",
+        first_upgraded_at: new Date(1_808_000_100 * 1000).toISOString(),
+        last_upgraded_at: new Date(1_808_000_100 * 1000).toISOString(),
+        first_inferred_upgraded_at: new Date(1_808_000_000 * 1000).toISOString(),
+        last_inferred_upgraded_at: new Date(1_808_000_000 * 1000).toISOString(),
+      });
+      const verifiedCanonical = await pool.query(
+        `select first_upgraded_at, last_upgraded_at
+         from ${quotedSchema}.sidestream_customer_profiles where id = $1`,
+        [legacyProfile.id],
+      );
+      assert.deepEqual({
+        first_upgraded_at: verifiedCanonical.rows[0].first_upgraded_at.toISOString(),
+        last_upgraded_at: verifiedCanonical.rows[0].last_upgraded_at.toISOString(),
+      }, {
+        first_upgraded_at: new Date(1_808_000_100 * 1000).toISOString(),
+        last_upgraded_at: new Date(1_808_000_100 * 1000).toISOString(),
       });
     });
 
@@ -661,6 +946,7 @@ test("Customer commerce materializes idempotent per-currency Stripe money truth"
       );
       await seedLinks(pool, quotedSchema, profileA.id, "test", [
         ["stripe_customer", "cus_conflict_a"],
+        ["stripe_payment_intent", "pi_conflict_a"],
       ]);
       await materializeCustomerCommerceEvent(stripeEvent(
         "evt_conflict_charge",
@@ -669,6 +955,7 @@ test("Customer commerce materializes idempotent per-currency Stripe money truth"
         {
           id: "ch_conflict",
           customer: "cus_conflict_a",
+          payment_intent: "pi_conflict_a",
           paid: true,
           status: "succeeded",
           amount_captured: 100,
@@ -740,6 +1027,7 @@ test("Customer commerce materializes idempotent per-currency Stripe money truth"
           id: "ch_unresolved",
           created: 1_809_999_990,
           customer: "cus_later",
+          payment_intent: "pi_later",
           paid: true,
           status: "succeeded",
           amount: 700,
@@ -755,6 +1043,16 @@ test("Customer commerce materializes idempotent per-currency Stripe money truth"
 
       const later = await seedProfile(pool, quotedSchema, "test", "2026-02-01T00:00:00Z", null);
       await seedLinks(pool, quotedSchema, later.id, "test", [["stripe_customer", "cus_later"]]);
+      fact = await pool.query(
+        `select profile_id from ${quotedSchema}.sidestream_customer_commerce_materializations
+         where source_object_id = 'ch_unresolved'`,
+      );
+      assert.equal(fact.rows[0].profile_id, null);
+
+      await seedLinks(pool, quotedSchema, later.id, "test", [[
+        "stripe_payment_intent",
+        "pi_later",
+      ]]);
       fact = await pool.query(
         `select profile_id from ${quotedSchema}.sidestream_customer_commerce_materializations
          where source_object_id = 'ch_unresolved'`,

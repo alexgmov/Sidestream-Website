@@ -204,6 +204,8 @@ function normalizeCheckout(
   const state = stringValue(object.payment_status) || checkoutEventState(event.type);
   const successful = state === "paid" || state === "no_payment_required" ||
     event.type === "checkout.session.async_payment_succeeded";
+  const successTransition = event.type === "checkout.session.completed" ||
+    event.type === "checkout.session.async_payment_succeeded";
   const gross = successful ? money(object.amount_total) : 0;
   const details = recordValue(object.total_details);
   const discount = successful ? money(details.amount_discount) : 0;
@@ -232,8 +234,8 @@ function normalizeCheckout(
     refundedMinor: 0,
     disputedMinor: 0,
     inquiryMinor: 0,
-    paidAt: successful && gross > 0 ? timing.effectiveAt : null,
-    upgradedAt: successful ? timing.effectiveAt : null,
+    paidAt: successful && successTransition && gross > 0 ? timing.effectiveAt : null,
+    upgradedAt: successful && successTransition ? timing.effectiveAt : null,
     timing,
     source: explicitModel ? "manual_metadata" : "stripe_object",
   })];
@@ -248,10 +250,11 @@ function normalizePaymentIntent(
 ) {
   const state = stringValue(object.status) || paymentIntentEventState(event.type);
   const successful = state === "succeeded";
+  const successTransition = event.type === "payment_intent.succeeded";
   const gross = successful ? moneyOrFallback(object.amount_received, object.amount) : 0;
   const currency = monetaryCurrency(object.currency, gross);
   const explicitModel = metadataModel(object);
-  const timing = eventTiming(object, eventCreatedAt, successful);
+  const timing = eventTiming(object, eventCreatedAt, successTransition);
   return [observation({
     event,
     object,
@@ -270,8 +273,8 @@ function normalizePaymentIntent(
     refundedMinor: 0,
     disputedMinor: 0,
     inquiryMinor: 0,
-    paidAt: successful && gross > 0 ? timing.effectiveAt : null,
-    upgradedAt: successful ? timing.effectiveAt : null,
+    paidAt: successful && successTransition && gross > 0 ? timing.effectiveAt : null,
+    upgradedAt: successful && successTransition ? timing.effectiveAt : null,
     timing,
     source: explicitModel ? "manual_metadata" : "stripe_object",
   })];
@@ -287,11 +290,13 @@ function normalizeCharge(
   const state = stringValue(object.status) || chargeEventState(event.type);
   const successful = (object.paid === true || state === "succeeded") &&
     object.captured !== false;
+  const successTransition = event.type === "charge.succeeded" ||
+    event.type === "charge.captured";
   const gross = successful ? moneyOrFallback(object.amount_captured, object.amount) : 0;
   const refunded = successful ? Math.min(gross, money(object.amount_refunded)) : 0;
   const currency = monetaryCurrency(object.currency, gross, refunded);
   const explicitModel = metadataModel(object);
-  const timing = eventTiming(object, eventCreatedAt, successful);
+  const timing = eventTiming(object, eventCreatedAt, successTransition);
   return [observation({
     event,
     object,
@@ -310,8 +315,8 @@ function normalizeCharge(
     refundedMinor: refunded,
     disputedMinor: 0,
     inquiryMinor: 0,
-    paidAt: successful && gross > 0 ? timing.effectiveAt : null,
-    upgradedAt: successful ? timing.effectiveAt : null,
+    paidAt: successful && successTransition && gross > 0 ? timing.effectiveAt : null,
+    upgradedAt: successful && successTransition ? timing.effectiveAt : null,
     timing,
     source: explicitModel ? "manual_metadata" : "stripe_object",
   })];
@@ -402,6 +407,8 @@ function normalizeInvoice(
   const state = stringValue(object.status) || invoiceEventState(event.type);
   const successful = object.paid === true || state === "paid" ||
     event.type === "invoice.payment_succeeded";
+  const successTransition = event.type === "invoice.paid" ||
+    event.type === "invoice.payment_succeeded";
   const gross = successful ? money(object.amount_paid) : 0;
   const discount = successful
     ? Math.max(money(object.amount_discount), sumAmounts(object.total_discount_amounts))
@@ -433,8 +440,8 @@ function normalizeInvoice(
     refundedMinor: 0,
     disputedMinor: 0,
     inquiryMinor: 0,
-    paidAt: successful && gross > 0 ? timing.effectiveAt : null,
-    upgradedAt: successful ? timing.effectiveAt : null,
+    paidAt: successful && successTransition && gross > 0 ? timing.effectiveAt : null,
+    upgradedAt: successful && successTransition ? timing.effectiveAt : null,
     timing,
     source: explicitModel || object.paid_out_of_band === true
       ? "manual_metadata"

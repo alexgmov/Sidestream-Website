@@ -139,6 +139,45 @@ test("Checkout, PaymentIntent, charge, and invoice normalize without floating mo
   ));
 });
 
+test("successful object snapshots only emit paid dates on success or capture transitions", () => {
+  const paymentIntentUpdate = only(normalizeCustomerCommerceEvent(stripeEvent(
+    "evt_pi_metadata_update",
+    "payment_intent.updated",
+    1_720_001_000,
+    {
+      id: "pi_already_paid",
+      created: 1_720_000_000,
+      latest_charge: "ch_already_paid",
+      status: "succeeded",
+      amount_received: 999,
+      currency: "usd",
+    },
+  )));
+  const chargeUpdate = only(normalizeCustomerCommerceEvent(stripeEvent(
+    "evt_charge_refund_update",
+    "charge.updated",
+    1_720_001_100,
+    {
+      id: "ch_already_paid",
+      created: 1_720_000_010,
+      payment_intent: "pi_already_paid",
+      paid: true,
+      captured: true,
+      status: "succeeded",
+      amount_captured: 999,
+      amount_refunded: 100,
+      currency: "usd",
+    },
+  )));
+
+  for (const observation of [paymentIntentUpdate, chargeUpdate]) {
+    assert.equal(observation.grossPaidMinor, 999);
+    assert.equal(observation.paidAt, null);
+    assert.equal(observation.upgradedAt, null);
+    assert.equal(observation.timestampSource, "stripe_object");
+  }
+});
+
 test("zero-cost and explicit manual commerce remain upgrades without invented paid money", () => {
   const comped = only(normalizeCustomerCommerceEvent(stripeEvent(
     "evt_comped",

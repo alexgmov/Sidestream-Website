@@ -1,11 +1,13 @@
 -- Canonical Customer 360 money ledger.
 --
 -- This projection is money truth only. It deliberately does not read, write,
--- derive, or bless sidestream_licenses entitlement state. Signed Stripe event
--- mutable materializations are watermark-protected by (event_created_at, event_id), related
--- Checkout/PaymentIntent/charge/invoice objects converge through aliases, and
--- every materialized total remains isolated by ISO currency. The durable
--- sidestream_stripe_events queue remains the immutable signed-event history.
+-- derive, or bless sidestream_licenses entitlement state. Mutable source-object
+-- materializations are watermark-protected by (event_created_at, event_id),
+-- related Checkout/PaymentIntent/charge/invoice objects converge through aliases,
+-- and every materialized total remains isolated by ISO currency. The durable
+-- source boundary in sidestream_stripe_events is its insert-only event_id,
+-- event_type, and stripe_created_at. Queue processing state is mutable, and
+-- maintenance may redact payload and raw_payload fields.
 
 alter table public.sidestream_customer_profiles
   add column if not exists commerce_model text,
@@ -54,6 +56,10 @@ create table public.sidestream_customer_commerce_materializations (
   last_paid_at timestamptz,
   first_upgraded_at timestamptz,
   last_upgraded_at timestamptz,
+  first_inferred_paid_at timestamptz,
+  last_inferred_paid_at timestamptz,
+  first_inferred_upgraded_at timestamptz,
+  last_inferred_upgraded_at timestamptz,
   object_created_at timestamptz,
   effective_at timestamptz not null,
   billing_period_start timestamptz,
@@ -117,6 +123,16 @@ create table public.sidestream_customer_commerce_materializations (
       first_upgraded_at is null
       or last_upgraded_at is null
       or last_upgraded_at >= first_upgraded_at
+    )
+    and (
+      first_inferred_paid_at is null
+      or last_inferred_paid_at is null
+      or last_inferred_paid_at >= first_inferred_paid_at
+    )
+    and (
+      first_inferred_upgraded_at is null
+      or last_inferred_upgraded_at is null
+      or last_inferred_upgraded_at >= first_inferred_upgraded_at
     )
     and (
       billing_period_start is null
@@ -316,18 +332,10 @@ begin
       max(fact.discount_minor) as discount_minor,
       max(fact.tax_minor) as tax_minor,
       max(fact.refunded_minor) as reported_refunded_minor,
-      min(fact.first_paid_at) filter (
-        where fact.source_confidence = 'verified'
-      ) as first_paid_at,
-      max(fact.last_paid_at) filter (
-        where fact.source_confidence = 'verified'
-      ) as last_paid_at,
-      min(fact.first_upgraded_at) filter (
-        where fact.source_confidence = 'verified'
-      ) as first_upgraded_at,
-      max(fact.last_upgraded_at) filter (
-        where fact.source_confidence = 'verified'
-      ) as last_upgraded_at,
+      min(fact.first_paid_at) as first_paid_at,
+      max(fact.last_paid_at) as last_paid_at,
+      min(fact.first_upgraded_at) as first_upgraded_at,
+      max(fact.last_upgraded_at) as last_upgraded_at,
       case
         when bool_or(fact.commerce_model = 'subscription') then 'subscription'
         when count(distinct fact.commerce_model) = 1 then min(fact.commerce_model)
@@ -481,18 +489,10 @@ begin
   profile_dates as (
     select
       fact.profile_id,
-      min(fact.first_paid_at) filter (
-        where fact.source_confidence = 'verified'
-      ) as first_paid_at,
-      max(fact.last_paid_at) filter (
-        where fact.source_confidence = 'verified'
-      ) as last_paid_at,
-      min(fact.first_upgraded_at) filter (
-        where fact.source_confidence = 'verified'
-      ) as first_upgraded_at,
-      max(fact.last_upgraded_at) filter (
-        where fact.source_confidence = 'verified'
-      ) as last_upgraded_at
+      min(fact.first_paid_at) as first_paid_at,
+      max(fact.last_paid_at) as last_paid_at,
+      min(fact.first_upgraded_at) as first_upgraded_at,
+      max(fact.last_upgraded_at) as last_upgraded_at
     from public.sidestream_customer_commerce_materializations fact
     where fact.license_namespace = target_namespace
       and fact.profile_id is not null
@@ -540,7 +540,9 @@ declare
   resolved_profile uuid;
   group_profile uuid;
   identity_profile_count integer;
+  strong_identity_profile_count integer;
   group_profile_count integer;
+  strong_resolved_profile uuid;
   has_identity_conflict boolean;
   existing_event_created_at timestamptz;
   existing_event_id text;
@@ -657,6 +659,32 @@ begin
       );
 
     select
+      count(distinct profile.id)::integer,
+      case when count(distinct profile.id) = 1
+        then (array_agg(distinct profile.id))[1]
+      end
+    into strong_identity_profile_count, strong_resolved_profile
+    from public.sidestream_customer_identity_links link
+    join public.sidestream_customer_profiles profile
+      on profile.id = link.profile_id
+      and profile.license_namespace = link.license_namespace
+      and profile.merged_into is null
+    where link.license_namespace = target_namespace
+      and link.link_type in (
+        'stripe_checkout_session',
+        'stripe_payment_intent',
+        'stripe_subscription'
+      )
+      and exists (
+        select 1
+        from jsonb_array_elements(
+          coalesce(item->'identityEvidence', '[]'::jsonb)
+        ) evidence
+        where evidence->>'linkType' = link.link_type
+          and evidence->>'linkValue' = link.link_value
+      );
+
+    select
       count(distinct profile_id)::integer,
       case when count(distinct profile_id) = 1
         then (array_agg(distinct profile_id))[1]
@@ -677,8 +705,12 @@ begin
 
     if has_identity_conflict then
       resolved_profile := null;
-    elsif identity_profile_count = 0 then
+    elsif strong_identity_profile_count = 1 then
+      resolved_profile := strong_resolved_profile;
+    elsif group_profile_count = 1 then
       resolved_profile := group_profile;
+    else
+      resolved_profile := null;
     end if;
 
     select fact.event_created_at, fact.event_id
@@ -724,6 +756,10 @@ begin
       last_paid_at,
       first_upgraded_at,
       last_upgraded_at,
+      first_inferred_paid_at,
+      last_inferred_paid_at,
+      first_inferred_upgraded_at,
+      last_inferred_upgraded_at,
       object_created_at,
       effective_at,
       billing_period_start,
@@ -755,10 +791,22 @@ begin
       (item->>'disputedMinor')::bigint,
       (item->>'inquiryMinor')::bigint,
       (item->>'netPaidMinor')::bigint,
-      (item->>'paidAt')::timestamptz,
-      (item->>'paidAt')::timestamptz,
-      (item->>'upgradedAt')::timestamptz,
-      (item->>'upgradedAt')::timestamptz,
+      case when item->>'sourceConfidence' = 'verified'
+        then (item->>'paidAt')::timestamptz end,
+      case when item->>'sourceConfidence' = 'verified'
+        then (item->>'paidAt')::timestamptz end,
+      case when item->>'sourceConfidence' = 'verified'
+        then (item->>'upgradedAt')::timestamptz end,
+      case when item->>'sourceConfidence' = 'verified'
+        then (item->>'upgradedAt')::timestamptz end,
+      case when item->>'sourceConfidence' = 'legacy_inferred'
+        then (item->>'paidAt')::timestamptz end,
+      case when item->>'sourceConfidence' = 'legacy_inferred'
+        then (item->>'paidAt')::timestamptz end,
+      case when item->>'sourceConfidence' = 'legacy_inferred'
+        then (item->>'upgradedAt')::timestamptz end,
+      case when item->>'sourceConfidence' = 'legacy_inferred'
+        then (item->>'upgradedAt')::timestamptz end,
       (item->>'objectCreatedAt')::timestamptz,
       (item->>'effectiveAt')::timestamptz,
       (item->>'billingPeriodStart')::timestamptz,
@@ -811,6 +859,8 @@ begin
         net_paid_minor = case when is_newer then excluded.net_paid_minor
           else public.sidestream_customer_commerce_materializations.net_paid_minor end,
         first_paid_at = case
+          when not is_newer
+            then public.sidestream_customer_commerce_materializations.first_paid_at
           when public.sidestream_customer_commerce_materializations.first_paid_at is null
             then excluded.first_paid_at
           when excluded.first_paid_at is null
@@ -821,6 +871,8 @@ begin
           )
         end,
         last_paid_at = case
+          when not is_newer
+            then public.sidestream_customer_commerce_materializations.last_paid_at
           when public.sidestream_customer_commerce_materializations.last_paid_at is null
             then excluded.last_paid_at
           when excluded.last_paid_at is null
@@ -831,6 +883,8 @@ begin
           )
         end,
         first_upgraded_at = case
+          when not is_newer
+            then public.sidestream_customer_commerce_materializations.first_upgraded_at
           when public.sidestream_customer_commerce_materializations.first_upgraded_at is null
             then excluded.first_upgraded_at
           when excluded.first_upgraded_at is null
@@ -841,6 +895,8 @@ begin
           )
         end,
         last_upgraded_at = case
+          when not is_newer
+            then public.sidestream_customer_commerce_materializations.last_upgraded_at
           when public.sidestream_customer_commerce_materializations.last_upgraded_at is null
             then excluded.last_upgraded_at
           when excluded.last_upgraded_at is null
@@ -848,6 +904,54 @@ begin
           else greatest(
             public.sidestream_customer_commerce_materializations.last_upgraded_at,
             excluded.last_upgraded_at
+          )
+        end,
+        first_inferred_paid_at = case
+          when not is_newer
+            then public.sidestream_customer_commerce_materializations.first_inferred_paid_at
+          when public.sidestream_customer_commerce_materializations.first_inferred_paid_at is null
+            then excluded.first_inferred_paid_at
+          when excluded.first_inferred_paid_at is null
+            then public.sidestream_customer_commerce_materializations.first_inferred_paid_at
+          else least(
+            public.sidestream_customer_commerce_materializations.first_inferred_paid_at,
+            excluded.first_inferred_paid_at
+          )
+        end,
+        last_inferred_paid_at = case
+          when not is_newer
+            then public.sidestream_customer_commerce_materializations.last_inferred_paid_at
+          when public.sidestream_customer_commerce_materializations.last_inferred_paid_at is null
+            then excluded.last_inferred_paid_at
+          when excluded.last_inferred_paid_at is null
+            then public.sidestream_customer_commerce_materializations.last_inferred_paid_at
+          else greatest(
+            public.sidestream_customer_commerce_materializations.last_inferred_paid_at,
+            excluded.last_inferred_paid_at
+          )
+        end,
+        first_inferred_upgraded_at = case
+          when not is_newer
+            then public.sidestream_customer_commerce_materializations.first_inferred_upgraded_at
+          when public.sidestream_customer_commerce_materializations.first_inferred_upgraded_at is null
+            then excluded.first_inferred_upgraded_at
+          when excluded.first_inferred_upgraded_at is null
+            then public.sidestream_customer_commerce_materializations.first_inferred_upgraded_at
+          else least(
+            public.sidestream_customer_commerce_materializations.first_inferred_upgraded_at,
+            excluded.first_inferred_upgraded_at
+          )
+        end,
+        last_inferred_upgraded_at = case
+          when not is_newer
+            then public.sidestream_customer_commerce_materializations.last_inferred_upgraded_at
+          when public.sidestream_customer_commerce_materializations.last_inferred_upgraded_at is null
+            then excluded.last_inferred_upgraded_at
+          when excluded.last_inferred_upgraded_at is null
+            then public.sidestream_customer_commerce_materializations.last_inferred_upgraded_at
+          else greatest(
+            public.sidestream_customer_commerce_materializations.last_inferred_upgraded_at,
+            excluded.last_inferred_upgraded_at
           )
         end,
         object_created_at = case when is_newer then excluded.object_created_at
@@ -926,6 +1030,11 @@ begin
       and fact.profile_id is null
     group by fact.id
     having count(distinct profile.id) = 1
+      and bool_or(link.link_type in (
+        'stripe_checkout_session',
+        'stripe_payment_intent',
+        'stripe_subscription'
+      ))
   )
   update public.sidestream_customer_commerce_materializations fact
   set profile_id = owner.profile_id,
@@ -971,11 +1080,13 @@ on public.sidestream_customer_profiles
 for each row execute function public.sidestream_customer_commerce_profile_merge();
 
 comment on table public.sidestream_customer_commerce_materializations is
-  'Mutable latest-state money materializations keyed by Stripe source object. Immutable signed event history remains in sidestream_stripe_events; this table is not entitlement truth.';
+  'Mutable latest-state money materializations keyed by Stripe source object. sidestream_stripe_events durably preserves insert-only event_id, event_type, and stripe_created_at; its processing state is mutable and payload fields may be redacted. This table is not entitlement truth.';
 comment on table public.sidestream_customer_money_totals is
   'Materialized money totals separated by customer profile, namespace, and ISO currency.';
 comment on column public.sidestream_customer_commerce_materializations.source_confidence is
-  'verified for Stripe object/event dates; legacy_inferred only when an object date is absent.';
+  'Confidence for the latest source-object timing. Verified canonical dates and legacy-inferred support dates are stored separately.';
+comment on column public.sidestream_customer_commerce_materializations.first_inferred_upgraded_at is
+  'Earliest legacy-inferred upgrade timing retained for support only; never used for canonical profile dates.';
 
 alter table public.sidestream_customer_commerce_materializations enable row level security;
 alter table public.sidestream_customer_commerce_aliases enable row level security;

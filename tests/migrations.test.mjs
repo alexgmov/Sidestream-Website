@@ -80,6 +80,10 @@ test("Customer commerce migration keeps money currency-separated and entitlement
     "net_paid_minor",
     "billing_period_start",
     "billing_period_end",
+    "first_inferred_paid_at",
+    "last_inferred_paid_at",
+    "first_inferred_upgraded_at",
+    "last_inferred_upgraded_at",
     "source_confidence",
     "identity_conflict",
   ]) {
@@ -88,7 +92,10 @@ test("Customer commerce migration keeps money currency-separated and entitlement
   assert.doesNotMatch(migration, /update public\.sidestream_licenses/i);
   assert.doesNotMatch(migration, /alter table public\.sidestream_licenses/i);
   assert.match(migration, /Mutable latest-state money materializations/);
-  assert.match(migration, /sidestream_stripe_events queue remains the immutable signed-event history/);
+  assert.match(migration, /insert-only event_id, event_type, and stripe_created_at/);
+  assert.match(migration, /processing state is mutable/);
+  assert.match(migration, /payload fields may be redacted/);
+  assert.doesNotMatch(migration, /immutable signed-event history/i);
 });
 
 test("ledger classification reports pending files and rejects every checksum mismatch", async () => {

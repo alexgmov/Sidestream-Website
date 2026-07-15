@@ -366,7 +366,9 @@ test("Stripe events use a durable claimed queue with bounded retry and protected
       await pool.query(
         `insert into public.sidestream_customer_identity_links (
            profile_id, license_namespace, link_type, link_value
-         ) values ($1, 'test', 'stripe_customer', 'cus_queue_money')`,
+         ) values
+           ($1, 'test', 'stripe_customer', 'cus_queue_money'),
+           ($1, 'test', 'stripe_payment_intent', 'pi_queue_money')`,
         [profile.rows[0].id],
       );
       const event = stripeEvent(
@@ -377,6 +379,7 @@ test("Stripe events use a durable claimed queue with bounded retry and protected
           id: "ch_queue_money",
           created: 1_700_004_490,
           customer: "cus_queue_money",
+          payment_intent: "pi_queue_money",
           paid: true,
           status: "succeeded",
           amount: 999,
@@ -441,7 +444,9 @@ test("Stripe events use a durable claimed queue with bounded retry and protected
       await pool.query(
         `insert into public.sidestream_customer_identity_links (
            profile_id, license_namespace, link_type, link_value
-         ) values ($1, 'test', 'stripe_customer', 'cus_commerce_isolation')`,
+         ) values
+           ($1, 'test', 'stripe_customer', 'cus_commerce_isolation'),
+           ($1, 'test', 'stripe_checkout_session', 'cs_commerce_isolation')`,
         [profile.rows[0].id],
       );
       const event = stripeEvent(
@@ -576,6 +581,60 @@ test("Stripe events use a durable claimed queue with bounded retry and protected
       );
       assert.equal(queried, false);
       assert.deepEqual(runtime.stub.calls, []);
+    });
+
+    await t.test("unresolved trusted deployment state blocks entitlement and commerce", async () => {
+      const states = [
+        {
+          name: "incomplete",
+          serverEnv: { SIDESTREAM_LICENSE_NAMESPACE: "test" },
+        },
+        {
+          name: "contradictory",
+          serverEnv: {
+            SIDESTREAM_LICENSE_NAMESPACE: "test",
+            VERCEL_ENV: "production",
+            SIDESTREAM_TEST_API_HOSTS: "test.sidestream.invalid",
+            SIDESTREAM_TEST_POSTGRES_URL:
+              "postgresql://postgres@127.0.0.1:55439/sidestream_test",
+            SIDESTREAM_POSTGRES_URL:
+              "postgresql://postgres@127.0.0.1:55439/sidestream_production_sentinel",
+          },
+        },
+      ];
+      for (const state of states) {
+        runtime.stub.reset();
+        let commerceQueries = 0;
+        await assert.rejects(
+          runtime.stripeEvents.reconcileStripeEvent(
+            stripeEvent(
+              `evt_environment_${state.name}`,
+              "checkout.session.completed",
+              1_700_004_800,
+              {
+                id: `cs_environment_${state.name}`,
+                mode: "payment",
+                payment_status: "paid",
+                amount_total: 100,
+                currency: "usd",
+                metadata: { sidestream_plan: "sidestream_pro" },
+              },
+            ),
+            async () => {
+              commerceQueries += 1;
+              return { rows: [] };
+            },
+            state.serverEnv,
+          ),
+          (error) => {
+            assert.equal(error.code, "commerce_environment_unresolved");
+            return true;
+          },
+          state.name,
+        );
+        assert.equal(commerceQueries, 0, state.name);
+        assert.deepEqual(runtime.stub.calls, [], state.name);
+      }
     });
 
     await t.test("subscription reconciliation uses canonical Stripe truth and event ordering", async () => {
