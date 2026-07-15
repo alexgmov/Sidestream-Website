@@ -273,7 +273,9 @@ test("Customer 360 attachment is atomic, convergent, conflict-audited, and names
     });
 
     const stable = await findInstall(pool, quotedSchema, "test", "1".repeat(64));
-    const accountA = await seedVerifiedAccount(pool, quotedSchema, "a");
+    const accountA = await seedVerifiedAccount(pool, quotedSchema, "a", {
+      duplicateLicenseCustomer: true,
+    });
 
     await t.test("verified server rows materialize contact and purchase evidence", async () => {
       const result = await attachCommitted(pool, identity, {
@@ -298,7 +300,8 @@ test("Customer 360 attachment is atomic, convergent, conflict-audited, and names
       const values = await identityValues(pool, quotedSchema, stable.profile_id);
       for (const expected of [
         ["account_identity", accountA.id],
-        ["stripe_customer", accountA.stripeCustomerId],
+        ["stripe_customer", accountA.accountStripeCustomerId],
+        ["stripe_customer", accountA.licenseStripeCustomerId],
         ["stripe_checkout_session", accountA.checkoutSessionId],
         ["stripe_payment_intent", accountA.paymentIntentId],
         ["stripe_subscription", accountA.subscriptionId],
@@ -310,6 +313,28 @@ test("Customer 360 attachment is atomic, convergent, conflict-audited, and names
           expected.join(":"),
         );
       }
+      const duplicateLicenseRows = await pool.query(
+        `
+          select count(*)::int as count
+          from ${quotedSchema}.sidestream_licenses
+          where account_id = $1 and stripe_customer_id = $2
+        `,
+        [accountA.id, accountA.licenseStripeCustomerId],
+      );
+      assert.equal(duplicateLicenseRows.rows[0].count, 2);
+      assert.deepEqual(
+        values.filter((row) => row.link_type === "stripe_customer"),
+        [
+          {
+            link_type: "stripe_customer",
+            link_value: accountA.accountStripeCustomerId,
+          },
+          {
+            link_type: "stripe_customer",
+            link_value: accountA.licenseStripeCustomerId,
+          },
+        ],
+      );
       assert.ok(values.every((row) => row.link_value !== "attacker@example.com"));
       assert.ok(values.every((row) => row.link_value !== "campaign-not-identity"));
     });
@@ -338,7 +363,8 @@ test("Customer 360 attachment is atomic, convergent, conflict-audited, and names
       );
       for (const rejectedValue of [
         accountB.id,
-        accountB.stripeCustomerId,
+        accountB.accountStripeCustomerId,
+        accountB.licenseStripeCustomerId,
         accountB.checkoutSessionId,
         accountB.paymentIntentId,
         accountB.subscriptionId,
@@ -410,7 +436,8 @@ test("Customer 360 attachment is atomic, convergent, conflict-audited, and names
       assert.equal(profile.display_name, winner.displayName);
       for (const rejectedValue of [
         loser.id,
-        loser.stripeCustomerId,
+        loser.accountStripeCustomerId,
+        loser.licenseStripeCustomerId,
         loser.checkoutSessionId,
         loser.paymentIntentId,
         loser.subscriptionId,
@@ -581,10 +608,11 @@ async function attachCommitted(pool, identity, options) {
   }
 }
 
-async function seedVerifiedAccount(pool, quotedSchema, label) {
+async function seedVerifiedAccount(pool, quotedSchema, label, options = {}) {
   const email = `${label}@example.com`;
   const displayName = `Verified ${label.toUpperCase()}`;
-  const stripeCustomerId = `cus_identity_${label}`;
+  const accountStripeCustomerId = `cus_identity_account_${label}`;
+  const licenseStripeCustomerId = `cus_identity_license_${label}`;
   const checkoutSessionId = `cs_identity_${label}`;
   const paymentIntentId = `pi_identity_${label}`;
   const subscriptionId = `sub_identity_${label}`;
@@ -595,7 +623,7 @@ async function seedVerifiedAccount(pool, quotedSchema, label) {
       ) values ($1, $2, $3, $4, now(), now())
       returning id
     `,
-    [`google-identity-${label}`, email, displayName, stripeCustomerId],
+    [`google-identity-${label}`, email, displayName, accountStripeCustomerId],
   );
   const id = account.rows[0].id;
   await pool.query(
@@ -606,13 +634,38 @@ async function seedVerifiedAccount(pool, quotedSchema, label) {
         plan_key, status, created_at, updated_at
       ) values ($1, $2, $3, $4, $5, 'sidestream_pro', 'active', now(), now())
     `,
-    [id, stripeCustomerId, subscriptionId, checkoutSessionId, paymentIntentId],
+    [
+      id,
+      licenseStripeCustomerId,
+      subscriptionId,
+      checkoutSessionId,
+      paymentIntentId,
+    ],
   );
+  if (options.duplicateLicenseCustomer) {
+    await pool.query(
+      `
+        insert into ${quotedSchema}.sidestream_licenses (
+          account_id, stripe_customer_id, stripe_subscription_id,
+          stripe_checkout_session_id, stripe_payment_intent_id,
+          plan_key, status, created_at, updated_at
+        ) values ($1, $2, $3, $4, $5, 'sidestream_pro', 'active', now(), now())
+      `,
+      [
+        id,
+        licenseStripeCustomerId,
+        `sub_identity_${label}_duplicate`,
+        `cs_identity_${label}_duplicate`,
+        `pi_identity_${label}_duplicate`,
+      ],
+    );
+  }
   return {
     id,
     email,
     displayName,
-    stripeCustomerId,
+    accountStripeCustomerId,
+    licenseStripeCustomerId,
     checkoutSessionId,
     paymentIntentId,
     subscriptionId,

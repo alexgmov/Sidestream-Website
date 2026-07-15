@@ -171,6 +171,286 @@ test("single-device entitlement transactions hold in disposable Postgres", {
       ]);
     });
 
+    await t.test("CRM identity on account paths cannot change device or entitlement decisions", async () => {
+      const anchor = await seedAccount(databasePool, schema);
+      const anchorActivation = await seedActivation(databasePool, schema, anchor, {
+        deviceId: "identity-anchor-device",
+        appVersion: "1.0.14",
+      });
+      const conflictingInstallHashes = ["a", "b", "c", "d"].map((value) =>
+        value.repeat(64)
+      );
+      for (const installIdHash of conflictingInstallHashes) {
+        assert.deepEqual(
+          await accountModule.claimActivationToAccount(
+            anchorActivation.activationKey,
+            anchor.accountId,
+            { environment: production, identity: { installIdHash } },
+          ),
+          { claimed: true },
+        );
+      }
+
+      const fixture = await seedAccount(databasePool, schema, {
+        features: { identityProofPolicy: "must-remain-unchanged" },
+      });
+      const activation = await seedActivation(databasePool, schema, fixture, {
+        deviceId: "identity-proof-device",
+        appVersion: "1.0.14",
+      });
+      const associatedInstallHashes = ["5", "6", "7", "8"].map((value) =>
+        value.repeat(64)
+      );
+
+      const claimWithoutIdentity = await accountModule.claimActivationToAccount(
+        activation.activationKey,
+        fixture.accountId,
+        { environment: production },
+      );
+      const claimProtectedState = await snapshotIdentityProtectedState(
+        databasePool,
+        schema,
+        fixture.accountId,
+        activation.activationId,
+      );
+      const claimWithIdentity = await accountModule.claimActivationToAccount(
+        activation.activationKey,
+        fixture.accountId,
+        {
+          environment: production,
+          identity: { installIdHash: associatedInstallHashes[0] },
+        },
+      );
+      assert.deepEqual(claimWithIdentity, claimWithoutIdentity);
+      assert.deepEqual(
+        await snapshotIdentityProtectedState(
+          databasePool,
+          schema,
+          fixture.accountId,
+          activation.activationId,
+        ),
+        claimProtectedState,
+      );
+      let reviewCount = await customerIdentityReviewCount(databasePool, schema);
+      let identityState = await snapshotCustomerIdentityState(databasePool, schema);
+      const claimWithConflict = await accountModule.claimActivationToAccount(
+        activation.activationKey,
+        fixture.accountId,
+        {
+          environment: production,
+          identity: { installIdHash: conflictingInstallHashes[0] },
+        },
+      );
+      assert.deepEqual(claimWithConflict, claimWithoutIdentity);
+      assert.deepEqual(
+        await snapshotIdentityProtectedState(
+          databasePool,
+          schema,
+          fixture.accountId,
+          activation.activationId,
+        ),
+        claimProtectedState,
+      );
+      assert.deepEqual(
+        await snapshotCustomerIdentityState(databasePool, schema),
+        identityState,
+      );
+      assert.equal(await customerIdentityReviewCount(databasePool, schema), ++reviewCount);
+
+      const statusWithoutIdentity = await accountModule.getActivationStatus(
+        activation.activationKey,
+        "identity-proof-device",
+        { skipReconciliation: true, environment: production, platform: "macos" },
+      );
+      assert.equal(statusWithoutIdentity.status, "active");
+      const statusProtectedState = await snapshotIdentityProtectedState(
+        databasePool,
+        schema,
+        fixture.accountId,
+        activation.activationId,
+      );
+      const statusWithIdentity = await accountModule.getActivationStatus(
+        activation.activationKey,
+        "identity-proof-device",
+        {
+          skipReconciliation: true,
+          environment: production,
+          platform: "macos",
+          identity: { installIdHash: associatedInstallHashes[1] },
+        },
+      );
+      assert.deepEqual(statusWithIdentity, statusWithoutIdentity);
+      assert.deepEqual(
+        await snapshotIdentityProtectedState(
+          databasePool,
+          schema,
+          fixture.accountId,
+          activation.activationId,
+        ),
+        statusProtectedState,
+      );
+      identityState = await snapshotCustomerIdentityState(databasePool, schema);
+      const statusWithConflict = await accountModule.getActivationStatus(
+        activation.activationKey,
+        "identity-proof-device",
+        {
+          skipReconciliation: true,
+          environment: production,
+          platform: "macos",
+          identity: { installIdHash: conflictingInstallHashes[1] },
+        },
+      );
+      assert.deepEqual(statusWithConflict, statusWithoutIdentity);
+      assert.deepEqual(
+        await snapshotIdentityProtectedState(
+          databasePool,
+          schema,
+          fixture.accountId,
+          activation.activationId,
+        ),
+        statusProtectedState,
+      );
+      assert.deepEqual(
+        await snapshotCustomerIdentityState(databasePool, schema),
+        identityState,
+      );
+      assert.equal(await customerIdentityReviewCount(databasePool, schema), ++reviewCount);
+
+      const verifyWithoutIdentity = await accountModule.verifyLicenseToken(
+        statusWithoutIdentity.licenseToken,
+        "identity-proof-device",
+        production,
+      );
+      const verifyProtectedState = await snapshotIdentityProtectedState(
+        databasePool,
+        schema,
+        fixture.accountId,
+        activation.activationId,
+      );
+      const verifyWithIdentity = await accountModule.verifyLicenseToken(
+        statusWithoutIdentity.licenseToken,
+        "identity-proof-device",
+        production,
+        { installIdHash: associatedInstallHashes[2] },
+      );
+      assert.deepEqual(verifyWithIdentity, verifyWithoutIdentity);
+      assert.deepEqual(
+        await snapshotIdentityProtectedState(
+          databasePool,
+          schema,
+          fixture.accountId,
+          activation.activationId,
+        ),
+        verifyProtectedState,
+      );
+      identityState = await snapshotCustomerIdentityState(databasePool, schema);
+      const verifyWithConflict = await accountModule.verifyLicenseToken(
+        statusWithoutIdentity.licenseToken,
+        "identity-proof-device",
+        production,
+        { installIdHash: conflictingInstallHashes[2] },
+      );
+      assert.deepEqual(verifyWithConflict, verifyWithoutIdentity);
+      assert.deepEqual(
+        await snapshotIdentityProtectedState(
+          databasePool,
+          schema,
+          fixture.accountId,
+          activation.activationId,
+        ),
+        verifyProtectedState,
+      );
+      assert.deepEqual(
+        await snapshotCustomerIdentityState(databasePool, schema),
+        identityState,
+      );
+      assert.equal(await customerIdentityReviewCount(databasePool, schema), ++reviewCount);
+
+      const refreshWithoutIdentity = await accountModule.refreshLicenseToken(
+        statusWithoutIdentity.refreshToken,
+        "identity-proof-device",
+        production,
+      );
+      const refreshProtectedState = await snapshotIdentityProtectedState(
+        databasePool,
+        schema,
+        fixture.accountId,
+        activation.activationId,
+      );
+      const refreshWithIdentity = await accountModule.refreshLicenseToken(
+        statusWithoutIdentity.refreshToken,
+        "identity-proof-device",
+        production,
+        { installIdHash: associatedInstallHashes[3] },
+      );
+      assert.deepEqual(refreshWithIdentity, refreshWithoutIdentity);
+      assert.deepEqual(
+        await snapshotIdentityProtectedState(
+          databasePool,
+          schema,
+          fixture.accountId,
+          activation.activationId,
+        ),
+        refreshProtectedState,
+      );
+      identityState = await snapshotCustomerIdentityState(databasePool, schema);
+      const refreshWithConflict = await accountModule.refreshLicenseToken(
+        statusWithoutIdentity.refreshToken,
+        "identity-proof-device",
+        production,
+        { installIdHash: conflictingInstallHashes[3] },
+      );
+      assert.deepEqual(refreshWithConflict, refreshWithoutIdentity);
+      assert.deepEqual(
+        await snapshotIdentityProtectedState(
+          databasePool,
+          schema,
+          fixture.accountId,
+          activation.activationId,
+        ),
+        refreshProtectedState,
+      );
+      assert.deepEqual(
+        await snapshotCustomerIdentityState(databasePool, schema),
+        identityState,
+      );
+      assert.equal(await customerIdentityReviewCount(databasePool, schema), ++reviewCount);
+
+      const reviews = await databasePool.query(
+        `
+          select attachment_source, evidence_type, evidence_trust, review_state
+          from ${quotedSchema}.sidestream_customer_identity_reviews
+          order by attachment_source
+        `,
+      );
+      assert.deepEqual(reviews.rows, [
+        {
+          attachment_source: "activation_claim",
+          evidence_type: "install_identity_hash",
+          evidence_trust: "client_association",
+          review_state: "pending_review",
+        },
+        {
+          attachment_source: "activation_status",
+          evidence_type: "install_identity_hash",
+          evidence_trust: "client_association",
+          review_state: "pending_review",
+        },
+        {
+          attachment_source: "license_refresh",
+          evidence_type: "install_identity_hash",
+          evidence_trust: "client_association",
+          review_state: "pending_review",
+        },
+        {
+          attachment_source: "license_verify",
+          evidence_type: "install_identity_hash",
+          evidence_trust: "client_association",
+          review_state: "pending_review",
+        },
+      ]);
+    });
+
     let primaryFixture;
     let initialCredentials;
     await t.test("concurrent status polling makes one idempotent initial claim", async () => {
@@ -1218,6 +1498,140 @@ async function licenseFeatures(pool, schema, licenseId) {
     [licenseId],
   );
   return result.rows[0].features;
+}
+
+async function snapshotIdentityProtectedState(
+  pool,
+  schema,
+  accountId,
+  activationId,
+) {
+  const quotedSchema = quoteIdentifier(schema);
+  const [account, devices, transfers, credentials, licenses, activation] =
+    await Promise.all([
+      pool.query(
+        `
+          select id, email, display_name, stripe_customer_id
+          from ${quotedSchema}.sidestream_accounts
+          where id = $1
+        `,
+        [accountId],
+      ),
+      pool.query(
+        `
+          select id, license_namespace, device_id_hash, platform, app_version,
+            build_channel, revoked_at is not null as revoked, revocation_reason
+          from ${quotedSchema}.sidestream_account_devices
+          where account_id = $1
+          order by activated_at, id
+        `,
+        [accountId],
+      ),
+      pool.query(
+        `
+          select id, license_namespace, from_device_id, to_device_id,
+            initiated_by, transfer_reason
+          from ${quotedSchema}.sidestream_device_transfers
+          where account_id = $1
+          order by transferred_at, id
+        `,
+        [accountId],
+      ),
+      pool.query(
+        `
+          select id, license_id, activation_session_id, device_id_hash,
+            token_hash, refresh_token_hash, previous_refresh_token_hash,
+            revoked_at is not null as revoked
+          from ${quotedSchema}.sidestream_license_tokens
+          where account_id = $1
+          order by created_at, id
+        `,
+        [accountId],
+      ),
+      pool.query(
+        `
+          select id, plan_key, status, entitlement_status, status_reason,
+            revoked_at is not null as revoked, features
+          from ${quotedSchema}.sidestream_licenses
+          where account_id = $1
+          order by created_at, id
+        `,
+        [accountId],
+      ),
+      pool.query(
+        `
+          select id, account_id, license_id, device_id_hash, status,
+            completed_at is not null as completed
+          from ${quotedSchema}.sidestream_activation_sessions
+          where id = $1
+        `,
+        [activationId],
+      ),
+    ]);
+  return {
+    policyMode: process.env.SIDESTREAM_DEVICE_POLICY_MODE,
+    account: account.rows,
+    devices: devices.rows,
+    deviceGeneration: devices.rows.length,
+    activeDeviceBindings: devices.rows.filter((row) => !row.revoked).length,
+    transfers: transfers.rows,
+    transferCount: transfers.rows.length,
+    credentials: credentials.rows,
+    credentialGeneration: credentials.rows.length,
+    liveCredentialCount: credentials.rows.filter((row) => !row.revoked).length,
+    licenses: licenses.rows,
+    activation: activation.rows,
+  };
+}
+
+async function snapshotCustomerIdentityState(pool, schema) {
+  const quotedSchema = quoteIdentifier(schema);
+  const [profiles, links, installs, merges] = await Promise.all([
+    pool.query(
+      `
+        select id, license_namespace, merged_into, contact_email, display_name,
+          platform_summary, app_version_summary, download_success_count,
+          download_failure_count, entitlement_status
+        from ${quotedSchema}.sidestream_customer_profiles
+        order by id
+      `,
+    ),
+    pool.query(
+      `
+        select profile_id, license_namespace, link_type, link_value
+        from ${quotedSchema}.sidestream_customer_identity_links
+        order by profile_id, link_type, link_value
+      `,
+    ),
+    pool.query(
+      `
+        select profile_id, license_namespace, install_id_hash, platform, app_version
+        from ${quotedSchema}.sidestream_customer_installs
+        order by profile_id, install_id_hash
+      `,
+    ),
+    pool.query(
+      `
+        select source_profile_id, target_profile_id, license_namespace,
+          merge_evidence_type, merge_evidence_value_hash, initiated_by
+        from ${quotedSchema}.sidestream_customer_profile_merges
+        order by source_profile_id
+      `,
+    ),
+  ]);
+  return {
+    profiles: profiles.rows,
+    links: links.rows,
+    installs: installs.rows,
+    merges: merges.rows,
+  };
+}
+
+async function customerIdentityReviewCount(pool, schema) {
+  const result = await pool.query(
+    `select count(*)::int as count from ${quoteIdentifier(schema)}.sidestream_customer_identity_reviews`,
+  );
+  return result.rows[0].count;
 }
 
 function privateIdentifierHash(value) {
