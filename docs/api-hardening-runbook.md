@@ -726,7 +726,246 @@ credentials.
    Vercel plan supports the declared cron frequencies. Inventory the Production
    pooled URL, pool budget, `CRON_SECRET`, rate/lead/installer HMAC values, Stripe
    live signing secret and exact Product/Price/legacy allowlists, retention
-   values, and license environment without printing values. The legacy audit
+   values, and license environment without printing values.
+
+   The one-time Pro catalog is a separate pre-mutation gate; the recurring legacy
+   proof below is not a substitute. Independently prepare
+   `/secure/prod-pro-catalog.json` with the exact approved live IDs:
+
+   ```json
+   {
+     "productId": "prod_...",
+     "priceId": "price_..."
+   }
+   ```
+
+   Rematerialize mode-`0600` `/secure/prod-pro.env` with the live
+   `STRIPE_SECRET_KEY` and only the runtime selectors that are actually configured:
+   `SIDESTREAM_PRO_PRODUCT_ID`, `SIDESTREAM_PRO_PRICE_ID`, and/or
+   `SIDESTREAM_UNLIMITED_PRICE_ID`. The action below must run successfully here,
+   before every later Production action marker, and its retained proof must be
+   reasserted immediately before promotion in step 10.5. This documentation change
+   did not run it or call live Stripe.
+
+   <!-- ACTION: VERIFY-LIVE-PRO-CATALOG -->
+
+   ```bash
+   (
+     set -euo pipefail
+     set +x
+     umask 077
+     export EXPECTED_STRIPE_ACCOUNT_ID='<approved acct_...>'
+     export EXPECTED_PRO_CATALOG='/secure/prod-pro-catalog.json'
+     export EXPECTED_PRO_CATALOG_SHA256='<approved sha256>'
+     export PRO_CATALOG_EVIDENCE_DIR='<fresh absolute access-controlled evidence directory>'
+     test -n "$EXPECTED_STRIPE_ACCOUNT_ID"
+     test -s "$EXPECTED_PRO_CATALOG"
+     [[ "$EXPECTED_PRO_CATALOG_SHA256" =~ ^[0-9a-f]{64}$ ]]
+     test -n "$PRO_CATALOG_EVIDENCE_DIR"
+     test "${PRO_CATALOG_EVIDENCE_DIR#/}" != "$PRO_CATALOG_EVIDENCE_DIR"
+     test "$(stat -f '%Lp' /secure/prod-pro.env)" = '600'
+     mkdir -p "$PRO_CATALOG_EVIDENCE_DIR"
+     test -z "$(find "$PRO_CATALOG_EVIDENCE_DIR" -mindepth 1 -maxdepth 1 -print -quit)"
+     env -i PATH="$PATH" HOME="$HOME" \
+       EXPECTED_STRIPE_ACCOUNT_ID="$EXPECTED_STRIPE_ACCOUNT_ID" \
+       EXPECTED_PRO_CATALOG="$EXPECTED_PRO_CATALOG" \
+       EXPECTED_PRO_CATALOG_SHA256="$EXPECTED_PRO_CATALOG_SHA256" \
+       node --env-file=/secure/prod-pro.env --input-type=module \
+       > "$PRO_CATALOG_EVIDENCE_DIR/live-pro-catalog.json" <<'NODE'
+   import { createHash } from "node:crypto";
+   import { readFile } from "node:fs/promises";
+   import Stripe from "stripe";
+
+   const DEFAULT_PRODUCT_ID = "prod_UpwXh6oO1OmPyQ";
+   const DEFAULT_PRICE_ID = "";
+   const LOOKUP_KEY = "sidestream_pro_once_999";
+   const expectedBytes = await readFile(process.env.EXPECTED_PRO_CATALOG);
+   const expectedCatalogSha256 = createHash("sha256").update(expectedBytes).digest("hex");
+   if (expectedCatalogSha256 !== process.env.EXPECTED_PRO_CATALOG_SHA256) {
+     throw new Error("Approved Pro catalog checksum mismatch");
+   }
+   const expected = JSON.parse(expectedBytes.toString("utf8"));
+   if (Object.keys(expected).sort().join(",") !== "priceId,productId" ||
+       !/^prod_[A-Za-z0-9]+$/.test(expected.productId) ||
+       !/^price_[A-Za-z0-9]+$/.test(expected.priceId)) {
+     throw new Error("Expected Pro catalog must contain only exact Product and Price IDs");
+   }
+   const optionalId = (name, pattern) => {
+     const value = process.env[name]?.trim() || "";
+     if (value && !pattern.test(value)) throw new Error(`Malformed ${name}`);
+     return value;
+   };
+   const configuredProductId = optionalId(
+     "SIDESTREAM_PRO_PRODUCT_ID", /^prod_[A-Za-z0-9]+$/,
+   );
+   const configuredPriceId = optionalId(
+     "SIDESTREAM_PRO_PRICE_ID", /^price_[A-Za-z0-9]+$/,
+   );
+   const compatibleUnlimitedPriceId = optionalId(
+     "SIDESTREAM_UNLIMITED_PRICE_ID", /^price_[A-Za-z0-9]+$/,
+   );
+   const productId = configuredProductId || DEFAULT_PRODUCT_ID;
+   if (productId !== expected.productId) {
+     throw new Error("Configured/default Pro Product ID does not match approval");
+   }
+   const stripeKey = process.env.STRIPE_SECRET_KEY?.trim() || "";
+   if (!stripeKey.startsWith("sk_live_")) throw new Error("Expected a live Stripe key");
+   const stripe = new Stripe(stripeKey);
+   const account = await stripe.accounts.retrieve();
+   if (account.id !== process.env.EXPECTED_STRIPE_ACCOUNT_ID) {
+     throw new Error("Stripe account mismatch");
+   }
+   const product = await stripe.products.retrieve(productId, {
+     expand: ["default_price"],
+   });
+   if (product.id !== expected.productId || product.object !== "product" ||
+       product.livemode !== true || product.active !== true ||
+       "deleted" in product) {
+     throw new Error("Live Pro Product contract mismatch");
+   }
+   const normalizeProductId = (price) =>
+     typeof price?.product === "string" ? price.product : price?.product?.id;
+   const hasExactShape = (price) => Boolean(
+     price?.object === "price" &&
+     price.livemode === true &&
+     price.active === true &&
+     normalizeProductId(price) === productId &&
+     price.type === "one_time" &&
+     price.recurring == null &&
+     price.currency === "usd" &&
+     price.unit_amount === 999
+   );
+   const missingResource = (error) =>
+     error?.code === "resource_missing" || error?.raw?.code === "resource_missing";
+   const retrievePrice = (id) => stripe.prices.retrieve(id);
+   let selectedPrice = null;
+   let selectionBranch = "";
+
+   // Mirror runtime precedence exactly. An explicit Pro Price is fail-closed.
+   if (configuredPriceId) {
+     const price = await retrievePrice(configuredPriceId);
+     if (!hasExactShape(price)) {
+       throw new Error("Configured SIDESTREAM_PRO_PRICE_ID has the wrong live Pro shape");
+     }
+     selectedPrice = price;
+     selectionBranch = "SIDESTREAM_PRO_PRICE_ID";
+   }
+
+   // The runtime code default Price ID is currently empty, but retains precedence.
+   if (!selectedPrice && DEFAULT_PRICE_ID) {
+     const price = await retrievePrice(DEFAULT_PRICE_ID);
+     if (hasExactShape(price)) {
+       selectedPrice = price;
+       selectionBranch = "code default Price ID";
+     }
+   }
+
+   // The Unlimited selector is compatible only when its Price has the exact shape.
+   if (!selectedPrice && compatibleUnlimitedPriceId) {
+     try {
+       const price = await retrievePrice(compatibleUnlimitedPriceId);
+       if (hasExactShape(price)) {
+         selectedPrice = price;
+         selectionBranch = "SIDESTREAM_UNLIMITED_PRICE_ID";
+       }
+     } catch (error) {
+       if (!missingResource(error)) throw error;
+     }
+   }
+
+   if (!selectedPrice && product.default_price) {
+     let price = product.default_price;
+     if (typeof price === "string") {
+       try {
+         price = await retrievePrice(price);
+       } catch (error) {
+         if (!missingResource(error)) throw error;
+         price = null;
+       }
+     }
+     if (hasExactShape(price)) {
+       selectedPrice = price;
+       selectionBranch = "expanded Product default_price";
+     }
+   }
+
+   if (!selectedPrice) {
+     const lookupPrices = await stripe.prices.list({
+       active: true,
+       lookup_keys: [LOOKUP_KEY],
+       product: productId,
+       limit: 10,
+     });
+     const match = lookupPrices.data.find((price) =>
+       price.lookup_key === LOOKUP_KEY && hasExactShape(price));
+     if (match) {
+       selectedPrice = match;
+       selectionBranch = "sidestream_pro_once_999 lookup key";
+     } else if (lookupPrices.data[0]) {
+       throw new Error("sidestream_pro_once_999 resolves to an incompatible Price");
+     }
+   }
+
+   if (!selectedPrice) {
+     const productPrices = await stripe.prices.list({
+       active: true,
+       product: productId,
+       limit: 100,
+     });
+     selectedPrice = productPrices.data.find(hasExactShape) || null;
+     if (selectedPrice) selectionBranch = "other active matching Product Price";
+   }
+
+   if (!selectedPrice) {
+     throw new Error("No approved live Pro Price; blocked before runtime create fallback");
+   }
+   const price = await stripe.prices.retrieve(selectedPrice.id);
+   if (price.id !== expected.priceId || !hasExactShape(price) ||
+       (selectionBranch === "sidestream_pro_once_999 lookup key" &&
+        price.lookup_key !== LOOKUP_KEY)) {
+     throw new Error("Selected live Pro Price ID or shape does not match approval");
+   }
+   console.log(JSON.stringify({
+     stripeAccountId: account.id,
+     productId: product.id,
+     priceId: price.id,
+     selectionBranch,
+     productLivemode: product.livemode,
+     productActive: product.active,
+     priceLivemode: price.livemode,
+     priceActive: price.active,
+     priceProductId: normalizeProductId(price),
+     priceType: price.type,
+     recurring: price.recurring,
+     currency: price.currency,
+     unitAmount: price.unit_amount,
+     expectedCatalogSha256,
+   }));
+   NODE
+     shasum -a 256 "$PRO_CATALOG_EVIDENCE_DIR/live-pro-catalog.json" \
+       > "$PRO_CATALOG_EVIDENCE_DIR/live-pro-catalog.json.sha256"
+     test -s "$PRO_CATALOG_EVIDENCE_DIR/live-pro-catalog.json"
+     test -s "$PRO_CATALOG_EVIDENCE_DIR/live-pro-catalog.json.sha256"
+     cat "$PRO_CATALOG_EVIDENCE_DIR/live-pro-catalog.json"
+     cat "$PRO_CATALOG_EVIDENCE_DIR/live-pro-catalog.json.sha256"
+   )
+   ```
+
+   This proof fails closed on the exact approved IDs, wrong account/mode, missing
+   or inactive resources, bad linkage, a recurring Price, non-USD currency, or an
+   amount other than 999 cents. It never creates a Product or Price and stops
+   before the runtime's create fallback. Retain the non-secret JSON, its `sha256`,
+   the expected-catalog checksum, and the mode-`0600` secret-file version/hash in
+   access-controlled evidence. Any missing proof blocks every later Production
+   action, including legacy audit/apply, staging, WAF mutation, maintenance, and
+   migrations. Stripe's primary [Product retrieval](https://docs.stripe.com/api/products/retrieve),
+   [Price retrieval](https://docs.stripe.com/api/prices/retrieve), and
+   [Price listing](https://docs.stripe.com/api/prices/list) contracts define the
+   asserted fields and filters.
+
+   <!-- EVIDENCE: VERIFIED-LIVE-PRO-CATALOG -->
+
+   Separately, the legacy audit
    script retrieves only Product/Price objects referenced by existing database
    subscription rows and silently drops malformed allowlist entries; it is not a
    complete catalog gate. Prepare `/secure/prod-legacy-catalog.json` independently
@@ -1952,6 +2191,24 @@ credentials.
    it was separately reviewed, proved against the compatible current artifact,
    recorded with exact host/path/method/order, and removed before the boundary.
 
+   <!-- ACTION: RUN-PROVISIONAL-HISTORICAL-LIFECYCLE-SCAN -->
+
+   Production remains blocked before maintenance until the separately owned,
+   reviewed, tested, idempotent historical lifecycle tool described at the start
+   of this runbook exists **and this action actually runs it**. No such tool or
+   executable command exists in the current repository; do not substitute an ad
+   hoc query, queue replay, bounded event window, or manual row edit. Run the
+   future tool's provisional complete scan as late as practical after the drain
+   above and before entering maintenance. Retain its inclusive
+   `HISTORICAL_LIFECYCLE_SCAN_WATERMARK`, complete exact-ID/type input manifest and
+   checksum, stable source bounds and source counts, authenticated target
+   evidence, canonical outcomes, before/after states, and every resulting
+   entitlement watermark (`stripe_state_event_created_at` and
+   `stripe_state_event_id`). Freeze those artifacts as inputs to the mandatory
+   post-deny full/delta gate below. If the implementation, authenticated proof,
+   complete manifest, checksum, or watermark evidence is absent, stop before
+   `ENTER-MAINTENANCE`; keyword presence is not proof that this action ran.
+
    <!-- SAFETY: STRIPE-DRAIN-BEFORE-DENY -->
 
    <!-- ACTION: ENTER-MAINTENANCE -->
@@ -1981,11 +2238,13 @@ credentials.
    writes and processors have drained, may the historical lifecycle gate at the
    start of this runbook close. Freeze the complete exact transition-ID manifest,
    then run the separately implemented and Preview/Test-proved historical tool in
-   canonical full-scan or exact manifest-derived delta mode. Its input must cover
-   every refund/dispute lifecycle event through the deny boundary: the provisional
-   scan manifest at `HISTORICAL_LIFECYCLE_SCAN_WATERMARK`, every lifecycle ID in
-   `PREDRAIN_EVENT_IDS`, and every lifecycle ID accepted or observed between that
-   scan and the proved deny/drain. Event-ID ordering or a bounded created-time
+   canonical full-scan or exact manifest-derived delta mode. Its input must consume
+   the retained provisional scan manifest and checksum at
+   `HISTORICAL_LIFECYCLE_SCAN_WATERMARK`, its source bounds/counts, authenticated
+   target, canonical outcomes and resulting entitlement watermarks, every lifecycle
+   ID in `PREDRAIN_EVENT_IDS`, and every lifecycle ID accepted or observed between
+   that scan and the proved deny/drain. It must cover every refund/dispute lifecycle
+   event through the deny boundary. Event-ID ordering or a bounded created-time
    query cannot substitute for the exact set comparison.
 
    Retain the final input manifest/checksum, source counts, authenticated target,
@@ -2090,12 +2349,13 @@ credentials.
        procedure. If neither disposition is approved, do not create the row and
        block cutover. Capture the final disposition after the canary.
 
-    5. Through `env -i` with only `PATH`, `HOME`, approved expected account/resource
-       IDs, and `/secure/prod-stripe-read.env`, first retrieve and assert the exact
-       live Stripe account as in steps 4/11, then read only the configured Product
-       and Price. Require `livemode=true`, active Product and Price, one-time USD
-       999, and exact Product ownership; record only IDs/mode/outcomes. An inherited
-       `STRIPE_SECRET_KEY` is never acceptable. Do not call
+    5. Rematerialize the mode-`0600` Pro read environment and rerun step 4's exact
+       `VERIFY-LIVE-PRO-CATALOG` action from `env -i`. Recompute the retained
+       evidence checksum and require the same approved Stripe account, exact
+       Product/Price IDs, selector branch, expected-catalog SHA-256, `livemode=true`,
+       active state, Price-to-Product linkage, one-time USD 999 shape, and non-secret
+       outcomes. The reassertion is mandatory but does not replace the pre-mutation
+       proof. An inherited `STRIPE_SECRET_KEY` is never acceptable. Do not call
        `GET /api/checkout/start`, activation status, or any other production
        maintenance smoke: Checkout start inserts an intent, while activation
        status can reconcile payment or issue credentials. Do not run a test-mode
