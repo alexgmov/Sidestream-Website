@@ -13,6 +13,15 @@ application-rollback procedure. It supersedes the older migration/cutover prose
 in `docs/single-device-entitlements.md`; use that document only for device-domain
 behavior, privacy, and support actions.
 
+That routing statement does not make the older file safe by itself. The current
+`docs/single-device-entitlements.md` still calls itself a cutover runbook, falsely
+says the migration runner has no ledger, and gives a one-file `psql` production
+procedure. This docs-remediation step is not allowed to edit that file. Production
+mutation is therefore blocked until a separately owned change replaces its stale
+cutover section with an in-document supersession notice and a link here. An
+operator opening the stale file directly must not be expected to discover a
+warning in some other document.
+
 ## Contract at a glance
 
 - Public reads and redirects remain server-owned. Runtime handlers never run
@@ -32,9 +41,11 @@ behavior, privacy, and support actions.
   and run retention maintenance.
 - The repository does not currently contain a production maintenance rule,
   operator WAF bypass, per-job cron kill switch, Stripe dead-letter reset/replay
-  tool, or qualified runtime-distinct rollback artifact. Every one is treated
-  below as a control to prove or an explicit pre-production blocker, never as an
-  existing capability.
+  tool, qualified runtime-distinct rollback artifact, failed-refund recovery
+  transition, or complete current-dispute-status mapping. The stale alternate
+  cutover document also remains executable. Every one is treated below as a
+  control to prove or an explicit pre-production blocker, never as an existing
+  capability.
 
 ## HTTP and release contract
 
@@ -161,25 +172,46 @@ move revokes the previous device and is bounded to three moves in a rolling 30
 days. See `docs/single-device-entitlements.md` for support actions and privacy
 rules.
 
-### Canonical entitlement states
+### Current entitlement transitions and unresolved blockers
 
 Only `entitlement_status=active` with plan `sidestream_pro` or the compatible
 `sidestream_unlimited` is paid access.
 
-| Stripe fact | Canonical result | Credential effect |
+The following table describes current code; it is not yet complete canonical
+Stripe truth and must not be used to approve production cutover:
+
+| Stripe fact | Current result | Credential effect / limitation |
 | --- | --- | --- |
 | Exact one-time payment paid | `active / payment_paid` | May issue credentials |
 | Partial refund | `active / partial_refund` | Remains active |
-| Full refund | `revoked / full_refund` | Revoke credentials; later stale Checkout cannot resurrect |
-| Dispute opened | `suspended / dispute_open` | Revoke credentials while disputed |
-| Dispute won | `active / dispute_won` | May reactivate from canonical facts |
-| Dispute lost | `revoked / dispute_lost` | Permanently revoked |
+| Full refund | `revoked / full_refund` | Irreversible in current code; later Checkout or a failed-refund update cannot restore access |
+| `warning_needs_response`, `warning_under_review`, `needs_response`, or `under_review` dispute | `suspended / dispute_open` | Conservative suspension while inquiry/dispute is open |
+| `warning_closed` or `prevented` dispute | **Incorrectly** `suspended / dispute_open` | Stripe defines these as non-open terminal outcomes, but current code treats every nonempty status other than `won` as open |
+| Dispute won | `active / dispute_won` | May reactivate only when the stored reason is not already irreversible `dispute_lost` |
+| Dispute lost | `revoked / dispute_lost` | Irreversible in current code, including if later canonical Stripe truth reports `won` |
 | Payment not paid | `revoked / payment_not_paid` | No credentials |
 | Unknown or unallowlisted legacy subscription | `unknown` or quarantined `revoked` | No paid access |
 
 The `(stripe_created_at, event_id)` watermark makes lifecycle application
 deterministic under duplicate or out-of-order delivery. Never edit entitlement
 state by hand to jump ahead of that watermark.
+
+Two implementation gaps block production. First, Stripe returns failed refund
+funds to the merchant balance and emits `refund.failed`, but
+`reconcileStripeEvent()` neither subscribes to nor handles that type. The current
+`full_refund` transition and persisted maximum refunded amount are irreversible,
+so later canonical recovery cannot restore access. A separate code-owned change
+must add `refund.failed` handling, tests, and a reviewed recovery transition (or
+obtain explicit business approval for permanent refund-intent revocation plus a
+tested manual customer-recovery procedure). No such approval or procedure exists
+today. Second, Stripe's current Dispute object includes `warning_closed` and
+`prevented` as non-open outcomes, while the current mapper suspends both; it also
+makes `lost` irreversible. A separate change must explicitly map and test every
+current status, or obtain documented approval for a conservative anti-abuse
+policy and its recovery consequences. Until both gaps are resolved and proved in
+Preview/Test, this runbook is not executable in production. Primary contracts:
+[Stripe refunds](https://docs.stripe.com/refunds) and the
+[Stripe Dispute object](https://docs.stripe.com/api/disputes/object).
 
 Legacy subscriptions are fail-closed. Eligibility requires an exact Product in
 `SIDESTREAM_LEGACY_SUBSCRIPTION_PRODUCT_IDS` and exact Price in
@@ -243,19 +275,27 @@ replace or contradict status/checksum evidence.
 
 ### Required Stripe webhook subscriptions
 
-Configure the production endpoint for exactly the implemented lifecycle events:
+After the lifecycle blockers above are fixed and tested, the target production
+endpoint must select exactly the reviewed lifecycle events:
 
 - Checkout completion: `checkout.session.completed`
 - Refund lifecycle: `charge.refunded`, `charge.updated`, `refund.created`,
-  `refund.updated`
+  `refund.updated`, `refund.failed`
 - Dispute lifecycle: `charge.dispute.created`, `charge.dispute.updated`,
   `charge.dispute.closed`
 - Allowlisted legacy subscriptions: `customer.subscription.created`,
   `customer.subscription.updated`, `customer.subscription.deleted`
 
-Do not add an event merely because Stripe offers it. An unimplemented event is
-durably recorded and then ignored; expanding behavior requires code, tests, and
-this contract to change together.
+The current exhaustive switch implements every item above **except**
+`refund.failed`; an unimplemented event is durably recorded and then ignored.
+Do not add that event to the live destination and do not cut over while this gap
+exists. Expanding behavior requires code, tests, endpoint selection, and this
+contract to change together. Stripe's endpoint `enabled_events` is the selection
+for that endpoint, while Workbench Event deliveries show attempts to that
+endpoint; neither is an account-wide event inventory. See the primary
+[Webhook Endpoint object](https://docs.stripe.com/api/webhook_endpoints/object),
+[Workbench overview](https://docs.stripe.com/workbench/overview), and
+[List Events API](https://docs.stripe.com/api/events/list).
 
 ### State machine and retry policy
 
@@ -443,18 +483,31 @@ No gate authorizes secrets or customer data to be copied into this repository.
 Every multi-command shell block below uses exit-on-error; do not remove `set -e`
 or continue a gate after any command, assertion, or evidence write fails.
 
-Every `/secure/prod-direct.env` reference below means a mode-`0600`, ignored,
-command-scoped file materialized by the approved secret manager. It must contain
-the reviewed direct `SIDESTREAM_POSTGRES_URL_NON_POOLING` and only the additional
-values required by that command. Run with `set +x`; never source, print, archive,
-or commit the file. Before each database block, unset every supported Postgres URL
-name so an inherited runtime/Test value cannot outrank the file. The migration
-runner alone loads the path named by `SIDESTREAM_DB_ENV_FILE`. Every other Node
-tool, including `verify-migration-baseline.mjs` and the legacy-subscription audit,
-must receive the file explicitly through Node's `--env-file` (or an independently
-reviewed secret-manager process-injection equivalent). An inline
-`SIDESTREAM_DB_ENV_FILE=...` assignment affects only that one process and never
-supplies a later command.
+Every `/secure/*.env` reference below means a mode-`0600`, ignored,
+command-specific file materialized by the approved secret manager. Use three
+separate files: `/secure/prod-db.env` contains only the reviewed direct
+`SIDESTREAM_POSTGRES_URL_NON_POOLING` plus any command-required database
+TLS/timeout value;
+`/secure/prod-legacy.env` adds only `STRIPE_SECRET_KEY` and the two exact legacy
+allowlists needed by that audit; `/secure/prod-stripe-read.env` contains only the
+live Stripe key for account-level read/reconciliation. None may define
+`SIDESTREAM_ENV_FILE`, `SIDESTREAM_DB_ENV_FILE`, another Postgres URL name, or an
+unrelated application setting. Never source, print, archive, or commit them.
+
+An unset list is not isolation. The migration runner loads
+`SIDESTREAM_ENV_FILE` before `SIDESTREAM_DB_ENV_FILE` and refuses to replace an
+already populated value; Node's `--env-file` likewise leaves an inherited value
+in place. Every database or live-Stripe command below therefore starts with
+`env -i` and passes only an explicit allowlist such as `PATH`, `HOME`, a required
+output path, reviewed non-secret expected identities, and one env-file selector.
+Do not add inherited proxy, runtime, Test, Postgres, Stripe, or legacy-allowlist
+variables for convenience. A reviewed secret-manager process launcher is an
+acceptable substitute only if it proves the same empty-base/allowlisted contract.
+Run with `set +x`. The identity preflight in step 4 must pass immediately before
+each legacy audit/apply; migration commands must report selection of
+`SIDESTREAM_POSTGRES_URL_NON_POOLING`, and every retained evidence set must bind
+to the approved database-target fingerprint and Stripe account without exposing
+credentials.
 
 1. **Review the release and prove a real fallback.** Pin `RELEASE_SHA` and an
    explicitly reviewed `FALLBACK_SHA`. Inspect API methods, `vercel.json`, the
@@ -493,18 +546,34 @@ supplies a later command.
    `node scripts/assert-no-runtime-ddl.mjs`, and
    `node scripts/validate-vercel-contract.mjs`. Exercise missing/wrong/correct
    cron auth and the signed confirmation POST, Checkout, webhook, activation,
-   authorization, full and partial refund, dispute, and allowlisted legacy
-   subscription lifecycle in Stripe test mode. Require zero dead letters. This
-   Preview/Test target is the only place the cutover procedure proves Stripe
-   test-mode lifecycle; never point test resources at a Production artifact or
-   hostname.
+   authorization, partial/full/failed refund, every current Stripe Dispute status
+   (`warning_needs_response`, `warning_under_review`, `warning_closed`,
+   `needs_response`, `under_review`, `won`, `lost`, and `prevented`), and
+   allowlisted legacy-subscription lifecycle in Stripe test mode. Prove the
+   reviewed recovery consequence of each terminal outcome and require zero dead
+   letters. Current code cannot pass the failed-refund, `warning_closed`, or
+   `prevented` cases, so this gate blocks until the separately owned lifecycle
+   change or approved/tested policy exists. This Preview/Test target is the only
+   place the cutover procedure proves Stripe test-mode lifecycle; never point test
+   resources at a Production artifact or hostname.
 
-3. **Install the permanent lead edge limit.** On Preview first, then Production,
-   install a Vercel WAF rule for exact `POST /api/download-lead` by source IP no
-   looser than 20 requests per 10 minutes, or the closest stricter supported
-   window. Prove database-outage rejection on Preview; verify the identical rule
-   match in Production without taking Production Postgres offline. Keep it after
-   cutover; the otherwise-valid Blob fallback cannot consume the database limiter.
+3. **Install the permanent lead edge limit.** Vercel WAF rate-limit counters are
+   per region. A source reaching multiple regions can exceed one configured
+   regional counter in aggregate, so a `20 requests / 10 minutes / IP` WAF rule
+   is not a global 20-request bound. Before relying on Blob fallback, the security
+   owner must inventory and cap the reachable region set `R`, choose a reviewed
+   regional limit `L` no greater than 20, record the accepted aggregate exposure
+   (`L * R` plus documented edge-counter reconciliation risk), and prove the
+   database-outage behavior with concurrent multi-region Preview traffic. If the
+   product requires a hard global 20-per-IP bound, or `R` cannot be capped and
+   proved, implement and test a durable shared fallback limiter instead. This
+   docs step establishes neither an approved `L/R` exposure nor a shared limiter,
+   so the gate is currently unsatisfied and production mutation is blocked. Only
+   after approval, install the exact `POST /api/download-lead` rule on Preview and
+   Production, verify its match without taking Production Postgres offline, and
+   retain it after cutover. See Vercel's primary
+   [WAF rate-limiting contract](https://vercel.com/docs/vercel-firewall/vercel-waf/rate-limiting)
+   and [per-region counter limitation](https://vercel.com/i/rate-limiting-algorithms).
 
 4. **Freeze Production configuration and license-hash continuity.** Confirm the
    Vercel plan supports the declared cron frequencies. Inventory the Production
@@ -512,20 +581,106 @@ supplies a later command.
    live signing secret and exact Product/Price/legacy allowlists, retention
    values, and license environment without printing values. Run the legacy
    subscription audit read-only with both allowlists empty, review every live
-   Product and Price, configure exact IDs, and rerun read-only:
+   Product and Price, configure exact IDs, and rerun read-only. Before each audit,
+   set the four `EXPECTED_*` values below from an independently approved inventory
+   and run this clean-environment preflight. The database fingerprint is SHA-256
+   of lowercase host, explicit/effective port, and decoded database name; the
+   expected value and Stripe account/Product/Price IDs are evidence, not secrets:
 
    ```bash
    (
      set -e
      set +x
-     unset SIDESTREAM_POSTGRES_URL_NON_POOLING POSTGRES_URL_NON_POOLING \
-       SIDESTREAM_TEST_POSTGRES_URL SIDESTREAM_POSTGRES_URL POSTGRES_URL \
-       SIDESTREAM_POSTGRES_PRISMA_URL POSTGRES_PRISMA_URL
-     node --env-file=/secure/prod-direct.env \
+     export EXPECTED_PROD_DB_TARGET_SHA256='<approved sha256>'
+     export EXPECTED_STRIPE_ACCOUNT_ID='<approved acct_...>'
+     export EXPECTED_LEGACY_PRODUCT_IDS='<approved comma-separated prod_... IDs>'
+     export EXPECTED_LEGACY_PRICE_IDS='<approved comma-separated price_... IDs>'
+     env -i PATH="$PATH" HOME="$HOME" \
+       EXPECTED_PROD_DB_TARGET_SHA256="$EXPECTED_PROD_DB_TARGET_SHA256" \
+       EXPECTED_STRIPE_ACCOUNT_ID="$EXPECTED_STRIPE_ACCOUNT_ID" \
+       EXPECTED_LEGACY_PRODUCT_IDS="$EXPECTED_LEGACY_PRODUCT_IDS" \
+       EXPECTED_LEGACY_PRICE_IDS="$EXPECTED_LEGACY_PRICE_IDS" \
+       node --env-file=/secure/prod-legacy.env --input-type=module <<'NODE'
+   import { createHash } from "node:crypto";
+   import Stripe from "stripe";
+
+   const databaseNames = [
+     "SIDESTREAM_POSTGRES_URL_NON_POOLING", "POSTGRES_URL_NON_POOLING",
+     "SIDESTREAM_TEST_POSTGRES_URL", "SIDESTREAM_POSTGRES_URL",
+     "SIDESTREAM_POSTGRES_PRISMA_URL", "POSTGRES_URL", "POSTGRES_PRISMA_URL",
+   ];
+   const selected = databaseNames.filter((name) => process.env[name]?.trim());
+   if (selected.length !== 1 || selected[0] !== "SIDESTREAM_POSTGRES_URL_NON_POOLING") {
+     throw new Error(`Unexpected database variable selection: ${selected.join(",")}`);
+   }
+   if (process.env.SIDESTREAM_ENV_FILE || process.env.SIDESTREAM_DB_ENV_FILE) {
+     throw new Error("Nested env-file selectors are forbidden");
+   }
+   const url = new URL(process.env.SIDESTREAM_POSTGRES_URL_NON_POOLING.trim());
+   if (!["postgres:", "postgresql:"].includes(url.protocol)) {
+     throw new Error("Direct database URL must use Postgres");
+   }
+   if (url.hostname.includes("pooler") || url.port === "6543" ||
+       url.searchParams.has("pgbouncer") || url.searchParams.has("connection_limit")) {
+     throw new Error("Reviewed legacy target must be non-pooling");
+   }
+   const target = `${url.hostname.toLowerCase()}:${url.port || "5432"}/${
+     decodeURIComponent(url.pathname.replace(/^\//, ""))
+   }`;
+   const targetSha256 = createHash("sha256").update(target).digest("hex");
+   if (targetSha256 !== process.env.EXPECTED_PROD_DB_TARGET_SHA256) {
+     throw new Error("Production database target fingerprint mismatch");
+   }
+   const parseIds = (value, prefix) => {
+     const ids = (value || "").split(",").map((id) => id.trim()).filter(Boolean);
+     if (new Set(ids).size !== ids.length || ids.some((id) => !id.startsWith(prefix))) {
+       throw new Error(`Invalid ${prefix} allowlist`);
+     }
+     return ids.sort();
+   };
+   const products = parseIds(
+     process.env.SIDESTREAM_LEGACY_SUBSCRIPTION_PRODUCT_IDS, "prod_",
+   );
+   const prices = parseIds(
+     process.env.SIDESTREAM_LEGACY_SUBSCRIPTION_PRICE_IDS, "price_",
+   );
+   const expectedProducts = parseIds(process.env.EXPECTED_LEGACY_PRODUCT_IDS, "prod_");
+   const expectedPrices = parseIds(process.env.EXPECTED_LEGACY_PRICE_IDS, "price_");
+   if (JSON.stringify(products) !== JSON.stringify(expectedProducts) ||
+       JSON.stringify(prices) !== JSON.stringify(expectedPrices)) {
+     throw new Error("Legacy Product/Price allowlist mismatch");
+   }
+   const stripeKey = process.env.STRIPE_SECRET_KEY?.trim() || "";
+   if (!stripeKey.startsWith("sk_live_")) throw new Error("Expected a live Stripe key");
+   const stripe = new Stripe(stripeKey);
+   const account = await stripe.accounts.retrieve();
+   if (account.id !== process.env.EXPECTED_STRIPE_ACCOUNT_ID) {
+     throw new Error("Stripe account mismatch");
+   }
+   console.log(JSON.stringify({
+     databaseEnvironmentVariable: selected[0],
+     databaseTargetSha256: targetSha256,
+     stripeAccountId: account.id,
+     productIds: products,
+     priceIds: prices,
+   }));
+   NODE
+     env -i PATH="$PATH" HOME="$HOME" \
+       node --env-file=/secure/prod-legacy.env \
        scripts/audit-legacy-subscriptions.mjs --read-only \
        --database-url-env SIDESTREAM_POSTGRES_URL_NON_POOLING
    )
    ```
+
+   For the first inventory, both expected lists and both file values are empty;
+   after review, rematerialize the file with the exact approved IDs, update the
+   expected lists, and run the entire preflight plus read-only audit again. Retain
+   the non-secret JSON identity result and secret-manager file version/hash in
+   access-controlled evidence. Any extra database selector, nested env selector,
+   pooled target, target-fingerprint mismatch, non-live/mismatched Stripe account,
+   or allowlist mismatch blocks both audit and apply. The preflight itself reads
+   live Stripe account identity; it is a future human gate and was not run by this
+   documentation step.
 
    Before changing any database URL or pool, handle the legacy device-hash
    fallback. If `SIDESTREAM_LICENSE_HASH_SECRET` is absent, the application uses
@@ -547,12 +702,19 @@ supplies a later command.
    exactly or continuity cannot be proved, block cutover until a separately
    implemented and tested dual-hash migration exists.
 
-   Inventory the existing live Stripe destination and exact required event list.
-   Preserve its endpoint and signing-secret continuity for the staged artifact.
-   If event selections must change, prepare the reviewed change now but apply it
-   only after step 9's webhook deny is active; keep the destination enabled so
-   resulting deliveries fail non-`2xx`, remain visible, and enter the bounded
-   three-day automatic retry window described above.
+   Inventory the existing live Stripe destination, status, endpoint ID, API
+   version, `enabled_events`, account ID, and target event list. Do not proceed
+   until the failed-refund and dispute-status blockers above are implemented and
+   Preview/Test-qualified. Preserve endpoint and signing-secret continuity for
+   the staged artifact. If selection must change, prepare the exact reviewed
+   update now but apply it only after step 9's webhook deny is active; keep the
+   destination enabled so selected deliveries fail non-`2xx` and enter the
+   bounded retry window. Because `enabled_events` controls endpoint selection and
+   Workbench deliveries contain only attempts to that endpoint, record a
+   conservative account-event `created` interval beginning before both the
+   maintenance boundary and selection change. Step 11 must paginate the
+   account-level List Events API for every required type and union those IDs with
+   endpoint deliveries; endpoint deliveries alone are never complete evidence.
 
 5. **Stage and qualify the exact Production-environment artifacts.** Finalize
    every Production environment value first, including the license-hash
@@ -688,30 +850,105 @@ supplies a later command.
    commit/build mismatch, missing protection, environment drift, failed
    inspection, or any matrix/parity failure.
 
-6. **Take and verify a fresh database backup.** Prefer the provider's reviewed
-   snapshot/restore verification. For `pg_dump`, do not put the connection URL in
-   argv. Set `BACKUP_PATH` to access-controlled storage outside the repository and
-   inject the direct URL to libpq as `PGDATABASE` only in the child process:
+6. **Take and verify a fresh database backup.** Before this gate and immediately
+   before every later `/secure/prod-db.env` gate, run the following
+   empty-environment identity preflight with the independently approved target
+   fingerprint. It permits only the one direct database selector, rejects a
+   pooler/nested env file, connects read-only, and emits no URL or credential:
 
    ```bash
    (
      set -e
      set +x
-     unset SIDESTREAM_POSTGRES_URL_NON_POOLING POSTGRES_URL_NON_POOLING \
-       SIDESTREAM_TEST_POSTGRES_URL SIDESTREAM_POSTGRES_URL POSTGRES_URL \
-       SIDESTREAM_POSTGRES_PRISMA_URL POSTGRES_PRISMA_URL
+     export EXPECTED_PROD_DB_TARGET_SHA256='<approved sha256>'
+     env -i PATH="$PATH" HOME="$HOME" \
+       EXPECTED_PROD_DB_TARGET_SHA256="$EXPECTED_PROD_DB_TARGET_SHA256" \
+       node --env-file=/secure/prod-db.env --input-type=module <<'NODE'
+   import { createHash } from "node:crypto";
+   import { Pool } from "pg";
+
+   const databaseNames = [
+     "SIDESTREAM_POSTGRES_URL_NON_POOLING", "POSTGRES_URL_NON_POOLING",
+     "SIDESTREAM_TEST_POSTGRES_URL", "SIDESTREAM_POSTGRES_URL",
+     "SIDESTREAM_POSTGRES_PRISMA_URL", "POSTGRES_URL", "POSTGRES_PRISMA_URL",
+   ];
+   const selected = databaseNames.filter((name) => process.env[name]?.trim());
+   if (selected.length !== 1 || selected[0] !== "SIDESTREAM_POSTGRES_URL_NON_POOLING" ||
+       process.env.SIDESTREAM_ENV_FILE || process.env.SIDESTREAM_DB_ENV_FILE ||
+       process.env.STRIPE_SECRET_KEY ||
+       process.env.SIDESTREAM_LEGACY_SUBSCRIPTION_PRODUCT_IDS ||
+       process.env.SIDESTREAM_LEGACY_SUBSCRIPTION_PRICE_IDS) {
+     throw new Error(`Unexpected database/env-file selection: ${selected.join(",")}`);
+   }
+   const url = new URL(process.env.SIDESTREAM_POSTGRES_URL_NON_POOLING.trim());
+   if (!["postgres:", "postgresql:"].includes(url.protocol) ||
+       url.hostname.includes("pooler") || url.port === "6543" ||
+       url.searchParams.has("pgbouncer") || url.searchParams.has("connection_limit")) {
+     throw new Error("Expected the reviewed direct Postgres target");
+   }
+   const databaseName = decodeURIComponent(url.pathname.replace(/^\//, ""));
+   const target = `${url.hostname.toLowerCase()}:${url.port || "5432"}/${databaseName}`;
+   const targetSha256 = createHash("sha256").update(target).digest("hex");
+   if (targetSha256 !== process.env.EXPECTED_PROD_DB_TARGET_SHA256) {
+     throw new Error("Production database target fingerprint mismatch");
+   }
+   if (/^(prefer|require)$/i.test(url.searchParams.get("sslmode") || "")) {
+     url.searchParams.delete("sslmode");
+   }
+   const local = ["localhost", "127.0.0.1", "::1"].includes(url.hostname.toLowerCase());
+   if (!local && process.env.POSTGRES_SSL === "0") {
+     throw new Error("Remote production identity check cannot disable TLS");
+   }
+   const pool = new Pool({
+     connectionString: url.toString(), max: 1,
+     connectionTimeoutMillis: 10_000, statement_timeout: 30_000,
+     ssl: local ? false : { rejectUnauthorized: false },
+   });
+   try {
+     const result = await pool.query("select current_database() as database_name");
+     if (result.rows[0]?.database_name !== databaseName) {
+       throw new Error("Connected database identity mismatch");
+     }
+     console.log(JSON.stringify({
+       databaseEnvironmentVariable: selected[0],
+       databaseTargetSha256: targetSha256,
+     }));
+   } finally {
+     await pool.end();
+   }
+   NODE
+   )
+   ```
+
+   Retain that non-secret identity result with each gate. Prefer the provider's
+   reviewed snapshot/restore verification. For `pg_dump`, do not put the
+   connection URL in argv. Set `BACKUP_PATH` to access-controlled storage outside
+   the repository and inject the direct URL to libpq as `PGDATABASE` only in the
+   child process:
+
+   ```bash
+   (
+     set -e
+     set +x
      test -n "$BACKUP_PATH"
-     BACKUP_PATH="$BACKUP_PATH" node --env-file=/secure/prod-direct.env \
-       --input-type=module <<'NODE'
+     env -i PATH="$PATH" HOME="$HOME" BACKUP_PATH="$BACKUP_PATH" \
+       node --env-file=/secure/prod-db.env --input-type=module <<'NODE'
    import { spawn } from "node:child_process";
    const connection = process.env.SIDESTREAM_POSTGRES_URL_NON_POOLING?.trim()
      || process.env.POSTGRES_URL_NON_POOLING?.trim();
-   if (!connection) throw new Error("Reviewed direct Postgres URL is missing");
+   if (!connection || process.env.POSTGRES_URL_NON_POOLING ||
+       process.env.SIDESTREAM_ENV_FILE || process.env.SIDESTREAM_DB_ENV_FILE) {
+     throw new Error("Expected only the reviewed Sidestream direct Postgres URL");
+   }
    const child = spawn(
      "pg_dump",
      ["--no-password", "--format=custom", "--file", process.env.BACKUP_PATH],
      {
-       env: { ...process.env, PGDATABASE: connection },
+       env: {
+         PATH: process.env.PATH,
+         HOME: process.env.HOME,
+         PGDATABASE: connection,
+       },
        stdio: "inherit",
      },
    );
@@ -730,21 +967,27 @@ supplies a later command.
    put the URL, backup, or restore listing in the repository. Any failed backup or
    restore verification blocks cutover.
 
-7. **Capture authoritative migration state read-only.** Use the secret-injection
-   contract above. Scrubbing inherited URLs matters because the runner does not
-   replace an already-set environment value with one from its env file:
+7. **Capture authoritative migration state read-only.** Rerun and retain step 6's
+   database identity preflight, then use the clean-environment contract above.
+   Assert the runner's non-secret selected-variable line instead of trusting the
+   env-file pathname:
 
    ```bash
    (
      set -e
      set +x
-     unset SIDESTREAM_POSTGRES_URL_NON_POOLING POSTGRES_URL_NON_POOLING \
-       SIDESTREAM_TEST_POSTGRES_URL SIDESTREAM_POSTGRES_URL POSTGRES_URL \
-       SIDESTREAM_POSTGRES_PRISMA_URL POSTGRES_PRISMA_URL
-     export SIDESTREAM_DB_ENV_FILE=/secure/prod-direct.env
-     npm run db:migrate -- --status
-     npm run db:migrate -- --validate
-     npm run db:migrate -- --dry-run
+     status_output="$(env -i PATH="$PATH" HOME="$HOME" \
+       SIDESTREAM_DB_ENV_FILE=/secure/prod-db.env \
+       npm run db:migrate -- --status)"
+     printf '%s\n' "$status_output"
+     printf '%s\n' "$status_output" | grep -F \
+       'Using migration database from SIDESTREAM_POSTGRES_URL_NON_POOLING (direct/non-pooling preferred).'
+     env -i PATH="$PATH" HOME="$HOME" \
+       SIDESTREAM_DB_ENV_FILE=/secure/prod-db.env \
+       npm run db:migrate -- --validate
+     env -i PATH="$PATH" HOME="$HOME" \
+       SIDESTREAM_DB_ENV_FILE=/secure/prod-db.env \
+       npm run db:migrate -- --dry-run
    )
    ```
 
@@ -758,12 +1001,9 @@ supplies a later command.
      set -e
      set +x
      set -o pipefail
-     unset SIDESTREAM_POSTGRES_URL_NON_POOLING POSTGRES_URL_NON_POOLING \
-       SIDESTREAM_TEST_POSTGRES_URL SIDESTREAM_POSTGRES_URL POSTGRES_URL \
-       SIDESTREAM_POSTGRES_PRISMA_URL POSTGRES_PRISMA_URL
-     export SIDESTREAM_DB_ENV_FILE=/secure/prod-direct.env
      test -n "$CHECKSUM_EVIDENCE"
-     node --env-file="$SIDESTREAM_DB_ENV_FILE" --input-type=module \
+     env -i PATH="$PATH" HOME="$HOME" CHECKSUM_EVIDENCE="$CHECKSUM_EVIDENCE" \
+       node --env-file=/secure/prod-db.env --input-type=module \
        <<'NODE' | tee "$CHECKSUM_EVIDENCE"
    import { Pool } from "pg";
    import {
@@ -847,10 +1087,8 @@ supplies a later command.
    (
      set -e
      set +x
-     unset SIDESTREAM_POSTGRES_URL_NON_POOLING POSTGRES_URL_NON_POOLING \
-       SIDESTREAM_TEST_POSTGRES_URL SIDESTREAM_POSTGRES_URL POSTGRES_URL \
-       SIDESTREAM_POSTGRES_PRISMA_URL POSTGRES_PRISMA_URL
-     node --env-file=/secure/prod-direct.env \
+     env -i PATH="$PATH" HOME="$HOME" \
+       node --env-file=/secure/prod-db.env \
        scripts/verify-migration-baseline.mjs --json \
        > /secure/cutover-evidence/migration-baseline-before.json
    )
@@ -938,15 +1176,24 @@ supplies a later command.
    reconcile all pre-existing Stripe `Failed`/`Pending` deliveries and require zero
    local due work/dead letters before recording the new boundary.
 
-   With that deny proved active, apply any pre-reviewed live event-selection
-   change needed to reach the exact required list. Do not rotate the signing
-   secret away from the value embedded in the staged Production artifact.
+   With that deny proved active, and only after the lifecycle implementation
+   blockers have already passed Preview/Test, apply any pre-reviewed live
+   event-selection change needed to reach the exact required list. Record the
+   old and new `enabled_events`, endpoint/account IDs, and exact update timestamp.
+   Do not rotate the signing secret away from the value embedded in the staged
+   Production artifact.
 
-   Record the endpoint ID, UTC start, boundary event ID immediately before the
-   window, every lifecycle event/delivery ID observed during it, and later the UTC
-   end/boundary ID; event IDs are evidence, not sortable clocks. Classify Checkout,
-   refund, dispute, and allowlisted legacy-subscription families even when a
-   family has zero events. Through the exact license bypass, use one existing real
+   Record the endpoint/account IDs, UTC start, boundary event ID immediately
+   before the window, exact selection-update time, every lifecycle event/delivery
+   ID observed during it, and later the UTC end/boundary ID; event IDs are
+   evidence, not sortable clocks. Set an inclusive `STRIPE_EVENT_WINDOW_GTE`
+   epoch at least five minutes before the earlier of maintenance start or the
+   selection update, and later an inclusive `STRIPE_EVENT_WINDOW_LTE` at least
+   five minutes after the compatible artifact, final selection, and webhook allow
+   are stable. The wider interval intentionally over-includes rather than loses a
+   boundary event. Classify Checkout, refund, dispute, and allowlisted
+   legacy-subscription families even when a family has zero events. Through the
+   exact license bypass, use one existing real
    device ID and its existing token to call `POST /api/license/verify`; retain the
    `2xx`/active outcome and timestamp without logging either credential. Confirm
    all other writes and both tagged/untagged download GETs are denied before any
@@ -958,19 +1205,23 @@ supplies a later command.
 10. **Migrate, qualify, and promote as one closed-write gate.** Public writes and
     the Stripe webhook remain denied throughout this step.
 
-    1. If and only if step 7 proved a baseline is required, run explicit baseline
-       with inherited database URLs scrubbed, then retain complete filename status:
+    1. Rerun and retain step 6's database identity preflight. If and only if step 7
+       proved a baseline is required, run explicit baseline in the empty-base
+       environment, then retain complete filename status:
 
        ```bash
        (
          set -e
          set +x
-         unset SIDESTREAM_POSTGRES_URL_NON_POOLING POSTGRES_URL_NON_POOLING \
-           SIDESTREAM_TEST_POSTGRES_URL SIDESTREAM_POSTGRES_URL POSTGRES_URL \
-           SIDESTREAM_POSTGRES_PRISMA_URL POSTGRES_PRISMA_URL
-         export SIDESTREAM_DB_ENV_FILE=/secure/prod-direct.env
-         npm run db:migrate -- --baseline
-         npm run db:migrate -- --status
+         env -i PATH="$PATH" HOME="$HOME" \
+           SIDESTREAM_DB_ENV_FILE=/secure/prod-db.env \
+           npm run db:migrate -- --baseline
+         status_output="$(env -i PATH="$PATH" HOME="$HOME" \
+           SIDESTREAM_DB_ENV_FILE=/secure/prod-db.env \
+           npm run db:migrate -- --status)"
+         printf '%s\n' "$status_output"
+         printf '%s\n' "$status_output" | grep -F \
+           'Using migration database from SIDESTREAM_POSTGRES_URL_NON_POOLING (direct/non-pooling preferred).'
        )
        ```
 
@@ -978,18 +1229,22 @@ supplies a later command.
        separate read-only checksum-export block. Baseline is not complete evidence
        unless each recorded row's local and ledger values are identical.
 
-    2. Apply every pending migration and retain complete filename status:
+    2. Rerun and retain step 6's database identity preflight, then apply every
+       pending migration and retain complete filename status:
 
        ```bash
        (
          set -e
          set +x
-         unset SIDESTREAM_POSTGRES_URL_NON_POOLING POSTGRES_URL_NON_POOLING \
-           SIDESTREAM_TEST_POSTGRES_URL SIDESTREAM_POSTGRES_URL POSTGRES_URL \
-           SIDESTREAM_POSTGRES_PRISMA_URL POSTGRES_PRISMA_URL
-         export SIDESTREAM_DB_ENV_FILE=/secure/prod-direct.env
-         npm run db:migrate
-         npm run db:migrate -- --status
+         env -i PATH="$PATH" HOME="$HOME" \
+           SIDESTREAM_DB_ENV_FILE=/secure/prod-db.env \
+           npm run db:migrate
+         status_output="$(env -i PATH="$PATH" HOME="$HOME" \
+           SIDESTREAM_DB_ENV_FILE=/secure/prod-db.env \
+           npm run db:migrate -- --status)"
+         printf '%s\n' "$status_output"
+         printf '%s\n' "$status_output" | grep -F \
+           'Using migration database from SIDESTREAM_POSTGRES_URL_NON_POOLING (direct/non-pooling preferred).'
        )
        ```
 
@@ -998,21 +1253,23 @@ supplies a later command.
        tip to be `recorded`, every local/ledger SHA-256 pair to match, and no
        ledger-only filename. Status alone is not retainable checksum evidence.
 
-    3. Apply the reviewed exact legacy-subscription backfill/quarantine, rerun it
-       read-only, and retain Product/Price/count evidence:
+    3. Rematerialize `/secure/prod-legacy.env`, rerun step 4's entire identity
+       preflight with the approved nonempty allowlists, then apply the reviewed
+       exact legacy-subscription backfill/quarantine. Rerun the same preflight and
+       audit read-only; retain database fingerprint, Stripe account,
+       Product/Price, secret-file version/hash, and count evidence:
 
        ```bash
        (
          set -e
          set +x
-         unset SIDESTREAM_POSTGRES_URL_NON_POOLING POSTGRES_URL_NON_POOLING \
-           SIDESTREAM_TEST_POSTGRES_URL SIDESTREAM_POSTGRES_URL POSTGRES_URL \
-           SIDESTREAM_POSTGRES_PRISMA_URL POSTGRES_PRISMA_URL
-         node --env-file=/secure/prod-direct.env \
+         env -i PATH="$PATH" HOME="$HOME" \
+           node --env-file=/secure/prod-legacy.env \
            scripts/audit-legacy-subscriptions.mjs --apply \
            --database-url-env SIDESTREAM_POSTGRES_URL_NON_POOLING \
            --confirm APPLY-LEGACY-SUBSCRIPTIONS
-         node --env-file=/secure/prod-direct.env \
+         env -i PATH="$PATH" HOME="$HOME" \
+           node --env-file=/secure/prod-legacy.env \
            scripts/audit-legacy-subscriptions.mjs --read-only \
            --database-url-env SIDESTREAM_POSTGRES_URL_NON_POOLING
        )
@@ -1031,9 +1288,12 @@ supplies a later command.
        procedure. If neither disposition is approved, do not create the row and
        block cutover. Capture the final disposition after the canary.
 
-    5. From a secret-manager shell, read only the configured live Stripe Product
+    5. Through `env -i` with only `PATH`, `HOME`, approved expected account/resource
+       IDs, and `/secure/prod-stripe-read.env`, first retrieve and assert the exact
+       live Stripe account as in steps 4/11, then read only the configured Product
        and Price. Require `livemode=true`, active Product and Price, one-time USD
-       999, and exact Product ownership; record only IDs/mode/outcomes. Do not call
+       999, and exact Product ownership; record only IDs/mode/outcomes. An inherited
+       `STRIPE_SECRET_KEY` is never acceptable. Do not call
        `GET /api/checkout/start`, activation status, or any other production
        maintenance smoke: Checkout start inserts an intent, while activation
        status can reconcile payment or issue credentials. Do not run a test-mode
@@ -1074,16 +1334,116 @@ supplies a later command.
     `POST /api/stripe/webhook` on the configured endpoint host; Stripe cannot send
     the operator header, so this is a separate narrowly scoped phase. Keep the
     destination enabled. In Stripe Workbench, close the recorded UTC/boundary-ID
-    window and export or enumerate every endpoint delivery. Record IDs and counts
-    for Checkout completion, refund, dispute, and allowlisted legacy-subscription
-    families, explicitly recording zero where applicable.
+    window and enumerate **every page** of endpoint deliveries. Record IDs, types,
+    status, attempts, and counts for Checkout completion, refund (including
+    `refund.failed`), dispute, and allowlisted legacy-subscription families,
+    explicitly recording zero where applicable. Workbench is endpoint-attempt
+    evidence, not the complete account event set.
+
+    Independently enumerate the account-level Stripe Events API over the inclusive
+    conservative `created` interval. The API accepts up to 20 `types` and returns
+    at most 100 per page; `autoPagingEach` below must finish. Set the output to an
+    access-controlled path outside the repository. The clean Stripe file contains
+    only `STRIPE_SECRET_KEY`; this script asserts live mode and the approved
+    account, writes only event identity/type/time, and never writes payloads or the
+    key:
+
+    ```bash
+    (
+      set -e
+      set +x
+      test -n "$STRIPE_EVENT_WINDOW_GTE"
+      test -n "$STRIPE_EVENT_WINDOW_LTE"
+      test -n "$STRIPE_ACCOUNT_EVENTS"
+      test -n "$EXPECTED_STRIPE_ACCOUNT_ID"
+      env -i PATH="$PATH" HOME="$HOME" \
+        EXPECTED_STRIPE_ACCOUNT_ID="$EXPECTED_STRIPE_ACCOUNT_ID" \
+        STRIPE_EVENT_WINDOW_GTE="$STRIPE_EVENT_WINDOW_GTE" \
+        STRIPE_EVENT_WINDOW_LTE="$STRIPE_EVENT_WINDOW_LTE" \
+        STRIPE_ACCOUNT_EVENTS="$STRIPE_ACCOUNT_EVENTS" \
+        node --env-file=/secure/prod-stripe-read.env --input-type=module <<'NODE'
+    import { open } from "node:fs/promises";
+    import Stripe from "stripe";
+
+    const types = [
+      "checkout.session.completed",
+      "charge.refunded", "charge.updated",
+      "refund.created", "refund.updated", "refund.failed",
+      "charge.dispute.created", "charge.dispute.updated", "charge.dispute.closed",
+      "customer.subscription.created", "customer.subscription.updated",
+      "customer.subscription.deleted",
+    ];
+    const integer = (name) => {
+      const raw = process.env[name] || "";
+      if (!/^\d+$/.test(raw)) throw new Error(`${name} must be epoch seconds`);
+      return Number(raw);
+    };
+    const gte = integer("STRIPE_EVENT_WINDOW_GTE");
+    const lte = integer("STRIPE_EVENT_WINDOW_LTE");
+    if (gte > lte || lte - gte > 72 * 60 * 60) {
+      throw new Error("Stripe account-event interval must be ordered and at most 72 hours");
+    }
+    const forbidden = [
+      "SIDESTREAM_ENV_FILE", "SIDESTREAM_DB_ENV_FILE",
+      "SIDESTREAM_POSTGRES_URL_NON_POOLING", "POSTGRES_URL_NON_POOLING",
+      "SIDESTREAM_TEST_POSTGRES_URL", "SIDESTREAM_POSTGRES_URL",
+      "SIDESTREAM_POSTGRES_PRISMA_URL", "POSTGRES_URL", "POSTGRES_PRISMA_URL",
+      "SIDESTREAM_LEGACY_SUBSCRIPTION_PRODUCT_IDS",
+      "SIDESTREAM_LEGACY_SUBSCRIPTION_PRICE_IDS",
+    ].filter((name) => process.env[name]?.trim());
+    if (forbidden.length) {
+      throw new Error("Stripe event enumeration received forbidden inherited configuration");
+    }
+    const stripeKey = process.env.STRIPE_SECRET_KEY?.trim() || "";
+    if (!stripeKey.startsWith("sk_live_")) throw new Error("Expected a live Stripe key");
+    const stripe = new Stripe(stripeKey);
+    const account = await stripe.accounts.retrieve();
+    if (account.id !== process.env.EXPECTED_STRIPE_ACCOUNT_ID) {
+      throw new Error("Stripe account mismatch");
+    }
+    const counts = Object.fromEntries(types.map((type) => [type, 0]));
+    const output = await open(process.env.STRIPE_ACCOUNT_EVENTS, "wx", 0o600);
+    try {
+      await stripe.events.list({ types, created: { gte, lte }, limit: 100 })
+        .autoPagingEach(async (event) => {
+          if (!event.livemode || !types.includes(event.type) ||
+              event.created < gte || event.created > lte) {
+            throw new Error(`Unexpected Stripe event ${event.id}`);
+          }
+          counts[event.type] += 1;
+          await output.write(`${JSON.stringify({
+            id: event.id, type: event.type, created: event.created,
+          })}\n`);
+        });
+    } finally {
+      await output.close();
+    }
+    console.log(JSON.stringify({
+      stripeAccountId: account.id, gte, lte, counts,
+      output: process.env.STRIPE_ACCOUNT_EVENTS,
+    }));
+    NODE
+      shasum -a 256 "$STRIPE_ACCOUNT_EVENTS"
+    )
+    ```
+
+    Retain the account/type counts and file checksum. Union these account-event
+    IDs with all paginated Workbench endpoint-delivery IDs; deduplicate only by
+    exact event ID and preserve both evidence sources. An account event absent
+    from endpoint deliveries is not zero activity: it is evidence of the
+    selection gap and must be explicitly sent/retried to this exact endpoint with
+    reviewed Stripe tooling. If Workbench pagination/export or the List Events
+    enumeration cannot be completed, if the event interval has aged beyond the
+    API's 30-day full-payload window, or if reviewed tooling cannot deliver every
+    unioned ID, production remains blocked.
 
     Calculate and retain each event's creation time before relying on a resend.
     Live automatic attempts stop after at most three days; Dashboard/Workbench
     Resend stops after 15 days; `stripe events resend` stops after 30 days.
     Individually Retry/Resend every `Failed` or `Pending` delivery in Workbench
-    while it is eligible and require a `2xx` attempt. For every ID in the window,
-    including already Delivered events, prove a matching
+    while it is eligible and require a `2xx` attempt. For every ID in the union,
+    including already Delivered events and account events initially missing from
+    endpoint deliveries, prove a `2xx` attempt to the exact endpoint and a matching
     `public.sidestream_stripe_events` ledger row with the expected type. Manually invoke
     `GET /api/internal/stripe-events/process` through both the WAF bypass and
     `CRON_SECRET` until all due work is terminal; require expected
@@ -1124,7 +1484,8 @@ supplies a later command.
     maintenance deny still protects the API, then immediately publish the normal
     WAF configuration: remove the broad maintenance deny, temporary public-read
     and Stripe reconciliation bypass rules, and operator bypass; retain the
-    permanent lead rate limit. Revoke the WAF bypass secret and record its rule
+    approved permanent regional lead control or durable shared fallback limiter
+    from step 3. Revoke the WAF bypass secret and record its rule
     removal/disposition. Verify the next scheduled invocation of all three jobs,
     Stripe due/dead counts, fallback backlog, maintenance counts, pool use,
     Checkout/rate-limit signals, and release parity. If global cron enablement or
@@ -1160,8 +1521,9 @@ fallback is application-forward, not a destructive schema reversal:
 4. Run only the bounded release GET/HEAD smoke, approved lead canary/disposition,
    and same-device/token continuity canary while other writes remain blocked.
    Then follow cutover steps 11-12 exactly: separately allow only the Stripe
-   webhook, reconcile every Failed/Pending delivery and every event ID in the
-   window to `2xx` plus a ledger row, require zero due/dead work, manually prove
+   webhook, repeat step 11's paginated account-level event enumeration plus
+   Workbench delivery union, reconcile every Failed/Pending delivery and every
+   unioned event ID to `2xx` plus a ledger row, require zero due/dead work, manually prove
    all three jobs, enable project scheduling once, remove maintenance rules, and
    revoke the bypass. Existing local `dead_letter` rows remain terminal because
    no reset/replay tool exists; do not claim one was replayed without separately
