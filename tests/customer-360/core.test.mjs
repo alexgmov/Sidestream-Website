@@ -167,6 +167,37 @@ test("merges are deterministic, idempotent, and namespace isolated", () => {
   );
 });
 
+test("fixed-width UTC microsecond merge ordering is timezone safe across the DST gap", () => {
+  const older = {
+    id: "ffffffff-ffff-4fff-8fff-ffffffffffff",
+    licenseNamespace: "production",
+    createdAt: "2026-03-08T02:30:00.000001",
+  };
+  const newer = {
+    id: "00000000-0000-4000-8000-000000000000",
+    licenseNamespace: "production",
+    createdAt: "2026-03-08T03:00:00.000002",
+  };
+
+  assert.ok(newer.id < older.id, "the newer profile must win any incorrect UUID fallback");
+  if (process.env.TZ === "America/Los_Angeles") {
+    assert.ok(
+      Date.parse(older.createdAt) > Date.parse(newer.createdAt),
+      "the fixture must expose suffix-less local-time parsing across the DST gap",
+    );
+  }
+
+  for (const [left, right] of [
+    [older, newer],
+    [newer, older],
+  ]) {
+    const plan = planProfileMerge(left, right, { linkType: "account_identity" });
+    assert.equal(plan.merge, true);
+    assert.equal(plan.survivorId, older.id);
+    assert.equal(plan.tombstoneId, newer.id);
+  }
+});
+
 test("privacy boundary accepts an allowed record and rejects forbidden fields", () => {
   const allowed = {
     id: "profile-1",

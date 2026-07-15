@@ -25,6 +25,7 @@ Sidestream is an HTML-first landing page for a Premiere Pro panel that lets edit
 - `api/releases/latest.ts` and `api/_lib/release-manifest.ts` - Sidestream-owned update manifest endpoint for the CEP panel. It selects the Mac or Windows manifest by platform and serves public metadata without exposing the private Blob pathname.
 - `api/download-lead.ts` and `api/_lib/download-leads.ts` - Bounded JSON lead ingestion, canonical `(email, cta_source)` convergence, idempotency receipts, atomic email/IP rate limits, and deterministic private-Blob fallback. `api/internal/download-leads/replay.ts` replays mapped fallback records and deletes only after a committed database write plus ETag match.
 - `api/_lib/postgres.ts` and `api/_lib/rate-limit.ts` - Shared attached runtime Postgres pool/transaction ownership and atomic HMAC-dimension rate limiting. Production runtime requires a pooled URL; direct URLs are reserved for reviewed migrations/backfills and development/test fallback.
+- `api/_lib/customer-profiles.ts` and `tests/customer-360/core*.test.mjs` - Server-only Customer 360 identity/profile primitives, transactional merge planning, privacy-contract proof, and disposable-Postgres coverage. Merge survivors follow the database's immutable `(created_at, id)` total order within one license namespace.
 - `api/_lib/account.ts`, `api/_lib/entitlement.ts`, `api/_lib/device-policy.ts`, and `api/_lib/license-environment.ts` - Shared server-only account/Stripe/Postgres implementation plus dependency-free entitlement primitives. They own exact Checkout verification, account-device transactions, one-active-device decisions, transfer limits, production/Test isolation from trusted deployment state, short-lived access tokens, rotating refresh credentials, legacy compatibility through 1.0.13, safe OAuth return paths, and restore CSRF validation. Serverless route imports intentionally use `.js` extensions so Vercel's Node ESM runtime resolves compiled helpers.
 - `api/auth/google/start.ts` and `api/auth/google/callback.ts` - Google OAuth redirect/callback handlers. They set a short-lived HTTP-only state cookie, upsert `sidestream_accounts`, and issue a server-side session cookie.
 - `api/auth/session.ts` and `api/auth/logout.ts` - Account-session JSON and logout endpoints used by `account.html` and `upgrade.html`.
@@ -467,6 +468,7 @@ Use the narrowest relevant check after edits:
 - Open the HTML page and check that the first fold intentionally places the hero copy lower than the older `Sidestream front end 2/screenshots/01-scan.png` reference.
 - Run `npm run test:api` after any API, shared helper, migration, cron, or handler-contract change. Run `npm run test:postgres-integration` with a disposable `SIDESTREAM_TEST_POSTGRES_URL` after any database/concurrency change; it must never target production or a deployed Test database.
 - Run `node scripts/assert-no-runtime-ddl.mjs` and `node scripts/validate-vercel-contract.mjs` after API/migration/routing work. For a human Vercel build, follow `npx vercel@latest build` with `npm run verify:vercel-build`.
+- Run `TZ=America/Los_Angeles node --experimental-strip-types --test tests/customer-360/core.test.mjs` after Customer 360 identity or profile-merge changes, then run `node --experimental-strip-types --test tests/customer-360/core-postgres.test.mjs` for the database total-order contract.
 - Run `npm run build` after shader, TypeScript, Tailwind, HTML mount, Vite config, or package changes.
 - Run `npm run test:download-referral` after changing installer attribution or `/api/download`. It verifies that tagged `GET`s are recorded only after a successful redirect, while `HEAD`, `304`, bad platforms, fulfillment errors, database errors, and database timeouts cannot create a false successful event or block delivery.
 - After SEO/GEO metadata changes, run `npm run build`, confirm `dist/robots.txt`, `dist/sitemap.xml`, `dist/llms.txt`, and `dist/sidestream-og.jpg` exist, validate both source and built sitemap XML, confirm the built sitemap contains a generated ISO `<lastmod>` while the source contains only the generator marker, and spot-check the built HTML for the absolute canonical URL, meta description, Open Graph/Twitter image tags, and valid JSON-LD.
@@ -515,6 +517,7 @@ Use the narrowest relevant check after edits:
 
 ## Known Gotchas
 
+- Customer 360 database `created_at` values reach TypeScript as fixed-width six-microsecond UTC timestamps without a timezone suffix. Compare two canonical values lexically before `Date.parse`; parsing first treats them as local time, can reverse order across a DST gap, and violates the database trigger's `(created_at, id)` total-order contract. ISO inputs from pure callers still use parsed instant ordering, and equal timestamps still use the UUID tie-breaker.
 - The project root was missing a README before this restoration.
 - The page uses the local Apple/SF Pro system font stack and does not request external web fonts.
 - Several screenshot files are duplicates or alternate experiments. Prefer the numbered scan series for the restored hero state.
@@ -591,6 +594,7 @@ Use the narrowest relevant check after edits:
 
 ## Recent Change Log
 
+- 2026-07-15: Made Customer 360 profile merge ordering timezone-safe by comparing canonical UTC microsecond timestamps before parsed ISO fallback, with both argument orders covered across the Los Angeles DST gap. No Production migration, deployment, backfill, or cutover was performed.
 - 2026-07-15: Removed the unsafe executable Production cutover and fallback recipe. Production cutover is blocked; the API runbook now records only current facts, blockers, and capabilities required by a future separately reviewed plan. No Production action was performed.
 - 2026-07-14: An earlier documentation attempt claimed live Pro catalog, historical-lifecycle, deployment-binding, and promotion evidence that independent review found non-executable or unsafe. Those claims are superseded by the 2026-07-15 blocked status; no Production action was performed.
 - 2026-07-14: Recorded the intended historical-lifecycle ordering, but later review found that the fallback path consumed provisional evidence it never produced. Both future main and fallback paths are now explicit capability blockers; no Production action was performed.
