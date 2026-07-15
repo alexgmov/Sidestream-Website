@@ -67,7 +67,7 @@ test("Customer commerce migration keeps money currency-separated and entitlement
     "../db/migrations/20260715122000_add_customer_commerce_ledger.sql",
     import.meta.url,
   ), "utf8");
-  assert.match(migration, /create table public\.sidestream_customer_commerce_facts/);
+  assert.match(migration, /create table public\.sidestream_customer_commerce_materializations/);
   assert.match(migration, /create table public\.sidestream_customer_money_totals/);
   assert.match(migration, /primary key \(license_namespace, profile_id, currency\)/);
   for (const column of [
@@ -76,15 +76,19 @@ test("Customer commerce migration keeps money currency-separated and entitlement
     "tax_minor",
     "refunded_minor",
     "disputed_minor",
+    "inquiry_minor",
     "net_paid_minor",
     "billing_period_start",
     "billing_period_end",
     "source_confidence",
+    "identity_conflict",
   ]) {
     assert.match(migration, new RegExp(`\\b${column}\\b`));
   }
   assert.doesNotMatch(migration, /update public\.sidestream_licenses/i);
   assert.doesNotMatch(migration, /alter table public\.sidestream_licenses/i);
+  assert.match(migration, /Mutable latest-state money materializations/);
+  assert.match(migration, /sidestream_stripe_events queue remains the immutable signed-event history/);
 });
 
 test("ledger classification reports pending files and rejects every checksum mismatch", async () => {

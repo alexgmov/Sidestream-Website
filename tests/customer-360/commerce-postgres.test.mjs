@@ -5,7 +5,9 @@ import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { Pool } from "pg";
-import { materializeCustomerCommerceEvent } from "../../api/_lib/customer-commerce.ts";
+import {
+  materializeCustomerCommerceEvent as materializeCustomerCommerceEventWithNamespace,
+} from "../../api/_lib/customer-commerce.ts";
 import {
   createTestPoolOptions,
   requireSafeTestDatabaseUrl,
@@ -17,6 +19,8 @@ const migrations = [
   "20260715121000_add_customer_identity_links.sql",
   "20260715122000_add_customer_commerce_ledger.sql",
 ];
+const materializeCustomerCommerceEvent = (event, query) =>
+  materializeCustomerCommerceEventWithNamespace(event, query, "test");
 
 test("Customer commerce materializes idempotent per-currency Stripe money truth", {
   timeout: 120_000,
@@ -50,15 +54,16 @@ test("Customer commerce materializes idempotent per-currency Stripe money truth"
       );
       assert.deepEqual(tables.rows, [
         { relname: "sidestream_customer_commerce_aliases", relrowsecurity: true },
-        { relname: "sidestream_customer_commerce_facts", relrowsecurity: true },
+        { relname: "sidestream_customer_commerce_materializations", relrowsecurity: true },
       ]);
       const columns = await pool.query(
         `select column_name, data_type
          from information_schema.columns
-         where table_schema = $1 and table_name = 'sidestream_customer_commerce_facts'
+         where table_schema = $1 and table_name = 'sidestream_customer_commerce_materializations'
            and column_name in (
              'gross_paid_minor', 'discount_minor', 'tax_minor', 'refunded_minor',
-             'disputed_minor', 'net_paid_minor', 'currency', 'source_confidence'
+             'disputed_minor', 'inquiry_minor', 'net_paid_minor', 'currency',
+             'source_confidence', 'identity_conflict'
            ) order by column_name`,
         [schema],
       );
@@ -67,11 +72,19 @@ test("Customer commerce materializes idempotent per-currency Stripe money truth"
         { column_name: "discount_minor", data_type: "bigint" },
         { column_name: "disputed_minor", data_type: "bigint" },
         { column_name: "gross_paid_minor", data_type: "bigint" },
+        { column_name: "identity_conflict", data_type: "boolean" },
+        { column_name: "inquiry_minor", data_type: "bigint" },
         { column_name: "net_paid_minor", data_type: "bigint" },
         { column_name: "refunded_minor", data_type: "bigint" },
         { column_name: "source_confidence", data_type: "text" },
         { column_name: "tax_minor", data_type: "bigint" },
       ]);
+      const description = await pool.query(
+        `select obj_description($1::regclass) as description`,
+        [`${schema}.sidestream_customer_commerce_materializations`],
+      );
+      assert.match(description.rows[0].description, /Mutable latest-state money materializations/);
+      assert.match(description.rows[0].description, /sidestream_stripe_events/);
     });
 
     const profile = await seedProfile(pool, quotedSchema, "test", "2026-01-01T00:00:00Z");
@@ -158,12 +171,13 @@ test("Customer commerce materializes idempotent per-currency Stripe money truth"
         tax_minor: "80",
         refunded_minor: "300",
         disputed_minor: "0",
+        inquiry_minor: "0",
         net_paid_minor: "700",
         paid_transaction_count: "1",
         comped_transaction_count: "0",
       });
       const paymentFacts = await pool.query(
-        `select count(*)::int as count from ${quotedSchema}.sidestream_customer_commerce_facts
+        `select count(*)::int as count from ${quotedSchema}.sidestream_customer_commerce_materializations
          where profile_id = $1 and fact_kind = 'payment' and payment_key = 'charge:ch_primary'`,
         [profile.id],
       );
@@ -187,6 +201,11 @@ test("Customer commerce materializes idempotent per-currency Stripe money truth"
       ), query);
       assert.equal((await moneyTotal(pool, quotedSchema, profile.id, "usd")).refunded_minor, "300");
 
+      const before = await pool.query(
+        `select id, event_id, refunded_minor
+         from ${quotedSchema}.sidestream_customer_commerce_materializations
+         where source_object_type = 'refund' and source_object_id = 're_primary'`,
+      );
       const full = stripeEvent("evt_refund_full", "refund.updated", 1_800_000_140, {
         id: "re_primary",
         created: 1_800_000_040,
@@ -206,6 +225,15 @@ test("Customer commerce materializes idempotent per-currency Stripe money truth"
       );
       assert.equal((await materializeCustomerCommerceEvent(oldPartial, query)).stale, 1);
       assert.equal((await moneyTotal(pool, quotedSchema, profile.id, "usd")).refunded_minor, "1000");
+      const after = await pool.query(
+        `select id, event_id, refunded_minor
+         from ${quotedSchema}.sidestream_customer_commerce_materializations
+         where source_object_type = 'refund' and source_object_id = 're_primary'`,
+      );
+      assert.equal(after.rows.length, 1);
+      assert.equal(after.rows[0].id, before.rows[0].id);
+      assert.equal(after.rows[0].event_id, "evt_refund_full");
+      assert.equal(after.rows[0].refunded_minor, "1000");
     });
 
     await t.test("open/lost disputes reduce net while won, warning_closed, and prevented do not", async () => {
@@ -243,7 +271,18 @@ test("Customer commerce materializes idempotent per-currency Stripe money truth"
       await dispute("dp_open", "won", 1_800_000_170);
       total = await moneyTotal(pool, quotedSchema, profile.id, "usd");
       assert.equal(total.disputed_minor, "0");
+      assert.equal(total.inquiry_minor, "0");
       assert.equal(total.net_paid_minor, "1000");
+
+      await dispute("dp_inquiry", "warning_needs_response", 1_800_000_175);
+      total = await moneyTotal(pool, quotedSchema, profile.id, "usd");
+      assert.equal(total.disputed_minor, "0");
+      assert.equal(total.inquiry_minor, "400");
+      assert.equal(total.net_paid_minor, "1000");
+      await dispute("dp_inquiry", "warning_under_review", 1_800_000_176);
+      assert.equal((await moneyTotal(pool, quotedSchema, profile.id, "usd")).inquiry_minor, "400");
+      await dispute("dp_inquiry", "warning_closed", 1_800_000_177);
+      assert.equal((await moneyTotal(pool, quotedSchema, profile.id, "usd")).inquiry_minor, "0");
 
       await dispute("dp_lost", "lost", 1_800_000_180);
       assert.equal((await moneyTotal(pool, quotedSchema, profile.id, "usd")).disputed_minor, "400");
@@ -277,11 +316,31 @@ test("Customer commerce materializes idempotent per-currency Stripe money truth"
           created: 1_800_001_090,
           customer: "cus_primary",
           status: "active",
-          current_period_start: 1_800_001_000,
-          current_period_end: 1_802_593_000,
+          items: {
+            data: [{
+              id: "si_primary",
+              current_period_start: 1_800_001_000,
+              current_period_end: 1_802_593_000,
+            }],
+          },
         },
       ), query);
       for (const [suffix, created] of [["one", 1_800_001_200], ["two", 1_802_593_200]]) {
+        await materializeCustomerCommerceEvent(stripeEvent(
+          `evt_pi_${suffix}`,
+          "payment_intent.succeeded",
+          created - 10,
+          {
+            id: `pi_${suffix}`,
+            created: created - 200,
+            customer: "cus_primary",
+            latest_charge: `ch_${suffix}`,
+            status: "succeeded",
+            amount: 900,
+            amount_received: 900,
+            currency: "usd",
+          },
+        ), query);
         await materializeCustomerCommerceEvent(stripeEvent(
           `evt_invoice_${suffix}`,
           "invoice.paid",
@@ -290,9 +349,20 @@ test("Customer commerce materializes idempotent per-currency Stripe money truth"
             id: `in_${suffix}`,
             created: created - 20,
             customer: "cus_primary",
-            subscription: "sub_primary",
-            payment_intent: `pi_${suffix}`,
-            charge: `ch_${suffix}`,
+            parent: {
+              type: "subscription_details",
+              subscription_details: { subscription: "sub_primary" },
+            },
+            payments: {
+              data: [{
+                type: "payment",
+                payment: {
+                  type: "payment_intent",
+                  payment_intent: `pi_${suffix}`,
+                  charge: `ch_${suffix}`,
+                },
+              }],
+            },
             status: "paid",
             paid: true,
             amount_paid: 900,
@@ -312,8 +382,13 @@ test("Customer commerce materializes idempotent per-currency Stripe money truth"
           created: 1_800_001_090,
           customer: "cus_primary",
           status: "canceled",
-          current_period_start: 1_802_593_200,
-          current_period_end: 1_805_185_200,
+          items: {
+            data: [{
+              id: "si_primary",
+              current_period_start: 1_802_593_200,
+              current_period_end: 1_805_185_200,
+            }],
+          },
         },
       ), query);
       await materializeCustomerCommerceEvent(stripeEvent(
@@ -356,10 +431,36 @@ test("Customer commerce materializes idempotent per-currency Stripe money truth"
           comped_transaction_count: "1",
         },
       ]);
+      const renewalRows = await pool.query(
+        `select source_object_id, payment_key, commerce_model,
+           extract(epoch from first_paid_at)::bigint as first_paid_at
+         from ${quotedSchema}.sidestream_customer_commerce_materializations
+         where source_object_type in ('invoice', 'payment_intent')
+           and source_object_id = any($1::text[])
+         order by source_object_type, source_object_id`,
+        [["in_one", "in_two", "pi_one", "pi_two"]],
+      );
+      assert.equal(new Set(renewalRows.rows.map((row) => row.payment_key)).size, 2);
+      assert.equal(
+        renewalRows.rows.find((row) => row.source_object_id === "pi_one").first_paid_at,
+        "1800001190",
+      );
+      assert.equal(
+        renewalRows.rows.find((row) => row.source_object_id === "in_one").commerce_model,
+        "subscription",
+      );
+      assert.equal(
+        (await pool.query(
+          `select count(*)::int as count
+           from ${quotedSchema}.sidestream_customer_commerce_aliases
+           where alias_type = 'subscription'`,
+        )).rows[0].count,
+        0,
+      );
       const subscription = await pool.query(
         `select state, first_upgraded_at, last_upgraded_at, billing_period_start,
            billing_period_end
-         from ${quotedSchema}.sidestream_customer_commerce_facts
+         from ${quotedSchema}.sidestream_customer_commerce_materializations
          where source_object_type = 'subscription' and source_object_id = 'sub_primary'`,
       );
       assert.equal(subscription.rows[0].state, "canceled");
@@ -370,6 +471,248 @@ test("Customer commerce materializes idempotent per-currency Stripe money truth"
       );
       assert.ok(subscription.rows[0].billing_period_start);
       assert.ok(subscription.rows[0].billing_period_end);
+    });
+
+    await t.test("partial capture uses captured money instead of authorization", async () => {
+      const capturedProfile = await seedProfile(
+        pool,
+        quotedSchema,
+        "test",
+        "2026-01-02T00:00:00Z",
+        null,
+      );
+      await seedLinks(pool, quotedSchema, capturedProfile.id, "test", [
+        ["stripe_customer", "cus_partial_capture"],
+      ]);
+      await materializeCustomerCommerceEvent(stripeEvent(
+        "evt_partial_capture",
+        "charge.succeeded",
+        1_806_000_100,
+        {
+          id: "ch_partial_capture",
+          created: 1_806_000_000,
+          customer: "cus_partial_capture",
+          paid: true,
+          captured: true,
+          status: "succeeded",
+          amount: 1000,
+          amount_captured: 400,
+          amount_refunded: 0,
+          currency: "aud",
+        },
+      ), query);
+      assert.deepEqual(await moneyTotal(pool, quotedSchema, capturedProfile.id, "aud"), {
+        commerce_model: "one_time",
+        gross_paid_minor: "400",
+        discount_minor: "0",
+        tax_minor: "0",
+        refunded_minor: "0",
+        disputed_minor: "0",
+        inquiry_minor: "0",
+        net_paid_minor: "400",
+        paid_transaction_count: "1",
+        comped_transaction_count: "0",
+      });
+    });
+
+    await t.test("refund and dispute adjustments cannot change subscription classification", async () => {
+      const subscriptionProfile = await seedProfile(
+        pool,
+        quotedSchema,
+        "test",
+        "2026-01-03T00:00:00Z",
+        null,
+      );
+      await seedLinks(pool, quotedSchema, subscriptionProfile.id, "test", [
+        ["stripe_customer", "cus_subscription_only"],
+        ["stripe_subscription", "sub_subscription_only"],
+      ]);
+      await materializeCustomerCommerceEvent(stripeEvent(
+        "evt_subscription_only_invoice",
+        "invoice.paid",
+        1_807_000_100,
+        {
+          id: "in_subscription_only",
+          customer: "cus_subscription_only",
+          parent: {
+            type: "subscription_details",
+            subscription_details: { subscription: "sub_subscription_only" },
+          },
+          payments: {
+            data: [{
+              type: "payment",
+              payment: {
+                type: "payment_intent",
+                payment_intent: "pi_subscription_only",
+                charge: "ch_subscription_only",
+              },
+            }],
+          },
+          paid: true,
+          status: "paid",
+          amount_paid: 600,
+          currency: "usd",
+          status_transitions: { paid_at: 1_807_000_090 },
+        },
+      ), query);
+      await materializeCustomerCommerceEvent(stripeEvent(
+        "evt_subscription_only_refund",
+        "refund.updated",
+        1_807_000_200,
+        {
+          id: "re_subscription_only",
+          charge: "ch_subscription_only",
+          status: "succeeded",
+          amount: 100,
+          currency: "usd",
+        },
+      ), query);
+      await materializeCustomerCommerceEvent(stripeEvent(
+        "evt_subscription_only_dispute",
+        "charge.dispute.updated",
+        1_807_000_300,
+        {
+          id: "dp_subscription_only",
+          charge: "ch_subscription_only",
+          status: "won",
+          amount: 600,
+          currency: "usd",
+        },
+      ), query);
+      const stored = await pool.query(
+        `select commerce_model from ${quotedSchema}.sidestream_customer_profiles where id = $1`,
+        [subscriptionProfile.id],
+      );
+      assert.equal(stored.rows[0].commerce_model, "subscription");
+      assert.equal(
+        (await moneyTotal(pool, quotedSchema, subscriptionProfile.id, "usd")).refunded_minor,
+        "100",
+      );
+    });
+
+    await t.test("legacy-inferred dates stay on materialization but not canonical profile", async () => {
+      const legacyProfile = await seedProfile(
+        pool,
+        quotedSchema,
+        "test",
+        "2026-01-04T00:00:00Z",
+        null,
+      );
+      await seedLinks(pool, quotedSchema, legacyProfile.id, "test", [
+        ["stripe_customer", "cus_legacy_date"],
+      ]);
+      await materializeCustomerCommerceEvent(stripeEvent(
+        "evt_legacy_date",
+        "customer.subscription.updated",
+        1_808_000_000,
+        {
+          id: "sub_legacy_date",
+          customer: "cus_legacy_date",
+          status: "active",
+          items: {
+            data: [{
+              id: "si_legacy_date",
+              current_period_start: 1_808_000_000,
+              current_period_end: 1_810_592_000,
+            }],
+          },
+        },
+      ), query);
+      const materialization = await pool.query(
+        `select source_confidence, first_upgraded_at, effective_at
+         from ${quotedSchema}.sidestream_customer_commerce_materializations
+         where source_object_id = 'sub_legacy_date'`,
+      );
+      assert.equal(materialization.rows[0].source_confidence, "legacy_inferred");
+      assert.ok(materialization.rows[0].first_upgraded_at);
+      assert.equal(
+        materialization.rows[0].first_upgraded_at.toISOString(),
+        materialization.rows[0].effective_at.toISOString(),
+      );
+      const canonical = await pool.query(
+        `select commerce_model, first_paid_at, last_paid_at,
+           first_upgraded_at, last_upgraded_at
+         from ${quotedSchema}.sidestream_customer_profiles where id = $1`,
+        [legacyProfile.id],
+      );
+      assert.deepEqual(canonical.rows[0], {
+        commerce_model: "subscription",
+        first_paid_at: null,
+        last_paid_at: null,
+        first_upgraded_at: null,
+        last_upgraded_at: null,
+      });
+    });
+
+    await t.test("conflicting verified identity stays unresolved despite a group owner", async () => {
+      const profileA = await seedProfile(
+        pool,
+        quotedSchema,
+        "test",
+        "2026-01-05T00:00:00Z",
+        null,
+      );
+      const profileB = await seedProfile(
+        pool,
+        quotedSchema,
+        "test",
+        "2026-01-06T00:00:00Z",
+        null,
+      );
+      await seedLinks(pool, quotedSchema, profileA.id, "test", [
+        ["stripe_customer", "cus_conflict_a"],
+      ]);
+      await materializeCustomerCommerceEvent(stripeEvent(
+        "evt_conflict_charge",
+        "charge.succeeded",
+        1_809_000_000,
+        {
+          id: "ch_conflict",
+          customer: "cus_conflict_a",
+          paid: true,
+          status: "succeeded",
+          amount_captured: 100,
+          currency: "usd",
+        },
+      ), query);
+      await seedLinks(pool, quotedSchema, profileB.id, "test", [
+        ["stripe_payment_intent", "pi_conflict_b"],
+      ]);
+      await materializeCustomerCommerceEvent(stripeEvent(
+        "evt_conflict_pi",
+        "payment_intent.succeeded",
+        1_809_000_100,
+        {
+          id: "pi_conflict_b",
+          customer: "cus_conflict_a",
+          latest_charge: "ch_conflict",
+          status: "succeeded",
+          amount_received: 100,
+          currency: "usd",
+        },
+      ), query);
+      const conflict = await pool.query(
+        `select profile_id, identity_conflict
+         from ${quotedSchema}.sidestream_customer_commerce_materializations
+         where source_object_type = 'payment_intent'
+           and source_object_id = 'pi_conflict_b'`,
+      );
+      assert.deepEqual(conflict.rows[0], {
+        profile_id: null,
+        identity_conflict: true,
+      });
+      assert.equal(
+        (await moneyTotal(pool, quotedSchema, profileA.id, "usd")).gross_paid_minor,
+        "100",
+      );
+      assert.equal(
+        (await pool.query(
+          `select count(*)::int as count
+           from ${quotedSchema}.sidestream_customer_money_totals where profile_id = $1`,
+          [profileB.id],
+        )).rows[0].count,
+        0,
+      );
     });
 
     await t.test("profile dates come only from commerce facts and entitlement stays untouched", async () => {
@@ -405,7 +748,7 @@ test("Customer commerce materializes idempotent per-currency Stripe money truth"
       );
       await materializeCustomerCommerceEvent(unresolvedEvent, query);
       let fact = await pool.query(
-        `select profile_id from ${quotedSchema}.sidestream_customer_commerce_facts
+        `select profile_id from ${quotedSchema}.sidestream_customer_commerce_materializations
          where source_object_id = 'ch_unresolved'`,
       );
       assert.equal(fact.rows[0].profile_id, null);
@@ -413,7 +756,7 @@ test("Customer commerce materializes idempotent per-currency Stripe money truth"
       const later = await seedProfile(pool, quotedSchema, "test", "2026-02-01T00:00:00Z", null);
       await seedLinks(pool, quotedSchema, later.id, "test", [["stripe_customer", "cus_later"]]);
       fact = await pool.query(
-        `select profile_id from ${quotedSchema}.sidestream_customer_commerce_facts
+        `select profile_id from ${quotedSchema}.sidestream_customer_commerce_materializations
          where source_object_id = 'ch_unresolved'`,
       );
       assert.equal(fact.rows[0].profile_id, later.id);
@@ -439,7 +782,7 @@ test("Customer commerce materializes idempotent per-currency Stripe money truth"
         throw error;
       }
       fact = await pool.query(
-        `select profile_id from ${quotedSchema}.sidestream_customer_commerce_facts
+        `select profile_id from ${quotedSchema}.sidestream_customer_commerce_materializations
          where source_object_id = 'ch_unresolved'`,
       );
       assert.equal(fact.rows[0].profile_id, profile.id);
@@ -481,7 +824,7 @@ async function seedLinks(pool, quotedSchema, profileId, namespace, links) {
 async function moneyTotal(pool, quotedSchema, profileId, currency) {
   const result = await pool.query(
     `select commerce_model, gross_paid_minor, discount_minor, tax_minor,
-       refunded_minor, disputed_minor, net_paid_minor, paid_transaction_count,
+       refunded_minor, disputed_minor, inquiry_minor, net_paid_minor, paid_transaction_count,
        comped_transaction_count
      from ${quotedSchema}.sidestream_customer_money_totals
      where profile_id = $1 and currency = $2`,

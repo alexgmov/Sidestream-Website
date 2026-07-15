@@ -44,6 +44,7 @@ test("Stripe events use a durable claimed queue with bounded retry and protected
     "POSTGRES_PRISMA_URL",
     "POSTGRES_URL_NON_POOLING",
     "SIDESTREAM_LICENSE_NAMESPACE",
+    "SIDESTREAM_TEST_API_HOSTS",
     "VERCEL_ENV",
     "POSTGRES_SSL",
     "POSTGRES_POOL_MAX",
@@ -423,11 +424,158 @@ test("Stripe events use a durable claimed queue with bounded retry and protected
       assert.equal(
         (await pool.query(
           `select count(*)::int as count
-           from public.sidestream_customer_commerce_facts
+           from public.sidestream_customer_commerce_materializations
            where source_object_id = 'ch_queue_money'`,
         )).rows[0].count,
         1,
       );
+    });
+
+    await t.test("commerce failure preserves entitlement order and retries money independently", async () => {
+      await resetEvents(pool);
+      runtime.stub.reset();
+      const profile = await pool.query(
+        `insert into public.sidestream_customer_profiles (license_namespace)
+         values ('test') returning id`,
+      );
+      await pool.query(
+        `insert into public.sidestream_customer_identity_links (
+           profile_id, license_namespace, link_type, link_value
+         ) values ($1, 'test', 'stripe_customer', 'cus_commerce_isolation')`,
+        [profile.rows[0].id],
+      );
+      const event = stripeEvent(
+        "evt_commerce_isolation",
+        "checkout.session.completed",
+        1_700_004_600,
+        {
+          id: "cs_commerce_isolation",
+          customer: "cus_commerce_isolation",
+          mode: "payment",
+          payment_status: "paid",
+          amount_total: 500,
+          currency: "usd",
+        },
+      );
+      await runtime.stripeEvents.recordStripeEvent(event, JSON.stringify(event), query);
+      const commerceFailureQuery = async (text, params = []) => {
+        if (text.includes("sidestream_customer_commerce_apply")) {
+          const error = new Error("commerce projection unavailable");
+          error.code = "commerce_projection_unavailable";
+          throw error;
+        }
+        return query(text, params);
+      };
+      const failed = await runtime.stripeEvents.drainStripeEventQueue({
+        batchSize: 1,
+        createClaimToken: () => "00000000-0000-4000-8000-000000000008",
+        query: commerceFailureQuery,
+        random: () => 0,
+        log: () => {},
+      });
+      assert.deepEqual(failed, {
+        claimed: 1,
+        processed: 0,
+        ignored: 0,
+        retryable: 1,
+        deadLetter: 0,
+      });
+      assert.deepEqual(runtime.stub.calls, [[
+        "checkout",
+        event.data.object,
+        { eventId: event.id, created: event.created },
+      ]]);
+      let stored = await pool.query(
+        `select processing_status, last_error_code, terminal_at
+         from public.sidestream_stripe_events where event_id = $1`,
+        [event.id],
+      );
+      assert.deepEqual(stored.rows[0], {
+        processing_status: "retryable",
+        last_error_code: "commerce_projection_unavailable",
+        terminal_at: null,
+      });
+      assert.equal(
+        (await pool.query(
+          `select count(*)::int as count
+           from public.sidestream_customer_commerce_materializations
+           where source_object_id = 'cs_commerce_isolation'`,
+        )).rows[0].count,
+        0,
+      );
+
+      await pool.query(
+        `update public.sidestream_stripe_events set next_attempt_at = now() - interval '1 second'
+         where event_id = $1`,
+        [event.id],
+      );
+      const recovered = await runtime.stripeEvents.drainStripeEventQueue({
+        batchSize: 1,
+        createClaimToken: () => "00000000-0000-4000-8000-000000000009",
+        query,
+        log: () => {},
+      });
+      assert.deepEqual(recovered, {
+        claimed: 1,
+        processed: 1,
+        ignored: 0,
+        retryable: 0,
+        deadLetter: 0,
+      });
+      assert.equal(runtime.stub.calls.length, 2);
+      assert.deepEqual(runtime.stub.calls[1], runtime.stub.calls[0]);
+      stored = await pool.query(
+        `select processing_status, outcome, terminal_at is not null as terminal
+         from public.sidestream_stripe_events where event_id = $1`,
+        [event.id],
+      );
+      assert.deepEqual(stored.rows[0], {
+        processing_status: "processed",
+        outcome: "checkout_fulfilled",
+        terminal: true,
+      });
+      const total = await pool.query(
+        `select gross_paid_minor, net_paid_minor
+         from public.sidestream_customer_money_totals where profile_id = $1 and currency = 'usd'`,
+        [profile.rows[0].id],
+      );
+      assert.deepEqual(total.rows[0], {
+        gross_paid_minor: "500",
+        net_paid_minor: "500",
+      });
+    });
+
+    await t.test("trusted deployment namespace rejects signed livemode mismatch", async () => {
+      runtime.stub.reset();
+      let queried = false;
+      await assert.rejects(
+        runtime.stripeEvents.reconcileStripeEvent(
+          {
+            ...stripeEvent(
+              "evt_live_mismatch",
+              "checkout.session.completed",
+              1_700_004_700,
+              {
+                id: "cs_live_mismatch",
+                payment_status: "paid",
+                amount_total: 100,
+                currency: "usd",
+              },
+            ),
+            livemode: true,
+          },
+          async () => {
+            queried = true;
+            return { rows: [] };
+          },
+        ),
+        (error) => {
+          assert.equal(error.code, "stripe_event_namespace_mismatch");
+          return true;
+        },
+      );
+      assert.equal(queried, false);
+      assert.deepEqual(runtime.stub.calls, []);
     });
 
     await t.test("subscription reconciliation uses canonical Stripe truth and event ordering", async () => {
@@ -702,7 +850,11 @@ test("Stripe events use a durable claimed queue with bounded retry and protected
     });
   } finally {
     if (runtime.accountPostgres) {
-      await runtime.accountPostgres.getPostgresPool().end().catch(() => {});
+      await runtime.accountPostgres.getPostgresPool({
+        connectionString: postgres.connectionString,
+        environmentVariable: "SIDESTREAM_TEST_POSTGRES_URL",
+        pooled: true,
+      }).end().catch(() => {});
     }
     await pool.end().catch(() => {});
     await postgres.stop();
@@ -808,6 +960,9 @@ export function waitUntil() {}
     const customerCommerceUrl = pathToFileURL(
       join(repositoryRoot, "api/_lib/customer-commerce.ts"),
     ).href;
+    const licenseEnvironmentUrl = pathToFileURL(
+      join(repositoryRoot, "api/_lib/license-environment.ts"),
+    ).href;
     const vercelFunctionsStubUrl = pathToFileURL(vercelFunctionsStubPath).href;
     const stripeEventsUrl = await writeAdaptedModule(
       directory,
@@ -816,6 +971,7 @@ export function waitUntil() {}
       {
         "./account.js": stubUrl,
         "./customer-commerce.js": customerCommerceUrl,
+        "./license-environment.js": licenseEnvironmentUrl,
       },
     );
     const webhookUrl = await writeAdaptedModule(
@@ -979,18 +1135,19 @@ async function reservePort() {
 
 function configureAccountRuntime(connectionString) {
   for (const name of [
+    "SIDESTREAM_POSTGRES_URL",
     "SIDESTREAM_POSTGRES_PRISMA_URL",
     "SIDESTREAM_POSTGRES_URL_NON_POOLING",
-    "SIDESTREAM_TEST_POSTGRES_URL",
     "POSTGRES_URL",
     "POSTGRES_PRISMA_URL",
     "POSTGRES_URL_NON_POOLING",
   ]) {
     delete process.env[name];
   }
-  process.env.SIDESTREAM_POSTGRES_URL = connectionString;
-  process.env.SIDESTREAM_LICENSE_NAMESPACE = "production";
-  process.env.VERCEL_ENV = "production";
+  process.env.SIDESTREAM_TEST_POSTGRES_URL = connectionString;
+  process.env.SIDESTREAM_TEST_API_HOSTS = "test.sidestream.local";
+  process.env.SIDESTREAM_LICENSE_NAMESPACE = "test";
+  process.env.VERCEL_ENV = "preview";
   process.env.POSTGRES_SSL = "0";
   process.env.POSTGRES_POOL_MAX = "12";
 }

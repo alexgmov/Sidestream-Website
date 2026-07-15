@@ -540,6 +540,10 @@ export function __setPostgresIntegrationStripeClient(value: Stripe | null) {
     replacements: {
       "./account.js": accountStubUrl,
       "./customer-commerce.js": customerCommerceUrl,
+      "./license-environment.js": new URL(
+        "../api/_lib/license-environment.ts",
+        import.meta.url,
+      ).href,
     },
   });
 

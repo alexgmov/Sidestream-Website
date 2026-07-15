@@ -49,6 +49,7 @@ export type CustomerCommerceObservation = Readonly<{
   taxMinor: number;
   refundedMinor: number;
   disputedMinor: number;
+  inquiryMinor: number;
   netPaidMinor: number;
   paidAt: string | null;
   upgradedAt: string | null;
@@ -89,17 +90,14 @@ const PAYMENT_MODE_METADATA_KEYS = [
   "sidestream_commerce_model",
   "commerce_model",
 ] as const;
-const ACTIVE_DISPUTE_STATUSES = new Set([
+const FORMAL_DISPUTE_STATUSES = new Set([
   "needs_response",
   "under_review",
-  "warning_needs_response",
-  "warning_under_review",
   "lost",
 ]);
-const RETAINED_DISPUTE_STATUSES = new Set([
-  "won",
-  "warning_closed",
-  "prevented",
+const INQUIRY_DISPUTE_STATUSES = new Set([
+  "warning_needs_response",
+  "warning_under_review",
 ]);
 const ACTIVE_SUBSCRIPTION_STATUSES = new Set(["active", "trialing", "past_due"]);
 
@@ -119,45 +117,46 @@ export class CustomerCommerceNormalizationError extends TypeError {
  */
 export function normalizeCustomerCommerceEvent(
   event: Stripe.Event,
+  trustedNamespace: CustomerCommerceNamespace,
 ): readonly CustomerCommerceObservation[] {
   assertEvent(event);
+  assertTrustedNamespace(event, trustedNamespace);
   const object = recordValue(event.data?.object);
   const sourceObjectId = boundedId(object.id);
   if (!sourceObjectId) return [];
 
-  const namespace: CustomerCommerceNamespace = event.livemode ? "production" : "test";
   const eventCreatedAt = unixTimestamp(event.created, "event_created");
   const type = event.type;
 
   if (type.startsWith("checkout.session.")) {
-    return normalizeCheckout(event, object, namespace, eventCreatedAt, sourceObjectId);
+    return normalizeCheckout(event, object, trustedNamespace, eventCreatedAt, sourceObjectId);
   }
   if (type.startsWith("payment_intent.")) {
-    return normalizePaymentIntent(event, object, namespace, eventCreatedAt, sourceObjectId);
+    return normalizePaymentIntent(event, object, trustedNamespace, eventCreatedAt, sourceObjectId);
   }
   if (type.startsWith("charge.dispute.")) {
-    return normalizeDispute(event, object, namespace, eventCreatedAt, sourceObjectId);
+    return normalizeDispute(event, object, trustedNamespace, eventCreatedAt, sourceObjectId);
   }
   if (type.startsWith("charge.")) {
-    return normalizeCharge(event, object, namespace, eventCreatedAt, sourceObjectId);
+    return normalizeCharge(event, object, trustedNamespace, eventCreatedAt, sourceObjectId);
   }
   if (type.startsWith("refund.")) {
-    return normalizeRefund(event, object, namespace, eventCreatedAt, sourceObjectId);
+    return normalizeRefund(event, object, trustedNamespace, eventCreatedAt, sourceObjectId);
   }
   if (type.startsWith("invoice.")) {
-    return normalizeInvoice(event, object, namespace, eventCreatedAt, sourceObjectId);
+    return normalizeInvoice(event, object, trustedNamespace, eventCreatedAt, sourceObjectId);
   }
   if (type.startsWith("customer.subscription.")) {
-    return normalizeSubscription(event, object, namespace, eventCreatedAt, sourceObjectId);
+    return normalizeSubscription(event, object, trustedNamespace, eventCreatedAt, sourceObjectId);
   }
   if (type.startsWith("customer.discount.") || type.startsWith("discount.")) {
-    return normalizeDiscount(event, object, namespace, eventCreatedAt, sourceObjectId);
+    return normalizeDiscount(event, object, trustedNamespace, eventCreatedAt, sourceObjectId);
   }
   if (type.startsWith("customer.balance_transaction.")) {
     return normalizeManualAdjustment(
       event,
       object,
-      namespace,
+      trustedNamespace,
       eventCreatedAt,
       sourceObjectId,
     );
@@ -169,16 +168,16 @@ export function normalizeCustomerCommerceEvent(
 export async function materializeCustomerCommerceEvent(
   event: Stripe.Event,
   query: CustomerCommerceQuery,
+  trustedNamespace: CustomerCommerceNamespace,
 ): Promise<CustomerCommerceProjectionResult> {
-  const observations = normalizeCustomerCommerceEvent(event);
-  const namespace: CustomerCommerceNamespace = event.livemode ? "production" : "test";
+  const observations = normalizeCustomerCommerceEvent(event, trustedNamespace);
   if (observations.length === 0) {
     return Object.freeze({
       recognized: false,
       observationCount: 0,
       applied: 0,
       stale: 0,
-      licenseNamespace: namespace,
+      licenseNamespace: trustedNamespace,
     });
   }
   const result = await query(
@@ -191,7 +190,7 @@ export async function materializeCustomerCommerceEvent(
     observationCount: observations.length,
     applied: nonnegativeInteger(appliedResult.applied),
     stale: nonnegativeInteger(appliedResult.stale),
-    licenseNamespace: namespace,
+    licenseNamespace: trustedNamespace,
   });
 }
 
@@ -232,6 +231,7 @@ function normalizeCheckout(
     taxMinor: tax,
     refundedMinor: 0,
     disputedMinor: 0,
+    inquiryMinor: 0,
     paidAt: successful && gross > 0 ? timing.effectiveAt : null,
     upgradedAt: successful ? timing.effectiveAt : null,
     timing,
@@ -251,7 +251,7 @@ function normalizePaymentIntent(
   const gross = successful ? moneyOrFallback(object.amount_received, object.amount) : 0;
   const currency = monetaryCurrency(object.currency, gross);
   const explicitModel = metadataModel(object);
-  const timing = eventTiming(object, eventCreatedAt);
+  const timing = eventTiming(object, eventCreatedAt, successful);
   return [observation({
     event,
     object,
@@ -269,6 +269,7 @@ function normalizePaymentIntent(
     taxMinor: 0,
     refundedMinor: 0,
     disputedMinor: 0,
+    inquiryMinor: 0,
     paidAt: successful && gross > 0 ? timing.effectiveAt : null,
     upgradedAt: successful ? timing.effectiveAt : null,
     timing,
@@ -286,11 +287,11 @@ function normalizeCharge(
   const state = stringValue(object.status) || chargeEventState(event.type);
   const successful = (object.paid === true || state === "succeeded") &&
     object.captured !== false;
-  const gross = successful ? money(object.amount) : 0;
+  const gross = successful ? moneyOrFallback(object.amount_captured, object.amount) : 0;
   const refunded = successful ? Math.min(gross, money(object.amount_refunded)) : 0;
   const currency = monetaryCurrency(object.currency, gross, refunded);
   const explicitModel = metadataModel(object);
-  const timing = eventTiming(object, eventCreatedAt);
+  const timing = eventTiming(object, eventCreatedAt, successful);
   return [observation({
     event,
     object,
@@ -308,6 +309,7 @@ function normalizeCharge(
     taxMinor: 0,
     refundedMinor: refunded,
     disputedMinor: 0,
+    inquiryMinor: 0,
     paidAt: successful && gross > 0 ? timing.effectiveAt : null,
     upgradedAt: successful ? timing.effectiveAt : null,
     timing,
@@ -326,7 +328,7 @@ function normalizeRefund(
   const successful = state === "succeeded";
   const refunded = successful ? money(object.amount) : 0;
   const currency = monetaryCurrency(object.currency, refunded);
-  const timing = eventTiming(object, eventCreatedAt);
+  const timing = eventTiming(object, eventCreatedAt, true);
   return [observation({
     event,
     object,
@@ -343,6 +345,7 @@ function normalizeRefund(
     taxMinor: 0,
     refundedMinor: refunded,
     disputedMinor: 0,
+    inquiryMinor: 0,
     paidAt: null,
     upgradedAt: null,
     timing,
@@ -358,13 +361,13 @@ function normalizeDispute(
   sourceObjectId: string,
 ) {
   const state = stringValue(object.status) || disputeEventState(event.type);
-  const active = ACTIVE_DISPUTE_STATUSES.has(state);
-  // warning_closed and prevented retain money just like won. Unknown terminal
-  // values fail closed in storage as zero rather than silently reducing net.
-  const retained = RETAINED_DISPUTE_STATUSES.has(state);
-  const disputed = active && !retained ? money(object.amount) : 0;
-  const currency = monetaryCurrency(object.currency, disputed);
-  const timing = eventTiming(object, eventCreatedAt);
+  // Stripe inquiry warnings expose money to risk without removing it. Formal
+  // disputes reduce net only while open or lost; won/warning_closed/prevented
+  // and unknown terminal values retain money.
+  const disputed = FORMAL_DISPUTE_STATUSES.has(state) ? money(object.amount) : 0;
+  const inquiry = INQUIRY_DISPUTE_STATUSES.has(state) ? money(object.amount) : 0;
+  const currency = monetaryCurrency(object.currency, disputed, inquiry);
+  const timing = eventTiming(object, eventCreatedAt, true);
   return [observation({
     event,
     object,
@@ -381,6 +384,7 @@ function normalizeDispute(
     taxMinor: 0,
     refundedMinor: 0,
     disputedMinor: disputed,
+    inquiryMinor: inquiry,
     paidAt: null,
     upgradedAt: null,
     timing,
@@ -409,6 +413,7 @@ function normalizeInvoice(
   const currency = monetaryCurrency(object.currency, gross, discount, tax);
   const explicitModel = metadataModel(object);
   const zeroCost = successful && gross === 0;
+  const subscriptionId = invoiceSubscriptionId(object);
   const timing = invoiceTiming(object, eventCreatedAt);
   return [observation({
     event,
@@ -419,7 +424,7 @@ function normalizeInvoice(
     sourceObjectId,
     factKind: "payment",
     commerceModel: explicitModel || (zeroCost ? "comped" :
-      hasId(object.subscription) ? "subscription" : "one_time"),
+      subscriptionId ? "subscription" : "one_time"),
     state,
     currency,
     grossPaidMinor: gross,
@@ -427,6 +432,7 @@ function normalizeInvoice(
     taxMinor: tax,
     refundedMinor: 0,
     disputedMinor: 0,
+    inquiryMinor: 0,
     paidAt: successful && gross > 0 ? timing.effectiveAt : null,
     upgradedAt: successful ? timing.effectiveAt : null,
     timing,
@@ -448,6 +454,7 @@ function normalizeSubscription(
   const state = stringValue(object.status) || subscriptionEventState(event.type);
   const timing = eventTiming(object, eventCreatedAt);
   const active = ACTIVE_SUBSCRIPTION_STATUSES.has(state);
+  const billingPeriod = subscriptionBillingPeriod(object);
   return [observation({
     event,
     object,
@@ -464,12 +471,13 @@ function normalizeSubscription(
     taxMinor: 0,
     refundedMinor: 0,
     disputedMinor: 0,
+    inquiryMinor: 0,
     paidAt: null,
     upgradedAt: active ? timing.effectiveAt : null,
     timing,
     source: metadataModel(object) ? "manual_metadata" : "stripe_object",
-    billingPeriodStart: optionalUnixTimestamp(object.current_period_start),
-    billingPeriodEnd: optionalUnixTimestamp(object.current_period_end),
+    billingPeriodStart: billingPeriod.start,
+    billingPeriodEnd: billingPeriod.end,
   })];
 }
 
@@ -497,6 +505,7 @@ function normalizeDiscount(
     taxMinor: 0,
     refundedMinor: 0,
     disputedMinor: 0,
+    inquiryMinor: 0,
     paidAt: null,
     upgradedAt: null,
     timing,
@@ -529,6 +538,7 @@ function normalizeManualAdjustment(
     taxMinor: 0,
     refundedMinor: 0,
     disputedMinor: 0,
+    inquiryMinor: 0,
     paidAt: null,
     upgradedAt: explicitUpgrade,
     timing,
@@ -569,6 +579,7 @@ function observation(input: ObservationInput): CustomerCommerceObservation {
     taxMinor: input.taxMinor,
     refundedMinor: input.refundedMinor,
     disputedMinor: input.disputedMinor,
+    inquiryMinor: input.inquiryMinor,
     netPaidMinor: Math.max(
       0,
       input.grossPaidMinor - input.refundedMinor - input.disputedMinor,
@@ -648,12 +659,20 @@ function commerceAliases(
   object: Record<string, unknown>,
 ) {
   const aliases: CustomerCommerceAlias[] = [];
-  addAlias(aliases, sourceObjectType, sourceObjectId);
+  addAlias(
+    aliases,
+    sourceObjectType === "subscription" ? "subscription_lifecycle" : sourceObjectType,
+    sourceObjectId,
+  );
   addAlias(aliases, "payment_intent", object.payment_intent);
   addAlias(aliases, "charge", object.charge);
   addAlias(aliases, "charge", object.latest_charge);
   addAlias(aliases, "invoice", object.invoice);
   addAlias(aliases, "checkout_session", object.checkout_session);
+  for (const payment of invoicePayments(object)) {
+    addAlias(aliases, "payment_intent", payment.payment_intent);
+    addAlias(aliases, "charge", payment.charge);
+  }
   return Object.freeze(aliases);
 }
 
@@ -665,7 +684,10 @@ function identityEvidence(
   const evidence: CustomerCommerceIdentityEvidence[] = [];
   addEvidence(evidence, "stripe_customer", object.customer);
   addEvidence(evidence, "stripe_payment_intent", object.payment_intent);
-  addEvidence(evidence, "stripe_subscription", object.subscription);
+  addEvidence(evidence, "stripe_subscription", invoiceSubscriptionId(object));
+  for (const payment of invoicePayments(object)) {
+    addEvidence(evidence, "stripe_payment_intent", payment.payment_intent);
+  }
   if (sourceObjectType === "checkout_session") {
     addEvidence(evidence, "stripe_checkout_session", sourceObjectId);
   }
@@ -719,11 +741,11 @@ function aliasPriority(type: string) {
     payment_intent: 1,
     invoice: 2,
     checkout_session: 3,
-    subscription: 4,
     refund: 5,
     dispute: 5,
     discount: 6,
     manual_adjustment: 6,
+    subscription_lifecycle: 6,
   } as Record<string, number>)[type] ?? 10;
 }
 
@@ -774,6 +796,40 @@ function moneyOrFallback(primary: unknown, fallback: unknown) {
 function sumAmounts(value: unknown) {
   if (!Array.isArray(value)) return 0;
   return value.reduce((total, item) => total + money(recordValue(item).amount), 0);
+}
+
+function invoicePayments(object: Record<string, unknown>) {
+  const data = recordValue(object.payments).data;
+  if (!Array.isArray(data)) return [];
+  return data.map((entry) => recordValue(recordValue(entry).payment));
+}
+
+function invoiceSubscriptionId(object: Record<string, unknown>) {
+  const current = recordValue(recordValue(object.parent).subscription_details).subscription;
+  return boundedId(current) || boundedId(object.subscription);
+}
+
+function subscriptionBillingPeriod(object: Record<string, unknown>) {
+  const data = recordValue(object.items).data;
+  const items = Array.isArray(data) ? data.map(recordValue) : [];
+  const starts = items.map((item) => unixSeconds(item.current_period_start))
+    .filter((value): value is number => value !== null);
+  const ends = items.map((item) => unixSeconds(item.current_period_end))
+    .filter((value): value is number => value !== null);
+  const legacyStart = unixSeconds(object.current_period_start);
+  const legacyEnd = unixSeconds(object.current_period_end);
+  const start = starts.length > 0 ? Math.min(...starts) : legacyStart;
+  const end = ends.length > 0 ? Math.max(...ends) : legacyEnd;
+  return {
+    start: start === null ? null : unixTimestamp(start, "billing_period_start"),
+    end: end === null ? null : unixTimestamp(end, "billing_period_end"),
+  } as const;
+}
+
+function unixSeconds(value: unknown) {
+  if (value === null || value === undefined || value === "") return null;
+  const seconds = typeof value === "number" ? value : Number(value);
+  return Number.isSafeInteger(seconds) && seconds >= 0 ? seconds : null;
 }
 
 function optionalUnixTimestamp(value: unknown) {
@@ -837,6 +893,19 @@ function assertEvent(event: Stripe.Event) {
     !event.data || typeof event.data !== "object"
   ) {
     throw new CustomerCommerceNormalizationError("invalid_stripe_event");
+  }
+}
+
+function assertTrustedNamespace(
+  event: Stripe.Event,
+  trustedNamespace: CustomerCommerceNamespace,
+) {
+  if (trustedNamespace !== "production" && trustedNamespace !== "test") {
+    throw new CustomerCommerceNormalizationError("invalid_trusted_namespace");
+  }
+  const signedEventNamespace = event.livemode ? "production" : "test";
+  if (signedEventNamespace !== trustedNamespace) {
+    throw new CustomerCommerceNormalizationError("stripe_event_namespace_mismatch");
   }
 }
 
