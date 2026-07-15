@@ -21,6 +21,11 @@ const INTERNAL_CRONS = Object.freeze([
     schedule: "13 4 * * *",
     source: "api/internal/maintenance.ts",
   },
+  {
+    path: "/api/internal/customer-usage/sync",
+    schedule: "27 5 * * *",
+    source: "api/internal/customer-usage/sync.ts",
+  },
 ]);
 
 const RELEASE_SOURCES = Object.freeze([
@@ -57,7 +62,7 @@ export async function validateVercelContract(root = REPOSITORY_ROOT) {
       `${expected.source} must explicitly admit Vercel Cron GET`,
     );
     requireCondition(
-      !/SIDESTREAM_(?:DOWNLOAD_LEADS_REPLAY|STRIPE_EVENTS_PROCESS|MAINTENANCE)_SECRET/.test(source),
+      !/SIDESTREAM_(?:DOWNLOAD_LEADS_REPLAY|STRIPE_EVENTS_PROCESS|MAINTENANCE|CUSTOMER_USAGE)_SECRET/.test(source),
       `${expected.source} must not introduce a second scheduler secret`,
     );
   }

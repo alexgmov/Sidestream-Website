@@ -36,7 +36,7 @@ function knownBaselineSnapshot(rowSecurityEnabled = false) {
 
 test("migration files are ordered, checksummed, and append-only baseline files are pinned", async () => {
   const migrations = validateMigrationFiles(await loadMigrationFiles());
-  assert.equal(migrations.length, 21);
+  assert.equal(migrations.length, 22);
   assert.deepEqual(
     migrations.map((migration) => migration.filename),
     [...migrations.map((migration) => migration.filename)].sort(),
@@ -57,9 +57,50 @@ test("migration files are ordered, checksummed, and append-only baseline files a
     "20260715120000_add_customer_360_core.sql",
     "20260715121000_add_customer_identity_links.sql",
     "20260715122000_add_customer_commerce_ledger.sql",
+    "20260715123000_add_customer_usage_aggregates.sql",
   ]) {
     assert.ok(migrations.some((migration) => migration.filename === filename));
   }
+});
+
+test("Customer usage migration stores private UTC aggregates without raw telemetry", async () => {
+  const migration = await readFile(new URL(
+    "../db/migrations/20260715123000_add_customer_usage_aggregates.sql",
+    import.meta.url,
+  ), "utf8");
+  assert.match(migration, /create table public\.sidestream_customer_usage_daily/);
+  assert.match(migration, /create table public\.sidestream_customer_usage_sync_state/);
+  assert.match(migration, /primary key \(license_namespace, install_id_hash, activity_day\)/);
+  assert.match(migration, /checkpoint_received_at timestamptz/);
+  assert.match(migration, /checkpoint_telemetry_event_id text/);
+  assert.match(migration, /enable row level security/);
+  for (const column of [
+    "first_app_use_at",
+    "last_app_use_at",
+    "first_download_attempt_at",
+    "last_download_attempt_at",
+    "first_download_success_at",
+    "last_download_success_at",
+    "download_attempt_count",
+    "download_outcome_count",
+    "download_success_count",
+    "download_failure_count",
+    "download_cancelled_count",
+    "download_pending_count",
+    "download_unknown_count",
+    "usage_active_days_count",
+    "usage_active_days_7",
+    "usage_active_days_30",
+    "download_frequency_30d",
+    "usage_install_count",
+    "usage_synced_at",
+    "usage_source_freshness_at",
+  ]) {
+    assert.match(migration, new RegExp(`\\b${column}\\b`));
+  }
+  assert.doesNotMatch(migration, /\bjsonb?\b/i);
+  assert.doesNotMatch(migration, /search[_ ]?(?:text|query)|user[_ ]?agent|ip_address|url|title/i);
+  assert.doesNotMatch(migration, /gmail_campaign_hash/i);
 });
 
 test("Customer commerce migration keeps money currency-separated and entitlement-independent", async () => {

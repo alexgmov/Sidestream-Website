@@ -12,6 +12,7 @@ export const RUNTIME_DATABASE_ENV_NAMES = Object.freeze([
   "POSTGRES_URL",
   "POSTGRES_PRISMA_URL",
   "POSTGRES_URL_NON_POOLING",
+  "SIDESTREAM_TELEMETRY_POSTGRES_URL",
 ]);
 
 const POSTGRES_INTEGRATION_TESTS = Object.freeze([
@@ -21,6 +22,7 @@ const POSTGRES_INTEGRATION_TESTS = Object.freeze([
   "tests/maintenance.test.mjs",
   "tests/stripe-events.test.mjs",
   "tests/single-device-postgres.test.mjs",
+  "tests/customer-360/usage-sync-postgres.test.mjs",
 ]);
 
 export function requireSafeTestDatabaseUrl(environment = process.env) {

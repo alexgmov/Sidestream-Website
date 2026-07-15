@@ -11,6 +11,7 @@ const REQUIRED_FUNCTIONS = Object.freeze([
   "api/internal/stripe-events/process.func",
   "api/internal/download-leads/replay.func",
   "api/internal/maintenance.func",
+  "api/internal/customer-usage/sync.func",
 ]);
 
 export async function verifyVercelBuild(outputRoot = OUTPUT_ROOT) {
