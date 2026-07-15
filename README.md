@@ -149,12 +149,25 @@ operator response.
 | `/api/internal/download-leads/replay` | `GET`, `POST` | Protected `{ok,summary,nextCursor,hasMore}`; scheduled GET is fixed at 25/delete, manual POST accepts bounded controls |
 | `/api/internal/maintenance` | `GET` | Protected `{ok,outcome,durationMs,batchSize,hasMore,counts}` |
 
-All internal routes require `Authorization: Bearer <CRON_SECRET>`. A missing or
-invalid 16-512 character configuration returns `503`; missing/wrong auth returns
-`401`. `vercel.json` schedules Stripe processing every five minutes, lead replay
-every ten minutes, and maintenance daily at `04:13` UTC.
+For `/api/activation/status`, a parsed JSON body with missing or invalid required
+fields returns `400 invalid_request`. Invalid JSON currently escapes the handler
+as an unshaped platform `5xx`; it is not a documented `400` response. Changing
+that behavior requires a separately owned handler fix and regression test.
+
+All internal routes require `Authorization: Bearer <CRON_SECRET>`. The one shared
+token must be 16-512 printable, non-space ASCII characters (`U+0021`-`U+007E`)
+so all three route validators accept the same header; generate 32 random bytes
+as 64 hexadecimal characters in the approved secret manager. A missing or weak
+length configuration returns `503`; missing/wrong auth returns `401`.
+`vercel.json` schedules Stripe processing every five minutes, lead replay every
+ten minutes, and maintenance daily at `04:13` UTC.
 
 Release platform aliases are fail-closed and shared by both release routes:
+
+The selector URL-decodes, trims, and lowercases `platform` before matching, so
+the listed aliases are case-insensitive and may have surrounding decoded
+whitespace. An omitted parameter defaults to Mac; an empty value after trimming
+or any unknown normalized value returns `404`.
 
 | `platform` | Public platform | Manifest/artifact |
 | --- | --- | --- |
@@ -200,7 +213,7 @@ Key hardened environment/configuration ownership:
 
 | Area | Contract |
 | --- | --- |
-| Cron | One stable `CRON_SECRET`, 16-512 characters, protects Stripe process, lead replay, and maintenance routes |
+| Cron | One stable `CRON_SECRET`, 16-512 printable non-space ASCII characters (`U+0021`-`U+007E`), protects Stripe process, lead replay, and maintenance routes; use a secret-manager-generated 64-character hexadecimal token |
 | Pool | `POSTGRES_POOL_MAX` defaults to 4 (2-20); idle/connection/query/statement timeout variables are bounded and documented in the runbook |
 | Limiter/lead | `SIDESTREAM_RATE_LIMIT_HASH_SECRET` and `SIDESTREAM_LEAD_HASH_SECRET` are stable server-only HMAC values of at least 32 characters; `SIDESTREAM_DOWNLOAD_LEADS_BLOB_PREFIX` selects the private fallback prefix |
 | Checkout intent | Confirmation is fixed at 10 minutes, intent at 24 hours; Product/Price selection uses `SIDESTREAM_PRO_PRODUCT_ID`, `SIDESTREAM_PRO_PRICE_ID`, and compatible `SIDESTREAM_UNLIMITED_PRICE_ID` |
@@ -475,7 +488,8 @@ Use the narrowest relevant check after edits:
 - Vercel compiles TypeScript API routes to Node ESM. Keep relative imports between API route files extension-explicit, such as `../_lib/account.js`; extensionless helper imports can pass local typecheck but fail in production with `ERR_MODULE_NOT_FOUND`.
 - Local account/billing testing also requires Vercel dev plus env vars: a server-only Postgres connection string (`SIDESTREAM_POSTGRES_URL` preferred, `POSTGRES_URL` fallback), `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, and `SIDESTREAM_BASE_URL`. `SIDESTREAM_LICENSE_HASH_SECRET` must be a stable high-entropy server-only value for a fresh environment and must be preserved across database credential rotations. Production predates that dedicated variable, so its existing device hashes use the current Postgres connection string fallback; do not introduce a different random value during rollout without a dual-hash migration, or existing devices will fail with `device_mismatch`. Preserve the existing fallback for this compatibility release, or set the dedicated variable to the exact current fallback value, then plan a separate dual-hash rotation. `SIDESTREAM_PRO_PRODUCT_ID` defaults to `prod_UpwXh6oO1OmPyQ`; `SIDESTREAM_PRO_PRICE_ID` may override the active $9.99 one-time Price, while the default lookup key is `sidestream_pro_once_999`. `SIDESTREAM_UNLIMITED_PRICE_ID` is only a legacy migration fallback when it points at the Pro Product. `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` are only needed when testing the optional account/Customer Portal sign-in path. Use environment placeholders for Stripe keys and obtain real values from the Stripe Dashboard; rotate any secret key that has been pasted into chat before using live mode.
 - License environment resolution fails closed unless deployment state, trusted host, and selected database agree. Production uses `SIDESTREAM_POSTGRES_URL`; preview/development/test require exact `SIDESTREAM_TEST_API_HOSTS` plus a distinct `SIDESTREAM_TEST_POSTGRES_URL`. Client `buildChannel` is diagnostic only and cannot select a namespace.
-- The Postgres migration runner has a checksummed ledger and advisory lock. Use `--status` and `--validate`; use `--baseline` only after backup and catalog verification of an existing non-empty pre-ledger schema. Production applies through the direct URL, while runtime must use the shared pooled URL. Rollback pauses crons and rolls application code forward-compatible with the migrated schema; it never deletes the ledger or reverses destructive migrations.
+- The Postgres migration runner has a checksummed ledger and advisory lock. Use `--status` and `--validate`; use `--baseline` only after backup and catalog verification of an existing non-empty pre-ledger schema. Production applies through the direct URL, while runtime must use the shared pooled URL. Rollback pauses crons and promotes only a pre-qualified application artifact compatible with the migrated schema; it never deletes the ledger or reverses destructive migrations.
+- Migration `20260714200000_remove_redundant_download_lead_key_unique.sql` is not compatible with the pre-hardening `c34ef25` lead writer: that code uses `ON CONFLICT (lead_key)` after the required unique constraint has been removed, so Postgres capture fails and requests degrade to Blob fallback. With respect to this schema change, `d134ef8` is the minimum compatible application commit because it uses canonical `ON CONFLICT (email, cta_source)`; cutover must pre-build and smoke-test a reviewed `c93bc09`-or-later rollback artifact against the complete migrated schema. Never treat an arbitrary previous deployment as rollback-safe.
 - Switching a deployment from sandbox/test Stripe keys to live Stripe keys can leave existing account rows with customer IDs from the old mode. `findOrCreateStripeCustomer()` validates a saved customer against the currently configured Stripe mode before Checkout reuse and creates a fresh customer if Stripe returns `resource_missing`.
 - Checkout Sessions currently pin `payment_method_types: ["card"]` so live Checkout works even before Stripe Dynamic Payment Methods are configured in the dashboard. Revisit this once the live Stripe account has the desired payment methods enabled.
 - If a successful purchase still shows Free in the account page or plugin, check `/api/stripe/webhook`, `/api/checkout/complete`, and activation logs, then inspect `public.sidestream_stripe_events` for due retry/dead-letter work and use migration `--status`. Runtime routes intentionally do not execute DDL, and account/session reads intentionally do not drain the queue. The status fallback retrieves only the persisted exact Checkout Session after device validation; it cannot repair a missing migration, unattached Session, refund, dispute, or poisoned event.
@@ -496,10 +510,11 @@ Use the narrowest relevant check after edits:
 - The email gate is a website CTA gate, not hard security. A direct request to `/api/download` still serves the installer; true server-enforced lead capture would require issuing download tokens or moving `/api/download` behind a verified lead/session check.
 - The Windows waitlist is historical: its modal/capture code and `cta_source = "windows-waitlist"` rows remain, but there is no active trigger after the hero pill became a direct platform download. Reuse `/api/download-lead` if that lead flow is intentionally revived instead of creating a duplicate client-only endpoint or table.
 - Download-lead capture and SaaS entitlement storage share the bounded server-only pool in `api/_lib/postgres.ts`. Production precedence is `SIDESTREAM_POSTGRES_URL`, `SIDESTREAM_POSTGRES_PRISMA_URL`, `POSTGRES_URL`, then `POSTGRES_PRISMA_URL`; direct/non-pooling fallback is rejected in production runtime and belongs only to reviewed tools/development/test. Do not expose any private database URL to HTML, React browser code, or the CEP plugin.
-- `CRON_SECRET` is the one 16-512 character scheduler secret for all three internal routes. Missing configuration must produce `503`, wrong/missing bearer auth must produce `401`, and the value must never appear in commands captured by logs or in committed files.
+- `CRON_SECRET` is the one 16-512 character scheduler secret for all three internal routes, but the common denominator is stricter: every character must be printable non-space ASCII (`U+0021`-`U+007E`) because lead replay rejects spaces and non-ASCII even though the other two routes compare the whole header. Generate a 64-character hexadecimal token from 32 random bytes in the approved secret manager. Missing configuration must produce `503`, wrong/missing bearer auth must produce `401`, and the value must never appear in commands captured by logs or in committed files.
 - Checkout and lead rate limits are atomic Postgres controls, not a substitute for edge protection. The Blob fallback cannot consume the database lead limiter, so production needs the reviewed Vercel WAF rule on exact `POST /api/download-lead` before relying on fallback during an outage.
 - Legacy subscription access is default-deny. Both the exact Product and exact Price must appear in their respective allowlists after inventory; do not wildcard IDs, infer eligibility from a customer, or mix Stripe test/live mode.
 - Stripe payload retention redacts processed work after 14 days by default and dead-letter work after 90 days by default; event identity and audit metadata remain. Maintenance deletes bounded expired operational rows, never canonical leads or active entitlements. Alert on unexpected deletion/redaction counts instead of disabling retention blindly.
+- Stripe `dead_letter` rows are terminal and the repository currently has no reset/replay CLI or route for them. Any dead letter during Preview/Test blocks promotion; in production, preserve its payload, pause the affected drain if needed, and require a separately reviewed, event-specific recovery implementation before attempting replay. Do not update queue status or entitlement rows by hand.
 - Supabase-hosted Sidestream SaaS tables must keep RLS enabled with no direct `anon` or `authenticated` table access. If a future feature needs browser-side Supabase reads or writes, add the narrow policy for that feature intentionally and document the public data shape; do not make the private account, session, activation, license, license-token, Stripe event, or lead tables broadly API-readable.
 - The canonical URL is the deployed root, `https://sidestream.tv/`. Keep every crawler-facing URL in the HTML head, sitemap, `llms.txt`, and README pointed at `/`; keep the duplicate-host and duplicate-path canonicalization in `vercel.json` as server-side `308` rules. The legacy fallback file must remain inert and `noindex`, not become a second client-side redirect implementation.
 - Keep structured data conservative and matched to visible page claims. Do not add FAQ, review, rating, or price claims unless the same facts are present in the visible landing page.
@@ -507,7 +522,7 @@ Use the narrowest relevant check after edits:
 
 ## Recent Change Log
 
-- 2026-07-14: Consolidated the hardened API contract and operator runbook: confirmed-POST Checkout, exact release platform behavior, shared pooled Postgres ownership, checksummed migrations, activation compatibility, refund/dispute entitlements, durable Stripe retries/dead letters, lead fallback/replay, protected crons, bounded retention, alerts, disposable-database proof, and a human-gated cutover/forward-only rollback. No production deployment or configuration change is claimed.
+- 2026-07-14: Consolidated the hardened API contract and operator runbook: confirmed-POST Checkout, normalized release aliases, shared pooled Postgres ownership, checksummed migrations, activation compatibility, refund/dispute entitlements, durable Stripe retries/dead letters, lead fallback/replay, protected crons, bounded retention, alerts, disposable-database proof, and a human-gated cutover requiring a schema-compatible rollback artifact. The runbook explicitly records that terminal Stripe dead letters have no recovery tool yet. No production deployment or configuration change is claimed.
 - 2026-07-14: Locked the decorative Premiere/Sidestream recording's visible panel corner to the center of the desktop viewport at every supported window size while preserving the existing `900px` hide-and-pause breakpoint.
 - 2026-07-14: Removed the explanatory sentence beneath the hero's "in Premiere Pro" subline, cleaned up its unused responsive styles, and retained deliberate spacing above the platform download buttons.
 - 2026-07-14: Framed the desktop Features, Pricing, and Account nav links as compact rounded glass pills with clearer hover and keyboard-focus states, leaving the mobile-hidden behavior and header CTA count unchanged.

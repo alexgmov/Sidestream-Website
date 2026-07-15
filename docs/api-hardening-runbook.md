@@ -47,7 +47,7 @@ and JSON responses are `no-store`.
 | `/api/billing/receipt` | `POST` | Authenticated `200 {"url":"..."}` for the latest owned charge receipt | `401` unauthenticated, `403` customer mismatch, `404` no purchase/receipt URL, Stripe failure is a server `500` |
 | `/api/stripe/webhook` | `POST` | `200 {"received":true}` after durable insert; duplicate acknowledgment also includes `"duplicate":true` | `400` missing/invalid signature; an unhandled durable-storage failure is a server `500` and must be retried by Stripe |
 | `/api/activation/start` | `POST` | `200` with `activationKey`, 24-hour `expiresAt`, `upgradeUrl`, and `restoreUrl` | `400 invalid_request` for missing device; an unexpected dependency failure is a server `500` |
-| `/api/activation/status` | `POST` | `200` state payload: `pending`, `pending_payment`, `active`, `completed`, `not_found`, `device_mismatch`, `expired`, `transfer_required`, `transfer_limit_reached`, `device_replaced`, or `device_deactivated` | `400` malformed; `503` environment unavailable |
+| `/api/activation/status` | `POST` | `200` state payload: `pending`, `pending_payment`, `active`, `completed`, `not_found`, `device_mismatch`, `expired`, `transfer_required`, `transfer_limit_reached`, `device_replaced`, or `device_deactivated` | A parsed JSON body missing valid `activationKey` or `deviceId` returns `400 invalid_request`; invalid JSON/body-read failure currently escapes as an unshaped platform `5xx`, not `400`; `503` environment unavailable |
 | `/api/activation/claim` | `GET` / `POST` | GET is read-only sign-in/confirmation HTML; same-origin CSRF-valid POST restores/reconnects/transfers | `400` invalid/transfer intent; `401` sign-in required; `403` inactive or CSRF; `409` unavailable, binding changed, transfer limit, or claim conflict; `503` environment unavailable |
 | `/api/license/verify` | `POST` | `200` current credential result | `400 invalid_request`; `401 invalid_token`, `revoked`, `device_mismatch`, `device_replaced`, or `device_deactivated`; `403 license_inactive`; `503` retryable environment failure |
 | `/api/license/refresh` | `POST` | `200` atomically rotated access/refresh pair; predecessor replay is deterministic for two minutes | Same stable `400`/`401`/`403`/`503` classes as verify |
@@ -66,6 +66,12 @@ event queue.
 
 The release and download routes call the same manifest selector. A mismatch
 between these surfaces is a release-blocking incident.
+
+The URL parser decodes `platform`, then the selector trims and lowercases it.
+The table therefore lists normalized aliases: casing is ignored (`WINDOWS` is
+accepted) and surrounding decoded whitespace is ignored (`%20windows%20` is
+accepted). Omission alone selects Mac; an empty value after trimming or any
+unknown normalized value returns `404`.
 
 | Query `platform` | Public platform | Manifest | Artifact | Result |
 | --- | --- | --- | --- | --- |
@@ -229,6 +235,16 @@ least one second. These bounds are code constants, not environment variables.
 Poison events isolate to retry/dead-letter and cannot make `/api/auth/session` or
 other customer reads process the queue.
 
+`dead_letter` is terminal: the row has `terminal_at` set and the claim query
+cannot select it. This repository currently has no Stripe dead-letter reset or
+replay CLI, API route, or audited SQL procedure. Do not change queue status,
+`terminal_at`, watermarks, or entitlement rows by hand. Any dead letter in
+Preview/Test blocks production promotion. A production dead letter is a critical
+incident: preserve its payload before retention redacts it, pause the affected
+drain if needed, fix the cause, and add separately reviewed event-specific
+recovery tooling plus tests before any replay attempt. Until that tooling exists,
+the event remains terminal.
+
 ## Download-lead fallback and replay
 
 `POST /api/download-lead` normalizes email/source, converges on one row per
@@ -261,7 +277,7 @@ Never paste values into this document, tickets, chat, browser code, or CEP code.
 
 | Area | Variables and bounded contract |
 | --- | --- |
-| Scheduler | `CRON_SECRET`: one stable random value, 16-512 characters, sent as `Authorization: Bearer ...` to every internal route |
+| Scheduler | `CRON_SECRET`: one stable random value, 16-512 printable non-space ASCII characters (`U+0021`-`U+007E`), sent as `Authorization: Bearer ...` to every internal route. Generate 32 random bytes as a 64-character hexadecimal token in the approved secret manager; spaces, tabs, newlines, and non-ASCII are outside the shared contract because lead replay rejects them even though the other two validators do not enforce this character class. |
 | Runtime database | Pooled URL precedence above; `POSTGRES_POOL_MAX` default 4, range 2-20; `POSTGRES_POOL_IDLE_TIMEOUT_MS` 10000, 1000-60000; `POSTGRES_CONNECTION_TIMEOUT_MS` 5000, 250-30000; `POSTGRES_QUERY_TIMEOUT_MS` and `POSTGRES_STATEMENT_TIMEOUT_MS` 10000, 250-60000; `POSTGRES_SSL=0` only for a known local target |
 | Migration database | `SIDESTREAM_POSTGRES_URL_NON_POOLING` preferred; `POSTGRES_MIGRATION_STATEMENT_TIMEOUT_MS` defaults to 300000 and is bounded 1000-1800000; runner pool max is 1 |
 | Test database | `SIDESTREAM_TEST_POSTGRES_URL` is mandatory for integration tests, must be disposable, and must not normalize to any runtime host/port/database target |
@@ -294,7 +310,7 @@ tokens, device IDs, full Stripe payloads, or lead email addresses.
 | Signal | Metric/query | Alert threshold and response |
 | --- | --- | --- |
 | Pending/retry Stripe events | Count `received`, due `retryable`, and expired `processing` leases | Warning when any due work remains for 10 minutes; critical at 30 minutes. Check cron auth, database, then worker errors. |
-| Dead-letter Stripe events | Count `processing_status='dead_letter'` and newest transition | Critical on any new dead-letter. Preserve payload, fix root cause, then replay through reviewed tooling; never flip entitlement rows manually. |
+| Dead-letter Stripe events | Count `processing_status='dead_letter'` and newest transition | Critical on any new dead-letter. Preserve payload and fix the root cause. No reset/replay tool currently exists, so Preview/Test promotion is blocked and production recovery requires separately reviewed tooling; never mutate queue or entitlement rows manually. |
 | Oldest event age | Age of oldest due nonterminal event | Warning over 10 minutes, critical over 30 minutes; the processor runs every five minutes. |
 | Event failures | `retryable + deadLetter` divided by claimed, plus `processing_failed` route outcomes | Warning above 5% with at least 5 claims in 15 minutes; critical above 20% or any route-level failure for 5 minutes. |
 | Checkout volume | Confirmation GETs, confirmed POSTs, created/reused Sessions, `csrf_rejected`, dependency errors | Warning when create failures exceed 1% or 5 in 15 minutes. A GET without a matching confirmation POST is abandonment, not a Stripe failure. |
@@ -303,7 +319,7 @@ tokens, device IDs, full Stripe payloads, or lead email addresses.
 | Unmapped Blob records | Replay `summary.unmapped` and path sample without lead contents | Critical on any new unmapped record. Quarantine/preserve it; do not auto-delete. |
 | Maintenance | Missing run, `maintenance_failed`, `hasMore`, duration, and every deletion/redaction count | Critical on any failed run or no completed/locked run in 26 hours; warning when `hasMore` or a count reaches batch size for 3 runs, or a count exceeds 4x its rolling seven-day median. |
 | DB pool saturation | Provider connections, pool waiters/acquisition timeouts, query/statement timeouts | Warning at 80% provider connections for 5 minutes or waiters for 1 minute; critical at 90% or any sustained acquisition timeout. Reduce concurrency/pool, do not switch to direct runtime URLs. |
-| Release-platform mismatch | Compare manifest and download HEAD platform/version/SHA/filename/size for Mac and Windows aliases | Critical on any mismatch or an unknown platform that does not return `404`; stop promotion and restore the last internally consistent manifests/code. |
+| Release-platform mismatch | Compare manifest and download HEAD platform/version/SHA/filename/size for Mac and Windows aliases | Critical on any mismatch or an unknown platform that does not return `404`; stop promotion and use only the pre-qualified schema-compatible manifests/application artifact. |
 
 Useful read-only queue snapshot:
 
@@ -342,7 +358,8 @@ The exact `counts` fields are `credentialRowsDeleted`,
 
 For a manual protected check, avoid shell history exposure: load
 `CRON_SECRET` from the approved secret manager into the process environment and
-send the header without printing the value. Prefer GET replay only when
+first verify it is 16-512 printable non-space ASCII characters. Send the header
+without printing the value. Prefer GET replay only when
 delete-after-commit is intended; use manual POST with `disposition=preserve` for
 diagnosis.
 
@@ -353,7 +370,22 @@ operator, timestamp, target, command output, and approval for each gate.
 
 1. **Review the integrated diff.** Confirm only reviewed hardening commits are
    present; compare API methods, `vercel.json`, migration checksums, manifests,
-   and this runbook. Stop on unexplained drift.
+   and this runbook. Stop on unexplained drift. Before any production database
+   mutation, pin and preserve a schema-compatible rollback artifact. Migration
+   `20260714200000_remove_redundant_download_lead_key_unique.sql` removes the
+   unique constraint required by the pre-hardening `c34ef25` writer's
+   `ON CONFLICT (lead_key)`, so that deployment is not rollback-safe: healthy
+   Postgres lead writes fail and every request degrades to Blob fallback. The
+   minimum application commit compatible with that constraint removal is
+   `d134ef8`, which writes with `ON CONFLICT (email, cta_source)`. Use the fully
+   integrated `c93bc09` or a later reviewed descendant for the rollback
+   artifact, not merely any older deployment. In an isolated checkout, build it
+   with `npx vercel@latest build`, run `npm run verify:vercel-build`, and run the
+   API plus `SIDESTREAM_TEST_POSTGRES_URL` integration suites against a
+   disposable database containing the complete migration chain. Smoke a lead
+   capture with healthy Postgres and verify the database row commits without a
+   `queued` Blob-fallback response. Record the exact commit, build-output
+   checksum/location, and evidence; cutover is blocked without this artifact.
 2. **Take and verify a database backup.** Use the approved direct production URL
    and `pg_dump` into access-controlled storage. Record a checksum and run
    `pg_restore --list` (or the equivalent provider restore verification). Do not
@@ -404,9 +436,11 @@ operator, timestamp, target, command output, and approval for each gate.
    from the wrong Stripe mode.
 6. **Configure secrets and bounded settings.** Confirm the selected Vercel plan
    supports the five- and ten-minute cron frequencies. Set one 16-512 character
-   `CRON_SECRET`, a production pooled runtime URL, the reviewed pool budget,
-   stable HMAC secrets, Product/Price allowlists, lifecycle settings, and bounded
-   retention values. Keep the direct URL out of normal runtime configuration.
+   printable non-space ASCII `CRON_SECRET` (prefer a secret-manager-generated
+   64-character hexadecimal token), a production pooled runtime URL, the
+   reviewed pool budget, stable HMAC secrets, Product/Price allowlists,
+   lifecycle settings, and bounded retention values. Keep the direct URL out of
+   normal runtime configuration.
 7. **Configure the Stripe endpoint.** Point it at `/api/stripe/webhook`, set the
    correct live signing secret, and subscribe to the exact event list above.
    Send signed test-mode events only to the test target first.
@@ -417,14 +451,17 @@ operator, timestamp, target, command output, and approval for each gate.
    `npm run test:postgres-integration`, `npm run typecheck`, `npm run build`,
    `node scripts/assert-no-runtime-ddl.mjs`, and
    `node scripts/validate-vercel-contract.mjs`. Exercise each internal route with
-   missing, wrong, and correct auth without logging the secret.
+   missing, wrong, and correct auth without logging the secret. Require zero
+   Stripe dead letters in Preview/Test; no recovery tool exists, so any dead
+   letter blocks promotion.
 10. **Configure the desired Vercel WAF rule for lead ingestion.** Match exact
     path `/api/download-lead` and method `POST`; apply a per-source-IP block/rate
     limit no looser than 20 requests per 10 minutes (or the closest stricter
     Vercel window). Exclude internal replay. Verify a Preview request receives an
     edge rejection before relying on Blob fallback under database failure.
 11. **Promote the reviewed Preview build to production.** Record the deployment
-    ID and keep the last known-good application deployment available.
+    ID and keep the exact pre-qualified, schema-compatible rollback artifact
+    from step 1 available. Do not substitute a pre-`d134ef8` deployment.
 12. **Run bounded release and API smoke tests.** Run
     `node scripts/smoke-release-endpoints.mjs --base-url "$DEPLOY_BASE_URL"` and
     test confirmation GET, confirmed test-mode Checkout, activation, authorization,
@@ -433,7 +470,8 @@ operator, timestamp, target, command output, and approval for each gate.
 13. **Inspect convergence.** Check pending/retry/dead Stripe counts and oldest
     age, entitlement states/watermarks, lead fallback/replay summaries including
     unmapped records, maintenance output, database pool health, and release
-    platform parity before declaring cutover complete.
+    platform parity before declaring cutover complete. A dead letter blocks
+    completion because the current repository cannot reset or replay it.
 
 ## Forward-compatible rollback
 
@@ -441,11 +479,19 @@ Rollback is application-forward, not a destructive schema reversal:
 
 1. Pause the three Vercel cron schedules or make their routes unavailable to the
    scheduler. Pause Stripe endpoint delivery when the webhook `waitUntil`
-   background drain must also stop; Stripe and the local event ledger retain work
-   for later replay.
-2. Roll back application code/manifests to the last known-good deployment. Keep
-   the migrated database and migration ledger in place; old code must tolerate
-   additive columns/tables.
+   background drain must also stop. Stripe retains undelivered webhook attempts,
+   and local nonterminal ledger rows remain claimable after recovery; existing
+   `dead_letter` rows remain terminal because no reset/replay tool exists.
+2. Promote only the exact rollback artifact pre-qualified in cutover step 1 and
+   verify its recorded commit/build identity. It must be `d134ef8` or later with
+   respect to the final lead schema; the reviewed full-integration choice is
+   `c93bc09` or a later descendant. Keep the migrated database and migration
+   ledger in place. Do not use `c34ef25` or another generic prior deployment:
+   after the `lead_key` unique constraint is removed, its Postgres upsert fails,
+   all lead captures fall back to Blob, and the database rate limit is bypassed.
+   If the pre-qualified artifact is unavailable, application rollback is
+   blocked: leave crons/background drains paused, keep the lead WAF active, and
+   fix forward rather than claiming a successful rollback.
 3. Set device policy to `observe` if enforcement is causing false denials. This
    does not resurrect explicitly revoked/replaced credentials.
 4. Do **not** run down migrations, delete the ledger, drop new tables/columns,
@@ -453,4 +499,6 @@ Rollback is application-forward, not a destructive schema reversal:
    quarantine, replay-receipt, and redaction history must survive rollback.
 5. Continue read-only monitoring. Fix forward, redeploy Preview, re-run contract
    and smoke proof, then re-enable Stripe delivery and crons one at a time while
-   watching oldest-event age, dead letters, fallback backlog, and pool use.
+   watching oldest-event age, dead letters, fallback backlog, and pool use. Do
+   not call a dead letter replayed unless separately reviewed recovery tooling
+   was implemented, tested, and actually used.
