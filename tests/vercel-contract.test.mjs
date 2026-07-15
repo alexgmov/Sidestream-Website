@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { loadInjectedModule } from "./helpers/handler-loader.mjs";
 import { invokeHandler } from "./helpers/http.mjs";
@@ -18,9 +19,26 @@ test("the static Vercel contract includes every protected cron and both release 
   const result = await validateVercelContract();
   assert.deepEqual(result, {
     crons: 4,
-    internalRoutes: 4,
+    adminRoutes: 2,
+    internalRoutes: 6,
     releaseEndpoints: 2,
   });
+});
+
+test("customer list and detail are protected on-demand admin routes, never crons", async () => {
+  const result = await validateVercelContract();
+  assert.equal(result.adminRoutes, 2);
+  assert.equal(result.crons, 4);
+});
+
+test("the human-only bundle verifier requires both customer functions", async () => {
+  const source = await readFile(
+    new URL("../scripts/verify-vercel-build.mjs", import.meta.url),
+    "utf8",
+  );
+  assert.match(source, /api\/internal\/customers\/index\.func/);
+  assert.match(source, /api\/internal\/customers\/\[customerId\]\.func/);
+  assert.match(source, /A human must run `npx vercel build` first/);
 });
 
 test("missing and incorrect CRON_SECRET authorization is rejected by every internal route", async () => {
