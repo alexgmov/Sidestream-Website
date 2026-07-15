@@ -42,7 +42,7 @@ test("normalization retains only exact durable evidence and discards PII", () =>
   const records = normalizeBackfillInput({
     version: 1,
     records: [{
-      recordId: "reviewed-source-row-1",
+      recordId: opaqueRecordId(1),
       accountId: ACCOUNT_A.toUpperCase(),
       activationId: ACTIVATION_A,
       stripeCustomerId: "cus_Customer360A",
@@ -78,13 +78,13 @@ test("normalization retains only exact durable evidence and discards PII", () =>
   }
 
   assert.throws(
-    () => normalizeBackfillInput([{ recordId: "row", emailHash: "not-allowed" }]),
+    () => normalizeBackfillInput([{ recordId: opaqueRecordId(2), emailHash: "not-allowed" }]),
     /unsupported field "emailHash"/,
   );
   assert.throws(
     () => normalizeBackfillInput([
-      { recordId: "duplicate" },
-      { recordId: "duplicate" },
+      { recordId: opaqueRecordId(3) },
+      { recordId: opaqueRecordId(3) },
     ]),
     /duplicate recordId/,
   );
@@ -96,16 +96,44 @@ test("normalization retains only exact durable evidence and discards PII", () =>
     ["stripeCustomerId", "customer_123", /canonical Stripe/],
   ]) {
     assert.throws(
-      () => normalizeBackfillInput([{ recordId: `invalid-${field}`, [field]: value }]),
+      () => normalizeBackfillInput([{ recordId: opaqueRecordId(4), [field]: value }]),
       expected,
     );
   }
 });
 
+test("recordId accepts only canonical opaque idempotency tokens", () => {
+  for (const recordId of [
+    "customer.private@example.com",
+    "198.51.100.44",
+    "2026-07-15T14:15:16.000Z",
+    "Private Customer Name",
+    "downloaded-seven-times",
+  ]) {
+    assert.throws(
+      () => normalizeBackfillInput([{ recordId }]),
+      /opaque UUID or lowercase hex64/,
+    );
+    assert.throws(
+      () => deterministicProfileId("test", recordId),
+      /opaque UUID or lowercase hex64/,
+    );
+  }
+
+  const canonicalUuid = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  assert.deepEqual(
+    normalizeBackfillInput([
+      { recordId: canonicalUuid.toUpperCase() },
+      { recordId: opaqueRecordId(5) },
+    ]).map(({ recordId }) => recordId),
+    [canonicalUuid, opaqueRecordId(5)],
+  );
+});
+
 test("only durable evidence joins records; unbridged historical rows remain separate", () => {
   const ignoredOnly = [
-    { recordId: "legacy-install-a", ...PRIVATE_FIELDS },
-    { recordId: "legacy-install-b", ...PRIVATE_FIELDS },
+    { recordId: opaqueRecordId(10), ...PRIVATE_FIELDS },
+    { recordId: opaqueRecordId(11), ...PRIVATE_FIELDS },
   ];
   const orphanPlan = buildBackfillPlan(ignoredOnly, "test");
   assert.equal(orphanPlan.components.length, 2);
@@ -128,37 +156,40 @@ test("only durable evidence joins records; unbridged historical rows remain sepa
   ]) {
     const [field, value] = durableField;
     const plan = buildBackfillPlan([
-      { recordId: `${field}-a`, [field]: value },
-      { recordId: `${field}-b`, [field]: value },
+      { recordId: opaqueRecordId(20), [field]: value },
+      { recordId: opaqueRecordId(21), [field]: value },
     ], "test");
     assert.equal(plan.components.length, 1, field);
     assert.equal(plan.components[0].recordIndexes.length, 2, field);
   }
 
   const transitive = buildBackfillPlan([
-    { recordId: "chain-a", installIdHash: INSTALL_A },
-    { recordId: "chain-b", installIdHash: INSTALL_A, supportCode: SUPPORT_A },
-    { recordId: "chain-c", supportCode: SUPPORT_A },
+    { recordId: opaqueRecordId(30), installIdHash: INSTALL_A },
+    { recordId: opaqueRecordId(31), installIdHash: INSTALL_A, supportCode: SUPPORT_A },
+    { recordId: opaqueRecordId(32), supportCode: SUPPORT_A },
   ], "test");
   assert.equal(transitive.components.length, 1);
   assert.equal(transitive.components[0].recordIndexes.length, 3);
 });
 
 test("conflict and orphan reports are privacy-safe and contain no identity values", () => {
+  const conflictRecordA = opaqueRecordId(40);
+  const conflictRecordB = opaqueRecordId(41);
+  const orphanRecord = opaqueRecordId(42);
   const conflictInput = [
     {
-      recordId: "conflict-a",
+      recordId: conflictRecordA,
       accountId: ACCOUNT_A,
       installIdHash: INSTALL_A,
       ...PRIVATE_FIELDS,
     },
     {
-      recordId: "conflict-b",
+      recordId: conflictRecordB,
       accountId: ACCOUNT_B,
       installIdHash: INSTALL_A,
       ...PRIVATE_FIELDS,
     },
-    { recordId: "orphan-private", ...PRIVATE_FIELDS },
+    { recordId: orphanRecord, ...PRIVATE_FIELDS },
   ];
   const report = buildDryRunReport(conflictInput, { namespace: "test" });
   assert.equal(report.summary.conflictComponents, 1);
@@ -168,9 +199,9 @@ test("conflict and orphan reports are privacy-safe and contain no identity value
     ACCOUNT_A,
     ACCOUNT_B,
     INSTALL_A,
-    "conflict-a",
-    "conflict-b",
-    "orphan-private",
+    conflictRecordA,
+    conflictRecordB,
+    orphanRecord,
   ]);
   assert.deepEqual(
     report.components.map(({ status, reason }) => [status, reason]),
@@ -186,7 +217,7 @@ test("dry-run performs no database, checkpoint, or batch-callback side effects",
   let checkpointWrites = 0;
   let batchCallbacks = 0;
   const report = await runCustomer360Backfill({
-    input: [{ recordId: "dry-run-row", installIdHash: INSTALL_A }],
+    input: [{ recordId: opaqueRecordId(50), installIdHash: INSTALL_A }],
     namespace: "test",
     apply: false,
     pool: {
@@ -235,7 +266,7 @@ test("Production apply is rejected before any connection and CLI apply is explic
   let connections = 0;
   await assert.rejects(
     runCustomer360Backfill({
-      input: [{ recordId: "production-row", accountId: ACCOUNT_A }],
+      input: [{ recordId: opaqueRecordId(60), accountId: ACCOUNT_A }],
       namespace: "production",
       apply: true,
       pool: {
@@ -251,34 +282,74 @@ test("Production apply is rejected before any connection and CLI apply is explic
 });
 
 test("deterministic profile IDs and checkpoints bind resume to exact normalized input", () => {
+  const stableRecordId = opaqueRecordId(70);
   assert.equal(
-    deterministicProfileId("test", "stable-record"),
-    deterministicProfileId("test", "stable-record"),
+    deterministicProfileId("test", stableRecordId),
+    deterministicProfileId("test", stableRecordId),
   );
   assert.notEqual(
-    deterministicProfileId("test", "stable-record"),
-    deterministicProfileId("production", "stable-record"),
+    deterministicProfileId("test", stableRecordId),
+    deterministicProfileId("production", stableRecordId),
   );
-  assert.match(deterministicProfileId("test", "stable-record"), /^[0-9a-f-]{36}$/);
+  assert.match(deterministicProfileId("test", stableRecordId), /^[0-9a-f-]{36}$/);
 
-  const input = [{ recordId: "checkpoint-row", activationId: ACTIVATION_A }];
+  const input = [{ recordId: opaqueRecordId(80), activationId: ACTIVATION_A }];
   const plan = buildBackfillPlan(input, "test");
   const checkpoint = {
-    version: 1,
+    version: 2,
     namespace: "test",
     inputDigest: plan.inputDigest,
     nextComponentIndex: 1,
     processedRecords: 1,
+    outcomes: {
+      processedComponents: 1,
+      appliedComponents: 1,
+      unchangedComponents: 0,
+      orphanComponents: 0,
+      conflictComponents: 0,
+      writes: 2,
+    },
   };
   const complete = buildDryRunReport(input, { namespace: "test", checkpoint });
   assert.equal(complete.checkpoint.complete, true);
   assert.equal(complete.summary.pendingComponents, 0);
 
   assert.throws(
-    () => buildDryRunReport([{ recordId: "changed-row", activationId: ACTIVATION_A }], {
+    () => buildDryRunReport(input, {
+      namespace: "test",
+      checkpoint: {
+        ...checkpoint,
+        outcomes: {
+          ...checkpoint.outcomes,
+          conflictComponents: 1,
+        },
+      },
+    }),
+    /Checkpoint does not match/,
+  );
+  assert.throws(
+    () => buildDryRunReport(input, {
+      namespace: "test",
+      checkpoint: {
+        version: 1,
+        namespace: "test",
+        inputDigest: plan.inputDigest,
+        nextComponentIndex: 1,
+        processedRecords: 1,
+      },
+    }),
+    /Checkpoint does not match/,
+  );
+
+  assert.throws(
+    () => buildDryRunReport([{ recordId: opaqueRecordId(81), activationId: ACTIVATION_A }], {
       namespace: "test",
       checkpoint,
     }),
     Customer360BackfillError,
   );
 });
+
+function opaqueRecordId(value) {
+  return value.toString(16).padStart(64, "0");
+}

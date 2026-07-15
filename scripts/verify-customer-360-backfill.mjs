@@ -111,8 +111,8 @@ export async function verifyCustomer360Backfill() {
     installerRequestHmac: "private-installer-request-hash",
   });
   const orphanInput = [
-    { recordId: "orphan-source-a", ...ignoredSecrets },
-    { recordId: "orphan-source-b", ...ignoredSecrets },
+    { recordId: opaqueRecordId(1), ...ignoredSecrets },
+    { recordId: opaqueRecordId(2), ...ignoredSecrets },
   ];
   const orphanPlan = buildBackfillPlan(orphanInput, "test");
   assert.equal(orphanPlan.components.length, 2);
@@ -120,8 +120,8 @@ export async function verifyCustomer360Backfill() {
 
   const durableHash = "d".repeat(64);
   const joinedPlan = buildBackfillPlan([
-    { recordId: "durable-source-a", installIdHash: durableHash, ...ignoredSecrets },
-    { recordId: "durable-source-b", installIdHash: durableHash, ...ignoredSecrets },
+    { recordId: opaqueRecordId(3), installIdHash: durableHash, ...ignoredSecrets },
+    { recordId: opaqueRecordId(4), installIdHash: durableHash, ...ignoredSecrets },
   ], "test");
   assert.equal(joinedPlan.components.length, 1);
 
@@ -129,13 +129,13 @@ export async function verifyCustomer360Backfill() {
   const accountB = "22222222-2222-4222-8222-222222222222";
   const conflictInput = [
     {
-      recordId: "conflict-source-a",
+      recordId: opaqueRecordId(5),
       accountId: accountA,
       supportCode: "SIDE-A1B2-C3D4-E5F6",
       ...ignoredSecrets,
     },
     {
-      recordId: "conflict-source-b",
+      recordId: opaqueRecordId(6),
       accountId: accountB,
       supportCode: "SIDE-A1B2-C3D4-E5F6",
       ...ignoredSecrets,
@@ -193,6 +193,10 @@ export function assertPrivacySafeReport(report, forbiddenValues = []) {
   assert.doesNotMatch(serialized, /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i);
   assert.doesNotMatch(serialized, /\b(?:\d{1,3}\.){3}\d{1,3}\b/);
   assertReportKeys(report);
+}
+
+function opaqueRecordId(value) {
+  return value.toString(16).padStart(64, "0");
 }
 
 function assertReportKeys(report) {

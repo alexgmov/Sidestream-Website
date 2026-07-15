@@ -58,10 +58,10 @@ test("test-only Customer 360 apply is atomic, resumable, idempotent, and private
     }
 
     const initialInput = [
-      { recordId: "legacy-orphan-a", ...PRIVATE_FIELDS },
-      { recordId: "legacy-orphan-b", ...PRIVATE_FIELDS },
+      { recordId: opaqueRecordId(101), ...PRIVATE_FIELDS },
+      { recordId: opaqueRecordId(102), ...PRIVATE_FIELDS },
       {
-        recordId: "verified-install-a",
+        recordId: opaqueRecordId(103),
         accountId: ACCOUNT_A,
         activationId: ACTIVATION_A,
         stripeCustomerId: "cus_C360BackfillA",
@@ -71,7 +71,7 @@ test("test-only Customer 360 apply is atomic, resumable, idempotent, and private
         ...PRIVATE_FIELDS,
       },
       {
-        recordId: "verified-install-b",
+        recordId: opaqueRecordId(104),
         activationId: ACTIVATION_B,
         stripeCheckoutSessionId: "cs_test_C360BackfillA",
         stripeSubscriptionId: "sub_C360BackfillA",
@@ -108,8 +108,7 @@ test("test-only Customer 360 apply is atomic, resumable, idempotent, and private
         ACTIVATION_B,
         INSTALL_A,
         RECEIPT_A,
-        "legacy-orphan-a",
-        "legacy-orphan-b",
+        ...initialInput.map(({ recordId }) => recordId),
       ]);
 
       const snapshot = await databaseSnapshot(pool, quotedSchema);
@@ -157,7 +156,7 @@ test("test-only Customer 360 apply is atomic, resumable, idempotent, and private
 
     await t.test("existing durable-owner conflict is quarantined with no writes or PII", async () => {
       const conflictInput = [{
-        recordId: "conflicting-account-row",
+        recordId: opaqueRecordId(110),
         accountId: ACCOUNT_B,
         activationId: ACTIVATION_C,
         installIdHash: INSTALL_A,
@@ -184,19 +183,76 @@ test("test-only Customer 360 apply is atomic, resumable, idempotent, and private
         ACCOUNT_B,
         ACTIVATION_C,
         INSTALL_A,
-        "conflicting-account-row",
+        conflictInput[0].recordId,
       ]);
+    });
+
+    await t.test("resume preserves checkpointed conflict outcomes after a later crash", async () => {
+      const conflictReplayInput = [
+        {
+          recordId: opaqueRecordId(111),
+          accountId: ACCOUNT_B,
+          installIdHash: INSTALL_A,
+        },
+        {
+          recordId: opaqueRecordId(112),
+          activationId: "ffffffff-ffff-4fff-8fff-ffffffffffff",
+        },
+      ];
+      let persistedCheckpoint = null;
+      await assert.rejects(
+        runCustomer360Backfill({
+          input: conflictReplayInput,
+          namespace: "test",
+          apply: true,
+          pool,
+          schema,
+          batchSize: 1,
+          afterBatchCommitted(checkpoint) {
+            if (checkpoint.nextComponentIndex === 2) {
+              throw new Error("simulated crash after later commit before checkpoint");
+            }
+          },
+          writeCheckpoint(checkpoint) {
+            persistedCheckpoint = checkpoint;
+          },
+        }),
+        /simulated crash after later commit before checkpoint/,
+      );
+
+      assert.equal(persistedCheckpoint.nextComponentIndex, 1);
+      assert.equal(persistedCheckpoint.outcomes.processedComponents, 1);
+      assert.equal(persistedCheckpoint.outcomes.conflictComponents, 1);
+      const resumed = await runCustomer360Backfill({
+        input: conflictReplayInput,
+        namespace: "test",
+        apply: true,
+        pool,
+        schema,
+        checkpoint: persistedCheckpoint,
+        batchSize: 1,
+        writeCheckpoint(checkpoint) {
+          persistedCheckpoint = checkpoint;
+        },
+      });
+
+      assert.equal(resumed.summary.processedComponents, 2);
+      assert.equal(resumed.summary.processedThisRun, 1);
+      assert.equal(resumed.summary.conflictComponents, 1);
+      assert.equal(resumed.summary.unchangedComponents, 1);
+      assert.equal(persistedCheckpoint.outcomes.conflictComponents, 1);
+      assertPrivacySafeReport(resumed, conflictReplayInput.map(({ recordId }) => recordId));
     });
 
     await t.test("resume replays a committed uncheckpointed batch without duplication", async () => {
       const resumeInput = [
-        { recordId: "resume-orphan-a", ...PRIVATE_FIELDS },
+        { recordId: opaqueRecordId(120), ...PRIVATE_FIELDS },
         {
-          recordId: "resume-durable-b",
+          recordId: opaqueRecordId(121),
           activationId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
         },
         {
-          recordId: "resume-durable-c",
+          recordId: opaqueRecordId(122),
           activationId: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
           supportCode: "SIDE-Z9Y8-X7W6-V5U4",
         },
@@ -223,7 +279,7 @@ test("test-only Customer 360 apply is atomic, resumable, idempotent, and private
       );
       assert.equal(persistedCheckpoint, null);
       const afterCrash = await databaseSnapshot(pool, quotedSchema);
-      assert.equal(afterCrash.profiles.length, 4);
+      assert.equal(afterCrash.profiles.length, 5);
 
       const resumed = await runCustomer360Backfill({
         input: resumeInput,
@@ -255,7 +311,8 @@ test("test-only Customer 360 apply is atomic, resumable, idempotent, and private
         schema,
         checkpoint: persistedCheckpoint,
       });
-      assert.equal(completedCheckpointRun.summary.processedComponents, 0);
+      assert.equal(completedCheckpointRun.summary.processedComponents, 3);
+      assert.equal(completedCheckpointRun.summary.processedThisRun, 0);
 
       const fullReplay = await runCustomer360Backfill({
         input: resumeInput,
@@ -270,8 +327,8 @@ test("test-only Customer 360 apply is atomic, resumable, idempotent, and private
 
     await t.test("later durable evidence quarantines previously separate orphan roots", async () => {
       const orphanInput = [
-        { recordId: "evolving-orphan-a", ...PRIVATE_FIELDS },
-        { recordId: "evolving-orphan-b", ...PRIVATE_FIELDS },
+        { recordId: opaqueRecordId(130), ...PRIVATE_FIELDS },
+        { recordId: opaqueRecordId(131), ...PRIVATE_FIELDS },
       ];
       const orphanApply = await runCustomer360Backfill({
         input: orphanInput,
@@ -319,23 +376,30 @@ test("test-only Customer 360 apply is atomic, resumable, idempotent, and private
       assertPrivacySafeReport(bridgeReport, [
         ...Object.values(PRIVATE_FIELDS),
         INSTALL_BRIDGE,
-        "evolving-orphan-a",
-        "evolving-orphan-b",
+        ...orphanInput.map(({ recordId }) => recordId),
       ]);
     });
 
     await t.test("checkpoint digest rejects changed or reordered work", async () => {
       const input = [
-        { recordId: "checkpoint-a" },
-        { recordId: "checkpoint-b" },
+        { recordId: opaqueRecordId(140) },
+        { recordId: opaqueRecordId(141) },
       ];
       const plan = buildBackfillPlan(input, "test");
       const checkpoint = {
-        version: 1,
+        version: 2,
         namespace: "test",
         inputDigest: plan.inputDigest,
         nextComponentIndex: 1,
         processedRecords: 1,
+        outcomes: {
+          processedComponents: 1,
+          appliedComponents: 0,
+          unchangedComponents: 0,
+          orphanComponents: 1,
+          conflictComponents: 0,
+          writes: 1,
+        },
       };
       await assert.rejects(
         runCustomer360Backfill({
@@ -389,4 +453,8 @@ function quoteIdentifier(identifier) {
     throw new TypeError("Unsafe Postgres schema");
   }
   return `"${identifier}"`;
+}
+
+function opaqueRecordId(value) {
+  return value.toString(16).padStart(64, "0");
 }

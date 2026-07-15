@@ -5,7 +5,7 @@ import { createHash } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-export const BACKFILL_CHECKPOINT_VERSION = 1;
+export const BACKFILL_CHECKPOINT_VERSION = 2;
 export const DEFAULT_BACKFILL_BATCH_SIZE = 100;
 
 export const DURABLE_EVIDENCE_FIELDS = Object.freeze({
@@ -359,12 +359,17 @@ export async function runCustomer360Backfill({
     const processedRecords = plan.components
       .slice(0, end)
       .reduce((total, component) => total + component.recordIndexes.length, 0);
+    const outcomes = accumulateCheckpointOutcomes(
+      currentCheckpoint.outcomes,
+      batchResults,
+    );
     const nextCheckpoint = Object.freeze({
       version: BACKFILL_CHECKPOINT_VERSION,
       namespace,
       inputDigest: plan.inputDigest,
       nextComponentIndex: end,
       processedRecords,
+      outcomes,
     });
     await afterBatchCommitted?.(nextCheckpoint, Object.freeze(batchResults));
     await writeCheckpoint?.(nextCheckpoint);
@@ -377,18 +382,24 @@ export async function runCustomer360Backfill({
     namespace,
     inputDigest: plan.inputDigest,
     checkpoint: safeCheckpointSummary(currentCheckpoint, plan),
-    summary: summarizeApplyResults(plan, results, normalizedCheckpoint),
+    summary: summarizeApplyResults(
+      plan,
+      results,
+      normalizedCheckpoint,
+      currentCheckpoint,
+    ),
     components: Object.freeze(results),
   });
 }
 
 export function deterministicProfileId(namespace, recordId) {
   assertNamespace(namespace);
+  const normalizedRecordId = normalizeRecordId(recordId);
   const digest = createHash("sha256")
     .update("sidestream-customer-360-backfill-profile:v1\0")
     .update(namespace)
     .update("\0")
-    .update(assertExactString(recordId, "recordId", 200))
+    .update(normalizedRecordId)
     .digest("hex");
   const hex = `${digest.slice(0, 12)}5${digest.slice(13, 16)}a${digest.slice(17, 32)}`;
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
@@ -448,22 +459,24 @@ export async function runBackfillSelfTest() {
     behavior: "same-behavior",
     gmailCampaignHmac: "campaign-secret-value",
   };
+  const legacyRecordA = "1".padStart(64, "0");
+  const legacyRecordB = "2".padStart(64, "0");
   const isolated = [
-    { recordId: "legacy-row-a", ...sharedIgnored },
-    { recordId: "legacy-row-b", ...sharedIgnored },
+    { recordId: legacyRecordA, ...sharedIgnored },
+    { recordId: legacyRecordB, ...sharedIgnored },
   ];
   const isolatedPlan = buildBackfillPlan(isolated, "test");
   assert.equal(isolatedPlan.components.length, 2);
   assert.ok(isolatedPlan.components.every((component) => component.orphan));
   assert.notEqual(
-    deterministicProfileId("test", "legacy-row-a"),
-    deterministicProfileId("test", "legacy-row-b"),
+    deterministicProfileId("test", legacyRecordA),
+    deterministicProfileId("test", legacyRecordB),
   );
 
   const installIdHash = "a".repeat(64);
   const joinedPlan = buildBackfillPlan([
-    { recordId: "install-row-a", installIdHash },
-    { recordId: "install-row-b", installIdHash },
+    { recordId: "3".padStart(64, "0"), installIdHash },
+    { recordId: "4".padStart(64, "0"), installIdHash },
   ], "test");
   assert.equal(joinedPlan.components.length, 1);
 
@@ -641,7 +654,7 @@ function normalizeBackfillRecord(record, index) {
     }
   }
 
-  const recordId = assertExactString(record.recordId, "recordId", 200);
+  const recordId = normalizeRecordId(record.recordId);
   const evidence = [];
   for (const [field, linkType] of Object.entries(DURABLE_EVIDENCE_FIELDS)) {
     const rawValue = record[field];
@@ -726,6 +739,7 @@ function normalizeCheckpoint(checkpoint, plan) {
       inputDigest: plan.inputDigest,
       nextComponentIndex: 0,
       processedRecords: 0,
+      outcomes: emptyCheckpointOutcomes(),
     });
   }
   if (
@@ -738,7 +752,8 @@ function normalizeCheckpoint(checkpoint, plan) {
     checkpoint.nextComponentIndex > plan.components.length ||
     !Number.isSafeInteger(checkpoint.processedRecords) ||
     checkpoint.processedRecords < 0 ||
-    checkpoint.processedRecords > plan.records.length
+    checkpoint.processedRecords > plan.records.length ||
+    !validCheckpointOutcomes(checkpoint.outcomes, checkpoint.nextComponentIndex)
   ) {
     throw new Customer360BackfillError(
       "Checkpoint does not match this namespace, input digest, or component boundary.",
@@ -756,6 +771,7 @@ function normalizeCheckpoint(checkpoint, plan) {
     inputDigest: checkpoint.inputDigest,
     nextComponentIndex: checkpoint.nextComponentIndex,
     processedRecords: checkpoint.processedRecords,
+    outcomes: freezeCheckpointOutcomes(checkpoint.outcomes),
   });
 }
 
@@ -767,6 +783,7 @@ function safeCheckpointSummary(checkpoint, plan) {
     processedRecords: checkpoint.processedRecords,
     recordCount: plan.records.length,
     complete: checkpoint.nextComponentIndex === plan.components.length,
+    outcomes: checkpoint.outcomes,
   });
 }
 
@@ -812,17 +829,79 @@ function summarizeComponents(plan, pending) {
   });
 }
 
-function summarizeApplyResults(plan, results, startingCheckpoint) {
+function summarizeApplyResults(plan, results, startingCheckpoint, currentCheckpoint) {
+  const outcomes = currentCheckpoint.outcomes;
   return Object.freeze({
     records: plan.records.length,
     components: plan.components.length,
     resumedAtComponent: startingCheckpoint.nextComponentIndex,
-    processedComponents: results.length,
-    appliedComponents: results.filter((result) => result.status === "applied").length,
-    unchangedComponents: results.filter((result) => result.status === "unchanged").length,
-    orphanComponents: results.filter((result) => result.status === "orphan").length,
-    conflictComponents: results.filter((result) => result.status === "conflict").length,
-    writes: results.reduce((total, result) => total + result.writes, 0),
+    processedComponents: outcomes.processedComponents,
+    processedThisRun: results.length,
+    appliedComponents: outcomes.appliedComponents,
+    unchangedComponents: outcomes.unchangedComponents,
+    orphanComponents: outcomes.orphanComponents,
+    conflictComponents: outcomes.conflictComponents,
+    writes: outcomes.writes,
+  });
+}
+
+function emptyCheckpointOutcomes() {
+  return Object.freeze({
+    processedComponents: 0,
+    appliedComponents: 0,
+    unchangedComponents: 0,
+    orphanComponents: 0,
+    conflictComponents: 0,
+    writes: 0,
+  });
+}
+
+function accumulateCheckpointOutcomes(previous, results) {
+  return Object.freeze({
+    processedComponents: previous.processedComponents + results.length,
+    appliedComponents: previous.appliedComponents +
+      results.filter((result) => result.status === "applied").length,
+    unchangedComponents: previous.unchangedComponents +
+      results.filter((result) => result.status === "unchanged").length,
+    orphanComponents: previous.orphanComponents +
+      results.filter((result) => result.status === "orphan").length,
+    conflictComponents: previous.conflictComponents +
+      results.filter((result) => result.status === "conflict").length,
+    writes: previous.writes +
+      results.reduce((total, result) => total + result.writes, 0),
+  });
+}
+
+function validCheckpointOutcomes(outcomes, nextComponentIndex) {
+  if (!isRecord(outcomes)) return false;
+  const keys = [
+    "processedComponents",
+    "appliedComponents",
+    "unchangedComponents",
+    "orphanComponents",
+    "conflictComponents",
+    "writes",
+  ];
+  if (
+    Object.keys(outcomes).length !== keys.length ||
+    keys.some((key) => !Number.isSafeInteger(outcomes[key]) || outcomes[key] < 0)
+  ) {
+    return false;
+  }
+  const statusTotal = outcomes.appliedComponents + outcomes.unchangedComponents +
+    outcomes.orphanComponents + outcomes.conflictComponents;
+  return outcomes.processedComponents === nextComponentIndex &&
+    statusTotal === outcomes.processedComponents;
+}
+
+function freezeCheckpointOutcomes(outcomes) {
+  return Object.freeze({
+    processedComponents: outcomes.processedComponents,
+    appliedComponents: outcomes.appliedComponents,
+    unchangedComponents: outcomes.unchangedComponents,
+    orphanComponents: outcomes.orphanComponents,
+    conflictComponents: outcomes.conflictComponents,
+    writes: outcomes.writes,
   });
 }
 
@@ -851,6 +930,15 @@ function assertExactString(value, fieldName, maxLength) {
     );
   }
   return value;
+}
+
+function normalizeRecordId(value) {
+  const recordId = assertExactString(value, "recordId", 64);
+  if (UUID_PATTERN.test(recordId)) return recordId.toLowerCase();
+  if (LOWERCASE_HEX_64_PATTERN.test(recordId)) return recordId;
+  throw new Customer360BackfillError(
+    "recordId must be an opaque UUID or lowercase hex64 idempotency token.",
+  );
 }
 
 function parseBatchSize(value) {
@@ -960,8 +1048,9 @@ checkpoint. Apply is restricted to the disposable test database selected by
 SIDESTREAM_TEST_POSTGRES_URL. Production apply is intentionally unavailable.
 
 Input is a reviewed JSON array (or {"version":1,"records":[]}). Each record
-requires an opaque recordId and may contain only the documented durable identity
-fields. Email, name, IP, timing, behavior, and Gmail campaign fields are ignored.`);
+requires an opaque UUID or lowercase hex64 recordId and may contain only the
+documented durable identity fields. Email, name, IP, timing, behavior, and Gmail
+campaign fields are ignored.`);
 }
 
 async function main() {
