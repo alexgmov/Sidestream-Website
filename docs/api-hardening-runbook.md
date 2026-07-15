@@ -36,8 +36,9 @@ history or tickets.
 - The repository does not currently contain a production maintenance rule,
   operator WAF bypass, per-job cron kill switch, Stripe dead-letter reset/replay
   tool, qualified runtime-distinct rollback artifact, failed-refund recovery
-  transition, complete current-dispute-status mapping, authenticated-transport
-  support in the migration/device tools, or historical lifecycle repair tool.
+  transition, complete current-dispute-status mapping, a claim-side total-attempt
+  cap, authenticated-transport support in the migration/legacy/device/reporting
+  tools, or historical lifecycle repair tool.
   Every one is treated below as a control to prove or an explicit pre-production
   blocker, never as an existing capability.
 
@@ -253,15 +254,19 @@ browser, CEP build, or normal serverless runtime.
 The ordered SQL chain is checksummed in
 `public.sidestream_schema_migrations`. The runner takes a global advisory lock,
 refuses checksum drift, and commits each migration plus its ledger row in one
-transaction. Its modes are:
+transaction. Only the following modes are executable without a database; they
+return before env-file loading and target selection and are safe for local
+repository verification, not Production-state evidence:
 
 ```bash
-npm run db:migrate -- --status
 npm run db:migrate -- --validate
 npm run db:migrate -- --dry-run
-npm run db:migrate -- --baseline
-npm run db:migrate
 ```
+
+Database-backed `--status`, `--baseline`, and apply require a connection. Use the
+current implementation only with a loopback disposable database. Never run those
+three current modes, or `verify-migration-baseline.mjs`, against Production; the
+human-gated procedure below keeps them blocked pending authenticated tooling.
 
 An existing non-empty schema without the ledger is not automatically assumed to
 be current. `--status` reports that a baseline is required; `--baseline` checks
@@ -276,8 +281,9 @@ index. Runtime DDL is prohibited and checked by
 filename inventory for the complete checksummed chain. When a ledger exists it
 loads every ledger checksum and fails on any local mismatch, but `printStatuses`
 emits only `<status>: <filename>`; it does not print retainable checksum values.
-`--validate` checks only local ordering/checksums and exits before connecting to
-the database. Retain status plus the separate local-and-ledger checksum export in
+`--validate` checks only local ordering/checksums and `--dry-run` lists local
+files; both exit before env-file loading or database selection. Retain future
+authenticated status plus the separate local-and-ledger checksum export in
 cutover step 7 before and after mutation. `scripts/verify-migration-baseline.mjs`
 is narrower. It recognizes a known pre-20260713 catalog, verifies its conditional
 RLS state, and reports only the baseline-era/activation-rotation guard it
@@ -316,18 +322,29 @@ endpoint; neither is an account-wide event inventory. See the primary
 ```text
 received ──claim──> processing ──success──> processed (terminal)
                         │        └────────> ignored (terminal)
-                        ├─failure before attempt 8──> retryable ──due claim──┐
-                        ├─failure at attempt 8──────> dead_letter (terminal)│
-                        └─expired lease─────────────────────────────────────┘
+                        ├─caught failure, attempt < 8──> retryable ──due claim──┐
+                        ├─caught failure, attempt >= 8─> dead_letter (terminal)│
+                        └─process termination──> expired lease ────────────────┘
 ```
 
 Claims use `FOR UPDATE SKIP LOCKED`, a UUID claim token, an incremented attempt,
-and a lease. The general worker defaults are batch 10, five-minute lease, and
-eight attempts; the cron is fixed at batch 25 with a ten-minute lease. Backoff is
-exponential from five seconds, jittered to 50-100%, capped at 15 minutes, and at
-least one second. These bounds are code constants, not environment variables.
-Poison events isolate to retry/dead-letter and cannot make `/api/auth/session` or
-other customer reads process the queue.
+and a lease. The general worker defaults are batch 10 and a five-minute lease;
+the cron is fixed at batch 25 with a ten-minute lease. A **caught** processing
+failure uses a maximum-attempt argument of eight: below it the row becomes
+`retryable`, and at or above it the failure handler makes the row `dead_letter`.
+Backoff is exponential from five seconds, jittered to 50-100%, capped at 15
+minutes, and at least one second.
+
+That is not an absolute eight-claim bound. If the process terminates after claim,
+the failure handler never runs. After lease expiry, the claim query has no
+`attempt_count` predicate, reclaims the row, and increments the counter again.
+Repeated termination/reclaim cycles can therefore continue indefinitely. This is
+an explicit Production blocker: a separately owned code change must impose a
+claim/reclaim-side total-attempt terminal cap, preserve race-safe claim semantics,
+and test repeated process termination plus lease expiry. Until that exists, any
+nonterminal row at or above attempt eight is a critical incident and no document
+may call local processing absolutely bounded. Poison events still cannot make
+`/api/auth/session` or other customer reads process the queue.
 
 `dead_letter` is terminal: the row has `terminal_at` set and the claim query
 cannot select it. This repository currently has no Stripe dead-letter reset or
@@ -398,7 +415,7 @@ Never paste values into this document, tickets, chat, browser code, or CEP code.
 | Test database | `SIDESTREAM_TEST_POSTGRES_URL` is mandatory for integration tests, must be disposable, and must not normalize to any runtime host/port/database target |
 | Rate limiter | `SIDESTREAM_RATE_LIMIT_HASH_SECRET`, at least 32 characters and stable; no production fallback. Checkout is fixed at 8/intent and 20/IP per 15 minutes; lead capture is fixed at 5/email and 20/IP per 10 minutes |
 | Checkout intent | Signed confirmation TTL 10 minutes; database intent TTL 24 hours; fixed code constants. Product/Price variables are `SIDESTREAM_PRO_PRODUCT_ID`, `SIDESTREAM_PRO_PRICE_ID`, and legacy `SIDESTREAM_UNLIMITED_PRICE_ID` |
-| Stripe retries | Batch/lease/attempt/backoff constants described above. Legacy allowlists are `SIDESTREAM_LEGACY_SUBSCRIPTION_PRODUCT_IDS` and `SIDESTREAM_LEGACY_SUBSCRIPTION_PRICE_IDS` |
+| Stripe retries | Batch/lease/backoff and caught-failure attempt-8 behavior are described above. Crash/lease-reclaim attempts are currently unbounded because the claim query has no total-attempt cap; that is a Production blocker. Legacy allowlists are `SIDESTREAM_LEGACY_SUBSCRIPTION_PRODUCT_IDS` and `SIDESTREAM_LEGACY_SUBSCRIPTION_PRICE_IDS` |
 | Lead fallback | `SIDESTREAM_LEAD_HASH_SECRET` at least 32 characters (may intentionally share the rate-limit secret), `SIDESTREAM_DOWNLOAD_LEADS_BLOB_PREFIX`, plus Vercel Blob auth variables |
 | License/device | If `SIDESTREAM_LICENSE_HASH_SECRET` is absent, the current device HMAC secret falls back to the first configured runtime value in this order: `SIDESTREAM_POSTGRES_URL`, `SIDESTREAM_POSTGRES_PRISMA_URL`, `POSTGRES_URL`, `POSTGRES_PRISMA_URL`. The runtime trims/selects and URL-normalizes that connection value before hashing; before any URL/pool change, securely capture the exact resulting bytes and duplicate them into `SIDESTREAM_LICENSE_HASH_SECRET` without logging or further parsing/re-encoding/normalization. Prove continuity with the same real device/token before and after promotion. `SIDESTREAM_DEVICE_POLICY_MODE` is `off`, `observe`, or `enforce`; `SIDESTREAM_TEST_API_HOSTS` strictly identifies Test hosts. |
 | Maintenance | `SIDESTREAM_MAINTENANCE_BATCH_SIZE` 100 (1-500); `SIDESTREAM_LICENSE_WRITE_THROTTLE_SECONDS` 3600 (60-86400); `SIDESTREAM_LEGACY_TOKEN_RENEWAL_THRESHOLD_DAYS` 30 (1-180); `SIDESTREAM_WEB_SESSION_GRACE_DAYS` 7 (1-90); `SIDESTREAM_ACTIVATION_SESSION_GRACE_DAYS` and `SIDESTREAM_CREDENTIAL_AUDIT_GRACE_DAYS` 30 (7-365); `SIDESTREAM_RATE_LIMIT_GRACE_HOURS` 24 (1-168); `SIDESTREAM_CHECKOUT_INTENT_GRACE_DAYS` 7 (1-90); `SIDESTREAM_STRIPE_PAYLOAD_RETENTION_DAYS` 14 (1-90); `SIDESTREAM_STRIPE_DEAD_LETTER_PAYLOAD_RETENTION_DAYS` 90 (14-365 and not below processed retention) |
@@ -426,6 +443,7 @@ tokens, device IDs, full Stripe payloads, or lead email addresses.
 | --- | --- | --- |
 | Pending/retry Stripe events | Count `received`, due `retryable`, and expired `processing` leases | Warning when any due work remains for 10 minutes; critical at 30 minutes. Check cron auth, database, then worker errors. |
 | Dead-letter Stripe events | Count `processing_status='dead_letter'` and newest transition | Critical on any new dead-letter. Preserve payload and fix the root cause. No reset/replay tool currently exists, so Preview/Test promotion is blocked and production recovery requires separately reviewed tooling; never mutate queue or entitlement rows manually. |
+| Crash/reclaim attempt overflow | Count `terminal_at is null and attempt_count >= 8`, including future retryable rows and unexpired processing leases | Critical on any row. The current claim path can reclaim indefinitely after repeated process termination; stop promotion and require the total-attempt implementation blocker to close. |
 | Oldest event age | Age of oldest due nonterminal event | Warning over 10 minutes, critical over 30 minutes; the processor runs every five minutes. |
 | Event failures | `retryable + deadLetter` divided by claimed, plus `processing_failed` route outcomes | Warning above 5% with at least 5 claims in 15 minutes; critical above 20% or any route-level failure for 5 minutes. |
 | Checkout volume | Confirmation GETs, confirmed POSTs, created/reused Sessions, `csrf_rejected`, dependency errors | Warning when create failures exceed 1% or 5 in 15 minutes. A GET without a matching confirmation POST is abandonment, not a Stripe failure. |
@@ -451,7 +469,18 @@ where terminal_at is null
     (processing_status in ('received', 'retryable') and next_attempt_at <= now())
     or (processing_status = 'processing' and lease_expires_at <= now())
   );
+
+select event_id, event_type, processing_status, attempt_count,
+       next_attempt_at, lease_expires_at
+from public.sidestream_stripe_events
+where terminal_at is null
+order by stripe_created_at, event_id;
 ```
+
+The due/expired query drives normal scheduling alerts. It is **not** the
+pre-maintenance zero-backlog test: that gate uses the final query and requires no
+row at all with `terminal_at is null`, including future retryable work and an
+unexpired processing lease.
 
 Maintenance runs under an advisory transaction lock and deletes only expired
 credential, activation, web-session, rate-limit, and Checkout-intent rows. It
@@ -510,6 +539,15 @@ connection string. Until then, support may use only conceptual guidance and
 non-Production verification from the device reference; no Production action is
 authorized.
 
+The same prohibition applies to `scripts/report-installer-referrals.mjs` and
+`scripts/dump-download-leads.mjs`. Both currently load env-file/inherited database
+selectors and set remote TLS to `rejectUnauthorized:false`; `env -i` alone does
+not authenticate the server. They may be used only with loopback disposable/local
+databases. Production reporting/export remains blocked until separately owned
+tools implement clean selection, strict endpoint/TLS-option rejection, pinned
+provider-CA and hostname validation, and connected-target evidence without
+printing a URL or customer data to uncontrolled output.
+
 ## Human-gated production cutover
 
 Nothing in this section was executed by the documentation-remediation step.
@@ -524,8 +562,9 @@ command-specific file materialized by the approved secret manager. Use three
 separate files: `/secure/prod-db.env` contains only the reviewed direct
 `SIDESTREAM_POSTGRES_URL_NON_POOLING`, whose connection parameters require
 `sslmode=verify-full` and the reviewed `/secure/` provider-CA path;
-`/secure/prod-legacy.env` uses that same authenticated URL and adds only
-`STRIPE_SECRET_KEY` plus the two exact legacy allowlists; and
+`/secure/prod-legacy.env` carries that same reviewed URL plus only
+`STRIPE_SECRET_KEY` and the two exact legacy allowlists for the catalog gate; it
+does not make the current legacy database client authenticated or executable; and
 `/secure/prod-stripe-read.env` contains only the live Stripe key for account-level
 read/reconciliation. The CA file is materialized separately, pinned by an
 approved SHA-256, and never replaced by an unreviewed downloaded bundle. None may define
@@ -544,6 +583,17 @@ PostgreSQL's primary [`verify-full` contract](https://www.postgresql.org/docs/cu
 Neon's [secure-connection guidance](https://neon.com/docs/connect/connect-securely),
 and node-postgres's warning that connection-string SSL parameters can overwrite
 an explicit [`ssl` object](https://node-postgres.com/features/ssl).
+
+For every authenticated Node client below, the URL is secret input only: reject
+duplicate `sslmode`/`sslrootcert`, reject every other query parameter (including
+`host`, `port`, `dbname`, `user`, `password`, `ssl`, `sslcert`, `sslkey`, and
+connection-routing options), then construct the client from separately validated
+host, numeric port, database, user, password, pinned CA, and TLS server name.
+Never pass the original or partly sanitized URL as `connectionString` alongside
+an `ssl` object. For libpq backup, pass the same validated values through discrete
+`PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER`, `PGPASSFILE`, `PGSSLMODE`, and
+`PGSSLROOTCERT`. A preflight connection never authenticates a later tool's
+separate client.
 
 An unset list is not isolation. The migration runner loads
 `SIDESTREAM_ENV_FILE` before `SIDESTREAM_DB_ENV_FILE` and refuses to replace an
@@ -602,25 +652,42 @@ credentials.
    `needs_response`, `under_review`, `won`, `lost`, and `prevented`), and
    allowlisted legacy-subscription lifecycle in Stripe test mode. Prove the
    reviewed recovery consequence of each terminal outcome and require zero dead
-   letters. Current code cannot pass the failed-refund, `warning_closed`, or
-   `prevented` cases, so this gate blocks until the separately owned lifecycle
-   change or approved/tested policy exists. This Preview/Test target is the only
+   letters. Also terminate the worker repeatedly after claim, advance through
+   lease expiry, and prove a claim-side total-attempt cap terminalizes the row
+   without an extra claim. Current code cannot pass that crash/reclaim case or the
+   failed-refund, `warning_closed`, and `prevented` cases, so this gate blocks
+   until the separately owned retry/lifecycle changes or approved/tested lifecycle
+   policy exist. This Preview/Test target is the only
    place the cutover procedure proves Stripe test-mode lifecycle; never point test
    resources at a Production artifact or hostname.
 
 3. **Approve the permanent lead limit without mutating Production.** Vercel Pro
    WAF exposes a per-region fixed window. One source can consume `L` at the end
-   of a window and another `L` at the start of the next in each reachable region,
-   so exposure across a trailing boundary window is approximately `2 * L * R`,
-   plus regional counter reconciliation risk. It is not a global 20-request
-   bound. The security owner must inventory and cap the reachable region set `R`,
+   of a window and another `L` at the start of the next in each reachable region.
+   With exactly one shared rule/counter domain covering every reachable hostname
+   (`H=1`), exposure across a trailing boundary window is approximately
+   `2 * L * R`, plus regional counter reconciliation risk. It is not a global
+   20-request bound.
+
+   Separate host-specific or duplicated rate-limit rules can create `H`
+   independent counter domains. In that configuration the exposure is
+   approximately `2 * L * R * H`, plus reconciliation risk. The preferred gate
+   therefore requires one shared rule whose hostname condition safely includes
+   the complete reviewed host set, and cross-host tests must prove that consuming
+   the source-IP budget on one host reduces the same budget on every other host.
+   If the UI cannot express one shared rule or the test shows independent
+   counters, do not silently duplicate the rule: inventory `H`, measure/test the
+   boundary on every rule/host domain, and obtain explicit security-owner
+   acceptance of the larger bound, or block pending a durable shared limiter.
+
+   The security owner must also inventory and cap the reachable region set `R`,
    choose a reviewed regional limit `L` no greater than 20, require the rule's
-   enforcing/rejecting action (never Log), record acceptance of that real bound,
-   and prove database-outage behavior with concurrent multi-region Preview
-   traffic. If `R` cannot be capped/proved, the bound is unacceptable, or the
-   product requires a hard global cap, implement and test a durable shared
-   fallback limiter instead. This docs step establishes neither an approved
-   `L/R` exposure nor a shared limiter, so production remains blocked.
+   enforcing/rejecting action (never Log), and prove database-outage behavior
+   with concurrent multi-region Preview traffic. If `R` or `H` cannot be
+   capped/proved, the bound is unacceptable, or the product requires a hard
+   global cap, implement and test a durable shared fallback limiter instead. This
+   docs step establishes neither an approved exposure nor a shared limiter, so
+   production remains blocked.
 
    Do **not** install or change the Production rule in this step. Its exact match,
    fixed-window threshold, rejecting action, priority, and interactions belong to
@@ -696,12 +763,23 @@ credentials.
      throw new Error("Nested env-file selectors are forbidden");
    }
    const url = new URL(process.env.SIDESTREAM_POSTGRES_URL_NON_POOLING.trim());
-   if (!["postgres:", "postgresql:"].includes(url.protocol)) {
+   if (!["postgres:", "postgresql:"].includes(url.protocol) || url.hash ||
+       !url.hostname || url.hostname.includes(",")) {
      throw new Error("Direct database URL must use Postgres");
    }
-   if (url.hostname.includes("pooler") || url.port === "6543" ||
-       url.searchParams.has("pgbouncer") || url.searchParams.has("connection_limit")) {
+   if (url.hostname.includes("pooler") || url.port === "6543") {
      throw new Error("Reviewed legacy target must be non-pooling");
+   }
+   const allowedParameters = new Set(["sslmode", "sslrootcert"]);
+   for (const key of url.searchParams.keys()) {
+     if (!allowedParameters.has(key)) {
+       throw new Error(`Forbidden endpoint/TLS query parameter: ${key}`);
+     }
+   }
+   for (const key of allowedParameters) {
+     if (url.searchParams.getAll(key).length !== 1) {
+       throw new Error(`Expected exactly one ${key} query parameter`);
+     }
    }
    if (url.searchParams.get("sslmode") !== "verify-full") {
      throw new Error("Legacy audit URL must require sslmode=verify-full");
@@ -714,8 +792,15 @@ credentials.
    if (caSha256 !== process.env.EXPECTED_PROD_DB_CA_SHA256) {
      throw new Error("Provider CA checksum mismatch");
    }
-   const target = `${url.hostname.toLowerCase()}:${url.port || "5432"}/${
-     decodeURIComponent(url.pathname.replace(/^\//, ""))
+   const databaseName = decodeURIComponent(url.pathname.replace(/^\//, ""));
+   const portText = url.port || "5432";
+   const port = Number(portText);
+   if (!databaseName || !url.username || !url.password || !/^\d+$/.test(portText) ||
+       !Number.isSafeInteger(port) || port < 1 || port > 65535) {
+     throw new Error("Legacy URL has invalid explicit connection fields");
+   }
+   const target = `${url.hostname.toLowerCase()}:${portText}/${
+     databaseName
    }`;
    const targetSha256 = createHash("sha256").update(target).digest("hex");
    if (targetSha256 !== process.env.EXPECTED_PROD_DB_TARGET_SHA256) {
@@ -820,17 +905,19 @@ credentials.
 
    <!-- ACTION: RUN-LEGACY-AUDIT-OR-APPLY -->
 
-   Only after the immediately preceding catalog gate passes may the read-only
-   audit run from the same empty base and exact env file:
-
-   ```bash
-   env -i PATH="$PATH" HOME="$HOME" \
-     node --env-file=/secure/prod-legacy.env \
-     scripts/audit-legacy-subscriptions.mjs --read-only \
-     --database-url-env SIDESTREAM_POSTGRES_URL_NON_POOLING
-   ```
-
-   Rerun the entire catalog/identity gate immediately before any later apply.
+   The action marker remains **closed**. The catalog block proves the live Stripe
+   account and exact Product/Price set, and its URL checks are only non-secret
+   target-selection evidence; it does not authenticate the database connection
+   later opened by `scripts/audit-legacy-subscriptions.mjs`. That script currently
+   reuses a connection string and permits remote TLS without verified
+   certificate/hostname proof. Do not run either its read-only or `--apply` mode
+   against Production. A separately owned change must make the script itself
+   start clean, reject duplicate and every endpoint/TLS-overriding query option,
+   construct its client from validated explicit host/port/database/credential
+   fields plus the pinned provider CA, and emit the same authenticated connected
+   target evidence. Only after tests and independent review may this runbook add
+   an executable Production audit/apply command; the complete catalog gate must
+   still run immediately before each one.
 
    Before changing any database URL or pool, handle the legacy device-hash
    fallback. If `SIDESTREAM_LICENSE_HASH_SECRET` is absent, the application uses
@@ -873,11 +960,16 @@ credentials.
    accessible by default. **Before creating either Production-configured URL,**
    the project owner must record the current project-level Deployment Protection
    method and scope and prove that it covers generated Production deployment
-   URLs at creation time. Current Standard Protection covers generated deployment
-   URLs while leaving the production domain public; All Deployments is also
-   sufficient. `None`, Legacy Standard, and Legacy Pre-Production are not
-   sufficient for this gate. Record the approved team/project IDs, protection
-   setting, owner, UTC time, and dashboard evidence. If the required scope cannot
+   URLs at creation time **while leaving the canonical Production domain public**.
+   This cutover requires current **Standard Protection**: it protects generated
+   Production deployment URLs but excludes production domains. `All Deployments`
+   is not sufficient because it also protects the canonical public domain and
+   would make the required unauthenticated post-promotion smoke and public reopen
+   fail. `None`, Legacy Standard, and Legacy Pre-Production are also insufficient.
+   If the project starts on All Deployments, complete and independently verify an
+   explicitly approved transition to Standard before staging; do not defer that
+   scope change until promotion. Record the approved team/project IDs, exact
+   Standard setting, owner, UTC time, and dashboard evidence. If Standard cannot
    be established before staging, do not put finalized Production secrets in a
    generated artifact at all; production remains blocked. See Vercel's primary
    [Deployment Protection scope](https://vercel.com/docs/deployment-protection)
@@ -898,15 +990,29 @@ credentials.
    immutable release ID/URL as `RELEASE_DEPLOYMENT`:
 
    ```bash
-   set -e
+   set -euo pipefail
    set +x
    export VERCEL_TEAM_SLUG='alex-3685s-projects'
    export VERCEL_PROJECT_NAME='sidestream'
    export EXPECTED_VERCEL_ORG_ID='<approved team ID>'
    export EXPECTED_VERCEL_PROJECT_ID='<approved project ID>'
    export RELEASE_SHA='<approved release commit>'
+   export RELEASE_EVIDENCE_DIR='<fresh absolute access-controlled release evidence directory>'
 
+   test -n "${VERCEL_TOKEN:-}"
+   test -n "$RELEASE_EVIDENCE_DIR"
+   test "${RELEASE_EVIDENCE_DIR#/}" != "$RELEASE_EVIDENCE_DIR"
+   mkdir -p "$RELEASE_EVIDENCE_DIR"
+   test -z "$(find "$RELEASE_EVIDENCE_DIR" -mindepth 1 -maxdepth 1 -print -quit)"
    test "$(git rev-parse HEAD)" = "$RELEASE_SHA"
+   git diff --quiet
+   git diff --cached --quiet
+   test -z "$(git ls-files --others --exclude-standard)"
+   test -z "$(git ls-files --others --ignored --exclude-standard | \
+     awk '$0 !~ /^\.vercel\//')"
+   RELEASE_TREE="$(git rev-parse 'HEAD^{tree}')"
+   readonly RELEASE_TREE
+   printf '%s\n' "$RELEASE_TREE" > "$RELEASE_EVIDENCE_DIR/release-source-tree.txt"
    env -i PATH="$PATH" HOME="$HOME" VERCEL_TOKEN="$VERCEL_TOKEN" \
      npx vercel@latest link --yes \
      --team "$VERCEL_TEAM_SLUG" --project "$VERCEL_PROJECT_NAME"
@@ -914,7 +1020,8 @@ credentials.
      VERCEL_PROJECT_NAME="$VERCEL_PROJECT_NAME" \
      EXPECTED_VERCEL_ORG_ID="$EXPECTED_VERCEL_ORG_ID" \
      EXPECTED_VERCEL_PROJECT_ID="$EXPECTED_VERCEL_PROJECT_ID" \
-     node --input-type=module <<'NODE'
+     node --input-type=module \
+     > "$RELEASE_EVIDENCE_DIR/release-project-link.json" <<'NODE'
    import { readFile } from "node:fs/promises";
    const link = JSON.parse(await readFile(".vercel/project.json", "utf8"));
    const expected = {
@@ -931,7 +1038,14 @@ credentials.
    NODE
    env -i PATH="$PATH" HOME="$HOME" VERCEL_TOKEN="$VERCEL_TOKEN" \
      npx vercel@latest project inspect "$EXPECTED_VERCEL_PROJECT_ID" \
-     --scope "$VERCEL_TEAM_SLUG"
+     --scope "$VERCEL_TEAM_SLUG" \
+     > "$RELEASE_EVIDENCE_DIR/release-project-inspect.txt"
+   test "$(git rev-parse HEAD)" = "$RELEASE_SHA"
+   git diff --quiet
+   git diff --cached --quiet
+   test -z "$(git ls-files --others --exclude-standard)"
+   test -z "$(git ls-files --others --ignored --exclude-standard | \
+     awk '$0 !~ /^\.vercel\//')"
    RELEASE_DEPLOYMENT="$(env -i PATH="$PATH" HOME="$HOME" \
      VERCEL_TOKEN="$VERCEL_TOKEN" npx vercel@latest deploy \
      --prod --skip-domain --scope "$VERCEL_TEAM_SLUG" \
@@ -940,11 +1054,22 @@ credentials.
    test -n "$RELEASE_DEPLOYMENT"
    env -i PATH="$PATH" HOME="$HOME" VERCEL_TOKEN="$VERCEL_TOKEN" \
      npx vercel@latest inspect "$RELEASE_DEPLOYMENT" --wait --format=json \
-     --scope "$VERCEL_TEAM_SLUG"
+     --scope "$VERCEL_TEAM_SLUG" \
+     > "$RELEASE_EVIDENCE_DIR/release-deployment-inspect.json"
    env -i PATH="$PATH" HOME="$HOME" VERCEL_TOKEN="$VERCEL_TOKEN" \
      npx vercel@latest inspect "$RELEASE_DEPLOYMENT" --logs \
-     --scope "$VERCEL_TEAM_SLUG"
+     --scope "$VERCEL_TEAM_SLUG" \
+     > "$RELEASE_EVIDENCE_DIR/release-build.log"
    ```
+
+   The cleanliness assertions reject modified tracked files, staged changes, and
+   every non-ignored untracked file before Vercel builds the uploaded working
+   directory. The second untracked check rejects ignored content too, allowing
+   only the freshly verified `.vercel/` link metadata. Build/dependency caches,
+   `dist`, local env files, ignored media, and every other ignored file must be
+   absent from these pinned staging checkouts even when `.vercelignore` would
+   normally exclude them. The recorded Git tree is the source/config identity
+   only because all deployable working-tree drift has been rejected.
 
    In the separate clean pinned fallback checkout, rerun the same empty-base
    link/identity inspection using the exact same approved project identity, prove
@@ -952,12 +1077,64 @@ credentials.
    different immutable variable:
 
    ```bash
-   set -e
+   set -euo pipefail
    set +x
    export FALLBACK_SHA='<approved runtime-distinct fallback commit>'
    export RELEASE_DEPLOYMENT='<preserved immutable release deployment ID or URL>'
+   export FALLBACK_EVIDENCE_DIR='<fresh absolute access-controlled fallback evidence directory>'
    readonly RELEASE_DEPLOYMENT
+   test -n "${VERCEL_TOKEN:-}"
+   test -n "${VERCEL_TEAM_SLUG:-}"
+   test -n "${VERCEL_PROJECT_NAME:-}"
+   test -n "${EXPECTED_VERCEL_ORG_ID:-}"
+   test -n "${EXPECTED_VERCEL_PROJECT_ID:-}"
+   test -n "$FALLBACK_EVIDENCE_DIR"
+   test "${FALLBACK_EVIDENCE_DIR#/}" != "$FALLBACK_EVIDENCE_DIR"
+   mkdir -p "$FALLBACK_EVIDENCE_DIR"
+   test -z "$(find "$FALLBACK_EVIDENCE_DIR" -mindepth 1 -maxdepth 1 -print -quit)"
    test "$(git rev-parse HEAD)" = "$FALLBACK_SHA"
+   git diff --quiet
+   git diff --cached --quiet
+   test -z "$(git ls-files --others --exclude-standard)"
+   test -z "$(git ls-files --others --ignored --exclude-standard | \
+     awk '$0 !~ /^\.vercel\//')"
+   FALLBACK_TREE="$(git rev-parse 'HEAD^{tree}')"
+   readonly FALLBACK_TREE
+   printf '%s\n' "$FALLBACK_TREE" > "$FALLBACK_EVIDENCE_DIR/fallback-source-tree.txt"
+   env -i PATH="$PATH" HOME="$HOME" VERCEL_TOKEN="$VERCEL_TOKEN" \
+     npx vercel@latest link --yes \
+     --team "$VERCEL_TEAM_SLUG" --project "$VERCEL_PROJECT_NAME"
+   env -i PATH="$PATH" HOME="$HOME" \
+     VERCEL_PROJECT_NAME="$VERCEL_PROJECT_NAME" \
+     EXPECTED_VERCEL_ORG_ID="$EXPECTED_VERCEL_ORG_ID" \
+     EXPECTED_VERCEL_PROJECT_ID="$EXPECTED_VERCEL_PROJECT_ID" \
+     node --input-type=module \
+     > "$FALLBACK_EVIDENCE_DIR/fallback-project-link.json" <<'NODE'
+   import { readFile } from "node:fs/promises";
+   const link = JSON.parse(await readFile(".vercel/project.json", "utf8"));
+   const expected = {
+     projectName: process.env.VERCEL_PROJECT_NAME,
+     orgId: process.env.EXPECTED_VERCEL_ORG_ID,
+     projectId: process.env.EXPECTED_VERCEL_PROJECT_ID,
+   };
+   for (const [field, value] of Object.entries(expected)) {
+     if (!value || value.startsWith("<") || link[field] !== value) {
+       throw new Error(`Vercel link identity mismatch for ${field}`);
+     }
+   }
+   console.log(JSON.stringify(link));
+   NODE
+   env -i PATH="$PATH" HOME="$HOME" VERCEL_TOKEN="$VERCEL_TOKEN" \
+     npx vercel@latest project inspect "$EXPECTED_VERCEL_PROJECT_ID" \
+     --scope "$VERCEL_TEAM_SLUG" \
+     > "$FALLBACK_EVIDENCE_DIR/fallback-project-inspect.txt"
+   test "$(git rev-parse HEAD)" = "$FALLBACK_SHA"
+   test "$(git rev-parse 'HEAD^{tree}')" = "$FALLBACK_TREE"
+   git diff --quiet
+   git diff --cached --quiet
+   test -z "$(git ls-files --others --exclude-standard)"
+   test -z "$(git ls-files --others --ignored --exclude-standard | \
+     awk '$0 !~ /^\.vercel\//')"
    FALLBACK_DEPLOYMENT="$(env -i PATH="$PATH" HOME="$HOME" \
      VERCEL_TOKEN="$VERCEL_TOKEN" npx vercel@latest deploy \
      --prod --skip-domain --scope "$VERCEL_TEAM_SLUG" \
@@ -967,10 +1144,12 @@ credentials.
    test "$FALLBACK_DEPLOYMENT" != "$RELEASE_DEPLOYMENT"
    env -i PATH="$PATH" HOME="$HOME" VERCEL_TOKEN="$VERCEL_TOKEN" \
      npx vercel@latest inspect "$FALLBACK_DEPLOYMENT" --wait --format=json \
-     --scope "$VERCEL_TEAM_SLUG"
+     --scope "$VERCEL_TEAM_SLUG" \
+     > "$FALLBACK_EVIDENCE_DIR/fallback-deployment-inspect.json"
    env -i PATH="$PATH" HOME="$HOME" VERCEL_TOKEN="$VERCEL_TOKEN" \
      npx vercel@latest inspect "$FALLBACK_DEPLOYMENT" --logs \
-     --scope "$VERCEL_TEAM_SLUG"
+     --scope "$VERCEL_TEAM_SLUG" \
+     > "$FALLBACK_EVIDENCE_DIR/fallback-build.log"
    ```
 
    Persist both immutable values and their checkout paths/commits in
@@ -990,66 +1169,82 @@ credentials.
    the application. Do not enable protection after the fact and call the artifact
    safe. Then record each commit, immutable deployment ID/URL, Production
    environment, build identity/logs, source/config checksum, protection state,
-   and absence of assigned production domains.
+   and absence of assigned production domains. Store the release setting export
+   and raw probe headers as `release-protection-setting.txt` and
+   `release-protection-probe.headers` in `RELEASE_EVIDENCE_DIR`; use the analogous
+   `fallback-*` names in `FALLBACK_EVIDENCE_DIR`. Record and reject any Deployment
+   Protection exception that makes the generated URL public.
 
    With `RELEASE_DEPLOYMENT` set to the exact protected release ID/URL and
-   `EVIDENCE_DIR` set to an access-controlled release directory outside the
+   `EVIDENCE_DIR` set to the already-fresh `RELEASE_EVIDENCE_DIR` outside the
    repository, execute this read-only
    matrix. `vercel curl` requires the path first, Vercel options before `--`, and
    underlying curl flags after `--`:
 
    ```bash
-   set -e
-   mkdir -p "$EVIDENCE_DIR"
+   set -euo pipefail
+   set +x
+   test -n "${VERCEL_TOKEN:-}"
+   test "$EVIDENCE_DIR" = "$RELEASE_EVIDENCE_DIR"
+   test -s "$EVIDENCE_DIR/release-protection-setting.txt"
+   test -s "$EVIDENCE_DIR/release-protection-probe.headers"
 
-   status="$(npx vercel@latest curl \
+   status="$(env -i PATH="$PATH" HOME="$HOME" VERCEL_TOKEN="$VERCEL_TOKEN" \
+     npx vercel@latest curl \
      '/api/releases/latest?channel=stable&platform=macos' \
      --deployment "$RELEASE_DEPLOYMENT" --yes -- \
      --silent --show-error --request GET \
      --dump-header "$EVIDENCE_DIR/release-macos-get.headers" \
      --output "$EVIDENCE_DIR/release-macos-get.json" --write-out '%{http_code}')"
    test "$status" = 200
-   status="$(npx vercel@latest curl \
+   status="$(env -i PATH="$PATH" HOME="$HOME" VERCEL_TOKEN="$VERCEL_TOKEN" \
+     npx vercel@latest curl \
      '/api/releases/latest?channel=stable&platform=win32-x64' \
      --deployment "$RELEASE_DEPLOYMENT" --yes -- \
      --silent --show-error --request GET \
      --dump-header "$EVIDENCE_DIR/release-windows-get.headers" \
      --output "$EVIDENCE_DIR/release-windows-get.json" --write-out '%{http_code}')"
    test "$status" = 200
-   status="$(npx vercel@latest curl \
+   status="$(env -i PATH="$PATH" HOME="$HOME" VERCEL_TOKEN="$VERCEL_TOKEN" \
+     npx vercel@latest curl \
      '/api/releases/latest?channel=stable&platform=macos' \
      --deployment "$RELEASE_DEPLOYMENT" --yes -- \
      --silent --show-error --head \
      --dump-header "$EVIDENCE_DIR/release-macos-head.headers" \
      --output /dev/null --write-out '%{http_code}')"
    test "$status" = 200
-   status="$(npx vercel@latest curl \
+   status="$(env -i PATH="$PATH" HOME="$HOME" VERCEL_TOKEN="$VERCEL_TOKEN" \
+     npx vercel@latest curl \
      '/api/releases/latest?channel=stable&platform=win32-x64' \
      --deployment "$RELEASE_DEPLOYMENT" --yes -- \
      --silent --show-error --head \
      --dump-header "$EVIDENCE_DIR/release-windows-head.headers" \
      --output /dev/null --write-out '%{http_code}')"
    test "$status" = 200
-   status="$(npx vercel@latest curl '/api/download?platform=macos' \
+   status="$(env -i PATH="$PATH" HOME="$HOME" VERCEL_TOKEN="$VERCEL_TOKEN" \
+     npx vercel@latest curl '/api/download?platform=macos' \
      --deployment "$RELEASE_DEPLOYMENT" --yes -- \
      --silent --show-error --head \
      --dump-header "$EVIDENCE_DIR/download-macos-head.headers" \
      --output /dev/null --write-out '%{http_code}')"
    test "$status" = 200
-   status="$(npx vercel@latest curl '/api/download?platform=win32-x64' \
+   status="$(env -i PATH="$PATH" HOME="$HOME" VERCEL_TOKEN="$VERCEL_TOKEN" \
+     npx vercel@latest curl '/api/download?platform=win32-x64' \
      --deployment "$RELEASE_DEPLOYMENT" --yes -- \
      --silent --show-error --head \
      --dump-header "$EVIDENCE_DIR/download-windows-head.headers" \
      --output /dev/null --write-out '%{http_code}')"
    test "$status" = 200
-   status="$(npx vercel@latest curl \
+   status="$(env -i PATH="$PATH" HOME="$HOME" VERCEL_TOKEN="$VERCEL_TOKEN" \
+     npx vercel@latest curl \
      '/api/releases/latest?channel=stable&platform=unknown' \
      --deployment "$RELEASE_DEPLOYMENT" --yes -- \
      --silent --show-error --request GET \
      --dump-header "$EVIDENCE_DIR/release-unknown-get.headers" \
      --output "$EVIDENCE_DIR/release-unknown-get.json" --write-out '%{http_code}')"
    test "$status" = 404
-   status="$(npx vercel@latest curl '/api/download?platform=unknown' \
+   status="$(env -i PATH="$PATH" HOME="$HOME" VERCEL_TOKEN="$VERCEL_TOKEN" \
+     npx vercel@latest curl '/api/download?platform=unknown' \
      --deployment "$RELEASE_DEPLOYMENT" --yes -- \
      --silent --show-error --head \
      --dump-header "$EVIDENCE_DIR/download-unknown-head.headers" \
@@ -1066,7 +1261,12 @@ credentials.
    Compare both GET bodies with their HEAD metadata and each platform's download
    HEAD for platform, version, SHA-256, filename, and size. Do not weaken
    Deployment Protection or call Production database-write/live Checkout
-   surfaces. The repository smoke script has no Deployment Protection credential
+   surfaces. Record the machine-readable comparison as
+   `release-parity-review.json` and the reviewed project/commit/build/Production
+   environment/immutable-ID/no-domain/Standard-protection assertions as
+   `release-identity-review.json`; both must explicitly fail rather than omit an
+   unknown field. Use the analogous `fallback-*` names for the fallback. The
+   repository smoke script has no Deployment Protection credential
    option, so it runs only after promotion on the production domain. See the
    primary [`vercel curl` contract](https://vercel.com/docs/cli/curl). Preview
    promotion is not this artifact: Vercel rebuilds Preview for Production values.
@@ -1080,6 +1280,130 @@ credentials.
    Abort on a Preview target, attached domain, team/project mismatch,
    commit/build mismatch, missing protection, environment drift, failed
    inspection, or any matrix/parity failure.
+
+   Finally create a deterministic qualification manifest for the release. This
+   runs only after every required evidence file exists, rejects empty files,
+   directories, symlinks, placeholders, and an already-used manifest path, and
+   hashes every evidence artifact in sorted filename order. It binds the exact
+   immutable deployment, Git commit/tree, approved team/project, Production
+   environment, and Standard Protection scope:
+
+   ```bash
+   (
+     set -euo pipefail
+     set +x
+     test -n "$RELEASE_DEPLOYMENT"
+     test -n "$RELEASE_SHA"
+     test -n "$RELEASE_TREE"
+     test -n "$EXPECTED_VERCEL_ORG_ID"
+     test -n "$EXPECTED_VERCEL_PROJECT_ID"
+     test -n "$RELEASE_EVIDENCE_DIR"
+     export RELEASE_QUALIFICATION_MANIFEST="$RELEASE_EVIDENCE_DIR/release-qualification-manifest.json"
+     test ! -e "$RELEASE_QUALIFICATION_MANIFEST"
+     env -i PATH="$PATH" HOME="$HOME" \
+       EVIDENCE_DIR="$RELEASE_EVIDENCE_DIR" ROLE='release' \
+       DEPLOYMENT="$RELEASE_DEPLOYMENT" GIT_COMMIT="$RELEASE_SHA" \
+       GIT_TREE="$RELEASE_TREE" VERCEL_ORG_ID="$EXPECTED_VERCEL_ORG_ID" \
+       VERCEL_PROJECT_ID="$EXPECTED_VERCEL_PROJECT_ID" \
+       QUALIFICATION_MANIFEST="$RELEASE_QUALIFICATION_MANIFEST" \
+       node --input-type=module <<'NODE'
+   import { createHash } from "node:crypto";
+   import { lstat, readFile, readdir, writeFile } from "node:fs/promises";
+   import path from "node:path";
+
+   const required = [
+     "release-source-tree.txt", "release-project-link.json",
+     "release-project-inspect.txt", "release-deployment-inspect.json",
+     "release-build.log", "release-protection-setting.txt",
+     "release-protection-probe.headers", "release-macos-get.headers",
+     "release-macos-get.json", "release-windows-get.headers",
+     "release-windows-get.json", "release-macos-head.headers",
+     "release-windows-head.headers", "download-macos-head.headers",
+     "download-windows-head.headers", "release-unknown-get.headers",
+     "release-unknown-get.json", "download-unknown-head.headers",
+     "release-parity-review.json", "release-identity-review.json",
+   ].sort();
+   const values = ["EVIDENCE_DIR", "DEPLOYMENT", "GIT_COMMIT", "GIT_TREE",
+     "VERCEL_ORG_ID", "VERCEL_PROJECT_ID", "QUALIFICATION_MANIFEST"];
+   for (const name of values) {
+     const value = process.env[name] || "";
+     if (!value || value.includes("<") || value.includes(">")) {
+       throw new Error(`Missing or placeholder qualification value: ${name}`);
+     }
+   }
+   const entries = (await readdir(process.env.EVIDENCE_DIR)).sort();
+   for (const name of required) {
+     if (!entries.includes(name)) throw new Error(`Missing qualification evidence: ${name}`);
+   }
+   const artifacts = [];
+   for (const name of entries) {
+     if (name.startsWith("release-qualification")) {
+       throw new Error(`Qualification output already exists: ${name}`);
+     }
+     const absolute = path.join(process.env.EVIDENCE_DIR, name);
+     const stat = await lstat(absolute);
+     if (!stat.isFile() || stat.isSymbolicLink() || stat.size === 0) {
+       throw new Error(`Invalid qualification evidence: ${name}`);
+     }
+     const body = await readFile(absolute);
+     artifacts.push({
+       path: name,
+       bytes: body.length,
+       sha256: createHash("sha256").update(body).digest("hex"),
+     });
+   }
+   const manifest = {
+     schemaVersion: 1,
+     role: "release",
+     deployment: process.env.DEPLOYMENT,
+     gitCommit: process.env.GIT_COMMIT,
+     gitTree: process.env.GIT_TREE,
+     vercelOrgId: process.env.VERCEL_ORG_ID,
+     vercelProjectId: process.env.VERCEL_PROJECT_ID,
+     environment: "production",
+     deploymentProtectionScope: "standard",
+     artifacts,
+   };
+   await writeFile(
+     process.env.QUALIFICATION_MANIFEST,
+     `${JSON.stringify(manifest, null, 2)}\n`,
+     { flag: "wx", mode: 0o600 },
+   );
+   NODE
+     test -s "$RELEASE_QUALIFICATION_MANIFEST"
+     EXPECTED_RELEASE_QUALIFICATION_SHA256="$(
+       shasum -a 256 "$RELEASE_QUALIFICATION_MANIFEST" | awk '{print $1}'
+     )"
+     [[ "$EXPECTED_RELEASE_QUALIFICATION_SHA256" =~ ^[0-9a-f]{64}$ ]]
+     printf '%s  %s\n' "$EXPECTED_RELEASE_QUALIFICATION_SHA256" \
+       "$(basename "$RELEASE_QUALIFICATION_MANIFEST")" \
+       > "$RELEASE_EVIDENCE_DIR/release-qualification.sha256"
+     test -s "$RELEASE_EVIDENCE_DIR/release-qualification.sha256"
+   )
+   ```
+
+   Store `RELEASE_QUALIFICATION_MANIFEST` and
+   `EXPECTED_RELEASE_QUALIFICATION_SHA256` in the immutable release record. A
+   different authorized approver must sign that exact digest with the
+   organization's approved signing service and retain signature-verification
+   evidence as `release-qualification-signature.txt`. That verification receipt
+   must identify the approved signer, exact 64-hex digest, verification result,
+   and UTC time; a nonempty file or digest copied from the same mutable directory
+   without independent cryptographic verification is not approval.
+
+   Rerun the same fail-closed manifest procedure in the fallback checkout with
+   role/prefix `fallback`, `FALLBACK_DEPLOYMENT`, `FALLBACK_SHA`, `FALLBACK_TREE`,
+   and `FALLBACK_EVIDENCE_DIR`. It must create and retain the distinct variables
+   `FALLBACK_QUALIFICATION_MANIFEST` and
+   `EXPECTED_FALLBACK_QUALIFICATION_SHA256` (a nonempty 64-hex digest), plus a
+   separately verified `fallback-qualification-signature.txt` receipt binding
+   that digest and approved signer. The fallback required-file list uses every
+   analogous `fallback-*` identity, inspection, build, protection, request,
+   parity, and review artifact; changing only `ROLE` while leaving release file
+   names is an error. Never reuse the release manifest, digest, signature, or
+   evidence directory for fallback. If the approved signing service cannot
+   produce machine-verifiable receipts for both roles, neither artifact is
+   qualified and Production remains blocked.
 
 6. **Take and verify a fresh database backup.** Before this gate and immediately
    before every later `/secure/prod-db.env` gate, run the following
@@ -1117,13 +1441,32 @@ credentials.
      throw new Error(`Unexpected database/env-file selection: ${selected.join(",")}`);
    }
    const url = new URL(process.env.SIDESTREAM_POSTGRES_URL_NON_POOLING.trim());
-   if (!["postgres:", "postgresql:"].includes(url.protocol) ||
-       url.hostname.includes("pooler") || url.port === "6543" ||
-       url.searchParams.has("pgbouncer") || url.searchParams.has("connection_limit")) {
+   if (!["postgres:", "postgresql:"].includes(url.protocol) || url.hash ||
+       !url.hostname || url.hostname.includes(",") ||
+       url.hostname.includes("pooler") || url.port === "6543") {
      throw new Error("Expected the reviewed direct Postgres target");
    }
+   const allowedParameters = new Set(["sslmode", "sslrootcert"]);
+   for (const key of url.searchParams.keys()) {
+     if (!allowedParameters.has(key)) {
+       throw new Error(`Forbidden endpoint/TLS query parameter: ${key}`);
+     }
+   }
+   for (const key of allowedParameters) {
+     if (url.searchParams.getAll(key).length !== 1) {
+       throw new Error(`Expected exactly one ${key} query parameter`);
+     }
+   }
    const databaseName = decodeURIComponent(url.pathname.replace(/^\//, ""));
-   const target = `${url.hostname.toLowerCase()}:${url.port || "5432"}/${databaseName}`;
+   const user = decodeURIComponent(url.username);
+   const password = decodeURIComponent(url.password);
+   const portText = url.port || "5432";
+   const port = Number(portText);
+   if (!databaseName || !user || !password || !/^\d+$/.test(portText) ||
+       !Number.isSafeInteger(port) || port < 1 || port > 65535) {
+     throw new Error("Direct database URL has invalid explicit connection fields");
+   }
+   const target = `${url.hostname.toLowerCase()}:${portText}/${databaseName}`;
    const targetSha256 = createHash("sha256").update(target).digest("hex");
    if (targetSha256 !== process.env.EXPECTED_PROD_DB_TARGET_SHA256) {
      throw new Error("Production database target fingerprint mismatch");
@@ -1141,11 +1484,8 @@ credentials.
    if (providerCaSha256 !== process.env.EXPECTED_PROD_DB_CA_SHA256) {
      throw new Error("Production database provider CA fingerprint mismatch");
    }
-   // node-postgres connection-string SSL parameters overwrite an explicit ssl object.
-   url.searchParams.delete("sslmode");
-   url.searchParams.delete("sslrootcert");
    const pool = new Pool({
-     connectionString: url.toString(), max: 1,
+     host: url.hostname, port, database: databaseName, user, password, max: 1,
      connectionTimeoutMillis: 10_000, statement_timeout: 30_000,
      ssl: {
        ca: ca.toString("utf8"),
@@ -1175,12 +1515,14 @@ credentials.
    Retain that non-secret authenticated-identity result with each gate. Prefer the provider's
    reviewed snapshot/restore verification. For `pg_dump`, do not put the
    connection URL in argv. Set `BACKUP_PATH` to access-controlled storage outside
-   the repository and inject the direct URL to libpq as `PGDATABASE` only in the
-   child process:
+   the repository. Reject every query option except one `sslmode` and one
+   `sslrootcert`, parse the reviewed URL once, and pass libpq discrete
+   `PGHOST`/`PGPORT`/`PGDATABASE`/`PGUSER` plus a temporary mode-`0600` password
+   file, `PGSSLMODE=verify-full`, and `PGSSLROOTCERT`:
 
    ```bash
    (
-     set -e
+     set -euo pipefail
      set +x
      test -n "$BACKUP_PATH"
      test -n "$EXPECTED_PROD_DB_TARGET_SHA256"
@@ -1191,7 +1533,9 @@ credentials.
        node --env-file=/secure/prod-db.env --input-type=module <<'NODE'
    import { createHash } from "node:crypto";
    import { spawn } from "node:child_process";
-   import { readFile } from "node:fs/promises";
+   import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+   import { tmpdir } from "node:os";
+   import { join } from "node:path";
    const connection = process.env.SIDESTREAM_POSTGRES_URL_NON_POOLING?.trim()
      || process.env.POSTGRES_URL_NON_POOLING?.trim();
    if (!connection || process.env.POSTGRES_URL_NON_POOLING ||
@@ -1199,13 +1543,37 @@ credentials.
      throw new Error("Expected only the reviewed Sidestream direct Postgres URL");
    }
    const url = new URL(connection);
+   if (!["postgres:", "postgresql:"].includes(url.protocol) || url.hash ||
+       !url.hostname || url.hostname.includes(",") ||
+       url.hostname.includes("pooler") || url.port === "6543") {
+     throw new Error("Expected the reviewed direct backup target");
+   }
+   const allowedParameters = new Set(["sslmode", "sslrootcert"]);
+   for (const key of url.searchParams.keys()) {
+     if (!allowedParameters.has(key)) {
+       throw new Error(`Forbidden endpoint/TLS query parameter: ${key}`);
+     }
+   }
+   for (const key of allowedParameters) {
+     if (url.searchParams.getAll(key).length !== 1) {
+       throw new Error(`Expected exactly one ${key} query parameter`);
+     }
+   }
    const caPath = url.searchParams.get("sslrootcert") || "";
    if (url.searchParams.get("sslmode") !== "verify-full" ||
        !caPath.startsWith("/secure/")) {
      throw new Error("Backup requires verify-full and the reviewed provider CA");
    }
    const databaseName = decodeURIComponent(url.pathname.replace(/^\//, ""));
-   const target = `${url.hostname.toLowerCase()}:${url.port || "5432"}/${databaseName}`;
+   const user = decodeURIComponent(url.username);
+   const password = decodeURIComponent(url.password);
+   const portText = url.port || "5432";
+   const port = Number(portText);
+   if (!databaseName || !user || !password || !/^\d+$/.test(portText) ||
+       !Number.isSafeInteger(port) || port < 1 || port > 65535) {
+     throw new Error("Backup URL has invalid explicit connection fields");
+   }
+   const target = `${url.hostname.toLowerCase()}:${portText}/${databaseName}`;
    const targetSha256 = createHash("sha256").update(target).digest("hex");
    if (targetSha256 !== process.env.EXPECTED_PROD_DB_TARGET_SHA256) {
      throw new Error("Backup database target fingerprint mismatch");
@@ -1215,25 +1583,42 @@ credentials.
    if (providerCaSha256 !== process.env.EXPECTED_PROD_DB_CA_SHA256) {
      throw new Error("Backup provider CA fingerprint mismatch");
    }
-   const child = spawn(
-     "pg_dump",
-     ["--no-password", "--format=custom", "--file", process.env.BACKUP_PATH],
-     {
-       env: {
-         PATH: process.env.PATH,
-         HOME: process.env.HOME,
-         PGDATABASE: connection,
-         PGSSLMODE: "verify-full",
-         PGSSLROOTCERT: caPath,
+   const escapePassfile = (value) => value.replaceAll("\\", "\\\\").replaceAll(":", "\\:");
+   const passDirectory = await mkdtemp(join(tmpdir(), "sidestream-pgpass-"));
+   const passfile = join(passDirectory, "pgpass");
+   try {
+     await writeFile(
+       passfile,
+       `${[url.hostname, portText, databaseName, user, password]
+         .map(escapePassfile).join(":")}\n`,
+       { mode: 0o600 },
+     );
+     const child = spawn(
+       "pg_dump",
+       ["--no-password", "--format=custom", "--file", process.env.BACKUP_PATH],
+       {
+         env: {
+           PATH: process.env.PATH,
+           HOME: process.env.HOME,
+           PGHOST: url.hostname,
+           PGPORT: portText,
+           PGDATABASE: databaseName,
+           PGUSER: user,
+           PGPASSFILE: passfile,
+           PGSSLMODE: "verify-full",
+           PGSSLROOTCERT: caPath,
+         },
+         stdio: "inherit",
        },
-       stdio: "inherit",
-     },
-   );
-   const code = await new Promise((resolve, reject) => {
-     child.once("error", reject);
-     child.once("close", resolve);
-   });
-   if (code !== 0) throw new Error(`pg_dump exited ${code}`);
+     );
+     const code = await new Promise((resolve, reject) => {
+       child.once("error", reject);
+       child.once("close", resolve);
+     });
+     if (code !== 0) throw new Error(`pg_dump exited ${code}`);
+   } finally {
+     await rm(passDirectory, { recursive: true, force: true });
+   }
    NODE
      shasum -a 256 "$BACKUP_PATH"
      pg_restore --list "$BACKUP_PATH" > "${BACKUP_PATH}.restore-list.txt"
@@ -1248,14 +1633,18 @@ credentials.
    tooling exists.** The current migration runner and baseline verifier open
    their own remote connections with certificate verification disabled. Step 6's
    successful connection cannot authenticate those separate connections. Do not
-   run the current `db:migrate --status`, `--validate`, `--dry-run`, `--baseline`,
-   apply, or baseline-verifier paths against Production. Production remains
-   blocked until a separately owned code change makes every one of those tools
+   run the current `db:migrate --status`, `--baseline`, apply, or
+   baseline-verifier paths against Production. `--validate` and `--dry-run` are
+   local-only: they return before env-file loading or database selection, so they
+   may be retained as source-file evidence but cannot authenticate or report
+   Production state. Production remains blocked until a separately owned code
+   change makes every database-backed runner/verifier mode
    start from a clean environment, load the reviewed provider CA, validate the
    hostname/certificate with verify-full-equivalent semantics, and report the
    selected variable plus connected database without exposing a URL. After that
-   implementation is reviewed and tested, retain its status, validation, and
-   dry-run output as the authoritative complete filename state.
+   implementation is reviewed and tested, retain its status as the authoritative
+   complete applied/pending filename state and pair it with the local validation
+   and dry-run output.
 
    The future authenticated status is authoritative for complete applied/pending
    filenames and must fail on a
@@ -1299,11 +1688,32 @@ credentials.
    }
    const raw = process.env.SIDESTREAM_POSTGRES_URL_NON_POOLING.trim();
    const url = new URL(raw);
-   if (!['postgres:', 'postgresql:'].includes(url.protocol)) {
+   if (!['postgres:', 'postgresql:'].includes(url.protocol) || url.hash ||
+       !url.hostname || url.hostname.includes(',') ||
+       url.hostname.includes('pooler') || url.port === '6543') {
      throw new Error("Direct migration URL must use postgres protocol");
    }
+   const allowedParameters = new Set(['sslmode', 'sslrootcert']);
+   for (const key of url.searchParams.keys()) {
+     if (!allowedParameters.has(key)) {
+       throw new Error(`Forbidden endpoint/TLS query parameter: ${key}`);
+     }
+   }
+   for (const key of allowedParameters) {
+     if (url.searchParams.getAll(key).length !== 1) {
+       throw new Error(`Expected exactly one ${key} query parameter`);
+     }
+   }
    const databaseName = decodeURIComponent(url.pathname.replace(/^\//, ''));
-   const target = `${url.hostname.toLowerCase()}:${url.port || '5432'}/${databaseName}`;
+   const user = decodeURIComponent(url.username);
+   const password = decodeURIComponent(url.password);
+   const portText = url.port || '5432';
+   const port = Number(portText);
+   if (!databaseName || !user || !password || !/^\d+$/.test(portText) ||
+       !Number.isSafeInteger(port) || port < 1 || port > 65535) {
+     throw new Error('Direct migration URL has invalid explicit connection fields');
+   }
+   const target = `${url.hostname.toLowerCase()}:${portText}/${databaseName}`;
    const targetSha256 = createHash('sha256').update(target).digest('hex');
    if (targetSha256 !== process.env.EXPECTED_PROD_DB_TARGET_SHA256) {
      throw new Error('Production database target fingerprint mismatch');
@@ -1319,11 +1729,13 @@ credentials.
    if (providerCaSha256 !== process.env.EXPECTED_PROD_DB_CA_SHA256) {
      throw new Error('Production database provider CA fingerprint mismatch');
    }
-   url.searchParams.delete('sslmode');
-   url.searchParams.delete('sslrootcert');
    const migrations = validateMigrationFiles(await loadMigrationFiles());
    const pool = new Pool({
-     connectionString: url.toString(),
+     host: url.hostname,
+     port,
+     database: databaseName,
+     user,
+     password,
      max: 1,
      connectionTimeoutMillis: 10_000,
      statement_timeout: 300_000,
@@ -1417,12 +1829,14 @@ credentials.
    and IP-blocking layers are not that custom-bypass action. Because the following
    maintenance bypasses must precede the API deny, the security owner must map and
    explicitly accept every unrelated protection each exact tuple suppresses, or
-   production mutation is blocked. Review this one exact custom-rule order for
-   every exact host (duplicate rules when the UI cannot express a safe set):
+   production mutation is blocked. Review this one exact custom-rule order. The
+   permanent limiter must be one shared rule/counter domain spanning the complete
+   exact host set; if that cannot be proved, apply step 3's `H` blocker rather
+   than duplicating it:
 
    | Priority/control | Environment, host, path, and method | Additional match | Action |
    | --- | --- | --- | --- |
-   | 1. Permanent lead fixed-window control | Production; every inventoried host; exact `POST /api/download-lead` only | Source IP; reviewed `L` requests per ten-minute fixed window in each of the approved `R` reachable regions | **Rate Limit / reject**, never Log; owner accepts approximate trailing-boundary exposure `2 * L * R` plus regional reconciliation risk |
+   | 1. Permanent lead fixed-window control | Production; one shared rule whose exact host set contains every inventoried host; exact `POST /api/download-lead` only | One source-IP counter domain (`H=1`); reviewed `L` requests per ten-minute fixed window in each approved reachable region `R` | **Rate Limit / reject**, never Log; owner accepts approximate trailing-boundary exposure `2 * L * R` plus regional reconciliation risk. If cross-host proof reveals `H>1`, block or separately approve/test `2 * L * R * H` |
    | 2. Operator bypass | Production; each inventoried host; exact `POST /api/download-lead`, `POST /api/license/verify`, or exact `GET` for each of `/api/internal/stripe-events/process`, `/api/internal/download-leads/replay`, `/api/internal/maintenance` | Exact approved source IP **and** `x-sidestream-maintenance-bypass` equal to a short-lived secret | Bypass every subsequent custom and managed WAF rule; it cannot bypass priority 1; approved only with the inventory/risk acceptance above |
    | 3. Stripe reconciliation allow (initially disabled) | Production; only the configured Stripe endpoint host; exact `POST /api/stripe/webhook` | None; application signature verification remains mandatory | After compatible promotion only, bypass every subsequent custom and managed WAF rule; approved only for this exact tuple |
    | 4. Public release reads | Production; every inventoried host; exact `/api/releases/latest`; `GET`, `HEAD`, or `OPTIONS` only | None | Bypass every subsequent custom and managed WAF rule for this exact public read tuple |
@@ -1439,9 +1853,12 @@ credentials.
    Use a dedicated WAF secret distinct from `CRON_SECRET`; never place its value
    in source, shell history, request evidence, or logs. Clone the complete
    reviewed rule order and relevant managed rulesets to Preview first. Prove the
-   priority-1 control rejects request `L+1`, is not Log-only, and exercises
-   concurrent traffic on both sides of a fixed-window boundary in every approved
-   region; record the observed bound and any cross-region counter divergence.
+   priority-1 control rejects request `L+1`, is not Log-only, exercises concurrent
+   traffic on both sides of a fixed-window boundary in every approved region, and
+   shares one source-IP budget across every reachable hostname. Record the
+   observed bound plus any cross-region or cross-host counter divergence; any
+   independent host/rule counter changes the approved formula to
+   `2 * L * R * H` and reopens the blocker.
    Also prove each maintenance dimension independently before any data mutation:
    missing/wrong bypass, wrong IP, host, path, or method is denied; the correct
    WAF bypass reaches application validation without mutation (valid empty JSON
@@ -1460,29 +1877,50 @@ credentials.
    If the existing-rule inventory is incomplete, the bypass effect is not
    accepted, or the environment/host/path/method/IP/header scopes cannot all be
    implemented and separately tested, production mutation is blocked. If the
-   rejecting limit, `L/R` evidence, boundary test, and regional-risk acceptance
-   are absent, production mutation is also blocked.
+   rejecting limit, `L/R/H` evidence, boundary/cross-host tests, and regional-risk
+   acceptance are absent, production mutation is also blocked.
 
    <!-- ACTION: MUTATE-WAF -->
 
-   Only after every gate above passes, install the **entire** exact Production
-   order in one reviewed maintenance change; do not create or alter the permanent
-   lead rule in an earlier change. Leave priority 3 disabled. Immediately export
-   the complete effective firewall, hostname inventory, and final rule order
-   again and reject any drift. In an announced no-schema Production rehearsal (or
-   as step 9's first phase), repeat the complete Preview matrix and prove the same
-   results before any data mutation. If the Production matrix is deactivated
-   after rehearsal, repeat the full pre-mutation inventory/review before
-   reactivation, retain its reviewed configuration identity, and re-prove that
-   exact identity immediately afterward.
+   Only after every gate above passes, publish the **entire** exact Production
+   order in one reviewed configuration change; do not create or alter the
+   permanent lead rule in an earlier change. The permanent priority-1 limiter may
+   be enabled only after its rejecting, regional, boundary, and shared-cross-host
+   proof passes. Stage priorities 2-6 **disabled**. In particular, priority 6 must
+   not deny `/api/stripe/webhook` or any API request during the pre-drain, and
+   priority 3 remains disabled. Immediately export the complete effective
+   firewall, hostname inventory, enabled/disabled state, and final rule order
+   again and reject any drift.
+
+   A no-schema Production rehearsal may verify the permanent limiter and disabled
+   maintenance configuration identity, but it must not activate the API deny. Any
+   rehearsal that activates priority 6 creates a real Stripe maintenance window
+   and must perform its own complete step-9 pre-drain, boundary/timers, cron
+   disable, and steps 11-12 event reconciliation before the deny is removed. It
+   may not reuse or reset a later cutover window. Repeat the full pre-mutation
+   inventory/review before any later activation and re-prove the exact reviewed
+   configuration identity immediately afterward.
 
 9. **Enter maintenance without disabling Stripe delivery.** While the compatible
    current artifact is still serving the webhook and the destination remains
    enabled, enumerate **every** Workbench page and reconcile every pre-existing
    `Failed` or `Pending` delivery. Require a successful `2xx` delivery to the exact
-   endpoint and its matching local ledger row, then run the local processor until
-   there is zero due/expired-lease work and zero dead letters. Retain exact event
-   IDs, types, attempts, ledger outcomes, and the oldest creation time. If the
+   endpoint and its matching local ledger row. Retain that exact Workbench ID set
+   and also retain every local row whose `terminal_at is null`, including
+   `received`, future `retryable`, and unexpired `processing` rows; the ordinary
+   due/expired query is not this gate. Run the local processor and wait through
+   leases/backoff until **every retained ID** is terminal `processed` or `ignored`,
+   a fresh full-table query returns zero rows with `terminal_at is null`, and a
+   separate query returns zero `dead_letter` rows. Include any event arriving
+   before the boundary in the retained set and repeat the all-nonterminal query.
+   Retain exact event IDs, types, attempts, terminal outcomes, and the oldest
+   creation time in an immutable `PREDRAIN_EVENT_IDS` evidence set. A future
+   retryable row or unexpired lease is backlog, not zero. This exact set remains
+   an input to step 11 even when an event predates the bounded maintenance
+   account-event interval or no longer appears in a default Workbench view.
+   If any exact ID cannot terminalize, retain/carry it into incident evidence and
+   stop before the deny; do not hide it by waiting only for `next_attempt_at` to be
+   due. If the
    current artifact cannot safely return `2xx` and create/process the ledger row,
    stop: do not ask Stripe to retry into a deny and do not record a maintenance
    boundary. A narrowly scoped temporary webhook allowance is permitted only if
@@ -1493,19 +1931,26 @@ credentials.
 
    <!-- ACTION: ENTER-MAINTENANCE -->
 
-   Only after that pre-existing delivery/local backlog is zero, record a UTC
+   Only after that complete pre-existing delivery/local backlog is zero, record a UTC
    maintenance start, a planned closed-write end no more than two hours later, a
    24-hour reconciliation escalation, and a 48-hour hard-abort timestamp. Compute
    the latter two conservatively from the earlier of maintenance start or the
-   oldest event creation time discovered above. Announce the window, globally
-   disable Vercel Cron Jobs, activate the proven matrix with the Stripe
-   reconciliation allow still disabled, and wait for old in-flight writes and
-   function invocations to drain. Do not pause or disable the live Stripe event
+   oldest event creation time discovered above. Record the earliest boundary
+   event ID and inclusive `STRIPE_EVENT_WINDOW_GTE`, announce the window, and
+   globally disable Vercel Cron Jobs **while priority 6 is still disabled**. Only
+   then atomically activate the exact reviewed maintenance state: priorities 2,
+   4, 5, and 6 enabled, priority 3 disabled, and the permanent priority 1
+   unchanged. Immediately export and compare the active configuration identity,
+   then prove the deny and wait for old in-flight writes and function invocations
+   to drain. Do not pause or disable the live Stripe event
    destination. The edge deny must instead return non-`2xx` for webhook attempts
    while old code and the migrated schema would be incompatible, entering
    Stripe's bounded retry window. The retained boundary starts only after the
-   pre-existing backlog is reconciled; all later retries wait for step 11's
-   compatible-artifact webhook allowance.
+   pre-existing backlog is reconciled but before cron disable/deny, so every event
+   accepted during that short transition is inside step 11's account-event and
+   Workbench union. All later retries wait for step 11's compatible-artifact
+   webhook allowance. If the matrix cannot be activated atomically from the
+   reviewed disabled state, production remains blocked.
 
    With that deny proved active, and only after the lifecycle implementation
    blockers have already passed Preview/Test, apply any pre-reviewed live
@@ -1542,8 +1987,9 @@ credentials.
     plus `current_database()` is not a substitute. The following action boundary
     therefore remains closed until a separately owned, tested implementation uses
     the reviewed provider CA and verify-full-equivalent hostname/certificate
-    validation for **every** status, validate, dry-run, baseline, apply, and
-    baseline-verifier connection. The current provider supports that contract, so
+    validation for **every** database-backed status, baseline, apply, and
+    baseline-verifier connection. Local `--validate` and `--dry-run` do not open a
+    connection and remain source-file evidence only. The current provider supports that contract, so
     a risk-acceptance exception is not an available shortcut.
 
     <!-- SAFETY: AUTHENTICATED-DB-BEFORE-MUTATION -->
@@ -1554,7 +2000,8 @@ credentials.
     open. Once a reviewed implementation closes it, preserve this exact sequence:
 
     1. Rerun and retain step 6's authenticated-target preflight. Run the future
-       authenticated status/validate/dry-run path. If and only if complete state
+       authenticated status path and separately retain local validate/dry-run
+       evidence. If and only if complete state
        proves a baseline is required, run its explicit authenticated baseline,
        then retain complete filename status. Set `CHECKSUM_EVIDENCE` to a new
        baseline-after path and rerun step 7's separate authenticated read-only
@@ -1569,27 +2016,19 @@ credentials.
        SHA-256 pair to match, and no ledger-only filename. Status alone is not
        retainable checksum evidence.
 
-    3. Rematerialize `/secure/prod-legacy.env`, rerun step 4's entire identity
-       preflight with the approved nonempty allowlists, then apply the reviewed
-       exact legacy-subscription backfill/quarantine. Rerun the same preflight and
-       audit read-only; retain database fingerprint, Stripe account,
-       Product/Price, secret-file version/hash, and count evidence:
-
-       ```bash
-       (
-         set -e
-         set +x
-         env -i PATH="$PATH" HOME="$HOME" \
-           node --env-file=/secure/prod-legacy.env \
-           scripts/audit-legacy-subscriptions.mjs --apply \
-           --database-url-env SIDESTREAM_POSTGRES_URL_NON_POOLING \
-           --confirm APPLY-LEGACY-SUBSCRIPTIONS
-         env -i PATH="$PATH" HOME="$HOME" \
-           node --env-file=/secure/prod-legacy.env \
-           scripts/audit-legacy-subscriptions.mjs --read-only \
-           --database-url-env SIDESTREAM_POSTGRES_URL_NON_POOLING
-       )
-       ```
+    3. Do not run the current legacy audit/apply tool. Step 4's exact live catalog
+       proof remains required, but it cannot authenticate the separate database
+       connection opened by `audit-legacy-subscriptions.mjs`. This action stays
+       blocked until the tool itself implements clean selection, strict
+       endpoint/TLS-option rejection, explicit connection fields, pinned provider
+       CA and hostname verification, and connected-target evidence. After that
+       separately owned implementation passes disposable/Test proof and review,
+       rematerialize its command-specific secrets, rerun step 4's entire catalog
+       gate immediately before the future authenticated apply, and rerun the
+       authenticated read-only audit afterward. Retain the database identity,
+       Stripe account, exact Product/Price, secret-file version/hash, and counts.
+       This documentation-only revision intentionally provides no executable
+       Production legacy command.
 
     4. Against the protected, staged Production deployment ID from step 5,
        repeat the bounded release matrix with authenticated `vercel curl`
@@ -1634,37 +2073,117 @@ credentials.
 
        ```bash
        (
-         set -e
+         set -euo pipefail
          set +x
+         test -n "${VERCEL_TOKEN:-}"
+         test -n "${RELEASE_DEPLOYMENT:-}"
+         test -n "${FALLBACK_DEPLOYMENT:-}"
+         test -n "${APPROVED_RELEASE_DEPLOYMENT:-}"
+         test -n "${RELEASE_SHA:-}"
+         test -n "${RELEASE_TREE:-}"
+         test -n "${RELEASE_EVIDENCE_DIR:-}"
+         test -n "${RELEASE_QUALIFICATION_MANIFEST:-}"
+         test -n "${EXPECTED_RELEASE_QUALIFICATION_SHA256:-}"
+         test -n "${RELEASE_PROJECT_REASSERTION:-}"
+         test -n "${RELEASE_IDENTITY_REASSERTION:-}"
+         [[ "$EXPECTED_RELEASE_QUALIFICATION_SHA256" =~ ^[0-9a-f]{64}$ ]]
+         RELEASE_QUALIFICATION_SIGNATURE_EVIDENCE="$RELEASE_EVIDENCE_DIR/release-qualification-signature.txt"
+         test -s "$RELEASE_QUALIFICATION_SIGNATURE_EVIDENCE"
          readonly RELEASE_DEPLOYMENT
          readonly FALLBACK_DEPLOYMENT
-         test -n "$RELEASE_DEPLOYMENT"
-         test -n "$FALLBACK_DEPLOYMENT"
          test "$RELEASE_DEPLOYMENT" = "$APPROVED_RELEASE_DEPLOYMENT"
          test "$RELEASE_DEPLOYMENT" != "$FALLBACK_DEPLOYMENT"
          test "$(git rev-parse HEAD)" = "$RELEASE_SHA"
-         test "$(shasum -a 256 "$RELEASE_QUALIFICATION_MANIFEST" | awk '{print $1}')" = \
-           "$EXPECTED_RELEASE_QUALIFICATION_SHA256"
+         test "$(git rev-parse 'HEAD^{tree}')" = "$RELEASE_TREE"
+         git diff --quiet
+         git diff --cached --quiet
+         test -z "$(git ls-files --others --exclude-standard)"
+         test -z "$(git ls-files --others --ignored --exclude-standard | \
+           awk '$0 !~ /^\.vercel\//')"
+         actual_manifest_sha256="$(
+           shasum -a 256 "$RELEASE_QUALIFICATION_MANIFEST" | awk '{print $1}'
+         )"
+         [[ "$actual_manifest_sha256" =~ ^[0-9a-f]{64}$ ]]
+         test "$actual_manifest_sha256" = "$EXPECTED_RELEASE_QUALIFICATION_SHA256"
+         env -i PATH="$PATH" HOME="$HOME" \
+           EVIDENCE_DIR="$RELEASE_EVIDENCE_DIR" \
+           QUALIFICATION_MANIFEST="$RELEASE_QUALIFICATION_MANIFEST" \
+           DEPLOYMENT="$RELEASE_DEPLOYMENT" GIT_COMMIT="$RELEASE_SHA" \
+           GIT_TREE="$RELEASE_TREE" VERCEL_ORG_ID="$EXPECTED_VERCEL_ORG_ID" \
+           VERCEL_PROJECT_ID="$EXPECTED_VERCEL_PROJECT_ID" \
+           node --input-type=module <<'NODE'
+         import { createHash } from "node:crypto";
+         import { readFile } from "node:fs/promises";
+         import path from "node:path";
+         const manifest = JSON.parse(await readFile(
+           process.env.QUALIFICATION_MANIFEST, "utf8",
+         ));
+         const expected = {
+           schemaVersion: 1,
+           role: "release",
+           deployment: process.env.DEPLOYMENT,
+           gitCommit: process.env.GIT_COMMIT,
+           gitTree: process.env.GIT_TREE,
+           vercelOrgId: process.env.VERCEL_ORG_ID,
+           vercelProjectId: process.env.VERCEL_PROJECT_ID,
+           environment: "production",
+           deploymentProtectionScope: "standard",
+         };
+         for (const [field, value] of Object.entries(expected)) {
+           if (!value || value.includes?.("<") || manifest[field] !== value) {
+             throw new Error(`Qualification identity mismatch: ${field}`);
+           }
+         }
+         if (!Array.isArray(manifest.artifacts) || manifest.artifacts.length === 0) {
+           throw new Error("Qualification manifest has no artifacts");
+         }
+         const names = manifest.artifacts.map((artifact) => artifact.path);
+         if ([...names].sort().join("\n") !== names.join("\n") ||
+             new Set(names).size !== names.length) {
+           throw new Error("Qualification artifacts are not unique and sorted");
+         }
+         for (const artifact of manifest.artifacts) {
+           if (path.basename(artifact.path) !== artifact.path ||
+               !/^[0-9a-f]{64}$/.test(artifact.sha256) ||
+               !Number.isSafeInteger(artifact.bytes) || artifact.bytes <= 0) {
+             throw new Error(`Invalid qualification artifact: ${artifact.path}`);
+           }
+           const body = await readFile(path.join(process.env.EVIDENCE_DIR, artifact.path));
+           const digest = createHash("sha256").update(body).digest("hex");
+           if (body.length !== artifact.bytes || digest !== artifact.sha256) {
+             throw new Error(`Qualification artifact drift: ${artifact.path}`);
+           }
+         }
+       NODE
          env -i PATH="$PATH" HOME="$HOME" VERCEL_TOKEN="$VERCEL_TOKEN" \
            npx vercel@latest project inspect "$EXPECTED_VERCEL_PROJECT_ID" \
            --scope "$VERCEL_TEAM_SLUG" > "$RELEASE_PROJECT_REASSERTION"
          env -i PATH="$PATH" HOME="$HOME" VERCEL_TOKEN="$VERCEL_TOKEN" \
            npx vercel@latest inspect "$RELEASE_DEPLOYMENT" --wait --format=json \
            --scope "$VERCEL_TEAM_SLUG" > "$RELEASE_IDENTITY_REASSERTION"
+         test -s "$RELEASE_PROJECT_REASSERTION"
+         test -s "$RELEASE_IDENTITY_REASSERTION"
        )
        ```
 
        The release owner and independent approver must compare and sign those two
-       fresh reassertion files against the approved values above and record the
-       repeated protection probe before crossing this boundary:
+       fresh nonempty reassertion files against the approved values above, verify
+       the manifest's independent signature receipt cryptographically binds the
+       exact expected digest, approved signer, successful result, and UTC time,
+       re-confirm current Standard
+       Protection with no public exception, and record a repeated unauthenticated
+       protection probe before crossing this boundary. Any missing file, empty or
+       malformed digest, failed artifact rehash, dirty deployable tree, or unknown
+       inspection field fails closed:
 
        <!-- SAFETY: RELEASE-IDENTITY-BEFORE-PROMOTE -->
        <!-- ACTION: PROMOTE-RELEASE -->
 
        ```bash
        (
-         set -e
+         set -euo pipefail
          set +x
+         test -n "${VERCEL_TOKEN:-}"
          test "$RELEASE_DEPLOYMENT" = "$APPROVED_RELEASE_DEPLOYMENT"
          env -i PATH="$PATH" HOME="$HOME" VERCEL_TOKEN="$VERCEL_TOKEN" \
            npx vercel@latest promote "$RELEASE_DEPLOYMENT" \
@@ -1795,8 +2314,9 @@ credentials.
     ```
 
     Retain the account/type counts and file checksum. Union these account-event
-    IDs with all paginated Workbench endpoint-delivery IDs; deduplicate only by
-    exact event ID and preserve both evidence sources. An account event absent
+    IDs with all paginated Workbench endpoint-delivery IDs **and every exact ID
+    in step 9's immutable `PREDRAIN_EVENT_IDS` set**; deduplicate only by exact
+    event ID and preserve all three evidence sources. An account event absent
     from endpoint deliveries is not zero activity: it is evidence of the
     selection gap and must be explicitly sent/retried to this exact endpoint with
     reviewed Stripe tooling. If Workbench pagination/export or the List Events
@@ -1809,13 +2329,14 @@ credentials.
     Resend stops after 15 days; `stripe events resend` stops after 30 days.
     Individually Retry/Resend every `Failed` or `Pending` delivery in Workbench
     while it is eligible and require a `2xx` attempt. For every ID in the union,
-    including already Delivered events and account events initially missing from
-    endpoint deliveries, prove a `2xx` attempt to the exact endpoint and a matching
+    including step-9 pre-drain IDs, already Delivered events, and account events
+    initially missing from endpoint deliveries, prove a `2xx` attempt to the exact endpoint and a matching
     `public.sidestream_stripe_events` ledger row with the expected type. Manually invoke
     `GET /api/internal/stripe-events/process` through both the WAF bypass and
-    `CRON_SECRET` until all due work is terminal; require expected
-    `processed`/`ignored` outcomes, entitlement watermarks, zero due
-    received/retryable/expired-lease work, and zero `dead_letter` rows. A manual
+    `CRON_SECRET` until every exact unioned ID is terminal; require expected
+    `processed`/`ignored` outcomes, entitlement watermarks, zero rows across every
+    `terminal_at is null` state (including future retryable and unexpired
+    processing work), and zero `dead_letter` rows. A manual
     Stripe resend does not reset a local dead letter. This repository still has
     no local dead-letter reset/replay tool, so any dead letter blocks reopening.
     If the destination is discovered to have been disabled during any part of the
@@ -1838,7 +2359,8 @@ credentials.
 12. **Manually prove all jobs, then reopen once.** Keep project cron scheduling
     globally disabled and public writes denied. Sequentially, never concurrently:
 
-    1. Record the final zero-due Stripe processor invocation from step 11.
+    1. Record the final zero-nonterminal and zero-dead Stripe processor/query
+       evidence from step 11.
     2. Invoke protected GET lead replay through the operator bypass until
        `hasMore=false`; require no malformed, unmapped, read, database, or delete
        failures and record the fallback disposition.
@@ -1865,14 +2387,32 @@ No application rollback exists for this release until cutover step 1 qualifies
 and step 5 stages a runtime-distinct fallback. If that gate is later satisfied,
 fallback is application-forward, not a destructive schema reversal:
 
-1. Re-enter the exact maintenance matrix before changing application traffic.
-   Globally disable cron scheduling, keep the live Stripe destination enabled,
-   deny its webhook at the edge so attempts receive non-`2xx`, record a new exact
-   UTC/event-ID window, block every other write, and wait for in-flight work to
-   drain. Never disable the destination as a drain mechanism. Set a new two-hour
-   maintenance cap plus 24-hour escalation and 48-hour hard-abort timestamps from
-   the conservative start/oldest-event time, and retain the same three-day
-   automatic, 15-day Dashboard, and 30-day CLI resend ceilings from steps 9-11.
+1. Branch on the existing maintenance state **before** changing traffic; never
+   reset a reconciliation window:
+
+   - If cutover or incident maintenance is already active, preserve the earliest
+     recorded maintenance start, `STRIPE_EVENT_WINDOW_GTE`, boundary event IDs,
+     exact retained/unioned ID sets, two-hour cap, 24-hour escalation, and 48-hour
+     hard-abort timestamp. Keep cron disabled, the live Stripe destination
+     enabled, and the already-reviewed deny/allow state in place. Extend evidence
+     only by adding newly observed IDs and a later inclusive end; never move the
+     start forward, restart a timer, or create a replacement window merely because
+     fallback begins.
+   - If no maintenance window is active, priority 6 must remain disabled while the
+     currently serving compatible artifact receives the webhook. Repeat step 9's
+     complete paginated Workbench drain and local all-nonterminal drain: every
+     retained exact ID must be terminal `processed`/`ignored`, the full
+     `terminal_at is null` query must return zero across future retryable and
+     unexpired processing rows, and dead letters must be zero. Only then record the
+     new boundary and timers, disable cron, and atomically activate the reviewed
+     deny with the Stripe reconciliation allow disabled. If the serving artifact
+     cannot complete that drain, do not deny first; keep/restore the narrowly
+     reviewed webhook path and fix forward.
+
+   In both branches, never disable the destination as a drain mechanism. Retain
+   the same three-day automatic, 15-day Dashboard, and 30-day CLI resend ceilings
+   from steps 9-11. A prior Production rehearsal window is existing maintenance
+   state until it has been fully reconciled and closed; fallback cannot discard it.
 2. Promote only the exact immutable `FALLBACK_DEPLOYMENT` staged with the
    Production environment and qualified against the full migrated chain. Never
    assign it to `RELEASE_DEPLOYMENT` or a generic alias. Immediately repeat step
@@ -1896,8 +2436,9 @@ fallback is application-forward, not a destructive schema reversal:
    Then follow cutover steps 11-12 exactly: separately allow only the Stripe
    webhook, repeat step 11's paginated account-level event enumeration plus
    Workbench delivery union, reconcile every Failed/Pending delivery and every
-   unioned event ID to `2xx` plus a ledger row, require zero due/dead work, manually prove
-   all three jobs, enable project scheduling once, remove maintenance rules, and
+   unioned event ID to `2xx` plus a ledger row, require zero
+   all-nonterminal/dead work, manually prove all three jobs, enable project
+   scheduling once, remove maintenance rules, and
    revoke the bypass. Existing local `dead_letter` rows remain terminal because
    no reset/replay tool exists; do not claim one was replayed without separately
    implemented, reviewed, and tested recovery tooling.
