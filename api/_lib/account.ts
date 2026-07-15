@@ -2240,6 +2240,21 @@ export async function getActivationStatus(
     return { status: "expired" as const };
   }
 
+  // A later client may provide stable anonymous associations even when the
+  // activation was started by an older client. Persist those associations
+  // after the activation/device check, without making them device authority.
+  if (Object.keys(identity).length > 0) {
+    await attachCustomerIdentityTransaction({
+      environment,
+      identity,
+      activationId: row.activation_id,
+      accountId: row.account_id,
+      platform: options.platform,
+      appVersion: row.app_version,
+      source: "activation_status",
+    });
+  }
+
   const license = buildLicenseSummary({
     status: row.license_status,
     planKey: row.plan_key,

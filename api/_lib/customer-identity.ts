@@ -40,10 +40,19 @@ type IdentityEvidence = Readonly<{
 
 type VerifiedAccountRow = Readonly<{
   account_id: string;
-  stripe_customer_id: string | null;
+  email: string;
+  display_name: string | null;
+  account_stripe_customer_id: string | null;
+  license_stripe_customer_id: string | null;
   stripe_checkout_session_id: string | null;
   stripe_payment_intent_id: string | null;
   stripe_subscription_id: string | null;
+}>;
+
+type VerifiedAccountEvidence = Readonly<{
+  contactEmail: string;
+  displayName: string | null;
+  evidence: readonly IdentityEvidence[];
 }>;
 
 export class CustomerIdentityInputError extends TypeError {
@@ -167,17 +176,13 @@ export async function attachCustomerIdentity(
   if (accountId) {
     // Read account and purchase identifiers from the selected server database;
     // request email, name, IP, timing, behavior, and campaign HMACs are absent.
-    const verifiedEvidence = await loadVerifiedAccountEvidence(client, accountId);
-    await lockEvidence(client, namespace, verifiedEvidence);
-    for (const evidence of verifiedEvidence) {
-      const result = await attachEvidence(client, {
-        namespace,
-        profileId,
-        evidence,
-        source: options.source,
-      });
-      reviewRequired ||= result.reviewRequired;
-    }
+    const verified = await attachVerifiedAccount(client, {
+      namespace,
+      profileId,
+      accountId,
+      source: options.source,
+    });
+    reviewRequired ||= verified.reviewRequired;
   }
 
   return { profileId, attached: true, reviewRequired };
@@ -222,12 +227,15 @@ function buildAnonymousEvidence(
 async function loadVerifiedAccountEvidence(
   client: PoolClient,
   accountId: string,
-): Promise<IdentityEvidence[]> {
+): Promise<VerifiedAccountEvidence> {
   const result = await client.query<VerifiedAccountRow>(
     `
       select
         a.id as account_id,
-        a.stripe_customer_id,
+        a.email,
+        a.display_name,
+        a.stripe_customer_id as account_stripe_customer_id,
+        l.stripe_customer_id as license_stripe_customer_id,
         l.stripe_checkout_session_id,
         l.stripe_payment_intent_id,
         l.stripe_subscription_id
@@ -242,10 +250,23 @@ async function loadVerifiedAccountEvidence(
     throw new Error("Verified Customer 360 account no longer exists");
   }
 
+  const account = result.rows[0];
   const evidence = new Map<string, IdentityEvidence>();
   addVerifiedEvidence(evidence, "account_identity", accountId);
   for (const row of result.rows) {
-    addVerifiedEvidence(evidence, "stripe_customer", row.stripe_customer_id);
+    if (row.account_id !== accountId) {
+      throw new Error("Verified Customer 360 account query crossed an account boundary");
+    }
+    addVerifiedEvidence(
+      evidence,
+      "stripe_customer",
+      row.account_stripe_customer_id,
+    );
+    addVerifiedEvidence(
+      evidence,
+      "stripe_customer",
+      row.license_stripe_customer_id,
+    );
     addVerifiedEvidence(
       evidence,
       "stripe_checkout_session",
@@ -262,7 +283,208 @@ async function loadVerifiedAccountEvidence(
       row.stripe_subscription_id,
     );
   }
-  return [...evidence.values()];
+  return {
+    contactEmail: verifiedContactEmail(account.email),
+    displayName: verifiedDisplayName(account.display_name),
+    evidence: [...evidence.values()],
+  };
+}
+
+async function attachVerifiedAccount(
+  client: PoolClient,
+  options: Readonly<{
+    namespace: string;
+    profileId: string;
+    accountId: string;
+    source: CustomerIdentityAttachmentSource;
+  }>,
+): Promise<{ reviewRequired: boolean }> {
+  const verified = await loadVerifiedAccountEvidence(client, options.accountId);
+  await lockEvidence(client, options.namespace, verified.evidence);
+
+  const owners = await findEvidenceOwners(
+    client,
+    options.namespace,
+    verified.evidence,
+  );
+  const ownerConflicts = verified.evidence.flatMap((evidence) => {
+    const existingProfileId = owners.get(evidenceKey(evidence));
+    return existingProfileId && existingProfileId !== options.profileId
+      ? [{ evidence, existingProfileId }]
+      : [];
+  });
+  const existingAccountId = await findProfileAccountIdentity(
+    client,
+    options.namespace,
+    options.profileId,
+  );
+  const accountConflict = existingAccountId &&
+    existingAccountId !== options.accountId;
+
+  if (ownerConflicts.length > 0 || accountConflict) {
+    for (const conflict of ownerConflicts) {
+      await recordIdentityReview(client, {
+        namespace: options.namespace,
+        candidateProfileId: options.profileId,
+        existingProfileId: conflict.existingProfileId,
+        evidence: conflict.evidence,
+        source: options.source,
+      });
+    }
+    if (accountConflict) {
+      await recordIdentityReview(client, {
+        namespace: options.namespace,
+        candidateProfileId: options.profileId,
+        existingProfileId: options.profileId,
+        evidence: {
+          linkType: "account_identity",
+          linkValue: options.accountId,
+          verified: true,
+        },
+        source: options.source,
+      });
+    }
+    return { reviewRequired: true };
+  }
+
+  // Keep the verified set all-or-nothing even if a writer that does not honor
+  // the advisory locks races this transaction. Conflicts survive as review
+  // rows, but no partial account or purchase evidence survives the savepoint.
+  await client.query("savepoint sidestream_customer_verified_attachment");
+  let savepointActive = true;
+  try {
+    const conflicts: Array<Readonly<{
+      evidence: IdentityEvidence;
+      existingProfileId: string;
+    }>> = [];
+    for (const evidence of verified.evidence) {
+      const result = await attachEvidence(client, {
+        namespace: options.namespace,
+        profileId: options.profileId,
+        evidence,
+        source: options.source,
+        recordReview: false,
+      });
+      if (result.reviewRequired) {
+        conflicts.push({
+          evidence,
+          existingProfileId: result.existingProfileId,
+        });
+      }
+    }
+
+    if (conflicts.length > 0) {
+      await client.query("rollback to savepoint sidestream_customer_verified_attachment");
+      await client.query("release savepoint sidestream_customer_verified_attachment");
+      savepointActive = false;
+      for (const conflict of conflicts) {
+        await recordIdentityReview(client, {
+          namespace: options.namespace,
+          candidateProfileId: options.profileId,
+          existingProfileId: conflict.existingProfileId,
+          evidence: conflict.evidence,
+          source: options.source,
+        });
+      }
+      return { reviewRequired: true };
+    }
+
+    await materializeVerifiedContact(client, {
+      namespace: options.namespace,
+      profileId: options.profileId,
+      contactEmail: verified.contactEmail,
+      displayName: verified.displayName,
+    });
+    await client.query("release savepoint sidestream_customer_verified_attachment");
+    savepointActive = false;
+    return { reviewRequired: false };
+  } catch (error) {
+    if (savepointActive) {
+      await client.query("rollback to savepoint sidestream_customer_verified_attachment");
+      await client.query("release savepoint sidestream_customer_verified_attachment");
+    }
+    throw error;
+  }
+}
+
+async function findProfileAccountIdentity(
+  client: PoolClient,
+  namespace: string,
+  profileId: string,
+): Promise<string | null> {
+  const result = await client.query<{ link_value: string }>(
+    `
+      select link_value
+      from public.sidestream_customer_identity_links
+      where license_namespace = $1
+        and profile_id = $2
+        and link_type = 'account_identity'
+      order by created_at asc, id asc
+      limit 2
+    `,
+    [namespace, profileId],
+  );
+  if (result.rows.length > 1) {
+    throw new Error("Customer 360 profile has conflicting account identities");
+  }
+  return result.rows[0]?.link_value || null;
+}
+
+async function materializeVerifiedContact(
+  client: PoolClient,
+  options: Readonly<{
+    namespace: string;
+    profileId: string;
+    contactEmail: string;
+    displayName: string | null;
+  }>,
+): Promise<void> {
+  const updated = await client.query<{ id: string }>(
+    `
+      update public.sidestream_customer_profiles
+      set contact_email = $3,
+          display_name = $4,
+          updated_at = now()
+      where id = $1
+        and license_namespace = $2
+        and merged_into is null
+      returning id
+    `,
+    [
+      options.profileId,
+      options.namespace,
+      options.contactEmail,
+      options.displayName,
+    ],
+  );
+  if (updated.rows[0]?.id !== options.profileId) {
+    throw new Error("Verified Customer 360 contact lost its live profile root");
+  }
+}
+
+function verifiedContactEmail(value: unknown): string {
+  if (
+    typeof value !== "string" ||
+    value.length < 3 ||
+    value.length > 320 ||
+    value !== value.trim().toLowerCase() ||
+    !value.includes("@")
+  ) {
+    throw new Error("Invalid verified Customer 360 contact email");
+  }
+  return value;
+}
+
+function verifiedDisplayName(value: unknown): string | null {
+  if (value === null || value === "") return null;
+  if (
+    typeof value !== "string" ||
+    value.length > 200 ||
+    value.trim() !== value
+  ) {
+    throw new Error("Invalid verified Customer 360 display name");
+  }
+  return value;
 }
 
 function addVerifiedEvidence(
@@ -363,14 +585,18 @@ async function attachEvidence(
     profileId: string;
     evidence: IdentityEvidence;
     source: CustomerIdentityAttachmentSource;
+    recordReview?: boolean;
   }>,
-): Promise<{ reviewRequired: boolean }> {
+): Promise<
+  | { reviewRequired: false }
+  | { reviewRequired: true; existingProfileId: string }
+> {
   const inserted = await client.query<{ profile_id: string }>(
     `
       insert into public.sidestream_customer_identity_links (
         profile_id, license_namespace, link_type, link_value, created_at
       ) values ($1, $2, $3, $4, now())
-      on conflict (license_namespace, link_type, link_value) do nothing
+      on conflict do nothing
       returning profile_id
     `,
     [
@@ -393,20 +619,41 @@ async function attachEvidence(
     `,
     [options.namespace, options.evidence.linkType, options.evidence.linkValue],
   );
-  const existingProfileId = existing.rows[0]?.profile_id;
+  let existingProfileId = existing.rows[0]?.profile_id;
+  if (!existingProfileId && options.evidence.linkType === "account_identity") {
+    const existingAccount = await client.query<{ profile_id: string }>(
+      `
+        select profile_id
+        from public.sidestream_customer_identity_links
+        where license_namespace = $1
+          and profile_id = $2
+          and link_type = 'account_identity'
+        limit 1
+      `,
+      [options.namespace, options.profileId],
+    );
+    existingProfileId = existingAccount.rows[0]?.profile_id;
+  }
   if (!existingProfileId) {
     throw new Error("Customer 360 identity conflict lost its winning evidence row");
   }
-  if (existingProfileId === options.profileId) return { reviewRequired: false };
+  if (
+    existingProfileId === options.profileId &&
+    existing.rows[0]?.profile_id === options.profileId
+  ) {
+    return { reviewRequired: false };
+  }
 
-  await recordIdentityReview(client, {
-    namespace: options.namespace,
-    candidateProfileId: options.profileId,
-    existingProfileId,
-    evidence: options.evidence,
-    source: options.source,
-  });
-  return { reviewRequired: true };
+  if (options.recordReview !== false) {
+    await recordIdentityReview(client, {
+      namespace: options.namespace,
+      candidateProfileId: options.profileId,
+      existingProfileId,
+      evidence: options.evidence,
+      source: options.source,
+    });
+  }
+  return { reviewRequired: true, existingProfileId };
 }
 
 async function attachInstallMembership(

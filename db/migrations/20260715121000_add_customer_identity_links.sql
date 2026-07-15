@@ -22,6 +22,12 @@ alter table public.sidestream_customer_identity_links
     )
   );
 
+-- A profile may accumulate several purchases over time, but it may represent
+-- only one verified account. Runtime review rows preserve rejected contenders.
+create unique index if not exists sidestream_customer_identity_links_profile_account_unique
+  on public.sidestream_customer_identity_links (license_namespace, profile_id)
+  where link_type = 'account_identity';
+
 create table if not exists public.sidestream_customer_identity_reviews (
   id uuid primary key default gen_random_uuid(),
   license_namespace text not null,
@@ -35,9 +41,6 @@ create table if not exists public.sidestream_customer_identity_reviews (
   created_at timestamptz not null default now(),
   constraint sidestream_customer_identity_reviews_namespace_valid check (
     license_namespace in ('production', 'test')
-  ),
-  constraint sidestream_customer_identity_reviews_profiles_distinct check (
-    candidate_profile_id <> existing_profile_id
   ),
   constraint sidestream_customer_identity_reviews_evidence_type_valid check (
     evidence_type in (
@@ -109,7 +112,7 @@ before update or delete on public.sidestream_customer_identity_reviews
 for each row execute function public.sidestream_customer_identity_reviews_reject_mutation();
 
 comment on table public.sidestream_customer_identity_reviews is
-  'Immutable review queue for conflicting deterministic identity evidence; values are hashed and profiles are never auto-merged.';
+  'Immutable review queue for conflicting deterministic identity evidence; equal candidate/existing profiles represent a rejected second verified account and profiles are never auto-merged.';
 comment on column public.sidestream_customer_identity_reviews.evidence_value_hash is
   'SHA-256 of evidence type and value; raw support/account/Stripe evidence is not duplicated into review events.';
 
