@@ -36,7 +36,7 @@ function knownBaselineSnapshot(rowSecurityEnabled = false) {
 
 test("migration files are ordered, checksummed, and append-only baseline files are pinned", async () => {
   const migrations = validateMigrationFiles(await loadMigrationFiles());
-  assert.equal(migrations.length, 20);
+  assert.equal(migrations.length, 21);
   assert.deepEqual(
     migrations.map((migration) => migration.filename),
     [...migrations.map((migration) => migration.filename)].sort(),
@@ -56,9 +56,57 @@ test("migration files are ordered, checksummed, and append-only baseline files a
     "20260714200000_remove_redundant_download_lead_key_unique.sql",
     "20260715120000_add_customer_360_core.sql",
     "20260715121000_add_customer_identity_links.sql",
+    "20260715122000_add_customer_commerce_ledger.sql",
   ]) {
     assert.ok(migrations.some((migration) => migration.filename === filename));
   }
+});
+
+test("Customer commerce migration keeps money currency-separated and entitlement-independent", async () => {
+  const migration = await readFile(new URL(
+    "../db/migrations/20260715122000_add_customer_commerce_ledger.sql",
+    import.meta.url,
+  ), "utf8");
+  assert.match(migration, /create table public\.sidestream_customer_commerce_materializations/);
+  assert.match(migration, /create table public\.sidestream_customer_commerce_invoice_payments/);
+  assert.match(migration, /create table public\.sidestream_customer_money_totals/);
+  assert.match(migration, /primary key \(license_namespace, profile_id, currency\)/);
+  for (const column of [
+    "gross_paid_minor",
+    "discount_minor",
+    "tax_minor",
+    "off_stripe_paid_minor",
+    "refunded_minor",
+    "disputed_minor",
+    "inquiry_minor",
+    "net_paid_minor",
+    "billing_period_start",
+    "billing_period_end",
+    "first_inferred_paid_at",
+    "last_inferred_paid_at",
+    "first_inferred_upgraded_at",
+    "last_inferred_upgraded_at",
+    "source_confidence",
+    "identity_conflict",
+  ]) {
+    assert.match(migration, new RegExp(`\\b${column}\\b`));
+  }
+  assert.doesNotMatch(migration, /update public\.sidestream_licenses/i);
+  assert.doesNotMatch(migration, /alter table public\.sidestream_licenses/i);
+  assert.match(migration, /Mutable latest-state money materializations/);
+  assert.match(migration, /insert-only event_id, event_type, and stripe_created_at/);
+  assert.match(migration, /processing state is mutable/);
+  assert.match(migration, /payload fields may be redacted/);
+  assert.doesNotMatch(migration, /immutable signed-event history/i);
+  assert.doesNotMatch(migration, /max\(fact\.gross_paid_minor\)/i);
+  assert.match(migration, /source_object_type in \('payment_intent', 'charge'\)/);
+  assert.match(migration, /edge\.status = 'paid'/);
+  assert.match(migration, /off_stripe_paid_minor bigint not null default 0/);
+  assert.match(migration, /off_stripe_paid_minor <= gross_paid_minor/);
+  assert.match(migration, /ranked_fallbacks as/);
+  assert.match(migration, /fact\.source_object_type in \('checkout_session', 'invoice'\)/);
+  assert.match(migration, /sidestream_customer_commerce_reconcile_namespace/);
+  assert.match(migration, /fact\.had_conflict and not allow_conflict_clear/);
 });
 
 test("ledger classification reports pending files and rejects every checksum mismatch", async () => {
