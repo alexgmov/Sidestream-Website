@@ -26,6 +26,11 @@ const queueMigrationPath = join(
   repositoryRoot,
   "db/migrations/20260713202000_harden_stripe_event_processing.sql",
 );
+const customerMigrationPaths = [
+  "20260715120000_add_customer_360_core.sql",
+  "20260715121000_add_customer_identity_links.sql",
+  "20260715122000_add_customer_commerce_ledger.sql",
+].map((filename) => join(repositoryRoot, "db/migrations", filename));
 
 test("Stripe events use a durable claimed queue with bounded retry and protected drains", {
   timeout: 120_000,
@@ -59,6 +64,9 @@ test("Stripe events use a durable claimed queue with bounded retry and protected
   try {
     await pool.query(await readFile(baseMigrationPath, "utf8"));
     await pool.query(await readFile(queueMigrationPath, "utf8"));
+    for (const migrationPath of customerMigrationPaths) {
+      await pool.query(await readFile(migrationPath, "utf8"));
+    }
 
     await t.test("migration models every state and exposes a partial pending index", async () => {
       const columns = await pool.query(
@@ -348,6 +356,80 @@ test("Stripe events use a durable claimed queue with bounded retry and protected
       );
     });
 
+    await t.test("the durable queue projects ledger-only money events exactly once", async () => {
+      await resetEvents(pool);
+      const profile = await pool.query(
+        `insert into public.sidestream_customer_profiles (license_namespace)
+         values ('test') returning id`,
+      );
+      await pool.query(
+        `insert into public.sidestream_customer_identity_links (
+           profile_id, license_namespace, link_type, link_value
+         ) values ($1, 'test', 'stripe_customer', 'cus_queue_money')`,
+        [profile.rows[0].id],
+      );
+      const event = stripeEvent(
+        "evt_queue_money",
+        "charge.succeeded",
+        1_700_004_500,
+        {
+          id: "ch_queue_money",
+          created: 1_700_004_490,
+          customer: "cus_queue_money",
+          paid: true,
+          status: "succeeded",
+          amount: 999,
+          amount_refunded: 0,
+          currency: "usd",
+        },
+      );
+      assert.equal(
+        await runtime.stripeEvents.recordStripeEvent(event, JSON.stringify(event), query),
+        true,
+      );
+      const summary = await runtime.stripeEvents.drainStripeEventQueue({
+        batchSize: 1,
+        createClaimToken: () => "00000000-0000-4000-8000-000000000007",
+        query,
+        log: () => {},
+      });
+      assert.deepEqual(summary, {
+        claimed: 1,
+        processed: 1,
+        ignored: 0,
+        retryable: 0,
+        deadLetter: 0,
+      });
+      const stored = await pool.query(
+        `select event.processing_status, event.outcome, totals.gross_paid_minor,
+           totals.net_paid_minor, totals.currency
+         from public.sidestream_stripe_events event
+         join public.sidestream_customer_money_totals totals
+           on totals.profile_id = $2
+         where event.event_id = $1`,
+        [event.id, profile.rows[0].id],
+      );
+      assert.deepEqual(stored.rows[0], {
+        processing_status: "processed",
+        outcome: "commerce_reconciled",
+        gross_paid_minor: "999",
+        net_paid_minor: "999",
+        currency: "usd",
+      });
+      assert.equal(
+        await runtime.stripeEvents.recordStripeEvent(event, JSON.stringify(event), query),
+        false,
+      );
+      assert.equal(
+        (await pool.query(
+          `select count(*)::int as count
+           from public.sidestream_customer_commerce_facts
+           where source_object_id = 'ch_queue_money'`,
+        )).rows[0].count,
+        1,
+      );
+    });
+
     await t.test("subscription reconciliation uses canonical Stripe truth and event ordering", async () => {
       runtime.stub.reset();
       const canonical = {
@@ -370,7 +452,10 @@ test("Stripe events use a durable claimed queue with bounded retry and protected
         1_700_005_000,
         { id: "sub_canonical", status: "active" },
       );
-      const result = await runtime.stripeEvents.reconcileStripeEvent(event);
+      const commerceQuery = async () => ({
+        rows: [{ result: { applied: 1, stale: 0 } }],
+      });
+      const result = await runtime.stripeEvents.reconcileStripeEvent(event, commerceQuery);
       assert.deepEqual(result, {
         status: "processed",
         outcome: "subscription_reconciled",
@@ -386,8 +471,9 @@ test("Stripe events use a durable claimed queue with bounded retry and protected
       assert.deepEqual(
         await runtime.stripeEvents.reconcileStripeEvent(
           stripeEvent("evt_unknown", "invoice.created", 1_700_005_001),
+          commerceQuery,
         ),
-        { status: "ignored", outcome: "unsupported_event_type" },
+        { status: "processed", outcome: "commerce_reconciled" },
       );
     });
 
@@ -719,12 +805,18 @@ export function sendJson(response, statusCode, payload) {
 export function waitUntil() {}
 `, { mode: 0o600 });
     const stubUrl = pathToFileURL(stubPath).href;
+    const customerCommerceUrl = pathToFileURL(
+      join(repositoryRoot, "api/_lib/customer-commerce.ts"),
+    ).href;
     const vercelFunctionsStubUrl = pathToFileURL(vercelFunctionsStubPath).href;
     const stripeEventsUrl = await writeAdaptedModule(
       directory,
       "stripe-events",
       join(repositoryRoot, "api/_lib/stripe-events.ts"),
-      { "./account.js": stubUrl },
+      {
+        "./account.js": stubUrl,
+        "./customer-commerce.js": customerCommerceUrl,
+      },
     );
     const webhookUrl = await writeAdaptedModule(
       directory,

@@ -1,6 +1,10 @@
 import { randomUUID } from "node:crypto";
 import type Stripe from "stripe";
 import * as account from "./account.js";
+import {
+  materializeCustomerCommerceEvent,
+  type CustomerCommerceQuery,
+} from "./customer-commerce.js";
 
 export const DEFAULT_STRIPE_EVENT_BATCH_SIZE = 10;
 export const MAX_STRIPE_EVENT_BATCH_SIZE = 50;
@@ -174,7 +178,8 @@ export async function drainStripeEventQueue(
   options: StripeEventDrainOptions = {},
 ): Promise<StripeEventDrainSummary> {
   const query = options.query || runtimeQuery;
-  const processEvent = options.processEvent || reconcileStripeEvent;
+  const processEvent = options.processEvent ||
+    ((event: Stripe.Event) => reconcileStripeEvent(event, query));
   const now = options.now || Date.now;
   const random = options.random || Math.random;
   const log = options.log || logStripeEventOutcome;
@@ -242,8 +247,10 @@ export async function drainStripeEventQueue(
 
 export async function reconcileStripeEvent(
   event: Stripe.Event,
+  commerceQuery: CustomerCommerceQuery = runtimeQuery,
 ): Promise<StripeEventProcessingResult> {
   assertStripeEventIdentity(event);
+  const commerce = await materializeCustomerCommerceEvent(event, commerceQuery);
 
   switch (event.type) {
     case "checkout.session.completed": {
@@ -319,6 +326,14 @@ export async function reconcileStripeEvent(
       };
     }
     default:
+      if (commerce.recognized) {
+        return {
+          status: "processed",
+          outcome: commerce.applied > 0
+            ? "commerce_reconciled"
+            : "commerce_stale_noop",
+        };
+      }
       return { status: "ignored", outcome: "unsupported_event_type" };
   }
 }

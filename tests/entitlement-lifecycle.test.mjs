@@ -329,11 +329,22 @@ test("unknown active rows are denied and cannot shadow an older valid Pro row", 
 });
 
 test("runtime wiring persists lifecycle facts and atomically clears both credential types", async () => {
-  const [accountSource, eventsSource, migrationSource] = await Promise.all([
+  const [
+    accountSource,
+    eventsSource,
+    migrationSource,
+    commerceSource,
+    commerceMigrationSource,
+  ] = await Promise.all([
     readFile(new URL("../api/_lib/account.ts", import.meta.url), "utf8"),
     readFile(new URL("../api/_lib/stripe-events.ts", import.meta.url), "utf8"),
     readFile(new URL(
       "../db/migrations/20260713204000_add_entitlement_lifecycle.sql",
+      import.meta.url,
+    ), "utf8"),
+    readFile(new URL("../api/_lib/customer-commerce.ts", import.meta.url), "utf8"),
+    readFile(new URL(
+      "../db/migrations/20260715122000_add_customer_commerce_ledger.sql",
       import.meta.url,
     ), "utf8"),
   ]);
@@ -356,6 +367,7 @@ test("runtime wiring persists lifecycle facts and atomically clears both credent
   assert.match(accountSource, /prices\.retrieve/);
   assert.match(accountSource, /products\.retrieve/);
   assert.match(eventsSource, /subscriptions\.retrieve/);
+  assert.match(eventsSource, /materializeCustomerCommerceEvent/);
   for (const eventType of [
     "charge.refunded",
     "charge.dispute.created",
@@ -364,6 +376,11 @@ test("runtime wiring persists lifecycle facts and atomically clears both credent
     assert.match(eventsSource, new RegExp(eventType.replaceAll(".", "\\.")));
   }
   assert.match(accountSource, /l\.entitlement_status = 'active'[\s\S]*l\.plan_key in/);
+  assert.doesNotMatch(commerceSource, /sidestream_licenses|entitlement_status/);
+  assert.doesNotMatch(commerceMigrationSource, /(?:update|alter table) public\.sidestream_licenses/i);
+  for (const status of ["warning_closed", "prevented", "lost", "won"]) {
+    assert.match(commerceSource, new RegExp(`\\b${status}\\b`));
+  }
 });
 
 test("legacy audit is read-only by default and apply is an explicit gated mode", () => {

@@ -36,7 +36,7 @@ function knownBaselineSnapshot(rowSecurityEnabled = false) {
 
 test("migration files are ordered, checksummed, and append-only baseline files are pinned", async () => {
   const migrations = validateMigrationFiles(await loadMigrationFiles());
-  assert.equal(migrations.length, 20);
+  assert.equal(migrations.length, 21);
   assert.deepEqual(
     migrations.map((migration) => migration.filename),
     [...migrations.map((migration) => migration.filename)].sort(),
@@ -56,9 +56,35 @@ test("migration files are ordered, checksummed, and append-only baseline files a
     "20260714200000_remove_redundant_download_lead_key_unique.sql",
     "20260715120000_add_customer_360_core.sql",
     "20260715121000_add_customer_identity_links.sql",
+    "20260715122000_add_customer_commerce_ledger.sql",
   ]) {
     assert.ok(migrations.some((migration) => migration.filename === filename));
   }
+});
+
+test("Customer commerce migration keeps money currency-separated and entitlement-independent", async () => {
+  const migration = await readFile(new URL(
+    "../db/migrations/20260715122000_add_customer_commerce_ledger.sql",
+    import.meta.url,
+  ), "utf8");
+  assert.match(migration, /create table public\.sidestream_customer_commerce_facts/);
+  assert.match(migration, /create table public\.sidestream_customer_money_totals/);
+  assert.match(migration, /primary key \(license_namespace, profile_id, currency\)/);
+  for (const column of [
+    "gross_paid_minor",
+    "discount_minor",
+    "tax_minor",
+    "refunded_minor",
+    "disputed_minor",
+    "net_paid_minor",
+    "billing_period_start",
+    "billing_period_end",
+    "source_confidence",
+  ]) {
+    assert.match(migration, new RegExp(`\\b${column}\\b`));
+  }
+  assert.doesNotMatch(migration, /update public\.sidestream_licenses/i);
+  assert.doesNotMatch(migration, /alter table public\.sidestream_licenses/i);
 });
 
 test("ledger classification reports pending files and rejects every checksum mismatch", async () => {
