@@ -1,12 +1,12 @@
 # Single-device entitlement device-domain and support reference
 
-> **Reference status: device-domain/support only. No production action is
-> authorized here.** The former production cutover in this file is superseded
-> and removed. [`docs/api-hardening-runbook.md`](api-hardening-runbook.md) is the
-> sole production procedure for status, backup, migration, deployment,
-> backfill, enforcement, support mutation, and rollback. This reference records
-> durable behavior and privacy facts; it is not evidence that any production
-> action occurred.
+> **Reference status: device-domain/support only. No Production action is
+> authorized here.** No executable Production procedure exists. The former
+> cutover in this file is removed, and
+> [`docs/api-hardening-runbook.md`](api-hardening-runbook.md) records API facts,
+> blockers, and capabilities required by a future separately reviewed plan
+> only. Neither document authorizes status, backup, migration, deployment,
+> backfill, enforcement, support mutation, fallback, or rollback in Production.
 
 ## Contract
 
@@ -121,12 +121,12 @@ current audit and support CLIs load a general environment file before a database
 environment file, preserve inherited Postgres variables, and connect remotely
 without provider-CA/hostname verification. Consequently, no production audit,
 view, clear, override, or backfill example is executable from this reference.
-Production use remains blocked until the tooling and the canonical runbook's
-authenticated-database gate can prove an empty allowlisted environment, the one
+Production use remains blocked until separately reviewed tooling can prove an
+empty allowlisted environment, the one
 selected non-pooling variable, a non-secret target fingerprint, provider-CA and
 hostname verification, and the connected database without printing a connection
-string. Follow only [`docs/api-hardening-runbook.md`](api-hardening-runbook.md)
-after those blockers are closed.
+string. The API runbook records this blocker but is not an executable support
+procedure.
 
 ### Fleet audit and backfill
 
@@ -171,17 +171,17 @@ The harness rejects a target matching any configured runtime database URL, creat
 
 Useful narrower commands are `npm run test:single-device-postgres`, `npm run test:single-device-ops`, and `npm run test:entitlement`.
 
-## Superseded production procedure
+## Production procedure status
 
 The production section that formerly appeared here is intentionally gone. It
 contained a false no-ledger claim, a one-file database path, and alternate
 backup, deployment, backfill, enforcement, and rollback ordering that could
 bypass the full API-hardening gates.
 
-[`docs/api-hardening-runbook.md`](api-hardening-runbook.md) is the sole production
-procedure. It owns the checksummed full migration chain, authenticated database
-transport, Stripe drain/reconciliation, protected immutable Vercel artifacts,
-complete WAF order, device-hash continuity, qualified fallback/fix-forward, and
-all explicit pre-production blockers. Do not reconstruct the retired procedure
-from Git history, tickets, or this domain reference. No production action was
+No executable Production procedure exists.
+[`docs/api-hardening-runbook.md`](api-hardening-runbook.md) records the current
+API contract, open blockers, and capabilities a future separately reviewed plan
+would need; it does not provide executable status, migration, deployment,
+support, fallback, or rollback steps. Do not reconstruct the retired procedure
+from Git history, tickets, or this domain reference. No Production action was
 performed while neutralizing this document.
