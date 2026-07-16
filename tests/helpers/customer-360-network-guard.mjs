@@ -1,9 +1,16 @@
 import http from "node:http";
 import https from "node:https";
 import net from "node:net";
-import { requireSafeTestDatabaseUrl } from "../../scripts/run-postgres-integration.mjs";
+import {
+  RUNTIME_DATABASE_ENV_NAMES,
+  TEST_DATABASE_ENV,
+  createIsolatedTestDatabaseEnvironment,
+} from "../../scripts/run-postgres-integration.mjs";
 
-const connectionString = requireSafeTestDatabaseUrl(process.env);
+const isolatedEnvironment = createIsolatedTestDatabaseEnvironment(process.env);
+const connectionString = isolatedEnvironment[TEST_DATABASE_ENV];
+for (const name of RUNTIME_DATABASE_ENV_NAMES) delete process.env[name];
+process.env[TEST_DATABASE_ENV] = connectionString;
 const postgresUrl = new URL(connectionString);
 const allowedHost = postgresUrl.hostname.toLowerCase();
 const allowedPort = Number(postgresUrl.port || 5432);

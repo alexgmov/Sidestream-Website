@@ -4,7 +4,10 @@ import { spawn } from "node:child_process";
 import { readdir } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { requireSafeTestDatabaseUrl } from "./run-postgres-integration.mjs";
+import {
+  createIsolatedTestDatabaseEnvironment,
+  requireSafeTestDatabaseUrl,
+} from "./run-postgres-integration.mjs";
 
 export const CUSTOMER_360_NON_POSTGRES_TESTS = Object.freeze([
   "customer-360/backfill.test.mjs",
@@ -57,17 +60,21 @@ export async function runCustomer360Tests({ postgres = false } = {}) {
     const arguments_ = ["--experimental-strip-types"];
     if (postgres) arguments_.push("--import", NETWORK_GUARD);
     arguments_.push("--test", "--test-concurrency=1", path.join(TESTS_DIRECTORY, testFile));
-    const exitCode = await runChild(arguments_);
+    const exitCode = await runChild(arguments_, { postgres });
     if (exitCode !== 0) {
       throw new Error(`Customer 360 suite failed: ${testFile}`);
     }
   }
 }
 
-async function runChild(arguments_) {
+async function runChild(arguments_, { postgres }) {
+  const childEnvironment = postgres
+    ? createIsolatedTestDatabaseEnvironment(process.env)
+    : { ...process.env };
+  childEnvironment.TZ = "America/Los_Angeles";
   const child = spawn(process.execPath, arguments_, {
     cwd: process.cwd(),
-    env: { ...process.env, TZ: "America/Los_Angeles" },
+    env: childEnvironment,
     stdio: "inherit",
   });
   return new Promise((resolve, reject) => {

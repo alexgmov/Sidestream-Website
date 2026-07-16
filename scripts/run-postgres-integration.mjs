@@ -42,15 +42,31 @@ export function requireSafeTestDatabaseUrl(environment = process.env) {
       `${TEST_DATABASE_ENV} is required; Postgres integration tests never skip silently`,
     );
   }
-  const testIdentity = databaseIdentity(connectionString, TEST_DATABASE_ENV);
+  const testTarget = databaseTarget(connectionString, TEST_DATABASE_ENV);
   for (const name of RUNTIME_DATABASE_ENV_NAMES) {
     const runtimeConnectionString = configuredValue(environment[name]);
     if (!runtimeConnectionString) continue;
-    if (databaseIdentity(runtimeConnectionString, name) === testIdentity) {
+    const runtimeTarget = databaseTarget(runtimeConnectionString, name);
+    if (runtimeTarget.identity === testTarget.identity) {
       throw new Error(`${TEST_DATABASE_ENV} must not match runtime database ${name}`);
+    }
+    if (runtimeTarget.endpoint === testTarget.endpoint) {
+      throw new Error(
+        `${TEST_DATABASE_ENV} must not share a Postgres endpoint with runtime database ${name}`,
+      );
     }
   }
   return connectionString;
+}
+
+export function createIsolatedTestDatabaseEnvironment(environment = process.env) {
+  const connectionString = requireSafeTestDatabaseUrl(environment);
+  const isolatedEnvironment = {
+    ...environment,
+    [TEST_DATABASE_ENV]: connectionString,
+  };
+  for (const name of RUNTIME_DATABASE_ENV_NAMES) delete isolatedEnvironment[name];
+  return isolatedEnvironment;
 }
 
 export function createTestPoolOptions(connectionString) {
@@ -69,10 +85,14 @@ export function createTestPoolOptions(connectionString) {
   };
 }
 
-function databaseIdentity(connectionString, environmentName) {
+function databaseTarget(connectionString, environmentName) {
   const url = parsePostgresUrl(connectionString, environmentName);
   const database = decodeURIComponent(url.pathname.replace(/^\/+/, ""));
-  return `${url.hostname.toLowerCase()}:${url.port || "5432"}/${database}`;
+  const endpoint = `${url.hostname.toLowerCase()}:${url.port || "5432"}`;
+  return {
+    endpoint,
+    identity: `${endpoint}/${database}`,
+  };
 }
 
 function parsePostgresUrl(connectionString, environmentName) {
@@ -96,7 +116,7 @@ function configuredValue(value) {
 }
 
 async function main() {
-  requireSafeTestDatabaseUrl();
+  const childEnvironment = createIsolatedTestDatabaseEnvironment();
   const child = spawn(process.execPath, [
     "--experimental-strip-types",
     "--test",
@@ -104,7 +124,7 @@ async function main() {
     ...POSTGRES_INTEGRATION_TESTS,
   ], {
     cwd: process.cwd(),
-    env: process.env,
+    env: childEnvironment,
     stdio: "inherit",
   });
   const exitCode = await new Promise((resolve, reject) => {
