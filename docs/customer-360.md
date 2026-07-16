@@ -54,6 +54,41 @@ website migration, configuration, deployment, and verification gates below.
   that whole group's profile and sets sticky `identity_conflict` until an
   explicit deterministic merge and group-wide recomputation resolve it.
 
+### FlowState association request and continuity contract
+
+FlowState may add Customer 360 association values only as optional fields in the
+JSON body of these existing `POST` requests. All three fields are accepted on
+each route; no other FlowState route is an identity-association transport.
+
+| Route | Optional JSON body fields |
+| --- | --- |
+| `POST /api/activation/start` | `installIdHash`, `supportCode`, `installerReceiptIdHash` |
+| `POST /api/activation/status` | `installIdHash`, `supportCode`, `installerReceiptIdHash` |
+| `POST /api/license/verify` | `installIdHash`, `supportCode`, `installerReceiptIdHash` |
+| `POST /api/license/refresh` | `installIdHash`, `supportCode`, `installerReceiptIdHash` |
+
+`installIdHash` and `installerReceiptIdHash` must each be exactly 64 lowercase
+hexadecimal characters, matching `^[0-9a-f]{64}$`. `supportCode` must match
+`^SIDE-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}$`. A missing or `undefined` field,
+JSON `null`, or the empty string is treated as omitted for backward
+compatibility. Any other supplied value, including a non-string, wrong case,
+surrounding whitespace, or wrong length, returns `400
+invalid_customer_identity`; the website does not normalize a malformed value
+into the canonical form.
+
+FlowState must reuse its existing stable telemetry `installIdHash` verbatim. It
+must not hash it again or add a production/Test channel salt. Trusted website
+routing and deployment state own production/Test namespace isolation; client
+identity values and `buildChannel` do not select that namespace.
+
+These identity values must never be placed in activation, claim, checkout,
+restore, or account URLs, query strings, redirects, or browser form fields. The
+website stores the association against the server-side activation record; its
+upgrade and restore URLs contain only the activation key. Later verified
+account, Checkout, license, verify, and refresh evidence follows that activation
+record so it attaches to the same profile UUID. FlowState must not copy the
+identity values across the browser boundary to preserve that continuity.
+
 ### Customer identity is not single-device enforcement
 
 Customer 360 install membership and the single-device license policy are

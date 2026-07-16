@@ -192,6 +192,17 @@ that selection. `billingModel` describes purchase history, not current
 subscription state. Device policy still defaults to observe, and Customer 360
 does not enable enforcement.
 
+For FlowState, the association transport is limited to optional
+`installIdHash`, `supportCode`, and `installerReceiptIdHash` fields in the JSON
+`POST` bodies for `/api/activation/start`, `/api/activation/status`,
+`/api/license/verify`, and `/api/license/refresh`. FlowState must reuse its stable
+telemetry `installIdHash` verbatim, never rehash or channel-salt it, and never
+put any association value in activation, claim, checkout, restore, or account
+URLs, query strings, or browser forms. The exact route matrix, canonical
+formats, omission behavior, `400 invalid_customer_identity` contract, and
+activation-record continuity rules are in `docs/customer-360.md`; trusted
+website routing owns production/Test isolation.
+
 The only rollout path is the human-gated Preview/Test-first sequence in
 `docs/customer-360.md`: review and merge, approve a non-Production target, apply
 checksummed migrations there, configure secrets and reviewed invocation/scheduling,
@@ -657,6 +668,7 @@ Use the narrowest relevant check after edits:
 
 ## Recent Change Log
 
+- 2026-07-15: Completed the FlowState Customer 360 association contract with the exact four-route JSON-body matrix, strict identity formats and omission/error behavior, verbatim telemetry `installIdHash` reuse, website-owned production/Test isolation, browser/URL privacy boundary, and activation-record continuity. No deployment, migration, backfill, entitlement, or device change was performed.
 - 2026-07-15: Corrected the Customer 360 contract after semantic audit: distinguished trusted write namespace from authorized admin read selection, documented one-time/subscription/comped/mixed history without implying current subscription state, preserved observe-by-default single-device status, separated local FlowState work from live Preview/Test QA, exhaustively inventoried stored/derivable telemetry versus the compact API, defined null/zero success-rate behavior, corrected the cron response/log split, and accounted for Vercel's four-job project-wide scheduling control. Customer 360 is not deployed and Production is not migrated.
 - 2026-07-15: Published the durable cross-repo Customer 360 field/privacy/identity/commerce/usage contract and human-gated Preview/Test-first rollout guide. Documented the protected API, `SIDESTREAM_CRM_ADMIN_SECRET`, separate `SIDESTREAM_TELEMETRY_POSTGRES_URL`, disposable `SIDESTREAM_TEST_POSTGRES_URL` harness, `installIdHash` versus single-device separation, money minor units, first-attempt/success and rolling-window semantics, retention gap, observability, dry-run backfill, and non-Production rollback. Customer 360 is not deployed and Production is not migrated.
 - 2026-07-15: Deduplicated a paid Checkout fallback against only its related paid Invoice fallback before their shared instrument arrives. The paid InvoicePayment allocation edge now selects the Invoice as the one economic purchase without aliasing their payment keys; unrelated Checkout purchases remain countable before and after the related PaymentIntent materializes. Added disposable-Postgres overlap and negative-control coverage. No Production query, migration, backfill, deployment, Stripe/Vercel configuration change, entitlement mutation, or device mutation was performed.
