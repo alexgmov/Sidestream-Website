@@ -11,16 +11,25 @@ migration, or backfill-apply procedure.
 The website repository owns the Customer 360 database, Stripe money projection,
 telemetry aggregate import, and private read API. FlowState may provide durable
 association values such as `installIdHash`, but it does not select the database,
-license namespace, profile, entitlement, or merge result. The FlowState plan is
-run only after the website Preview/Test gates in this document pass.
+write namespace, profile, entitlement, or merge result. Local or fixture-backed
+FlowState implementation may proceed now against this audited contract. Live
+upstream Preview/Test integration and QA wait for the separately approved
+website migration, configuration, deployment, and verification gates below.
 
 ## Domain boundaries
 
 ### Profiles, installs, and identity
 
 - A live profile is a stable UUID in exactly one `production` or `test` license
-  namespace. Namespace comes from trusted server deployment state, never request
-  JSON, `buildChannel`, a header, or a query parameter.
+  namespace. Trusted server deployment state selects the namespace for writes,
+  identity and merge behavior, telemetry import, device policy, and entitlement
+  behavior; client `buildChannel`, headers, query parameters, and untrusted
+  request JSON cannot override it.
+- The protected admin read API is deliberately different: an authenticated
+  server caller supplies `licenseNamespace` in the list or detail POST body to
+  choose which authorized namespace to query. The API validates that value,
+  scopes every read to it, and binds it into signed list cursors. This read
+  selector neither changes trusted deployment state nor authorizes writes.
 - An anonymous install can create a sparse profile. Its membership key is a
   lowercase 64-character `installIdHash`; the raw install identifier is not
   stored. Contact, commerce, and usage fields may remain null indefinitely.
@@ -52,9 +61,12 @@ deliberately separate. `installIdHash` is a pseudonymous CRM association key; it
 is not the active device binding, credential, transfer counter, or authorization
 proof. Customer 360 attachment, merge, commerce, usage, and query code does not
 read or mutate active device rows, device credentials, transfer history, license
-policy mode, or download authorization. The existing single-device contract
-continues to enforce one active device per account independently in each
-production/Test namespace.
+policy mode, or download authorization. `SIDESTREAM_DEVICE_POLICY_MODE` defaults
+to `observe`; only an explicit `enforce` value blocks non-definitive device
+mismatches. Customer 360 neither enables nor changes that mode, and the current
+device rollout remains observe/not-yet-cut-over rather than proven Production
+enforcement. Explicitly revoked or replaced credentials and exact active-binding
+download authorization remain separate device-contract decisions in every mode.
 
 The Gmail `installer-referral` request HMAC is also separate. It is a
 campaign/day attribution value, not an installer receipt or install identity,
@@ -83,6 +95,16 @@ deduction, and `netPaidMinor = max(grossPaidMinor - refundedMinor -
 disputedMinor, 0)`. `paidTransactionCount` counts canonical paid purchases.
 Zero-cost upgrades may affect upgrade timing and billing model without creating
 paid money.
+
+The active Sidestream offer is one-time. The commerce model remains open-ended:
+if subscriptions are offered later, every settled renewal is a separate
+canonical economic payment rather than a rewrite of the first purchase. A
+profile with both one-time and subscription purchase history is `mixed`;
+`comped` can legitimately have zero paid money. `billingModel=subscription`
+describes purchase model/history, not whether a subscription is currently
+active. The compact list/detail object has no `isSubscribed`, renewal,
+cancellation, or current-subscription-state field, so consumers must not infer
+any of those states from `billingModel`.
 
 This ledger is money truth only. It never reads, writes, derives, or blesses
 `sidestream_licenses` or device state. The nullable `entitlementStatus` field is
@@ -134,13 +156,47 @@ used only when the modern finalization is absent.
 `downloadOutcomeDenominator` is terminal outcomes only: success + failure +
 cancelled. Pending and unknown attempts are excluded from the denominator and
 reported through data-quality flags, so this pair must not be labeled as all
-requests or completion rate without that denominator definition.
+requests or completion rate without that denominator definition. A consumer may
+calculate success rate only as `downloadOutcomeNumerator` divided by
+`downloadOutcomeDenominator`; the rate is unavailable when the terminal-outcome
+denominator is null or zero.
+
+### Stored/derivable telemetry versus the compact API
+
+The privacy-limited aggregate layer stores or derives this telemetry inventory:
+
+- first and last app use, first and last accepted download attempt, and first
+  and last successful download attempt;
+- accepted attempt, terminal outcome, success, failure, cancelled, pending, and
+  unknown counts;
+- lifetime active days, rolling 7-day and 30-day active days, and accepted
+  30-day attempts per active day;
+- per-install UTC-day active-event counts and the usage install count across a
+  profile's current memberships;
+- latest coarse platform and bounded app version;
+- daily-bucket refresh time, profile sync/materialization time, source
+  receive-time freshness, and derivable source lag.
+
+Daily rows retain the per-install/day values, source watermark, and refresh
+time. Profile materialization combines them across current install memberships
+and recomputes lifetime and rolling values. This inventory is not a raw event
+export and does not weaken the privacy exclusions below.
+
+The list/detail API is intentionally more compact. It exposes first attempt,
+first success, terminal success numerator/denominator, last app use, rolling
+active days, 30-day frequency, sync/freshness timestamps, install count,
+platform, app version, and quality flags. It does not expose last-attempt or
+last-success timestamps, total accepted attempts, individual
+failure/cancelled/pending/unknown counts, lifetime active days, daily
+active-event counts, the internal usage install count, or raw source lag. It
+also does not expose current subscription status.
 
 ### Cadence, rolling windows, and freshness
 
-Vercel schedules the protected sync once daily at `05:27` UTC. A completed
-namespace run is skipped if invoked again on the same UTC day; an advisory lock
-prevents concurrent runs. The default source batch is 250 aggregate rows
+The repository's Vercel configuration declares the protected sync once daily at
+`05:27` UTC. A completed namespace run is skipped if invoked again on the same
+UTC day; an advisory lock prevents concurrent runs. The default source batch is
+250 aggregate rows
 (configurable from 25 to 1,000). The high-water key is
 `(received_at, telemetry_event_id)`, and every run rereads a 48-hour overlap
 (configurable from 24 to 168 hours) so late updates replace affected UTC
@@ -305,11 +361,13 @@ dispose of them under an approved access/retention decision before any rollout.
 
 ## Observability
 
-The daily cron returns and logs `outcome`, `licenseNamespace`, `batches`,
+The daily cron response returns `outcome`, `licenseNamespace`, `batches`,
 `sourceRowsScanned`, `dailyBucketsWritten`, `profilesRefreshed`, and
-`sourceFreshnessAt`. Its structured log event is
-`sidestream_customer_usage_sync`; failure logs only `outcome=failed` and returns
-`500 customer_usage_sync_failed`. `locked` is expected for a concurrent run and
+`sourceFreshnessAt`. Its `sidestream_customer_usage_sync` structured log records
+only `outcome`, `batches`, `sourceRowsScanned`, `dailyBucketsWritten`, and
+`profilesRefreshed`; it does not log `licenseNamespace` or `sourceFreshnessAt`.
+Failure logs only `outcome=failed` and returns `500` with
+`customer_usage_sync_failed`. `locked` is expected for a concurrent run and
 `skipped` is expected after a completed run on the same UTC day.
 
 Operators must inspect:
@@ -325,7 +383,8 @@ Operators must inspect:
 An unexplained failed run, stale/null freshness, inconsistent outcome flag,
 identity conflict, incomplete checkpoint, or unexpected API authorization error
 blocks rollout progression. The reviewer must record the approved lag threshold
-and alert destination before enabling the Preview/Test cron.
+and alert destination before invoking usage sync or enabling any approved
+non-Production scheduling path.
 
 ## Disposable test harness
 
@@ -404,15 +463,21 @@ This is the only rollout sequence:
 3. Apply the checksummed migrations to that approved non-Production target only.
    Verify the ledger/checksums, RLS, private function grants, runtime-DDL
    prohibition, and a documented non-Production rollback/recreate path.
-4. Configure Preview/Test secrets and schedule ownership: a stable
+4. Configure Preview/Test secrets and invocation ownership: a stable
    `SIDESTREAM_CRM_ADMIN_SECRET`, separate
    `SIDESTREAM_TELEMETRY_POSTGRES_URL`, distinct
    `SIDESTREAM_TEST_POSTGRES_URL`, `CRON_SECRET`, trusted Test namespace/hosts,
    and existing website runtime database secrets. Record owners without putting
    values in commands, source, reports, or logs.
 5. Deploy Preview/Test only. Confirm the immutable artifact/commit and protected
-   host before invoking anything. Keep the usage cron disabled until its target,
-   source role, lag threshold, and alert path are reviewed.
+   host before invoking anything. Vercel scheduling has one project-wide control
+   for all four configured jobs, not a Customer 360-only toggle. Keep project-wide
+   scheduling disabled unless all four jobs, their targets, secrets, side effects,
+   failure handling, and alert paths receive separate non-Production approval.
+   For usage-sync verification while it remains disabled, require either an
+   approved secret-safe protected manual trigger or a separately approved
+   non-Production scheduler; the repository currently supplies neither operator
+   control, so the absence of one blocks this rollout stage.
 6. Run the offline backfill dry-run, verify its digest and privacy-safe report,
    and resolve every orphan/conflict decision. Any Test apply requires a new,
    separate human approval; dry-run approval is not apply approval. Verify a
@@ -420,18 +485,24 @@ This is the only rollout sequence:
 7. Verify both protected Customer APIs, no-store headers, namespace isolation,
    null-heavy and multi-currency responses, cursor tamper/filter binding, merged
    tombstone hiding, quality flags, daily sync summaries, source lag, rolling
-   decay, and unchanged entitlement/single-device rows. Enable the Preview/Test
-   cron only after these checks pass.
-8. Only then run the separately reviewed FlowState plan against Preview/Test.
-   Verify the existing activation/license behavior first, then verify optional
-   `installIdHash` association without changing device or entitlement decisions.
+   decay, and unchanged entitlement/single-device rows. Then either approve the
+   protected manual/separate scheduler path for usage sync, or separately review
+   and approve project-wide scheduling for all four jobs; never claim that only
+   the usage cron was enabled.
+8. Only then run live upstream integration and QA from the separately reviewed
+   FlowState plan against Preview/Test. Local or fixture-backed FlowState work
+   may already exist; live verification must confirm existing activation/license
+   behavior first, then optional `installIdHash` association without changing
+   device or entitlement decisions.
 
-For non-Production rollback, stop the Customer 360 cron, remove access to the
-two admin routes, redeploy the last known Preview/Test artifact, and restore or
-recreate the approved disposable/staging database from its pre-migration
-snapshot. Migrations are append-only; do not improvise down SQL or delete audit
-rows. Preserve failure evidence, backfill reports, and checkpoints for review,
-but do not copy them into Production.
+For non-Production rollback, stop the approved usage-sync invocation path. If
+project-wide Vercel scheduling was approved, disabling it affects all four jobs
+and requires the corresponding operator decision; there is no usage-only switch.
+Remove access to the two admin routes, redeploy the last known Preview/Test
+artifact, and restore or recreate the approved disposable/staging database from
+its pre-migration snapshot. Migrations are append-only; do not improvise down
+SQL or delete audit rows. Preserve failure evidence, backfill reports, and
+checkpoints for review, but do not copy them into Production.
 
 There is no Production rollback procedure here because no Production action is
 authorized. A future Production plan requires a fresh human review after all
