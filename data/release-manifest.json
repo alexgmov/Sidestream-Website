@@ -3,7 +3,7 @@
   "product": "sidestream",
   "channel": "stable",
   "version": "1.0.14",
-  "minSupportedVersion": "1.0.0",
+  "minSupportedVersion": "1.0.12",
   "critical": false,
   "rolloutPercent": 100,
   "publishedAt": "2026-07-16T03:19:46.175Z",

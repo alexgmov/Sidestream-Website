@@ -56,7 +56,7 @@ function main() {
   const artifactUrl = args["artifact-url"] || platformDefaults.artifactUrl;
   const pathname = normalizeBlobPath(required(args.pathname, "--pathname"));
   const version = normalizeVersion(required(args.version, "--version"));
-  const minSupportedVersion = normalizeVersion(args["min-supported-version"] || "1.0.0");
+  const minSupportedVersion = normalizeVersion(args["min-supported-version"] || "1.0.12");
   const channel = sanitizeLabel(args.channel || "stable");
   const rolloutPercent = normalizeRolloutPercent(args["rollout-percent"] || 100);
   const releaseNotesUrl = args["release-notes-url"] || platformDefaults.releaseNotesUrl;
