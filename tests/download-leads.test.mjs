@@ -453,6 +453,9 @@ test("mobile download email builder sends both stable installers through Resend"
   assert.equal((message.html.match(/class="download-link"/g) || []).length, 2);
   assert.equal((message.html.match(/background:#ffffff;color:#000000/g) || []).length, 2);
   assert.match(message.html, /background:#ff2a2a !important/);
+  assert.match(message.html, /class="windows-mark"/);
+  assert.match(message.html, /M3%205\.3l8-1\.1v7\.4H3V5\.3/);
+  assert.doesNotMatch(message.html, /&#9632;/);
   assert.match(message.text, /platform=win32-x64/);
   assert.match(message.text, /utm_source=mobile_handoff/);
 });
