@@ -134,17 +134,48 @@ function buildHtmlBody() {
   const windowsUrl = WINDOWS_DOWNLOAD_URL.replaceAll("&", "&amp;");
   return `<!doctype html>
 <html lang="en">
+  <head>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+      .download-link:hover { background:#ff2a2a !important; border-color:#ff2a2a !important; color:#ffffff !important; }
+      @media screen and (max-width:520px) {
+        .email-card { padding:24px !important; }
+        .download-panel { padding:16px !important; }
+        .download-cell { display:block !important; width:100% !important; padding-right:0 !important; padding-left:0 !important; }
+        .download-cell + .download-cell { padding-top:12px !important; }
+        .download-link { font-size:14px !important; }
+      }
+    </style>
+  </head>
   <body style="margin:0;background:#f4f4f5;color:#111827;font-family:Arial,Helvetica,sans-serif;">
     <div style="display:none;max-height:0;overflow:hidden;opacity:0;">Download Sidestream for Mac or Windows.</div>
     <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#f4f4f5;padding:32px 16px;">
       <tr>
         <td align="center">
-          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:560px;background:#ffffff;border:1px solid #e4e4e7;border-radius:18px;padding:36px;">
+          <table class="email-card" role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:560px;background:#ffffff;border:1px solid #e4e4e7;border-radius:18px;padding:36px;">
             <tr><td style="font-size:13px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#71717a;">Sidestream</td></tr>
             <tr><td style="padding-top:14px;font-size:28px;font-weight:700;line-height:1.15;">Your download links</td></tr>
             <tr><td style="padding-top:12px;font-size:16px;line-height:1.55;color:#52525b;">You asked us to send Sidestream to your computer. Choose the installer you need.</td></tr>
-            <tr><td style="padding-top:26px;"><a href="${macUrl}" style="display:block;padding:15px 20px;border-radius:10px;background:#111827;color:#ffffff;text-align:center;text-decoration:none;font-size:16px;font-weight:700;">Download for Mac</a></td></tr>
-            <tr><td style="padding-top:12px;"><a href="${windowsUrl}" style="display:block;padding:15px 20px;border-radius:10px;background:#ffffff;color:#111827;border:1px solid #d4d4d8;text-align:center;text-decoration:none;font-size:16px;font-weight:700;">Download for Windows</a></td></tr>
+            <tr>
+              <td style="padding-top:26px;">
+                <table role="presentation" width="100%" cellspacing="0" cellpadding="0" bgcolor="#171717" style="background:#171717;border-radius:20px;">
+                  <tr>
+                    <td class="download-panel" style="padding:20px;">
+                      <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
+                        <tr>
+                          <td class="download-cell" width="50%" style="padding-right:6px;">
+                            <a class="download-link" href="${macUrl}" aria-label="Download Sidestream for Mac" style="display:block;padding:15px 16px;border:1px solid #ffffff;border-radius:999px;background:#ffffff;color:#000000;text-align:center;text-decoration:none;font-size:15px;font-weight:700;line-height:1.35;white-space:nowrap;"><span aria-hidden="true" style="display:inline-block;margin-right:8px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI Symbol',sans-serif;font-size:17px;line-height:1;vertical-align:-1px;">&#63743;</span>Download for Mac</a>
+                          </td>
+                          <td class="download-cell" width="50%" style="padding-left:6px;">
+                            <a class="download-link" href="${windowsUrl}" aria-label="Download Sidestream for Windows" style="display:block;padding:15px 16px;border:1px solid #ffffff;border-radius:999px;background:#ffffff;color:#000000;text-align:center;text-decoration:none;font-size:15px;font-weight:700;line-height:1.35;white-space:nowrap;"><span aria-hidden="true" style="display:inline-block;margin-right:8px;font-family:Arial,sans-serif;font-size:7px;line-height:6px;letter-spacing:1px;vertical-align:1px;">&#9632;&#8201;&#9632;<br>&#9632;&#8201;&#9632;</span>Download for Windows</a>
+                          </td>
+                        </tr>
+                      </table>
+                    </td>
+                  </tr>
+                </table>
+              </td>
+            </tr>
             <tr><td style="padding-top:26px;font-size:13px;line-height:1.5;color:#71717a;">You received this one-time email because someone entered this address on sidestream.tv.</td></tr>
           </table>
         </td>
