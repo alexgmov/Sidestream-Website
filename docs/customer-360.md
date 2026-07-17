@@ -8,6 +8,14 @@ documents the repository contract and a human-gated Preview/Test-first rollout;
 it is not evidence of live state and it contains no Production deployment,
 migration, or backfill-apply procedure.
 
+The canonical operator matrix is
+[`customer-360-preview-test-plan.md`](customer-360-preview-test-plan.md). It owns
+the ordered Preview/Test gates, current environment rejection, evidence format,
+exact supported commands, stop conditions, non-Production rollback/recreate,
+and hard exit criteria. The current Vercel Preview environment is rejected
+because its database, Stripe, Google, and base URL values match Production.
+Provisioning and approving an isolated Preview target is a human-owned gate.
+
 The website repository owns the Customer 360 database, Stripe money projection,
 telemetry aggregate import, and private read API. FlowState may provide durable
 association values such as `installIdHash`, but it does not select the database,
@@ -487,7 +495,8 @@ This document intentionally provides no apply command.
 
 ## Human-gated Preview/Test-first rollout
 
-This is the only rollout sequence:
+This is the only rollout sequence. Execute it through the evidence and stop
+conditions in `customer-360-preview-test-plan.md`:
 
 1. Review the exact commit, contract, migration chain, test evidence, privacy
    decision, retention gap, open entitlement blockers, and cross-repo interface;
@@ -509,10 +518,10 @@ This is the only rollout sequence:
    for all four configured jobs, not a Customer 360-only toggle. Keep project-wide
    scheduling disabled unless all four jobs, their targets, secrets, side effects,
    failure handling, and alert paths receive separate non-Production approval.
-   For usage-sync verification while it remains disabled, require either an
-   approved secret-safe protected manual trigger or a separately approved
-   non-Production scheduler; the repository currently supplies neither operator
-   control, so the absence of one blocks this rollout stage.
+   This acceptance plan keeps project-wide scheduling disabled. The bounded
+   deployment verifier supplies one host-bound, separately confirmed Test
+   usage-sync mode, but it may run only after its read-only suite and every prior
+   matrix gate passes. It is not a scheduler or permission for another run.
 6. Run the offline backfill dry-run, verify its digest and privacy-safe report,
    and resolve every orphan/conflict decision. Any Test apply requires a new,
    separate human approval; dry-run approval is not apply approval. Verify a
@@ -520,10 +529,9 @@ This is the only rollout sequence:
 7. Verify both protected Customer APIs, no-store headers, namespace isolation,
    null-heavy and multi-currency responses, cursor tamper/filter binding, merged
    tombstone hiding, quality flags, daily sync summaries, source lag, rolling
-   decay, and unchanged entitlement/single-device rows. Then either approve the
-   protected manual/separate scheduler path for usage sync, or separately review
-   and approve project-wide scheduling for all four jobs; never claim that only
-   the usage cron was enabled.
+   decay, and unchanged entitlement/single-device rows. Use the matrix's one-time
+   verifier mode for the approved Test sync while project-wide scheduling stays
+   disabled; never claim that only the usage cron was enabled.
 8. Only then run live upstream integration and QA from the separately reviewed
    FlowState plan against Preview/Test. Local or fixture-backed FlowState work
    may already exist; live verification must confirm existing activation/license
