@@ -519,15 +519,10 @@
     line-height: 1.2;
     letter-spacing: -0.02em;
   }
-  .mobile-download-handoff-copy {
-    margin: 7px 0 16px;
-    color: var(--ink-soft);
-    font-size: 14px;
-    line-height: 1.45;
-  }
   .mobile-download-handoff-fields {
     display: grid;
     gap: 10px;
+    margin-top: 16px;
   }
   .mobile-download-handoff-label {
     position: absolute;
@@ -576,6 +571,7 @@
     font-size: 12.5px;
     line-height: 1.45;
   }
+  .mobile-download-handoff-status:empty { display: none; }
   .mobile-download-handoff-status.is-error { color: #ff9b9b; }
   .mobile-download-handoff-status.is-success { color: rgba(226, 232, 240, 0.88); }
 
@@ -1218,13 +1214,12 @@
           </div>
           <form class="mobile-download-handoff" id="mobile-download-handoff" novalidate>
             <p class="mobile-download-handoff-title">Get Sidestream on your computer</p>
-            <p class="mobile-download-handoff-copy">Enter your email and we'll send download links for Mac and Windows.</p>
             <div class="mobile-download-handoff-fields">
               <label class="mobile-download-handoff-label" for="mobile-download-email">Email address</label>
               <input class="mobile-download-handoff-input" id="mobile-download-email" name="email" type="email" inputmode="email" autocomplete="email" enterkeyhint="send" placeholder="you@email.com" required>
               <button class="btn btn-primary mobile-download-handoff-submit" id="mobile-download-submit" type="submit">Send me the links</button>
             </div>
-            <p class="mobile-download-handoff-status" id="mobile-download-status" aria-live="polite">One email. No account required.</p>
+            <p class="mobile-download-handoff-status" id="mobile-download-status" aria-live="polite"></p>
           </form>
         </div>
       </div>

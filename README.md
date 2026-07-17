@@ -684,6 +684,7 @@ Use the narrowest relevant check after edits:
 
 ## Recent Change Log
 
+- 2026-07-17: Tightened the mobile download handoff by removing the explanatory Mac/Windows sentence and the default "One email. No account required." note. The empty live region remains hidden until it needs to show validation or delivery feedback.
 - 2026-07-17: Restored Production activation polling, license verification, refresh, and download authorization against the pre-entitlement-lifecycle database. Every customer-facing license read now shares the fail-closed JSON-based lifecycle compatibility expression instead of directly referencing the absent column; targeted source regressions prevent any route from drifting back to the parse-time `42703` failure. No Production schema or entitlement row was mutated.
 - 2026-07-17: Added the mobile computer handoff: phone-width visitors see one inline email form instead of choosing Mac or Windows, lower mobile download CTAs return to that form, and the new fail-closed `/api/send-download-links` route stores bounded campaign context in the existing private replay queue before sending one idempotent Resend email with both installers from the existing `alexg.mov` domain. Its hashed email/IP limits use private Blob compare-and-swap writes so the MVP does not require the currently unapplied Postgres hardening tables. Desktop downloads remain direct.
 - 2026-07-17: Replaced the nearly blank Open Graph/Twitter screenshot with a cache-busted 1200×630 Sidestream product card and updated every social and JSON-LD image reference.
