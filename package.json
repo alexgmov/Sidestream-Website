@@ -26,6 +26,8 @@
     "test:single-device-ops": "node --experimental-strip-types --test tests/single-device-ops.test.mjs",
     "test:single-device-postgres": "node --experimental-strip-types --test --test-concurrency=1 tests/single-device-postgres.test.mjs",
     "typecheck": "tsc --noEmit",
+    "verify:customer-360-preview-deployment": "node scripts/verify-customer-360-preview-deployment.mjs",
+    "verify:customer-360-preview-environment": "node scripts/verify-customer-360-preview-environment.mjs",
     "verify:vercel-build": "node scripts/verify-vercel-build.mjs",
     "verify:vercel-contract": "node scripts/validate-vercel-contract.mjs",
     "preview": "vite preview"
