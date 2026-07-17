@@ -203,6 +203,13 @@ formats, omission behavior, `400 invalid_customer_identity` contract, and
 activation-record continuity rules are in `docs/customer-360.md`; trusted
 website routing owns production/Test isolation.
 
+Customer 360 identity attachment is schema-gated inside the existing account
+transaction. The complete core table set must be present before any profile or
+identity write runs; an older or intentionally unmigrated database skips the
+optional attachment and continues the activation/license operation. This keeps
+sign-in, restore, and transfer independent from the separately gated Customer
+360 rollout.
+
 The only rollout path is the human-gated Preview/Test-first sequence in
 `docs/customer-360.md`: review and merge, approve a non-Production target, apply
 checksummed migrations there, configure secrets and reviewed invocation/scheduling,
@@ -668,6 +675,7 @@ Use the narrowest relevant check after edits:
 
 ## Recent Change Log
 
+- 2026-07-16: Restored production sign-in and license transfer compatibility after the optional Customer 360 identity bridge was deployed ahead of its database schema. Identity attachment now remains dormant unless the complete core Customer 360 table set exists, so activation/session transactions continue on intentionally unmigrated databases without a Production migration.
 - 2026-07-16: Moved the decorative Premiere/Sidestream recording's compensated anchor farther up and left, from `50vw 35vh` to `45vw 25vh`, without changing its scale or mobile hide behavior.
 - 2026-07-16: Moved the decorative Premiere/Sidestream recording's compensated top-left anchor from `50vw 50vh` to `50vw 35vh`, preserving its horizontal alignment while revealing more of the recording's lower edge on desktop.
 - 2026-07-15: Set the canonical Mac manifest minimum supported version to `1.0.12`, making v1.0.11 and older update banners critical/non-dismissible while still routing directly to the current v1.0.14 installer; the release publisher now preserves that floor by default.

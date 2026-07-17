@@ -101,6 +101,31 @@ test("optional Customer 360 identity fields are exact, bounded, and backward com
     }),
     /trusted license namespace/,
   );
+
+  const missingSchemaQueries = [];
+  const missingSchemaClient = {
+    query(sql) {
+      missingSchemaQueries.push(String(sql));
+      return {
+        rows: [{ profiles: null, links: null, installs: null, reviews: null }],
+      };
+    },
+  };
+  assert.deepEqual(
+    await attachCustomerIdentity(missingSchemaClient, {
+      environment: { namespace: "production" },
+      activationId: randomUUID(),
+      identity: {
+        installIdHash: "c".repeat(64),
+        supportCode: "SIDE-A1B2-C3D4-E5F6",
+      },
+      source: "activation_start",
+    }),
+    { profileId: null, attached: false, reviewRequired: false },
+  );
+  assert.equal(missingSchemaQueries.length, 1);
+  assert.match(missingSchemaQueries[0], /to_regclass/);
+  assert.match(missingSchemaQueries[0], /sidestream_customer_identity_links/);
 });
 
 test("routes inject optional identity into account methods without owning database access", async () => {
