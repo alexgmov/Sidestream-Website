@@ -221,6 +221,319 @@ test("Stripe events use a durable claimed queue with bounded retry and protected
       assert.equal(claimed[0].claimToken, "00000000-0000-4000-8000-000000000004");
     });
 
+    await t.test("repeated crashes stop after the eighth claim and never process a ninth", async () => {
+      await resetEvents(pool);
+      const event = stripeEvent("evt_crash_cap", "test.crash", 1_700_002_100);
+      await runtime.stripeEvents.recordStripeEvent(event, JSON.stringify(event), query);
+
+      for (let attempt = 1; attempt <= 8; attempt += 1) {
+        const claimToken = deterministicClaimToken(100 + attempt);
+        const claimed = await runtime.stripeEvents.claimStripeEvents({
+          batchSize: 1,
+          leaseMs: 1_000,
+          maxAttempts: 8,
+          claimToken,
+          query,
+        });
+        assert.equal(claimed.length, 1, `claim ${attempt}`);
+        assert.equal(claimed[0].attemptCount, attempt, `claim ${attempt}`);
+        assert.equal(claimed[0].claimToken, claimToken, `claim ${attempt}`);
+
+        if (attempt === 8) {
+          const stillLeased = await runtime.stripeEvents.claimStripeEvents({
+            batchSize: 1,
+            maxAttempts: 8,
+            claimToken: deterministicClaimToken(109),
+            query,
+          });
+          assert.deepEqual(stillLeased, []);
+          const active = await pool.query(
+            `select processing_status, attempt_count,
+               terminal_at is not null as terminal
+             from public.sidestream_stripe_events where event_id = $1`,
+            [event.id],
+          );
+          assert.deepEqual(active.rows[0], {
+            processing_status: "processing",
+            attempt_count: 8,
+            terminal: false,
+          });
+        }
+
+        await pool.query(
+          `update public.sidestream_stripe_events
+           set lease_expires_at = now() - interval '1 second'
+           where event_id = $1`,
+          [event.id],
+        );
+      }
+
+      let processingCalls = 0;
+      const logs = [];
+      const exhausted = await runtime.stripeEvents.drainStripeEventQueue({
+        batchSize: 1,
+        maxAttempts: 8,
+        createClaimToken: () => deterministicClaimToken(110),
+        query,
+        processEvent: async () => {
+          processingCalls += 1;
+          return { status: "processed", outcome: "must_not_process_ninth" };
+        },
+        log: (entry) => logs.push(entry),
+      });
+      assert.deepEqual(exhausted, {
+        claimed: 0,
+        processed: 0,
+        ignored: 0,
+        retryable: 0,
+        deadLetter: 1,
+      });
+      assert.equal(processingCalls, 0);
+      assert.deepEqual(logs, [{
+        eventId: event.id,
+        eventType: event.type,
+        attempt: 8,
+        outcome: "dead_letter",
+        durationMs: 0,
+      }]);
+
+      const stored = await pool.query(
+        `select processing_status, attempt_count, last_error_code, outcome,
+           claim_token, lease_expires_at, terminal_at is not null as terminal
+         from public.sidestream_stripe_events where event_id = $1`,
+        [event.id],
+      );
+      assert.deepEqual(stored.rows[0], {
+        processing_status: "dead_letter",
+        attempt_count: 8,
+        last_error_code: "claim_attempt_limit_exhausted",
+        outcome: "dead_letter",
+        claim_token: null,
+        lease_expires_at: null,
+        terminal: true,
+      });
+      assert.deepEqual(await runtime.stripeEvents.claimStripeEvents({
+        batchSize: 1,
+        maxAttempts: 8,
+        claimToken: deterministicClaimToken(111),
+        query,
+      }), []);
+    });
+
+    await t.test("concurrent claimers increment the seventh attempt exactly once", async () => {
+      await resetEvents(pool);
+      const event = stripeEvent("evt_boundary_race", "test.race", 1_700_002_200);
+      await runtime.stripeEvents.recordStripeEvent(event, JSON.stringify(event), query);
+      await pool.query(
+        `update public.sidestream_stripe_events set attempt_count = 7 where event_id = $1`,
+        [event.id],
+      );
+
+      const claims = await Promise.all([
+        runtime.stripeEvents.claimStripeEvents({
+          batchSize: 1,
+          maxAttempts: 8,
+          claimToken: deterministicClaimToken(120),
+          query,
+        }),
+        runtime.stripeEvents.claimStripeEvents({
+          batchSize: 1,
+          maxAttempts: 8,
+          claimToken: deterministicClaimToken(121),
+          query,
+        }),
+      ]);
+      assert.equal(claims[0].length + claims[1].length, 1);
+      assert.equal(claims.flat()[0].attemptCount, 8);
+
+      await pool.query(
+        `update public.sidestream_stripe_events
+         set lease_expires_at = now() - interval '1 second'
+         where event_id = $1`,
+        [event.id],
+      );
+      const reclaims = await Promise.all([
+        runtime.stripeEvents.claimStripeEvents({
+          batchSize: 1,
+          maxAttempts: 8,
+          claimToken: deterministicClaimToken(122),
+          query,
+        }),
+        runtime.stripeEvents.claimStripeEvents({
+          batchSize: 1,
+          maxAttempts: 8,
+          claimToken: deterministicClaimToken(123),
+          query,
+        }),
+      ]);
+      assert.deepEqual(reclaims, [[], []]);
+      const stored = await pool.query(
+        `select processing_status, attempt_count,
+           terminal_at is not null as terminal
+         from public.sidestream_stripe_events where event_id = $1`,
+        [event.id],
+      );
+      assert.deepEqual(stored.rows[0], {
+        processing_status: "dead_letter",
+        attempt_count: 8,
+        terminal: true,
+      });
+    });
+
+    await t.test("historical over-cap rows terminalize without interrupting an active lease", async () => {
+      await resetEvents(pool);
+      const events = [
+        stripeEvent("evt_over_received", "test.history", 1_700_002_300),
+        stripeEvent("evt_over_retryable", "test.history", 1_700_002_301),
+        stripeEvent("evt_over_expired", "test.history", 1_700_002_302),
+        stripeEvent("evt_over_active", "test.history", 1_700_002_303),
+      ];
+      for (const event of events) {
+        await runtime.stripeEvents.recordStripeEvent(event, JSON.stringify(event), query);
+      }
+      await pool.query(
+        `update public.sidestream_stripe_events
+         set attempt_count = 8,
+             next_attempt_at = now() + interval '1 day'
+         where event_id = 'evt_over_received'`,
+      );
+      await pool.query(
+        `update public.sidestream_stripe_events
+         set processing_status = 'retryable',
+             attempt_count = 11,
+             next_attempt_at = now() + interval '1 day'
+         where event_id = 'evt_over_retryable'`,
+      );
+      await pool.query(
+        `update public.sidestream_stripe_events
+         set processing_status = 'processing',
+             attempt_count = 9,
+             claim_token = $1,
+             lease_expires_at = now() - interval '1 second'
+         where event_id = 'evt_over_expired'`,
+        [deterministicClaimToken(130)],
+      );
+      await pool.query(
+        `update public.sidestream_stripe_events
+         set processing_status = 'processing',
+             attempt_count = 8,
+             claim_token = $1,
+             lease_expires_at = now() + interval '1 day'
+         where event_id = 'evt_over_active'`,
+        [deterministicClaimToken(131)],
+      );
+
+      assert.deepEqual(await runtime.stripeEvents.claimStripeEvents({
+        batchSize: 10,
+        maxAttempts: 8,
+        claimToken: deterministicClaimToken(132),
+        query,
+      }), []);
+      let states = await pool.query(
+        `select event_id, processing_status, attempt_count, last_error_code,
+           terminal_at is not null as terminal
+         from public.sidestream_stripe_events order by event_id`,
+      );
+      assert.deepEqual(states.rows, [
+        {
+          event_id: "evt_over_active",
+          processing_status: "processing",
+          attempt_count: 8,
+          last_error_code: null,
+          terminal: false,
+        },
+        {
+          event_id: "evt_over_expired",
+          processing_status: "dead_letter",
+          attempt_count: 9,
+          last_error_code: "claim_attempt_limit_exhausted",
+          terminal: true,
+        },
+        {
+          event_id: "evt_over_received",
+          processing_status: "dead_letter",
+          attempt_count: 8,
+          last_error_code: "claim_attempt_limit_exhausted",
+          terminal: true,
+        },
+        {
+          event_id: "evt_over_retryable",
+          processing_status: "dead_letter",
+          attempt_count: 11,
+          last_error_code: "claim_attempt_limit_exhausted",
+          terminal: true,
+        },
+      ]);
+
+      await pool.query(
+        `update public.sidestream_stripe_events
+         set lease_expires_at = now() - interval '1 second'
+         where event_id = 'evt_over_active'`,
+      );
+      assert.deepEqual(await runtime.stripeEvents.claimStripeEvents({
+        batchSize: 10,
+        maxAttempts: 8,
+        claimToken: deterministicClaimToken(133),
+        query,
+      }), []);
+      states = await pool.query(
+        `select processing_status, attempt_count,
+           terminal_at is not null as terminal
+         from public.sidestream_stripe_events
+         where event_id = 'evt_over_active'`,
+      );
+      assert.deepEqual(states.rows[0], {
+        processing_status: "dead_letter",
+        attempt_count: 8,
+        terminal: true,
+      });
+    });
+
+    await t.test("a lost claim cannot terminalize a replacement claimant", async () => {
+      await resetEvents(pool);
+      const event = stripeEvent("evt_claim_loss", "test.claim_loss", 1_700_002_400);
+      await runtime.stripeEvents.recordStripeEvent(event, JSON.stringify(event), query);
+      const replacementToken = deterministicClaimToken(141);
+      const logs = [];
+      const summary = await runtime.stripeEvents.drainStripeEventQueue({
+        batchSize: 1,
+        maxAttempts: 8,
+        createClaimToken: () => deterministicClaimToken(140),
+        query,
+        processEvent: async () => {
+          await pool.query(
+            `update public.sidestream_stripe_events
+             set claim_token = $2
+             where event_id = $1`,
+            [event.id, replacementToken],
+          );
+          return { status: "processed", outcome: "stale_completion" };
+        },
+        log: (entry) => logs.push(entry),
+      });
+      assert.deepEqual(summary, {
+        claimed: 1,
+        processed: 0,
+        ignored: 0,
+        retryable: 0,
+        deadLetter: 0,
+      });
+      assert.equal(logs.length, 1);
+      assert.equal(logs[0].outcome, "claim_lost");
+      const stored = await pool.query(
+        `select processing_status, attempt_count, claim_token,
+           terminal_at is not null as terminal
+         from public.sidestream_stripe_events where event_id = $1`,
+        [event.id],
+      );
+      assert.deepEqual(stored.rows[0], {
+        processing_status: "processing",
+        attempt_count: 1,
+        claim_token: replacementToken,
+        terminal: false,
+      });
+    });
+
     await t.test("a poison event retries without blocking ignored or processed rows", async () => {
       await resetEvents(pool);
       const events = [
@@ -1029,6 +1342,10 @@ function stripeEvent(id, type, created, object = { id: `object_${id}` }) {
     request: null,
     type,
   };
+}
+
+function deterministicClaimToken(value) {
+  return `00000000-0000-4000-8000-${String(value).padStart(12, "0")}`;
 }
 
 async function resetEvents(pool) {

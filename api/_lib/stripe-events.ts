@@ -35,6 +35,17 @@ export type ClaimedStripeEvent = Readonly<{
   claimToken: string;
 }>;
 
+type DeadLetteredStripeEvent = Readonly<{
+  eventId: string;
+  eventType: string;
+  attemptCount: number;
+}>;
+
+type StripeEventClaimBatch = Readonly<{
+  claimed: readonly ClaimedStripeEvent[];
+  deadLettered: readonly DeadLetteredStripeEvent[];
+}>;
+
 export type StripeEventProcessingResult = Readonly<{
   status: "processed" | "ignored";
   outcome: string;
@@ -101,9 +112,21 @@ export async function recordStripeEvent(
 export async function claimStripeEvents(options: {
   batchSize?: number;
   leaseMs?: number;
+  maxAttempts?: number;
   claimToken?: string;
   query?: StripeEventQuery;
 } = {}): Promise<ClaimedStripeEvent[]> {
+  const batch = await claimStripeEventBatch(options);
+  return [...batch.claimed];
+}
+
+async function claimStripeEventBatch(options: {
+  batchSize?: number;
+  leaseMs?: number;
+  maxAttempts?: number;
+  claimToken?: string;
+  query?: StripeEventQuery;
+} = {}): Promise<StripeEventClaimBatch> {
   const query = options.query || runtimeQuery;
   const batchSize = boundedInteger(
     options.batchSize,
@@ -117,15 +140,75 @@ export async function claimStripeEvents(options: {
     1_000,
     15 * 60 * 1_000,
   );
+  const maxAttempts = boundedInteger(
+    options.maxAttempts,
+    DEFAULT_STRIPE_EVENT_MAX_ATTEMPTS,
+    1,
+    20,
+  );
   const claimToken = options.claimToken || randomUUID();
   if (!isUuid(claimToken)) throw new TypeError("Stripe event claim token must be a UUID");
 
   const result = await query(
     `
-      with candidates as materialized (
-        select event_id
+      with exhausted_candidates as materialized (
+        select
+          event_id,
+          case
+            when processing_status = 'processing' then lease_expires_at
+            else next_attempt_at
+          end as eligible_at
         from public.sidestream_stripe_events
         where terminal_at is null
+          and attempt_count >= $4
+          and (
+            processing_status in ('received', 'retryable')
+            or (
+              processing_status = 'processing'
+              and lease_expires_at <= clock_timestamp()
+            )
+          )
+        order by
+          case
+            when processing_status = 'processing' then lease_expires_at
+            else next_attempt_at
+          end asc,
+          stripe_created_at asc,
+          event_id asc
+        limit $1
+        for update skip locked
+      ),
+      dead_lettered as (
+        update public.sidestream_stripe_events as event
+        set processing_status = 'dead_letter',
+            last_error_code = 'claim_attempt_limit_exhausted',
+            outcome = 'dead_letter',
+            terminal_at = clock_timestamp(),
+            claim_token = null,
+            lease_expires_at = null,
+            updated_at = now()
+        from exhausted_candidates
+        where event.event_id = exhausted_candidates.event_id
+          and event.terminal_at is null
+          and event.attempt_count >= $4
+        returning
+          event.event_id,
+          event.event_type,
+          event.stripe_created_at,
+          event.payload,
+          event.attempt_count,
+          event.claim_token
+      ),
+      claimable_candidates as materialized (
+        select
+          event_id,
+          case
+            when processing_status = 'processing' then lease_expires_at
+            else next_attempt_at
+          end as eligible_at
+        from public.sidestream_stripe_events
+        where terminal_at is null
+          and attempt_count < $4
           and (
             (
               processing_status in ('received', 'retryable')
@@ -145,37 +228,82 @@ export async function claimStripeEvents(options: {
           event_id asc
         limit $1
         for update skip locked
+      ),
+      claimed as (
+        update public.sidestream_stripe_events as event
+        set processing_status = 'processing',
+            attempt_count = event.attempt_count + 1,
+            claim_token = $2::uuid,
+            lease_expires_at = clock_timestamp() + ($3::bigint * interval '1 millisecond'),
+            processing_started_at = clock_timestamp(),
+            processing_duration_ms = null,
+            outcome = null,
+            updated_at = now()
+        from claimable_candidates
+        where event.event_id = claimable_candidates.event_id
+          and event.terminal_at is null
+          and event.attempt_count < $4
+        returning
+          event.event_id,
+          event.event_type,
+          event.stripe_created_at,
+          event.payload,
+          event.attempt_count,
+          event.claim_token
+      ),
+      claim_results as (
+        select
+          'claimed'::text as claim_result,
+          claimed.event_id,
+          claimed.event_type,
+          claimed.stripe_created_at,
+          claimed.payload,
+          claimed.attempt_count,
+          claimed.claim_token,
+          claimable_candidates.eligible_at
+        from claimed
+        join claimable_candidates using (event_id)
+        union all
+        select
+          'dead_lettered'::text as claim_result,
+          dead_lettered.event_id,
+          dead_lettered.event_type,
+          dead_lettered.stripe_created_at,
+          dead_lettered.payload,
+          dead_lettered.attempt_count,
+          dead_lettered.claim_token,
+          exhausted_candidates.eligible_at
+        from dead_lettered
+        join exhausted_candidates using (event_id)
       )
-      update public.sidestream_stripe_events as event
-      set processing_status = 'processing',
-          attempt_count = event.attempt_count + 1,
-          claim_token = $2::uuid,
-          lease_expires_at = clock_timestamp() + ($3::bigint * interval '1 millisecond'),
-          processing_started_at = clock_timestamp(),
-          processing_duration_ms = null,
-          outcome = null,
-          updated_at = now()
-      from candidates
-      where event.event_id = candidates.event_id
-      returning
-        event.event_id,
-        event.event_type,
-        event.stripe_created_at,
-        event.payload,
-        event.attempt_count,
-        event.claim_token
+      select *
+      from claim_results
+      order by eligible_at asc, stripe_created_at asc, event_id asc
     `,
-    [batchSize, claimToken, leaseMs],
+    [batchSize, claimToken, leaseMs, maxAttempts],
   );
 
-  return result.rows.map((row) => ({
-    eventId: String(row.event_id),
-    eventType: String(row.event_type),
-    stripeCreatedAt: row.stripe_created_at as Date | string,
-    payload: row.payload as Stripe.Event,
-    attemptCount: Number(row.attempt_count),
-    claimToken: String(row.claim_token),
-  }));
+  const claimed: ClaimedStripeEvent[] = [];
+  const deadLettered: DeadLetteredStripeEvent[] = [];
+  for (const row of result.rows) {
+    if (row.claim_result === "dead_lettered") {
+      deadLettered.push({
+        eventId: String(row.event_id),
+        eventType: String(row.event_type),
+        attemptCount: Number(row.attempt_count),
+      });
+      continue;
+    }
+    claimed.push({
+      eventId: String(row.event_id),
+      eventType: String(row.event_type),
+      stripeCreatedAt: row.stripe_created_at as Date | string,
+      payload: row.payload as Stripe.Event,
+      attemptCount: Number(row.attempt_count),
+      claimToken: String(row.claim_token),
+    });
+  }
+  return Object.freeze({ claimed, deadLettered });
 }
 
 export async function drainStripeEventQueue(
@@ -193,19 +321,31 @@ export async function drainStripeEventQueue(
     1,
     20,
   );
-  const claimed = await claimStripeEvents({
+  const claimBatch = await claimStripeEventBatch({
     batchSize: options.batchSize,
     leaseMs: options.leaseMs,
+    maxAttempts,
     claimToken: options.createClaimToken?.(),
     query,
   });
+  const claimed = claimBatch.claimed;
   const summary = {
     claimed: claimed.length,
     processed: 0,
     ignored: 0,
     retryable: 0,
-    deadLetter: 0,
+    deadLetter: claimBatch.deadLettered.length,
   };
+
+  for (const row of claimBatch.deadLettered) {
+    log(Object.freeze({
+      eventId: row.eventId,
+      eventType: row.eventType,
+      attempt: row.attemptCount,
+      outcome: "dead_letter",
+      durationMs: 0,
+    }));
+  }
 
   for (const row of claimed) {
     const startedAt = now();
