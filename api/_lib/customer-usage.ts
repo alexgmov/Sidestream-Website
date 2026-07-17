@@ -10,6 +10,25 @@ export const CUSTOMER_USAGE_SCHEMA_VERSIONS = Object.freeze(["0.2.0"]);
 export const CUSTOMER_USAGE_OVERLAP_MS = 48 * 60 * 60 * 1_000;
 export const CUSTOMER_USAGE_BATCH_SIZE = 250;
 
+const TELEMETRY_LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "::1"]);
+const TELEMETRY_AUTHENTICATED_TLS_MODES = new Set([
+  "prefer",
+  "require",
+  "verify-ca",
+  "verify-full",
+]);
+const TELEMETRY_NON_TLS_MODES = new Set(["disable", "false"]);
+const TELEMETRY_POOL_OWNED_PARAMETERS = new Set([
+  "connectiontimeoutmillis",
+  "connect_timeout",
+  "host",
+  "idletimeoutmillis",
+  "max",
+  "options",
+  "query_timeout",
+  "statement_timeout",
+]);
+
 // Only these schema-versioned scalar paths may leave the telemetry query. The
 // query below projects them into explicit aggregate columns and never returns
 // either JSON object itself.
@@ -163,11 +182,7 @@ export function loadCustomerUsageSyncConfiguration(
 
 export function buildTelemetryPoolOptions(connectionString: string) {
   const url = parsePostgresUrl(connectionString, "SIDESTREAM_TELEMETRY_POSTGRES_URL");
-  const local = ["localhost", "127.0.0.1", "::1"].includes(url.hostname.toLowerCase());
-  const sslDisabled = /sslmode=(?:disable|false)/i.test(connectionString);
-  if (/^(prefer|require)$/i.test(url.searchParams.get("sslmode") || "")) {
-    url.searchParams.delete("sslmode");
-  }
+  const ssl = normalizeTelemetryTlsConfiguration(url);
   return {
     connectionString: url.toString(),
     max: 1,
@@ -176,7 +191,7 @@ export function buildTelemetryPoolOptions(connectionString: string) {
     query_timeout: 15_000,
     statement_timeout: 15_000,
     options: "-c default_transaction_read_only=on",
-    ssl: local || sslDisabled ? false : { rejectUnauthorized: false },
+    ssl,
   };
 }
 
@@ -1395,6 +1410,99 @@ function parsePostgresUrl(connectionString: string, environmentName: string) {
   return url;
 }
 
+function normalizeTelemetryTlsConfiguration(url: URL) {
+  // pg parses connection-string parameters after top-level client options. Strip
+  // accepted TLS aliases and reject parameters that could override this pool's
+  // authenticated TLS, read-only, or timeout settings.
+  const hostname = url.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  const loopback = TELEMETRY_LOOPBACK_HOSTS.has(hostname);
+  const parametersToRemove = new Set<string>();
+  const requestedTls = new Set<boolean>();
+  const sslModes: string[] = [];
+  const libpqCompatibility = new Set<boolean>();
+
+  for (const [rawName, rawValue] of url.searchParams.entries()) {
+    const name = rawName.toLowerCase();
+    const value = rawValue.trim().toLowerCase();
+
+    if (TELEMETRY_POOL_OWNED_PARAMETERS.has(name)) {
+      throw unsafeTelemetryTlsConfiguration();
+    }
+    if (name === "rejectunauthorized" || name === "checkserveridentity") {
+      throw unsafeTelemetryTlsConfiguration();
+    }
+    if (name === "sslmode") {
+      parametersToRemove.add(rawName);
+      sslModes.push(value);
+      if (TELEMETRY_AUTHENTICATED_TLS_MODES.has(value)) {
+        requestedTls.add(true);
+      } else if (TELEMETRY_NON_TLS_MODES.has(value)) {
+        if (!loopback) throw remoteTelemetryTlsRequired();
+        requestedTls.add(false);
+      } else {
+        throw unsafeTelemetryTlsConfiguration();
+      }
+      continue;
+    }
+    if (name === "ssl") {
+      parametersToRemove.add(rawName);
+      if (value === "true" || value === "1") {
+        requestedTls.add(true);
+      } else if (value === "false" || value === "0") {
+        if (!loopback) throw remoteTelemetryTlsRequired();
+        requestedTls.add(false);
+      } else {
+        throw unsafeTelemetryTlsConfiguration();
+      }
+      continue;
+    }
+    if (name === "uselibpqcompat") {
+      parametersToRemove.add(rawName);
+      if (value === "true" || value === "1") {
+        libpqCompatibility.add(true);
+      } else if (value === "false" || value === "0") {
+        libpqCompatibility.add(false);
+      } else {
+        throw unsafeTelemetryTlsConfiguration();
+      }
+      continue;
+    }
+    if (name === "sslnegotiation") {
+      parametersToRemove.add(rawName);
+      if (value === "direct") {
+        requestedTls.add(true);
+      } else if (value !== "postgres") {
+        throw unsafeTelemetryTlsConfiguration();
+      }
+      continue;
+    }
+    if (name.startsWith("ssl")) {
+      throw unsafeTelemetryTlsConfiguration();
+    }
+  }
+
+  if (libpqCompatibility.size > 1 || requestedTls.size > 1) {
+    throw unsafeTelemetryTlsConfiguration();
+  }
+  if (
+    libpqCompatibility.has(true) &&
+    sslModes.some((mode) => mode !== "verify-full")
+  ) {
+    throw unsafeTelemetryTlsConfiguration();
+  }
+  for (const name of parametersToRemove) url.searchParams.delete(name);
+
+  return requestedTls.values().next().value ?? !loopback;
+}
+
+function remoteTelemetryTlsRequired() {
+  return new Error("Remote telemetry database must use authenticated TLS");
+}
+
+function unsafeTelemetryTlsConfiguration() {
+  return new Error("SIDESTREAM_TELEMETRY_POSTGRES_URL has an unsafe TLS configuration");
+}
+
 function readBoundedInteger(
   raw: string | undefined,
   fallback: number,
@@ -1486,6 +1594,9 @@ function emptySummary(
 }
 
 function safePostgresErrorCode(error: unknown) {
-  if (!error || typeof error !== "object" || !("code" in error)) return "unknown";
-  return String(error.code || "unknown").slice(0, 64);
+  if (!error || typeof error !== "object" || !("code" in error)) {
+    return "database_error";
+  }
+  const code = String(error.code || "");
+  return /^[A-Z0-9_]{1,24}$/.test(code) ? code : "database_error";
 }

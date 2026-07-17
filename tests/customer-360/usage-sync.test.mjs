@@ -169,15 +169,21 @@ test("high-water ordering preserves equal timestamps with the telemetry event id
 });
 
 test("rolling boundaries are UTC across Los Angeles spring-forward and fall-back", () => {
-  assert.equal(process.env.TZ, "America/Los_Angeles");
-  assert.deepEqual(utcUsageWindow(new Date("2026-03-08T09:30:00.000Z")), {
-    today: "2026-03-08",
-    sevenDayStart: "2026-03-02",
-    thirtyDayStart: "2026-02-07",
-  });
-  assert.deepEqual(utcUsageWindow(new Date("2026-11-01T09:30:00.000Z")), {
-    today: "2026-11-01",
-    sevenDayStart: "2026-10-26",
-    thirtyDayStart: "2026-10-03",
-  });
+  const previousTimezone = process.env.TZ;
+  process.env.TZ = "America/Los_Angeles";
+  try {
+    assert.deepEqual(utcUsageWindow(new Date("2026-03-08T09:30:00.000Z")), {
+      today: "2026-03-08",
+      sevenDayStart: "2026-03-02",
+      thirtyDayStart: "2026-02-07",
+    });
+    assert.deepEqual(utcUsageWindow(new Date("2026-11-01T09:30:00.000Z")), {
+      today: "2026-11-01",
+      sevenDayStart: "2026-10-26",
+      thirtyDayStart: "2026-10-03",
+    });
+  } finally {
+    if (previousTimezone === undefined) delete process.env.TZ;
+    else process.env.TZ = previousTimezone;
+  }
 });
