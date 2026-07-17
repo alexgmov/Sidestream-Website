@@ -527,6 +527,9 @@ npm run test:customer-360
 SIDESTREAM_TEST_POSTGRES_URL='<disposable-postgres-url>' npm run test:customer-360-postgres
 ```
 
+The non-Postgres aggregate includes fixture-backed coverage for both Preview
+environment and deployment verifiers; it uses temporary `.invalid` snapshots
+and mocked requests, so it does not contact Vercel or any other provider.
 The Postgres aggregate covers identity/merge, currency-partitioned commerce,
 once-daily telemetry sync and rolling-window decay, protected list/detail reads,
 dry-run backfill recovery, cross-namespace isolation, single-device separation,
