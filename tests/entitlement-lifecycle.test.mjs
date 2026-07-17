@@ -375,7 +375,15 @@ test("runtime wiring persists lifecycle facts and atomically clears both credent
   ]) {
     assert.match(eventsSource, new RegExp(eventType.replaceAll(".", "\\.")));
   }
-  assert.match(accountSource, /l\.entitlement_status = 'active'[\s\S]*l\.plan_key in/);
+  assert.match(accountSource, /to_jsonb\(l\) \? 'entitlement_status'/);
+  assert.match(
+    accountSource,
+    /l\.stripe_checkout_session_id is not null[\s\S]*l\.status in \('active', 'trialing'\)[\s\S]*l\.plan_key in/,
+  );
+  assert.match(
+    accountSource,
+    /license_state\.entitlement_status = 'active'[\s\S]*l\.plan_key in/,
+  );
   assert.doesNotMatch(commerceSource, /sidestream_licenses|entitlement_status/);
   assert.doesNotMatch(commerceMigrationSource, /(?:update|alter table) public\.sidestream_licenses/i);
   for (const status of ["warning_closed", "prevented", "lost", "won"]) {
