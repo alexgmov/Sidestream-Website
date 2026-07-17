@@ -19,6 +19,7 @@ import {
   getStripeCustomerIdempotencyKey,
   getStripeCheckoutWindow,
   getStripePriceIdempotencyKey,
+  hasSameOrigin,
   isActivationClaimReplay,
   isCanonicalLicenseEntitlementUsable,
   needsLegacyLicenseCompatibility,
@@ -213,6 +214,64 @@ export function sendJson(
   response.end(JSON.stringify(payload));
 }
 
+export function sendGoogleSignInError(
+  response: ServerResponse,
+  statusCode: number,
+  kind: "invalid_state" | "unavailable" | "failed",
+) {
+  const content = kind === "invalid_state"
+    ? {
+      title: "Let's try that again.",
+      message: "The secure Google sign-in check expired or no longer matches this browser.",
+    }
+    : kind === "unavailable"
+    ? {
+      title: "Sign-in is temporarily unavailable.",
+      message: "Sidestream could not start Google sign-in. Please try again in a moment.",
+    }
+    : {
+      title: "Google sign-in did not finish.",
+      message: "No account was changed. You can safely restart the sign-in flow.",
+    };
+
+  response.statusCode = statusCode;
+  response.setHeader("Content-Type", "text/html; charset=utf-8");
+  response.setHeader("Cache-Control", "no-store");
+  response.end(`<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="robots" content="noindex,nofollow">
+    <title>${content.title} | Sidestream</title>
+    <style>
+      :root { color-scheme: dark; font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Helvetica Neue", Arial, sans-serif; }
+      * { box-sizing: border-box; }
+      body { min-height: 100vh; margin: 0; display: grid; place-items: center; padding: 24px; background: #0b0b0d; color: #e2e8f0; }
+      main { width: min(100%, 560px); padding: clamp(28px, 6vw, 52px); border: 1px solid #303038; border-radius: 24px; background: #111114; }
+      .eyebrow { margin: 0 0 14px; color: #8f9099; font-size: 13px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; }
+      h1 { margin: 0; font-size: clamp(34px, 7vw, 58px); line-height: .98; letter-spacing: -.04em; }
+      p { margin: 22px 0 28px; color: #afb0b8; font-size: 17px; line-height: 1.55; }
+      .actions { display: flex; flex-wrap: wrap; gap: 12px; }
+      a { display: inline-flex; min-height: 48px; align-items: center; justify-content: center; padding: 0 20px; border-radius: 999px; font-weight: 700; text-decoration: none; }
+      .primary { background: #f8fafc; color: #09090b; }
+      .secondary { border: 1px solid #393941; color: #e2e8f0; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <p class="eyebrow">Sidestream account</p>
+      <h1>${content.title}</h1>
+      <p>${content.message}</p>
+      <div class="actions">
+        <a class="primary" href="/api/auth/google/start?next=%2Faccount.html">Continue with Google</a>
+        <a class="secondary" href="/">Back to site</a>
+      </div>
+    </main>
+  </body>
+</html>`);
+}
+
 export function redirect(
   response: ServerResponse,
   location: string,
@@ -288,8 +347,18 @@ export function resolveRequestLicenseEnvironment(request: IncomingMessage) {
 }
 
 export function getGoogleRedirectUri(request: IncomingMessage) {
-  return process.env.GOOGLE_REDIRECT_URI ||
+  const redirectUri = process.env.GOOGLE_REDIRECT_URI ||
     `${getBaseUrl(request)}/api/auth/google/callback`;
+  const requestOrigin = getOAuthRequestOrigin(request);
+
+  if (!hasSameOrigin(redirectUri, requestOrigin)) {
+    const configuredOrigin = safeUrlOrigin(redirectUri) || "invalid";
+    throw new Error(
+      `GOOGLE_REDIRECT_URI origin ${configuredOrigin} must match OAuth request origin ${requestOrigin}`,
+    );
+  }
+
+  return redirectUri;
 }
 
 export function getGoogleAuthUrl(
@@ -5706,4 +5775,26 @@ function normalizeIpAddress(value: string) {
 
 function firstHeaderValue(value: string | string[] | undefined) {
   return Array.isArray(value) ? value[0] || "" : value || "";
+}
+
+function getOAuthRequestOrigin(request: IncomingMessage) {
+  const forwardedHost = firstHeaderValue(request.headers["x-forwarded-host"])
+    .split(",")[0]
+    .trim();
+  const host = forwardedHost || firstHeaderValue(request.headers.host).trim();
+  const forwardedProto = firstHeaderValue(request.headers["x-forwarded-proto"])
+    .split(",")[0]
+    .trim();
+  const proto = forwardedProto || (process.env.VERCEL ? "https" : "http");
+
+  if (!host) return new URL(getBaseUrl(request)).origin;
+  return new URL(`${proto}://${host}`).origin;
+}
+
+function safeUrlOrigin(value: string) {
+  try {
+    return new URL(value).origin;
+  } catch {
+    return "";
+  }
 }

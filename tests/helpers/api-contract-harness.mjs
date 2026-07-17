@@ -232,6 +232,7 @@ export function createApiContractHarness(options = {}) {
     nextPath: "/account.html",
     cleared: 0,
     sessionsCreated: 0,
+    authUrlError: null,
   };
 
   const dependencies = {
@@ -245,6 +246,12 @@ export function createApiContractHarness(options = {}) {
       response.setHeader("Content-Type", "application/json; charset=utf-8");
       response.setHeader("Cache-Control", "no-store");
       response.end(JSON.stringify(payload));
+    },
+    sendGoogleSignInError(response, statusCode, kind) {
+      response.statusCode = statusCode;
+      response.setHeader("Content-Type", "text/html; charset=utf-8");
+      response.setHeader("Cache-Control", "no-store");
+      response.end(`<title>Sidestream sign-in</title><a href="/api/auth/google/start?next=%2Faccount.html">Continue with Google</a><p>${kind}</p>`);
     },
     redirect(response, location, statusCode = 303) {
       response.statusCode = statusCode;
@@ -490,6 +497,7 @@ export function createApiContractHarness(options = {}) {
       return sanitizeAccountNextPath(request.contractOAuthNextPath ?? oauth.nextPath);
     },
     getGoogleAuthUrl(_request, values) {
+      if (oauth.authUrlError) throw oauth.authUrlError;
       const url = new URL("https://accounts.google.test/o/oauth2/auth");
       url.searchParams.set("state", values.state);
       return url.toString();

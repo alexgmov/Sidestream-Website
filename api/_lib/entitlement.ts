@@ -532,6 +532,14 @@ export function sanitizeAccountNextPath(value: unknown) {
   return "/account.html";
 }
 
+export function hasSameOrigin(firstUrl: string, secondUrl: string) {
+  try {
+    return new URL(firstUrl).origin === new URL(secondUrl).origin;
+  } catch {
+    return false;
+  }
+}
+
 export function validateActivationClaimPost(options: {
   requestOrigin: string;
   expectedOrigin: string;
