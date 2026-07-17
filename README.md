@@ -18,6 +18,7 @@ Sidestream is an HTML-first landing page for a Premiere Pro panel that lets edit
 - `docs/single-device-entitlements.md` - Device-domain and support reference for the single-active-device contract, privacy boundary, API/page states, and conceptual support decisions. Its obsolete Production command surface has been removed; it authorizes no Production action and points to the API runbook only for blocker/capability status.
 - `docs/api-hardening-runbook.md` - Exact hardened API/release contract, shared Postgres and migration model, Stripe/lead/maintenance facts, bounded configuration, metrics, alerts, and the current fail-closed Production blocker/capability inventory. Production cutover is blocked; this file contains no executable Production cutover or fallback recipe and does not claim Production was changed.
 - `docs/customer-360.md` - Durable cross-repo Customer 360 contract: exact private list/detail fields and nullability, trusted write namespace versus authorized admin read selection, identity/merge and observe-by-default single-device separation, currency-partitioned money and purchase-history semantics in minor units, exhaustive stored/derivable usage versus compact API exposure, privacy/retention, observability, disposable tests, dry-run backfill, rollback, and the only human-gated Preview/Test-first rollout. Customer 360 is not deployed and Production is not migrated.
+- `docs/customer-360-preview-test-plan.md` - Canonical non-Production Customer 360 execution matrix: current Preview rejection, commit/artifact and Preview/Production isolation gates, database/migration/provider evidence, protected API/identity/commerce/usage/backfill/FlowState acceptance, regression and failure injection, a Pass/Fail/Blocked UTC evidence log, non-Production rollback/recreate, and hard exit criteria. It authorizes no Production action.
 - `thank-you.html` - Minimal noindex Checkout success page. Stripe success URLs land here after purchase, while legacy `/upgrade.html?checkout=success` links redirect here and preserve optional activation/session query values. It tells unlinked website/legacy buyers to sign in with the same verified Checkout email, then use Upgrade or Restore Purchase so the active account can claim the panel without a second charge.
 - `upgrade.html` - Minimal noindex checkout/cancel fallback page. Main upgrade entry points open the server-owned `/api/checkout/start` confirmation boundary; activation-bearing recovery enters the authenticated claim page so the account can safely choose same-device reconnect, confirmed transfer, or a confirmed purchase without a duplicate charge.
 - `data/release-manifest.json` and `data/release-manifest.windows.json` - Sidestream-owned stable release manifests. The default file keeps the public Mac artifact; the Windows file is selected by the explicit `win32-x64` platform query used by the public Windows download CTA. Private Blob pathnames are never returned by the public manifest API.
@@ -98,6 +99,7 @@ Sidestream is an HTML-first landing page for a Premiere Pro panel that lets edit
 - Customer 360 commerce ledger - `api/_lib/customer-commerce.ts`, `20260715122000_add_customer_commerce_ledger.sql`, and `tests/customer-360/commerce*.test.mjs`; settled money comes from one canonical PaymentIntent or standalone Charge per payment group. Before that instrument exists, a paid InvoicePayment edge makes the related Invoice the preferred fallback and suppresses only the Checkout view resolving to the same namespace/profile/currency payment key. Gross and its `off_stripe_paid_minor` subset stay currency-separated, unrelated Checkout fallbacks remain independent, paid InvoicePayment edges never collapse many-to-many allocations into alias equivalence, and contradictory live identity evidence triggers sticky whole-group quarantine.
 - Customer 360 usage and private reads - `api/_lib/customer-usage.ts`, `api/_lib/customer-query.ts`, `api/internal/customer-usage/sync.ts`, `api/internal/customers/index.ts`, and `api/internal/customers/[customerId].ts`; schema-versioned telemetry becomes replaceable UTC daily aggregates with exhaustive stored/derivable first/last use and attempt timestamps, outcome counts, lifetime and rolling activity, attempts-per-active-day frequency, coarse client summaries, and source/materialization freshness. The compact list/detail projection exposes only its documented subset, requires an authenticated admin body to select an authorized namespace, binds that namespace into signed keyset cursors, and exposes neither total accepted attempts nor current subscription status. The full cross-repo field/privacy/rollout contract is `docs/customer-360.md`.
 - Customer 360 backfill - `scripts/backfill-customer-360.mjs` and `scripts/verify-customer-360-backfill.mjs`; reviewed offline identity exports become privacy-safe candidate/orphan/conflict plans. Dry-run is the default and Production apply is unavailable. Any Test apply requires separate approval after dry-run review.
+- Customer 360 Preview/Test acceptance - `docs/customer-360-preview-test-plan.md`, `scripts/verify-customer-360-preview-environment.mjs`, and `scripts/verify-customer-360-preview-deployment.mjs`; the matrix owns ordered evidence, stop conditions, one-time host-bound usage-sync verification with project-wide cron disabled, rollback/recreate, and the hard exit. The current Vercel Preview environment is rejected because its database, Stripe, Google, and base URL values match Production; isolated provisioning is a human gate.
 - API operations - `api/_lib/postgres.ts` owns the shared bounded runtime pool; checksummed migrations own schema changes; `api/_lib/stripe-events.ts` owns durable claimed Stripe work; `api/_lib/maintenance.ts` owns bounded cleanup/redaction; `vercel.json` schedules all four `CRON_SECRET`-protected internal routes. Customer reads never run migrations or drain event backlog.
 
 ## Routes and Assets
@@ -187,6 +189,13 @@ Production entitlement enforcement as complete. `installIdHash` is a Customer
 360 association key, not the single-device binding, and the Gmail
 installer-referral HMAC is attribution only, never identity.
 
+The canonical execution checklist is
+`docs/customer-360-preview-test-plan.md`. The current Vercel Preview environment
+is rejected because its database, Stripe, Google, and base URL values match
+Production. Provisioning and approving an isolated Preview target is a
+human-owned gate; until it passes, no live Customer 360 deploy, migration,
+protected call, usage sync, backfill apply, or FlowState Preview QA is authorized.
+
 Trusted deployment state selects namespace for Customer 360 writes, identity,
 telemetry, device, and entitlement behavior. The protected admin list/detail
 POST body may select which authorized namespace to read, and signed cursors bind
@@ -216,7 +225,9 @@ lifecycle, and single-device transfer still require their separately reviewed
 migrations or an explicit compatibility implementation.
 
 The only rollout path is the human-gated Preview/Test-first sequence in
-`docs/customer-360.md`: review and merge, approve a non-Production target, apply
+`docs/customer-360.md`, executed and evidenced through
+`docs/customer-360-preview-test-plan.md`: review and merge, approve a
+non-Production target, apply
 checksummed migrations there, configure secrets and reviewed invocation/scheduling,
 deploy Preview/Test,
 dry-run and verify backfill, separately approve any Test apply, verify protected
@@ -518,11 +529,33 @@ npm run test:customer-360
 SIDESTREAM_TEST_POSTGRES_URL='<disposable-postgres-url>' npm run test:customer-360-postgres
 ```
 
+The non-Postgres aggregate includes fixture-backed coverage for both Preview
+environment and deployment verifiers; it uses temporary `.invalid` snapshots
+and mocked requests, so it does not contact Vercel or any other provider.
 The Postgres aggregate covers identity/merge, currency-partitioned commerce,
 once-daily telemetry sync and rolling-window decay, protected list/detail reads,
 dry-run backfill recovery, cross-namespace isolation, single-device separation,
 and end-to-end replay. It scrubs ambient runtime database selectors and blocks
 all network destinations except the approved disposable Postgres endpoint.
+
+For the human-gated Customer 360 Preview/Test matrix, first compare restricted
+environment snapshots offline, then verify only the separately approved
+immutable Preview host. Keep secrets in the process environment, never in argv:
+
+```bash
+npm run verify:customer-360-preview-environment -- \
+  --preview-env-file /absolute/restricted/path/preview.env \
+  --production-env-file /absolute/restricted/path/production.env
+SIDESTREAM_CRM_ADMIN_SECRET='<approved Preview secret>' \
+  npm run verify:customer-360-preview-deployment -- \
+  --origin https://<immutable-preview-host> \
+  --expected-deployment-host <immutable-preview-host>
+```
+
+The environment preflight is offline and the default deployment verifier is
+read-only. `docs/customer-360-preview-test-plan.md` owns their prerequisites,
+the separately confirmed one-time Test usage-sync form, project-wide cron
+prohibition, manual evidence, stop conditions, and non-Production rollback.
 
 `test:api` discovers every `tests/*.test.mjs` suite and fails if a Postgres suite is not explicitly classified. `test:postgres-integration` never silently skips: it requires `SIDESTREAM_TEST_POSTGRES_URL`, rejects a normalized host/port/database match with any runtime URL even when credentials/query options differ, runs serially in a random schema, and drops that schema in `finally`. After a human runs `npx vercel@latest build`, run `npm run verify:vercel-build` to inspect `.vercel/output`; that verifier deliberately fails when no Vercel build artifact exists.
 
@@ -551,6 +584,7 @@ Use the narrowest relevant check after edits:
 - Run `TZ=America/Los_Angeles node --experimental-strip-types --test tests/customer-360/core.test.mjs` after Customer 360 identity or profile-merge changes, then run `node --experimental-strip-types --test tests/customer-360/core-postgres.test.mjs` for the database total-order contract.
 - Run `node --experimental-strip-types --test tests/customer-360/commerce.test.mjs` after commerce normalization changes, then run `SIDESTREAM_TEST_POSTGRES_URL='<disposable-postgres-url>' node --experimental-strip-types --test tests/customer-360/commerce-postgres.test.mjs` after payment-group, identity-link trigger, allocation-edge, or totals changes. The Postgres suite proves partial capture authority, Checkout-only and paid-Invoice fallback replacement, paid InvoicePayment overlap deduplication with an unrelated-Checkout negative control, fully and partially off-Stripe totals, verified fallback dates, modern paid/open InvoicePayment shapes, many-to-many allocations, refund-first late attachment, product scope, and whole-group quarantine.
 - Run `npm run test:customer-360`, then `SIDESTREAM_TEST_POSTGRES_URL='<disposable-postgres-url>' npm run test:customer-360-postgres`, after any Customer 360 contract, identity, commerce, usage, query, migration, or backfill change. Confirm the harness rejects runtime/telemetry endpoint collisions, protected list/detail fields match `docs/customer-360.md`, dry-run makes no connection or checkpoint write, and the complete pipeline leaves entitlement/single-device state unchanged.
+- Execute `docs/customer-360-preview-test-plan.md` only against a human-approved isolated non-Production target. Record Pass/Fail/Blocked plus exact UTC timestamps; local tests and the secret-safe environment/deployment verifiers do not replace provider, database, artifact, FlowState, rollback, or manual evidence.
 - Run `npm run build` after shader, TypeScript, Tailwind, HTML mount, Vite config, or package changes.
 - Run `npm run test:download-referral` after changing installer attribution or `/api/download`. It verifies that tagged `GET`s are recorded only after a successful redirect, while `HEAD`, `304`, bad platforms, fulfillment errors, database errors, and database timeouts cannot create a false successful event or block delivery.
 - After SEO/GEO metadata changes, run `npm run build`, confirm `dist/robots.txt`, `dist/sitemap.xml`, `dist/llms.txt`, and `dist/sidestream-social-card-v2.jpg` exist, validate both source and built sitemap XML, confirm the built sitemap contains a generated ISO `<lastmod>` while the source contains only the generator marker, and spot-check the built HTML for the absolute canonical URL, meta description, Open Graph/Twitter image tags, and valid JSON-LD. When replacing a social card, publish it under a new filename because X and other crawlers may retain the old image URL in cache.
@@ -605,7 +639,8 @@ Use the narrowest relevant check after edits:
 - Customer 360 database `created_at` values reach TypeScript as fixed-width six-microsecond UTC timestamps without a timezone suffix. Compare two canonical values lexically before `Date.parse`; parsing first treats them as local time, can reverse order across a DST gap, and violates the database trigger's `(created_at, id)` total-order contract. ISO inputs from pure callers still use parsed instant ordering, and equal timestamps still use the UUID tie-breaker.
 - Customer 360 currently has no deletion or aggregate-expiry job. Daily usage buckets, canonical profiles/identity, and commerce materializations persist; merge and identity-review audits are immutable. Do not claim a retention period until a separately reviewed implementation enforces one. Stripe payload redaction and the 90-day installer-referral policy are separate domains.
 - Customer 360 is not deployed and Production is not migrated. The repository contract allows only the human-gated Preview/Test-first sequence in `docs/customer-360.md`; no dry-run, local test, build, or documentation result is Production approval.
-- Customer 360 local or fixture-backed FlowState consumers may implement the audited contract before website deployment, but live upstream Preview/Test integration and QA remain gated on separately approved migration, configuration, deployment, protected API, freshness, and scheduling evidence. Vercel cannot enable only the usage job: use a separately approved protected manual/non-Production scheduler or review all four jobs before the project-wide switch.
+- Customer 360 local or fixture-backed FlowState consumers may implement the audited contract before website deployment, but live upstream Preview/Test integration and QA remain gated on separately approved migration, configuration, deployment, protected API, freshness, and scheduling evidence. Vercel cannot enable only the usage job; the Preview/Test matrix keeps project-wide cron disabled and permits only its separately confirmed, host-bound one-time verifier after all prior gates pass.
+- The current Vercel Preview environment fails the Customer 360 isolation gate because its database, Stripe, Google, and base URL values match Production. Do not work around this with client namespace fields, a mutable alias, or shared credentials; a human must provision and approve an isolated target before the Preview/Test matrix can advance.
 - The project root was missing a README before this restoration.
 - The page uses the local Apple/SF Pro system font stack and does not request external web fonts.
 - Several screenshot files are duplicates or alternate experiments. Prefer the numbered scan series for the restored hero state.
@@ -683,6 +718,8 @@ Use the narrowest relevant check after edits:
 - `llms.txt` is useful as an AI-readable summary, but it is not a substitute for crawlable HTML, normal metadata, structured data, sitemap hygiene, or external citations/backlinks.
 
 ## Recent Change Log
+
+- 2026-07-17: Published the canonical Customer 360 Preview/Test acceptance and rollback matrix, routed it from the repository contract, documented the current shared-environment rejection and human-owned isolated-provisioning gate, and added exact secret-safe environment/deployment verification commands. The matrix keeps Vercel project-wide cron disabled, permits only a separately confirmed one-time Test usage sync after all prerequisites, requires Pass/Fail/Blocked UTC evidence and a rollback/recreate drill, and authorizes no Production action.
 
 - 2026-07-17: Embedded the email's Windows mark as a Resend CID inline PNG after real-client testing proved CSS data images were stripped. The visible shape still comes from the landing page's Windows silhouette and requires no remote image load.
 - 2026-07-17: Replaced the download email's four-square Windows font approximation with the landing page's exact Windows SVG mark, including the matching white hover treatment.
