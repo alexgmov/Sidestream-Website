@@ -469,6 +469,21 @@ test("OAuth start and callback collapse every unsafe next path to the account ro
   assert.equal(allowedCallback.response.getHeader("location"), allowedPath);
 });
 
+test("OAuth start reuses an active server session without sending the user through Google", async () => {
+  const harness = createApiContractHarness();
+  const start = await loadAccountHandler("../api/auth/google/start.ts", harness);
+  const result = await invokeHandler(start, {
+    method: "GET",
+    url: "/api/auth/google/start?next=%2Faccount.html",
+    session: { accountId: "account-owner" },
+  });
+
+  assert.equal(result.response.statusCode, 303);
+  assert.equal(result.response.getHeader("location"), "/account.html");
+  assert.equal(result.response.getHeader("set-cookie"), undefined);
+  assert.equal(harness.oauth.state, "");
+});
+
 async function loadAccountHandler(relativePath, harness) {
   return loadInjectedHandler(new URL(relativePath, import.meta.url), {
     "../_lib/account.js": harness.dependencies,

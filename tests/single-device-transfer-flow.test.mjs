@@ -189,6 +189,13 @@ test("public and account copy states one production device with confirmed deacti
   assert.match(account, /apiPost\("\/api\/license\/deactivate", \{\s*intent: "deactivate_active_device"/);
   assert.match(account, /receipt-button/);
   assert.match(account, /refund-button/);
+  assert.match(index, /href="\/api\/auth\/google\/start\?next=\/account\.html">Account<\/a>/);
+  assert.match(account, /<main id="account-main" hidden>/);
+  assert.match(account, /window\.location\.replace\(signInLink\.href\)/);
+  assert.match(account, /window\.location\.assign\("\/"\)/);
+  assert.match(account, /background: var\(--bg\)/);
+  assert.doesNotMatch(account, /radial-gradient/);
+  assert.doesNotMatch(account, /id="signed-out"/);
   assert.match(thankYou, /one active production device at a time/i);
   assert.match(thankYou, /instead of charging you again/);
   assert.match(upgrade, /One active production device at a time/);

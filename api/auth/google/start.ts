@@ -1,6 +1,7 @@
 import type { ServerResponse } from "node:http";
 import {
   getGoogleAuthUrl,
+  getSession,
   methodNotAllowed,
   randomToken,
   redirect,
@@ -17,8 +18,11 @@ export default async function handler(
   if (method !== "GET") return methodNotAllowed(response, "GET");
 
   const url = new URL(request.url || "/", "http://sidestream.local");
-  const state = randomToken(24);
   const nextPath = sanitizeNextPath(url.searchParams.get("next"));
+  const session = await getSession(request);
+  if (session) return redirect(response, nextPath, 303);
+
+  const state = randomToken(24);
 
   setOAuthCookies(request, response, { state, nextPath });
   return redirect(response, getGoogleAuthUrl(request, { state }), 302);

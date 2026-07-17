@@ -20,9 +20,7 @@
 
   * { box-sizing: border-box; }
   body {
-    background:
-      radial-gradient(circle at 18% 12%, rgba(255, 0, 51, 0.16), transparent 28rem),
-      linear-gradient(145deg, #050506 0%, #111114 48%, #050506 100%);
+    background: var(--bg);
     color: var(--ink);
     font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", Helvetica, Arial, sans-serif;
     margin: 0;
@@ -148,14 +146,14 @@
       <a class="back" href="/">Back to site</a>
     </header>
 
-    <main>
+    <main id="account-main" hidden>
       <p class="eyebrow">Account</p>
       <h1>Your Sidestream account.</h1>
 
-      <section class="panel" id="signed-out" hidden>
+      <section class="panel" id="account-error" hidden>
         <div>
-          <p class="label">Sign in</p>
-          <p class="value">Use Google only if you need to manage or reconnect Sidestream.</p>
+          <p class="label">Account unavailable</p>
+          <p class="value">We couldn't load your account.</p>
         </div>
         <div class="actions">
           <a class="button primary" id="sign-in-link" href="/api/auth/google/start?next=/account.html">Continue with Google</a>
@@ -213,7 +211,8 @@
   </div>
 
   <script>
-    const signedOut = document.getElementById("signed-out");
+    const accountMain = document.getElementById("account-main");
+    const accountError = document.getElementById("account-error");
     const signedIn = document.getElementById("signed-in");
     const signInLink = document.getElementById("sign-in-link");
     const accountEmail = document.getElementById("account-email");
@@ -256,16 +255,17 @@
     async function loadAccount() {
       signInLink.href = "/api/auth/google/start?next=" + encodeURIComponent(nextPath());
       const response = await fetch("/api/auth/session", { cache: "no-store" });
-      const session = await response.json();
+      const session = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(session.error || "Account unavailable");
 
       if (!session.authenticated) {
-        signedOut.hidden = false;
-        signedIn.hidden = true;
+        window.location.replace(signInLink.href);
         return;
       }
 
-      signedOut.hidden = true;
+      accountError.hidden = true;
       signedIn.hidden = false;
+      accountMain.hidden = false;
       signedInEmail = session.user.email || "";
       accountEmail.textContent = session.user.email;
       accountPlan.textContent = describePlan(session.license);
@@ -372,12 +372,13 @@
 
     signOutButton.addEventListener("click", async () => {
       await apiPost("/api/auth/logout");
-      window.location.reload();
+      window.location.assign("/");
     });
 
-    loadAccount().catch((error) => {
-      signedOut.hidden = false;
-      accountEmail.textContent = error.message;
+    loadAccount().catch(() => {
+      accountError.hidden = false;
+      signedIn.hidden = true;
+      accountMain.hidden = false;
     });
   </script>
 </body>
