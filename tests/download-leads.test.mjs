@@ -453,10 +453,13 @@ test("mobile download email builder sends both stable installers through Resend"
   assert.match(message.text, /utm_source=mobile_handoff/);
 });
 
-test("mobile download route requires idempotency and fails closed without Postgres", async () => {
+test("mobile download route requires idempotency and fails closed without durable rate limiting", async () => {
   let sendCalls = 0;
   const handler = createDownloadLinkHandler({
-    postgresConfigured: () => false,
+    consumeLimit: async () => {
+      throw new Error("Blob unavailable");
+    },
+    storeLead: async () => {},
     sendEmail: async () => {
       sendCalls += 1;
     },
@@ -496,11 +499,11 @@ test("mobile download route fixes the lead source, rate limits, and never logs t
   };
   const handler = createDownloadLinkHandler({
     now: () => new Date("2026-07-14T12:00:00.000Z"),
-    postgresConfigured: () => true,
-    capturePostgres: async (lead, options) => {
+    consumeLimit: async (lead, options) => {
       captured.push({ lead, options });
-      return { rateLimit: allowedRateLimit, upsert: { outcome: "inserted" } };
+      return allowedRateLimit;
     },
+    storeLead: async (lead) => captured.push({ storedLead: lead }),
     sendEmail: async (lead) => {
       sent.push(lead);
     },
@@ -524,12 +527,13 @@ test("mobile download route fixes the lead source, rate limits, and never logs t
   assert.equal(response.status, 200);
   assert.deepEqual(response.body, { ok: true });
   assert.equal(response.headers.get("ratelimit-limit"), "3");
-  assert.equal(captured.length, 1);
+  assert.equal(captured.length, 2);
   assert.equal(captured[0].lead.email, "person@example.com");
   assert.equal(captured[0].lead.ctaSource, "mobile-download-handoff");
   assert.equal(captured[0].lead.sourcePage, "/");
   assert.equal(captured[0].lead.utmSource, "instagram");
   assert.equal(captured[0].options.ipAddress, "203.0.113.92");
+  assert.equal(captured[1].storedLead, captured[0].lead);
   assert.equal(sent.length, 1);
   assert.equal(JSON.stringify(logs).includes("person@example.com"), false);
   assert.deepEqual(logs, [{
@@ -542,17 +546,14 @@ test("mobile download route fixes the lead source, rate limits, and never logs t
 test("mobile download route does not call Resend after a consumed rate limit", async () => {
   let sendCalls = 0;
   const handler = createDownloadLinkHandler({
-    postgresConfigured: () => true,
-    capturePostgres: async () => ({
-      rateLimit: {
-        allowed: false,
-        limit: 3,
-        remaining: 0,
-        retryAfterSeconds: 900,
-        resetAt: "2026-07-14T13:00:00.000Z",
-      },
-      upsert: null,
+    consumeLimit: async () => ({
+      allowed: false,
+      limit: 3,
+      remaining: 0,
+      retryAfterSeconds: 900,
+      resetAt: "2026-07-14T13:00:00.000Z",
     }),
+    storeLead: async () => {},
     sendEmail: async () => {
       sendCalls += 1;
     },
@@ -574,17 +575,14 @@ test("mobile download route does not call Resend after a consumed rate limit", a
 test("mobile download route sanitizes provider failures", async () => {
   const logs = [];
   const handler = createDownloadLinkHandler({
-    postgresConfigured: () => true,
-    capturePostgres: async () => ({
-      rateLimit: {
-        allowed: true,
-        limit: 3,
-        remaining: 2,
-        retryAfterSeconds: 0,
-        resetAt: "2026-07-14T13:00:00.000Z",
-      },
-      upsert: { outcome: "inserted" },
+    consumeLimit: async () => ({
+      allowed: true,
+      limit: 3,
+      remaining: 2,
+      retryAfterSeconds: 0,
+      resetAt: "2026-07-14T13:00:00.000Z",
     }),
+    storeLead: async () => {},
     sendEmail: async () => {
       throw new emailHelpers.DownloadLinkEmailDeliveryError(
         "private@example.com was rejected",
@@ -762,13 +760,18 @@ test("migration deterministically aggregates duplicates before adding canonical 
 
 test("runtime source uses deterministic private overwrite and aggregate structured logging", () => {
   const captureSource = readFileSync(path.join(repoRoot, "api", "download-lead.ts"), "utf8");
+  const blobSource = readFileSync(
+    path.join(repoRoot, "api", "_lib", "download-lead-blob.ts"),
+    "utf8",
+  );
   const replaySource = readFileSync(
     path.join(repoRoot, "api", "internal", "download-leads", "replay.ts"),
     "utf8",
   );
-  assert.match(captureSource, /access: "private"/);
-  assert.match(captureSource, /addRandomSuffix: false/);
-  assert.match(captureSource, /allowOverwrite: true/);
+  assert.match(blobSource, /access: "private"/);
+  assert.match(blobSource, /addRandomSuffix: false/);
+  assert.match(blobSource, /allowOverwrite: true/);
+  assert.match(blobSource, /ifMatch: current\.blob\.etag/);
   assert.doesNotMatch(captureSource, /console\.error\([^\n]*email/i);
   assert.doesNotMatch(replaySource, /console\.error/);
   assert.doesNotMatch(replaySource, /download_lead_replay_item/);

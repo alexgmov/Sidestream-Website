@@ -1,15 +1,18 @@
+import { BlobError } from "@vercel/blob";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { isIP } from "node:net";
 import {
+  consumeBlobRateLimit,
+  writeDeterministicDownloadLeadFallback,
+} from "./_lib/download-lead-blob.js";
+import {
   buildCanonicalDownloadLead,
   DownloadLeadConfigurationError,
-  DownloadLeadIdempotencyConflictError,
   DownloadLeadValidationError,
+  getDeterministicLeadBlobPathname,
   MAX_DOWNLOAD_LEAD_BODY_BYTES,
   parseIdempotencyKey,
-  upsertCanonicalDownloadLead,
   type CanonicalDownloadLead,
-  type DownloadLeadCaptureResult,
   type DownloadLeadPayload,
 } from "./_lib/download-leads.js";
 import {
@@ -18,14 +21,9 @@ import {
   sendDownloadLinkEmail,
 } from "./_lib/download-link-email.js";
 import {
-  isPostgresConfigured,
-  safePostgresErrorCode,
-  withPostgresTransaction,
-} from "./_lib/postgres.js";
-import {
   applyRateLimitHeaders,
-  consumeRateLimit,
   sendRateLimitExceeded,
+  type RateLimitResult,
 } from "./_lib/rate-limit.js";
 
 const MOBILE_DOWNLOAD_SOURCE = "mobile-download-handoff";
@@ -37,11 +35,11 @@ type DownloadLinkRequest = IncomingMessage & { method?: string };
 
 type DownloadLinkHandlerDependencies = Readonly<{
   now: () => Date;
-  postgresConfigured: () => boolean;
-  capturePostgres: (
+  consumeLimit: (
     lead: CanonicalDownloadLead,
     options: { ipAddress: string; now: Date },
-  ) => Promise<DownloadLeadCaptureResult>;
+  ) => Promise<RateLimitResult>;
+  storeLead: (lead: CanonicalDownloadLead) => Promise<void>;
   sendEmail: (lead: CanonicalDownloadLead) => Promise<void>;
   log: (entry: Record<string, string | number>) => void;
 }>;
@@ -59,8 +57,13 @@ class RequestBodyError extends Error {
 
 const defaultDependencies: DownloadLinkHandlerDependencies = {
   now: () => new Date(),
-  postgresConfigured: () => isPostgresConfigured(),
-  capturePostgres: captureMobileDownloadLead,
+  consumeLimit: consumeMobileDownloadLinkRateLimit,
+  storeLead: async (lead) => {
+    await writeDeterministicDownloadLeadFallback(
+      getDeterministicLeadBlobPathname(lead.leadKey),
+      lead,
+    );
+  },
   sendEmail: async (lead) => {
     if (!lead.idempotencyKeyHash) {
       throw new DownloadLinkEmailConfigurationError("Missing idempotency hash");
@@ -147,50 +150,42 @@ export function createDownloadLinkHandler(
       throw error;
     }
 
-    let postgresAvailable = false;
+    let rateLimit: RateLimitResult;
     try {
-      postgresAvailable = dependencies.postgresConfigured();
+      rateLimit = await dependencies.consumeLimit(lead, {
+        ipAddress: getClientIp(request),
+        now,
+      });
     } catch (error) {
       dependencies.log({
         event: "mobile_download_link_email",
-        outcome: "database_configuration_error",
+        outcome: "rate_limit_storage_failed",
         count: 1,
-        databaseCode: safePostgresErrorCode(error),
+        storageCode: error instanceof BlobError ? "blob_error" : "storage_error",
       });
-    }
-    if (!postgresAvailable) {
       return sendJson(response, 503, {
         error: "Email delivery temporarily unavailable",
         code: "email_unavailable",
       });
     }
-
-    try {
-      const result = await dependencies.capturePostgres(lead, {
-        ipAddress: getClientIp(request),
-        now,
-      });
-      if (!result.rateLimit.allowed) {
-        dependencies.log({
-          event: "mobile_download_link_email",
-          outcome: "rate_limited",
-          count: 1,
-        });
-        return sendRateLimitExceeded(response, result.rateLimit);
-      }
-      applyRateLimitHeaders(response, result.rateLimit);
-    } catch (error) {
-      if (error instanceof DownloadLeadIdempotencyConflictError) {
-        return sendJson(response, 409, {
-          error: "Idempotency key conflict",
-          code: "idempotency_conflict",
-        });
-      }
+    if (!rateLimit.allowed) {
       dependencies.log({
         event: "mobile_download_link_email",
-        outcome: "database_failed",
+        outcome: "rate_limited",
         count: 1,
-        databaseCode: safePostgresErrorCode(error),
+      });
+      return sendRateLimitExceeded(response, rateLimit);
+    }
+    applyRateLimitHeaders(response, rateLimit);
+
+    try {
+      await dependencies.storeLead(lead);
+    } catch (error) {
+      dependencies.log({
+        event: "mobile_download_link_email",
+        outcome: "lead_storage_failed",
+        count: 1,
+        storageCode: error instanceof BlobError ? "blob_error" : "storage_error",
       });
       return sendJson(response, 503, {
         error: "Email delivery temporarily unavailable",
@@ -238,28 +233,22 @@ export function createDownloadLinkHandler(
 const handler = createDownloadLinkHandler();
 export default handler;
 
-async function captureMobileDownloadLead(
+async function consumeMobileDownloadLinkRateLimit(
   lead: CanonicalDownloadLead,
   options: { ipAddress: string; now: Date },
-): Promise<DownloadLeadCaptureResult> {
-  return withPostgresTransaction(async (client) => {
-    const rateLimit = await consumeRateLimit({
-      scope: "mobile-download-link-email",
-      dimensions: [
-        { name: "email", value: lead.email, limit: EMAIL_RATE_LIMIT_PER_EMAIL },
-        {
-          name: "ip",
-          value: options.ipAddress || "unknown",
-          limit: EMAIL_RATE_LIMIT_PER_IP,
-        },
-      ],
-      windowSeconds: EMAIL_RATE_LIMIT_WINDOW_SECONDS,
-      now: options.now,
-      runner: client,
-    });
-    if (!rateLimit.allowed) return { rateLimit, upsert: null };
-    const upsert = await upsertCanonicalDownloadLead(client, lead);
-    return { rateLimit, upsert };
+): Promise<RateLimitResult> {
+  return consumeBlobRateLimit({
+    scope: "mobile-download-link-email",
+    dimensions: [
+      { name: "email", value: lead.email, limit: EMAIL_RATE_LIMIT_PER_EMAIL },
+      {
+        name: "ip",
+        value: options.ipAddress || "unknown",
+        limit: EMAIL_RATE_LIMIT_PER_IP,
+      },
+    ],
+    windowSeconds: EMAIL_RATE_LIMIT_WINDOW_SECONDS,
+    now: options.now,
   });
 }
 

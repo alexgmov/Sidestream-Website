@@ -1,11 +1,7 @@
-import {
-  BlobError,
-  BlobPreconditionFailedError,
-  get,
-  put,
-} from "@vercel/blob";
+import { BlobError } from "@vercel/blob";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { isIP } from "node:net";
+import { writeDeterministicDownloadLeadFallback } from "./_lib/download-lead-blob.js";
 import {
   buildCanonicalDownloadLead,
   captureDownloadLeadInPostgres,
@@ -14,11 +10,7 @@ import {
   DownloadLeadValidationError,
   getDeterministicLeadBlobPathname,
   MAX_DOWNLOAD_LEAD_BODY_BYTES,
-  MAX_REPLAY_BLOB_BYTES,
-  mergeFallbackLeads,
-  parseReplayBlob,
   parseIdempotencyKey,
-  serializeFallbackLead,
   type CanonicalDownloadLead,
   type DownloadLeadCaptureResult,
   type DownloadLeadPayload,
@@ -60,7 +52,7 @@ const defaultDependencies: DownloadLeadHandlerDependencies = {
   now: () => new Date(),
   postgresConfigured: () => isPostgresConfigured(),
   capturePostgres: (lead, options) => captureDownloadLeadInPostgres(lead, options),
-  writeFallback: writeDeterministicFallback,
+  writeFallback: writeDeterministicDownloadLeadFallback,
   log: (entry) => console.info(JSON.stringify(entry)),
 };
 
@@ -191,56 +183,6 @@ export function createDownloadLeadHandler(
 
 const handler = createDownloadLeadHandler();
 export default handler;
-
-async function writeDeterministicFallback(
-  pathname: string,
-  incoming: CanonicalDownloadLead,
-) {
-  for (let attempt = 0; attempt < 5; attempt += 1) {
-    const current = await get(pathname, { access: "private", useCache: false });
-    if (!current) {
-      try {
-        await put(pathname, serializeFallbackLead(incoming), {
-          access: "private",
-          addRandomSuffix: false,
-          allowOverwrite: false,
-          contentType: "application/json; charset=utf-8",
-          cacheControlMaxAge: 60,
-        });
-        return;
-      } catch (error) {
-        if (error instanceof BlobPreconditionFailedError) continue;
-        throw error;
-      }
-    }
-    if (current.statusCode !== 200 || !current.stream) {
-      throw new BlobError("Fallback Blob could not be read consistently");
-    }
-    if (current.blob.size > MAX_REPLAY_BLOB_BYTES) {
-      throw new BlobError("Fallback Blob exceeds the bounded replay size");
-    }
-    const existing = parseReplayBlob(await new Response(current.stream).text(), {
-      uploadedAt: current.blob.uploadedAt,
-    });
-    const merged = mergeFallbackLeads(existing, incoming);
-    if (merged === existing) return;
-    try {
-      await put(pathname, serializeFallbackLead(merged), {
-        access: "private",
-        addRandomSuffix: false,
-        allowOverwrite: true,
-        ifMatch: current.blob.etag,
-        contentType: "application/json; charset=utf-8",
-        cacheControlMaxAge: 60,
-      });
-      return;
-    } catch (error) {
-      if (error instanceof BlobPreconditionFailedError) continue;
-      throw error;
-    }
-  }
-  throw new BlobError("Fallback Blob could not be updated after bounded retries");
-}
 
 function getClientIp(request: IncomingMessage) {
   const candidates = [
