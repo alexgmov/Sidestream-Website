@@ -561,7 +561,7 @@ Use the narrowest relevant check after edits:
 - Confirm the final CTA panel stays clean above the pricing MacBook mockup and does not render the old top-right red radial glow.
 - Confirm the pricing MacBook Pro mockup video autoplays, loops, stays muted, sits centered below the two pricing panels plus final CTA, and does not create horizontal overflow. If browser autoplay is fussy, confirm the inline `.macbook-mockup-video` playback helper kicks it after load or visibility return.
 - Confirm the desktop hero copy still uses the wider left-anchored first-fold shell while staying aligned with the fixed Sidestream wordmark, sitting near the bottom-left corner of the first viewport, and rendering the "in Premiere Pro" subline in italic.
-- Confirm the hero Mac `Download` and `Download for Windows` links use matching white pills, display the Apple and Windows marks respectively, expose explicit platform-specific accessible names, start the correct installers without opening either historical modal, retain the shared red hover treatment, and stack at equal full width below `520px`.
+- Confirm both hero platform links use the visible label `Download`, matching white pills, and their respective Apple and Windows marks; expose explicit platform-specific accessible names, start the correct installers without opening either historical modal, retain the shared red hover treatment, and stack at equal full width below `520px`.
 - Watch the pricing MacBook rotation long enough to confirm the laptop stays centered and the alpha edges are not clipped by the pricing wrapper.
 - Confirm the Search demo group starts below the first fold with a deliberate gap between the hero download CTAs and the "Search for YouTube videos." heading on desktop and mobile.
 - Confirm the "Start free. Unlock when you need more." headline sits centered in the vertical space between the bottom of the `.feature-glass` band and the pricing cards.
@@ -678,6 +678,7 @@ Use the narrowest relevant check after edits:
 
 ## Recent Change Log
 
+- 2026-07-16: Shortened the visible hero Windows CTA from `Download for Windows` to `Download`, matching the Mac CTA while retaining the Windows icon, platform-specific installer URL, and explicit Windows accessible label.
 - 2026-07-16: Removed the optional Customer 360 identity bridge as the first hard dependency blocking Production activation start. Identity attachment now remains dormant unless the complete core Customer 360 table set exists, so activation creation works on the intentionally unmigrated Production database. Live verification then exposed the next existing blocker: activation status still assumes the unapplied entitlement-lifecycle schema, and full sign-in/transfer remains blocked pending a reviewed migration cutover or explicit pre-20260713 compatibility implementation.
 - 2026-07-16: Moved the decorative Premiere/Sidestream recording's compensated anchor farther up and left, from `50vw 35vh` to `45vw 25vh`, without changing its scale or mobile hide behavior.
 - 2026-07-16: Moved the decorative Premiere/Sidestream recording's compensated top-left anchor from `50vw 50vh` to `50vw 35vh`, preserving its horizontal alignment while revealing more of the recording's lower edge on desktop.
