@@ -10,8 +10,10 @@ const repoRoot = process.cwd();
 const testSecret = "download-lead-tests-use-a-stable-secret-value";
 let compiledDirectory;
 let createDownloadLeadHandler;
+let createDownloadLinkHandler;
 let createDownloadLeadReplayHandler;
 let helpers;
+let emailHelpers;
 const originalEnvironment = {
   NODE_ENV: process.env.NODE_ENV,
   SIDESTREAM_LEAD_HASH_SECRET: process.env.SIDESTREAM_LEAD_HASH_SECRET,
@@ -42,6 +44,12 @@ before(async () => {
   ({ createDownloadLeadHandler } = await import(
     pathToFileURL(path.join(compiledDirectory, "api", "download-lead.js")).href
   ));
+  ({ createDownloadLinkHandler } = await import(
+    pathToFileURL(path.join(compiledDirectory, "api", "send-download-links.js")).href
+  ));
+  emailHelpers = await import(
+    pathToFileURL(path.join(compiledDirectory, "api", "_lib", "download-link-email.js")).href
+  );
   ({ createDownloadLeadReplayHandler } = await import(
     pathToFileURL(
       path.join(compiledDirectory, "api", "internal", "download-leads", "replay.js"),
@@ -410,6 +418,198 @@ test("database outage writes one deterministic private-safe fallback identity", 
   const operationalOutput = JSON.stringify({ logs, first, second });
   assert.equal(operationalOutput.includes("private@example.com"), false);
   assert.equal(operationalOutput.includes("203.0.113.88"), false);
+});
+
+test("mobile download email builder sends both stable installers through Resend", async () => {
+  let request;
+  const result = await emailHelpers.sendDownloadLinkEmail({
+    recipient: "person@example.com",
+    idempotencyKeyHash: "a".repeat(64),
+    environment: { RESEND_API_KEY: "resend-test-key" },
+    fetchImpl: async (input, init) => {
+      request = { input: String(input), init };
+      return new Response(JSON.stringify({ id: "email-test-id" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    },
+  });
+
+  assert.deepEqual(result, { emailId: "email-test-id" });
+  assert.equal(request.input, "https://api.resend.com/emails");
+  assert.equal(request.init.method, "POST");
+  assert.equal(request.init.headers.Authorization, "Bearer resend-test-key");
+  assert.equal(
+    request.init.headers["Idempotency-Key"],
+    `mobile-download-links/${"a".repeat(64)}`,
+  );
+  const message = JSON.parse(request.init.body);
+  assert.equal(message.from, "Sidestream <downloads@alexg.mov>");
+  assert.equal(message.reply_to, "alex@alexg.mov");
+  assert.deepEqual(message.to, ["person@example.com"]);
+  assert.match(message.html, /Download for Mac/);
+  assert.match(message.html, /Download for Windows/);
+  assert.match(message.text, /platform=win32-x64/);
+  assert.match(message.text, /utm_source=mobile_handoff/);
+});
+
+test("mobile download route requires idempotency and fails closed without Postgres", async () => {
+  let sendCalls = 0;
+  const handler = createDownloadLinkHandler({
+    postgresConfigured: () => false,
+    sendEmail: async () => {
+      sendCalls += 1;
+    },
+    log: () => {},
+  });
+  const missingIdempotency = await invoke(handler, {
+    path: "/api/send-download-links",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ email: "person@example.com" }),
+  });
+  assert.equal(missingIdempotency.status, 400);
+  assert.equal(missingIdempotency.body.code, "missing_idempotency_key");
+
+  const unavailable = await invoke(handler, {
+    path: "/api/send-download-links",
+    headers: {
+      "content-type": "application/json",
+      "idempotency-key": "mobile-attempt-1",
+    },
+    body: JSON.stringify({ email: "person@example.com" }),
+  });
+  assert.equal(unavailable.status, 503);
+  assert.equal(unavailable.body.code, "email_unavailable");
+  assert.equal(sendCalls, 0);
+});
+
+test("mobile download route fixes the lead source, rate limits, and never logs the email", async () => {
+  const captured = [];
+  const sent = [];
+  const logs = [];
+  const allowedRateLimit = {
+    allowed: true,
+    limit: 3,
+    remaining: 2,
+    retryAfterSeconds: 0,
+    resetAt: "2026-07-14T13:00:00.000Z",
+  };
+  const handler = createDownloadLinkHandler({
+    now: () => new Date("2026-07-14T12:00:00.000Z"),
+    postgresConfigured: () => true,
+    capturePostgres: async (lead, options) => {
+      captured.push({ lead, options });
+      return { rateLimit: allowedRateLimit, upsert: { outcome: "inserted" } };
+    },
+    sendEmail: async (lead) => {
+      sent.push(lead);
+    },
+    log: (entry) => logs.push(entry),
+  });
+  const response = await invoke(handler, {
+    path: "/api/send-download-links",
+    headers: {
+      "content-type": "application/json",
+      "idempotency-key": "mobile-attempt-2",
+      "x-forwarded-for": "203.0.113.92",
+    },
+    body: JSON.stringify({
+      email: "Person@Example.com",
+      source: "attacker-controlled-source",
+      page: "/?email=private@example.com",
+      utmSource: "instagram",
+    }),
+  });
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(response.body, { ok: true });
+  assert.equal(response.headers.get("ratelimit-limit"), "3");
+  assert.equal(captured.length, 1);
+  assert.equal(captured[0].lead.email, "person@example.com");
+  assert.equal(captured[0].lead.ctaSource, "mobile-download-handoff");
+  assert.equal(captured[0].lead.sourcePage, "/");
+  assert.equal(captured[0].lead.utmSource, "instagram");
+  assert.equal(captured[0].options.ipAddress, "203.0.113.92");
+  assert.equal(sent.length, 1);
+  assert.equal(JSON.stringify(logs).includes("person@example.com"), false);
+  assert.deepEqual(logs, [{
+    event: "mobile_download_link_email",
+    outcome: "accepted",
+    count: 1,
+  }]);
+});
+
+test("mobile download route does not call Resend after a consumed rate limit", async () => {
+  let sendCalls = 0;
+  const handler = createDownloadLinkHandler({
+    postgresConfigured: () => true,
+    capturePostgres: async () => ({
+      rateLimit: {
+        allowed: false,
+        limit: 3,
+        remaining: 0,
+        retryAfterSeconds: 900,
+        resetAt: "2026-07-14T13:00:00.000Z",
+      },
+      upsert: null,
+    }),
+    sendEmail: async () => {
+      sendCalls += 1;
+    },
+    log: () => {},
+  });
+  const response = await invoke(handler, {
+    path: "/api/send-download-links",
+    headers: {
+      "content-type": "application/json",
+      "idempotency-key": "mobile-attempt-3",
+    },
+    body: JSON.stringify({ email: "person@example.com" }),
+  });
+  assert.equal(response.status, 429);
+  assert.equal(response.headers.get("retry-after"), "900");
+  assert.equal(sendCalls, 0);
+});
+
+test("mobile download route sanitizes provider failures", async () => {
+  const logs = [];
+  const handler = createDownloadLinkHandler({
+    postgresConfigured: () => true,
+    capturePostgres: async () => ({
+      rateLimit: {
+        allowed: true,
+        limit: 3,
+        remaining: 2,
+        retryAfterSeconds: 0,
+        resetAt: "2026-07-14T13:00:00.000Z",
+      },
+      upsert: { outcome: "inserted" },
+    }),
+    sendEmail: async () => {
+      throw new emailHelpers.DownloadLinkEmailDeliveryError(
+        "private@example.com was rejected",
+        422,
+      );
+    },
+    log: (entry) => logs.push(entry),
+  });
+  const response = await invoke(handler, {
+    path: "/api/send-download-links",
+    headers: {
+      "content-type": "application/json",
+      "idempotency-key": "mobile-attempt-4",
+    },
+    body: JSON.stringify({ email: "private@example.com" }),
+  });
+  assert.equal(response.status, 502);
+  assert.equal(response.body.code, "email_send_failed");
+  assert.equal(JSON.stringify({ logs, response }).includes("private@example.com"), false);
+  assert.deepEqual(logs, [{
+    event: "mobile_download_link_email",
+    outcome: "provider_failed",
+    count: 1,
+    providerStatus: 422,
+  }]);
 });
 
 test("protected replay pages mapped blobs, isolates bad data, and deletes only committed rows", async () => {
