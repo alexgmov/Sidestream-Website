@@ -391,6 +391,34 @@ test("runtime wiring persists lifecycle facts and atomically clears both credent
   }
 });
 
+test("every production license read tolerates the pre-lifecycle schema", async () => {
+  const accountSource = await readFile(
+    new URL("../api/_lib/account.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    accountSource,
+    /const LICENSE_ENTITLEMENT_STATUS_SQL = `[\s\S]*to_jsonb\(l\) \? 'entitlement_status'[\s\S]*stripe_checkout_session_id is not null[\s\S]*status in \('active', 'trialing'\)[\s\S]*plan_key in \('sidestream_pro', 'sidestream_unlimited'\)[\s\S]*else 'unknown'[\s\S]*`;/,
+  );
+  assert.doesNotMatch(accountSource, /\bl\.entitlement_status\b/);
+
+  for (const [name, nextName, expectedUses] of [
+    ["getSession", "requireSession", 1],
+    ["getActivationStatus", "verifyLicenseToken", 1],
+    ["verifyLicenseToken", "upsertLicenseFromSubscription", 1],
+    ["authorizeLicenseDownload", "getAccountDeviceStatus", 1],
+    ["refreshLicenseToken", "confirmAccountDeviceTransfer", 2],
+  ]) {
+    const start = accountSource.indexOf(`export async function ${name}`);
+    const end = accountSource.indexOf(`export async function ${nextName}`, start);
+    assert.ok(start >= 0 && end > start, `${name} source bounds must exist`);
+    const uses = accountSource
+      .slice(start, end)
+      .match(/\$\{LICENSE_ENTITLEMENT_STATUS_SQL\}/g) || [];
+    assert.equal(uses.length, expectedUses, `${name} must use the compatibility read`);
+  }
+});
+
 test("legacy audit is read-only by default and apply is an explicit gated mode", () => {
   assert.deepEqual(parseArgs([]), {
     fixture: false,

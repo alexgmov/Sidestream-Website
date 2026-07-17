@@ -195,10 +195,14 @@ test("account core serializes every credential path on the account namespace", a
   assert.match(source, /deriveRefreshRotationTokens\([\s\S]+deviceScope/);
   assert.match(source, /sidestream_device_policy_observation/);
 
-  const activeLicenseOrder = source.indexOf(
-    "when l.entitlement_status = 'active'",
+  const activationStatusStart = source.indexOf("export async function getActivationStatus");
+  const activationStatusEnd = source.indexOf("export async function verifyLicenseToken");
+  assert.ok(activationStatusStart >= 0 && activationStatusEnd > activationStatusStart);
+  const activationStatus = source.slice(activationStatusStart, activationStatusEnd);
+  const activeLicenseOrder = activationStatus.indexOf(
+    "when license_state.entitlement_status = 'active'",
   );
-  const issuance = source.indexOf("const issued = await issueLicenseTokenPair");
+  const issuance = activationStatus.indexOf("const issued = await issueLicenseTokenPair");
   assert.ok(activeLicenseOrder >= 0 && activeLicenseOrder < issuance);
 
   const bindingCheck = source.indexOf("const activationBinding = await checkActivationDeviceBinding");

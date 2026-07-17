@@ -107,6 +107,20 @@ const SIDESTREAM_PRO_PRICE = {
   unitAmount: 999,
   currency: "usd",
 };
+// Production can still use the pre-lifecycle license schema. JSON extraction
+// avoids a parse-time column lookup while preserving canonical migrated state
+// whenever the lifecycle field exists.
+const LICENSE_ENTITLEMENT_STATUS_SQL = `
+  case
+    when l.id is null then null
+    when to_jsonb(l) ? 'entitlement_status'
+      then to_jsonb(l) ->> 'entitlement_status'
+    when l.stripe_checkout_session_id is not null
+      and l.status in ('active', 'trialing')
+      and l.plan_key in ('sidestream_pro', 'sidestream_unlimited') then 'active'
+    else 'unknown'
+  end
+`;
 const BASIC_SUBSCRIPTION_RESOURCE_KEY_BASE = "basic_subscription";
 const BASIC_SUBSCRIPTION_PRODUCT = {
   name: "Basic subscription",
@@ -669,17 +683,7 @@ export async function getSession(
       join public.sidestream_accounts a on a.id = s.account_id
       left join public.sidestream_licenses l on l.account_id = a.id
       left join lateral (
-        select case
-          when l.id is null then null
-          when to_jsonb(l) ? 'entitlement_status'
-            then to_jsonb(l) ->> 'entitlement_status'
-          -- Before the lifecycle migration, preserve only the one-time paid
-          -- rows that the migration itself would backfill as active.
-          when l.stripe_checkout_session_id is not null
-            and l.status in ('active', 'trialing')
-            and l.plan_key in ('sidestream_pro', 'sidestream_unlimited') then 'active'
-          else 'unknown'
-        end as entitlement_status
+        select ${LICENSE_ENTITLEMENT_STATUS_SQL} as entitlement_status
       ) license_state on true
       where s.session_token_hash = $1
         and s.revoked_at is null
@@ -2253,16 +2257,19 @@ export async function getActivationStatus(
         a.stripe_checkout_session_id,
         l.status as license_status,
         l.plan_key,
-        l.entitlement_status,
+        license_state.entitlement_status,
         l.current_period_end,
         l.cancel_at_period_end,
         l.grace_until,
         l.features
       from public.sidestream_activation_sessions a
       left join public.sidestream_licenses l on l.account_id = a.account_id
+      left join lateral (
+        select ${LICENSE_ENTITLEMENT_STATUS_SQL} as entitlement_status
+      ) license_state on true
       where a.activation_key = $1
       order by (case
-          when l.entitlement_status = 'active'
+          when license_state.entitlement_status = 'active'
             and l.plan_key in ('sidestream_pro', 'sidestream_unlimited') then 0
           else 1
         end),
@@ -2515,7 +2522,7 @@ export async function verifyLicenseToken(
             a.build_channel as activation_build_channel,
             l.status,
             l.plan_key,
-            l.entitlement_status,
+            ${LICENSE_ENTITLEMENT_STATUS_SQL} as entitlement_status,
             l.current_period_end,
             l.cancel_at_period_end,
             l.grace_until,
@@ -4544,7 +4551,7 @@ export async function authorizeLicenseDownload(options: {
             t.revoked_at,
             l.status,
             l.plan_key,
-            l.entitlement_status,
+            ${LICENSE_ENTITLEMENT_STATUS_SQL} as entitlement_status,
             l.current_period_end,
             l.cancel_at_period_end,
             l.grace_until,
@@ -5083,7 +5090,7 @@ export async function refreshLicenseToken(
             a.build_channel as activation_build_channel,
             l.status,
             l.plan_key,
-            l.entitlement_status,
+            ${LICENSE_ENTITLEMENT_STATUS_SQL} as entitlement_status,
             l.current_period_end,
             l.cancel_at_period_end,
             l.grace_until,
@@ -5124,7 +5131,7 @@ export async function refreshLicenseToken(
               a.build_channel as activation_build_channel,
               l.status,
               l.plan_key,
-              l.entitlement_status,
+              ${LICENSE_ENTITLEMENT_STATUS_SQL} as entitlement_status,
               l.current_period_end,
               l.cancel_at_period_end,
               l.grace_until,
