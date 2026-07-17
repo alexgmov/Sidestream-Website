@@ -454,8 +454,25 @@ test("mobile download email builder sends both stable installers through Resend"
   assert.equal((message.html.match(/background:#ffffff;color:#000000/g) || []).length, 2);
   assert.match(message.html, /background:#ff2a2a !important/);
   assert.match(message.html, /class="windows-mark"/);
-  assert.match(message.html, /M3%205\.3l8-1\.1v7\.4H3V5\.3/);
+  assert.match(message.html, /src="cid:sidestream-windows-mark"/);
   assert.doesNotMatch(message.html, /&#9632;/);
+  assert.equal(message.attachments.length, 1);
+  assert.deepEqual(
+    {
+      filename: message.attachments[0].filename,
+      content_id: message.attachments[0].content_id,
+      content_type: message.attachments[0].content_type,
+    },
+    {
+      filename: "sidestream-windows-mark.png",
+      content_id: "sidestream-windows-mark",
+      content_type: "image/png",
+    },
+  );
+  assert.equal(
+    Buffer.from(message.attachments[0].content, "base64").subarray(0, 8).toString("hex"),
+    "89504e470d0a1a0a",
+  );
   assert.match(message.text, /platform=win32-x64/);
   assert.match(message.text, /utm_source=mobile_handoff/);
 });

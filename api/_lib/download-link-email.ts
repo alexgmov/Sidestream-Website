@@ -2,8 +2,9 @@ const RESEND_SEND_ENDPOINT = "https://api.resend.com/emails";
 const DEFAULT_FROM = "Sidestream <downloads@alexg.mov>";
 const DEFAULT_REPLY_TO = "alex@alexg.mov";
 const EMAIL_SUBJECT = "Your Sidestream download links";
-const WINDOWS_DOWNLOAD_MARK =
-  "data:image/svg+xml,%3Csvg%20xmlns=%27http://www.w3.org/2000/svg%27%20viewBox=%270%200%2024%2024%27%3E%3Cpath%20d=%27M3%205.3l8-1.1v7.4H3V5.3zm9-1.3l9-1.3v8.9h-9V4zm0%208.9h9v8.8l-9-1.3v-7.5zM3%2012.9h8v7.3l-8-1.1v-6.2z%27/%3E%3C/svg%3E";
+const WINDOWS_DOWNLOAD_MARK_CID = "sidestream-windows-mark";
+const WINDOWS_DOWNLOAD_MARK_PNG =
+  "iVBORw0KGgoAAAANSUhEUgAAADAAAAAwCAYAAABXAvmHAAAAAXNSR0IArs4c6QAAAERlWElmTU0AKgAAAAgAAYdpAAQAAAABAAAAGgAAAAAAA6ABAAMAAAABAAEAAKACAAQAAAABAAAAMKADAAQAAAABAAAAMAAAAADbN2wMAAABk0lEQVRoBe1ZbUoEMQxdRVBcVBBFWfzh519B9AqeQO+y6B09gycRTcZ5bLqkQ7AN7WIGQpJO5vXlZVjK7GwWVygQCmy0Alsdsz8jbnfC3jWurRs4JVK3gqQkfLBGWOW6s1bkkR5nCDLZo9IN1a7+ALpNz1yQ3Qh7G3G+R1/qVK7qYmanXVq/JOORS6IcX5HxfXkB27WBqVdoSWwkWVaYle7qgkoaqVLlgF2KA27AQz747hRN2BmSaMAgkmtJTMBVXgN4TMAgkmtJTMBVXgN4TMAgkmvJ1GHuqdLOtXAq0ekMRj3hjRwfC7l+VMIBDeAhH/xUA6XHYGCX4oAw8JAPPn6FEjkaJDGBBqInW8YEEjkaJDGBBqInW8YEEjkaJBs/ganj9DMJKr+N4oPuvIHQ2S3VA1K2+vfGOTk0A49GT8SzwHY9zIn9qoSHhPJA9irQPin+IuNGSkxArkKotFrxifi/g2sy+RcSYv5sb+Gh1qiLPj1kUffoDr+CaEj6hXiqB66Cji3cp7J7shdbeVSFAv9PgR8iECaXQfGmRwAAAABJRU5ErkJggg==";
 
 export const MAC_DOWNLOAD_URL =
   "https://sidestream.tv/api/download?utm_source=mobile_handoff&utm_medium=email&utm_campaign=mobile_download_link&utm_content=mac";
@@ -24,6 +25,12 @@ export type DownloadLinkEmailMessage = Readonly<{
   html: string;
   text: string;
   reply_to: string;
+  attachments: readonly Readonly<{
+    content: string;
+    filename: string;
+    content_id: string;
+    content_type: string;
+  }>[];
   tags: readonly Readonly<{ name: string; value: string }>[];
 }>;
 
@@ -64,6 +71,14 @@ export function buildDownloadLinkEmail(
     html: buildHtmlBody(),
     text: buildTextBody(),
     reply_to: replyTo,
+    attachments: Object.freeze([
+      Object.freeze({
+        content: WINDOWS_DOWNLOAD_MARK_PNG,
+        filename: "sidestream-windows-mark.png",
+        content_id: WINDOWS_DOWNLOAD_MARK_CID,
+        content_type: "image/png",
+      }),
+    ]),
     tags: Object.freeze([
       Object.freeze({ name: "email_type", value: "mobile_download_handoff" }),
     ]),
@@ -170,7 +185,7 @@ function buildHtmlBody() {
                             <a class="download-link" href="${macUrl}" aria-label="Download Sidestream for Mac" style="display:block;padding:15px 16px;border:1px solid #ffffff;border-radius:999px;background:#ffffff;color:#000000;text-align:center;text-decoration:none;font-size:15px;font-weight:700;line-height:1.35;white-space:nowrap;"><span aria-hidden="true" style="display:inline-block;margin-right:8px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI Symbol',sans-serif;font-size:17px;line-height:1;vertical-align:-1px;">&#63743;</span>Download for Mac</a>
                           </td>
                           <td class="download-cell" width="50%" style="padding-left:6px;">
-                            <a class="download-link" href="${windowsUrl}" aria-label="Download Sidestream for Windows" style="display:block;padding:15px 16px;border:1px solid #ffffff;border-radius:999px;background:#ffffff;color:#000000;text-align:center;text-decoration:none;font-size:15px;font-weight:700;line-height:1.35;white-space:nowrap;"><span class="windows-mark" aria-hidden="true" style="display:inline-block;width:15px;height:15px;margin-right:8px;vertical-align:-2px;background-image:url(${WINDOWS_DOWNLOAD_MARK});background-position:center;background-repeat:no-repeat;background-size:contain;font-size:0;line-height:0;">&nbsp;</span>Download for Windows</a>
+                            <a class="download-link" href="${windowsUrl}" aria-label="Download Sidestream for Windows" style="display:block;padding:15px 16px;border:1px solid #ffffff;border-radius:999px;background:#ffffff;color:#000000;text-align:center;text-decoration:none;font-size:15px;font-weight:700;line-height:1.35;white-space:nowrap;"><img class="windows-mark" src="cid:${WINDOWS_DOWNLOAD_MARK_CID}" width="15" height="15" alt="" style="display:inline-block;width:15px;height:15px;margin-right:8px;vertical-align:-2px;border:0;">Download for Windows</a>
                           </td>
                         </tr>
                       </table>
