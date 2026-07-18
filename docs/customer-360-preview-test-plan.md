@@ -18,6 +18,15 @@ apply migrations, invoke usage sync, apply backfill, or run live FlowState QA.
 The supplied current-state evidence did not include an exact UTC observation
 time; capture a fresh verifier run instead of inventing or backdating one.
 
+Local code has since closed five bounded implementation gaps: authenticated TLS
+enforcement for remote telemetry reads, an absolute normal Stripe claim cap,
+`refund.failed` recovery and exhaustive current dispute mapping, audited
+exact-event recovery restricted to isolated Test, and a no-write retention
+inventory. Those are fixture/local results only. No deployment, migration,
+backfill, usage sync, Stripe/provider configuration, cron enablement, live
+FlowState QA, connected-target check, or Preview observation occurred, so E01
+and every dependent row remain Blocked.
+
 Passing this plan means only that the named Customer 360 candidate satisfied the
 recorded Preview/Test gates. It does not authorize Production, enable device
 enforcement, close existing entitlement blockers, or prove a release safe.
@@ -64,6 +73,9 @@ steps when any of the following is true:
   and rollback owner;
 - there is no pre-migration snapshot/recreate proof, authenticated connected
   target proof, migration checksum proof, or live RLS/grant proof;
+- a reviewer has not approved an explicit period/action for every Customer 360
+  retention domain, or any proposed Test mutation lacks a dependency-aware
+  design and separate approval; the inventory planner is not an apply tool;
 - migration state has unexplained files, order drift, checksum drift, runtime
   DDL, overly broad grants, or an unreviewed baseline;
 - Vercel project-wide cron is enabled. This plan keeps all four project jobs
@@ -96,6 +108,31 @@ steps when any of the following is true:
 These are repository-supported commands, not substitutions for manual evidence.
 Run them from clean checkouts at the exact candidate commits and attach redacted
 stdout/stderr plus exit status to the evidence bundle.
+
+### Website repository: current locally supported closure gate
+
+This gate uses fixtures, source contracts, local build output, and the lifecycle
+suite's self-managed ephemeral loopback Postgres. It requires no external
+database selector or provider target and proves none of the manual rows.
+
+```bash
+npm run test:customer-360
+npm run test:api
+npm run test:download-referral
+npm run test:migrations
+npm run verify:vercel-contract
+node --experimental-strip-types --test tests/entitlement-lifecycle.test.mjs
+node --test tests/stripe-events.test.mjs
+node --test tests/customer-360/retention-ops.test.mjs tests/customer-360/telemetry-tls.test.mjs tests/stripe-dead-letter-recovery.test.mjs tests/stripe-event-claim-cap.test.mjs
+npm run typecheck
+npm run build
+git diff --check
+```
+
+`retention-ops.test.mjs` and `telemetry-tls.test.mjs` are explicitly classified
+as non-Postgres Customer 360 tests. Therefore both `test:customer-360` and
+`test:api` execute them. The Postgres-dependent suites remain in the separate
+registry and must not be relabeled as fixture tests.
 
 ### Website repository: local and fixture gates
 
@@ -202,6 +239,27 @@ These FlowState commands are fixture/local gates. They do not prove a live
 Customer API, Preview deployment, migration, backfill, scheduler, or Production
 state.
 
+### Human return checklist: database and live gates
+
+The local closure gate does not run these database aggregates. A human must
+provide a reviewed disposable URL that passes the repository collision guards,
+then retain their output with the candidate evidence:
+
+```bash
+SIDESTREAM_TEST_POSTGRES_URL='<reviewed-disposable-postgres-url>' npm run test:customer-360-postgres
+SIDESTREAM_TEST_POSTGRES_URL='<reviewed-disposable-postgres-url>' npm run test:postgres-integration
+SIDESTREAM_TEST_POSTGRES_URL='<reviewed-disposable-postgres-url>' npm run test:single-device
+```
+
+Even those disposable suites do not clear E01 onward. The same human return must
+name the isolated Preview target; capture fresh environment comparison and
+provider/artifact proof; prove authenticated connected runtime and telemetry
+targets; snapshot, apply, and verify checksummed non-Production migrations;
+approve backfill dry-run and any Test apply separately; approve retention
+periods/actions, lag/read budgets, alerts, and owners; keep project cron disabled;
+complete the protected API, failure, rollback, and live FlowState Preview QA
+rows; and commission a fresh Production plan only afterward.
+
 ## Ordered acceptance matrix
 
 Rows are dependency ordered. A blocked or failed row blocks every dependent row.
@@ -219,7 +277,9 @@ Rows are dependency ordered. A blocked or failed row blocks every dependent row.
 | I02 | Sign-in, purchase, restore, and merge continuity | Starting from I01, Google sign-in, sandbox purchase, activation/license verify/refresh, signed-in restore, and eligible merge retain one live Test customer root. Tombstone stays hidden; contact comes only from verified account; entitlement/device rows change only through their existing flows. | Duplicate live roots, email-driven merge, namespace crossing, unverified Stripe attachment, lost activation continuity, unexpected device/entitlement mutation, or tombstone exposure. |
 | I03 | Conflict and pending-review behavior | Contradictory unique identity creates immutable `pending_review` with hashed evidence and visible quality flag; no overwrite/automatic merge occurs. Payment-group ownership conflict quarantines the whole group until explicit deterministic resolution/recompute. | Silent winner replacement, partial evidence, leaked raw evidence, cleared sticky conflict without explicit recomputation, money assigned across owners, or cross-namespace merge. |
 | C01 | One-time, subscription, comped, mixed, and multi-currency commerce | Sandbox fixtures/events produce each billing history model; settled instruments replace fallbacks; renewals remain distinct; comped may be zero; at least two currencies remain separate minor-unit rows; `offStripePaidMinor` stays a subset; no commerce field grants entitlement or implies current subscription. | Double count, float parsing, cross-currency sum, fallback retained after instrument, model/current-state confusion, or commerce-driven entitlement change. |
-| C02 | Refund/dispute and negative commerce cases | Partial/full refunds and supported open/lost dispute states reduce net exactly once and floor at zero. Won/reversed/closed states release disputed amount as defined. Duplicate/out-of-order events are idempotent. Unpaid Checkout, open/canceled InvoicePayment, uncaptured charge, wrong product, unrelated Checkout, and conflicting ownership do not inflate money. | Negative/duplicated totals, wrong event routing, unsupported status silently accepted, invalid product included, refund/dispute changes entitlement, or identity conflict ignored. |
+| C02 | Refund/dispute and negative commerce cases | Partial/full/failed refunds and all eight current dispute statuses reconcile from canonical Stripe test state. The independent entitlement lifecycle suspends for four open states, closes `warning_closed`, `prevented`, and `won`, keeps `lost` irreversible, requires complete ownership/Product/Price/payment/dispute proof for failed full-refund recovery, and never revives old credentials. Customer 360 projects money separately: net changes exactly once, floors at zero, and never drives entitlement. Duplicate/out-of-order events are idempotent. Unpaid Checkout, open/canceled InvoicePayment, uncaptured charge, wrong product, unrelated Checkout, and conflicting ownership do not inflate money. | Negative/duplicated totals, wrong event routing, unsupported status silently accepted, incomplete proof recovers access, old credentials revive, invalid product is included, Customer 360 commerce drives entitlement, or identity conflict is ignored. |
+| Q01 | Stripe claim bound and Test-only dead-letter recovery | Repeated final-attempt crash/lease expiry terminalizes without a ninth normal processor call. If a synthetic Test dead letter is intentionally recovered, a separate approval binds the isolated target, pending recovery migration, attempt-8 row, non-livemode payload digest, terminal expectation, reason, and exact confirmation to one audited attempt 9; a lost-response retry is idempotent. No recovery is required or authorized when the row is not part of the reviewed Test case. | Nonterminal work at/above cap, ninth normal claim, bulk/reset/cap override, missing/mutable audit, livemode/Production target, manual queue/entitlement edit, or recovery without separate approval. |
+| T01 | Retention inventory and policy decision | Read-only inventory covers all eight domains with aggregate age buckets, stable policy digest, and target fingerprint. Reviewer explicitly approves periods/actions for every domain; merge audits and pending reviews remain preserved. Any future Test mutation is separately designed and approved. | Customer data/target name leaks, incomplete policy, mutable immutable domain, apply path presented as implemented, unapproved period/action, or dependency-unsafe deletion/anonymization proposal. |
 | U01 | Once-daily aggregate, lag, decay, retry, and idempotency | Before the one-time sync, reviewer approves source/row/read-byte/query-duration budgets and lag threshold. One Test run reports bounded counts/freshness. Same-day retry is `skipped`, concurrent injection is `locked`, repeated source rows replace rather than add, 48-hour overlap repairs late rows, rolling 7/30-day values decay on rematerialization, and failed batches retry without duplicates. | Budget exceeded, source write, unexplained stale/null freshness, count inconsistency, duplicate bucket/profile values, retry drift, wrong denominator, or non-decaying window. |
 | B01 | Offline backfill dry-run | Reviewed input is offline and privacy-limited. Dry-run opens no database/writes no checkpoint and records input digest, candidate/orphan/conflict totals, component refs, and reviewer dispositions. Production apply remains impossible. | Network/database access during dry-run, digest change, forbidden input, raw evidence leak, unresolved orphan/conflict, or any Production selector/apply proposal. |
 | B02 | Test-only backfill recovery, if separately authorized | A new human approval names the isolated Test target, digest, checkpoint, batch size, and rollback owner. Batches are atomic/append-only; injected failure rolls back a batch; post-commit checkpoint failure resumes safely; mismatched checkpoint fails closed; complete rerun is idempotent/no-op. | Dry-run approval reused as apply approval, wrong target/digest, partial batch, incomplete/mismatched checkpoint, non-idempotent rerun, audit deletion, or improvised down SQL. Restore/recreate, never apply Production. |
@@ -243,6 +303,7 @@ reference, candidate SHA, immutable host, or reviewer makes the row Blocked.
 | V01-A02 | Blocked | `<capture actual UTC>` | `<sha> / n/a` | `<immutable host>` | `<deployment/verifier/manual API evidence>` | Depends on E01-D02 |
 | I01-I03 | Blocked | `<capture actual UTC>` | `<sha> / <sha>` | `<immutable host>` | `<privacy-safe lineage/conflict evidence>` | Depends on API gates |
 | C01-C02 | Blocked | `<capture actual UTC>` | `<sha> / n/a` | `<Stripe test account fingerprint>` | `<currency/event/totals evidence>` | Sandbox only |
+| Q01-T01 | Blocked | `<capture actual UTC>` | `<sha> / n/a` | `<isolated Test DB / inventory target fingerprint>` | `<claim, recovery, audit, policy evidence>` | Separate recovery and retention decisions remain human-owned |
 | U01 | Blocked | `<capture actual UTC>` | `<sha> / n/a` | `<immutable host>` | `<budget, one-time sync, lag/decay evidence>` | Project-wide cron stays disabled |
 | B01-B02 | Blocked | `<capture actual UTC>` | `<sha> / n/a` | `<offline / isolated DB>` | `<digest/report/checkpoint evidence>` | B02 requires separate approval; no Production apply |
 | F01 | Blocked | `<capture actual UTC>` | `<sha> / <sha>` | `<loopback + immutable host>` | `<proxy/UI/cache/privacy evidence>` | Live FlowState QA is last integration gate |
@@ -306,6 +367,15 @@ reference, candidate SHA, immutable host, or reviewer makes the row Blocked.
    response may include namespace/freshness while the log omits them, as defined
    by the contract. Exercise `locked`, `skipped`, bounded failure/retry, overlap
    replacement, and time-based rolling decay without enabling project-wide cron.
+5. Prove an expired final-attempt Stripe lease terminalizes without increment or
+   another normal processor call. If Q01 includes an intentional Test recovery,
+   obtain its separate exact-event approval after the recovery migration is
+   checksummed and applied to the isolated target; retain the immutable audit and
+   idempotent lost-response result. Never rehearse against livemode or Production.
+6. Run retention inventory only with the reviewed complete policy. Record the
+   policy digest and aggregate report, then obtain an explicit human decision for
+   each period/action. Inventory success is not approval and exposes no apply
+   capability; any future Test mutation needs a new dependency-aware design.
 
 ### Backfill, FlowState, and regressions
 
@@ -371,7 +441,7 @@ authorizes no Production action.
 
 Preview/Test acceptance is complete only when all of the following are true:
 
-- every applicable P01 through RB1 row is Pass, none is Fail or Blocked, and each
+- every applicable P01 through RB1 row, including Q01 and T01, is Pass, none is Fail or Blocked, and each
   has an exact UTC timestamp, reviewer, candidate SHA, target, and evidence link;
 - the fresh isolation preflight and provider proof show fully distinct Preview
   database, telemetry, Stripe test, Google, base URL, and secrets;
