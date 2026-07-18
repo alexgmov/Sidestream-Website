@@ -26,6 +26,12 @@ const queueMigrationPath = join(
   repositoryRoot,
   "db/migrations/20260713202000_harden_stripe_event_processing.sql",
 );
+const entitlementMigrationPaths = [
+  "20260704130000_allow_stripe_first_accounts.sql",
+  "20260704150000_allow_one_time_checkout_licenses.sql",
+  "20260713180000_add_activation_checkout_and_refresh_rotation.sql",
+  "20260713204000_add_entitlement_lifecycle.sql",
+].map((filename) => join(repositoryRoot, "db/migrations", filename));
 const customerMigrationPaths = [
   "20260715120000_add_customer_360_core.sql",
   "20260715121000_add_customer_identity_links.sql",
@@ -48,6 +54,8 @@ test("Stripe events use a durable claimed queue with bounded retry and protected
     "VERCEL_ENV",
     "POSTGRES_SSL",
     "POSTGRES_POOL_MAX",
+    "SIDESTREAM_LEGACY_SUBSCRIPTION_PRICE_IDS",
+    "SIDESTREAM_LEGACY_SUBSCRIPTION_PRODUCT_IDS",
   ]);
   const runtime = await loadRuntimeModules();
   const postgres = await startEphemeralPostgres();
@@ -65,6 +73,9 @@ test("Stripe events use a durable claimed queue with bounded retry and protected
   try {
     await pool.query(await readFile(baseMigrationPath, "utf8"));
     await pool.query(await readFile(queueMigrationPath, "utf8"));
+    for (const migrationPath of entitlementMigrationPaths) {
+      await pool.query(await readFile(migrationPath, "utf8"));
+    }
     for (const migrationPath of customerMigrationPaths) {
       await pool.query(await readFile(migrationPath, "utf8"));
     }
@@ -958,6 +969,343 @@ test("Stripe events use a durable claimed queue with bounded retry and protected
       });
     });
 
+    await t.test("refund.failed is an entitlement lifecycle event", async () => {
+      runtime.stub.reset();
+      const event = stripeEvent(
+        "evt_refund_failed_routing",
+        "refund.failed",
+        1_700_004_650,
+        {
+          id: "re_refund_failed_routing",
+          object: "refund",
+          charge: "ch_refund_failed_routing",
+          payment_intent: "pi_refund_failed_routing",
+          status: "failed",
+          amount: 999,
+          currency: "usd",
+        },
+      );
+      assert.deepEqual(await runtime.stripeEvents.reconcileStripeEvent(
+        event,
+        async () => ({ rows: [{ result: { applied: 1, stale: 0 } }] }),
+      ), {
+        status: "processed",
+        outcome: "lifecycle_active",
+      });
+      assert.deepEqual(runtime.stub.calls, [[
+        "lifecycle",
+        "refund.failed",
+        event.data.object,
+        { eventId: event.id, created: event.created },
+      ]]);
+    });
+
+    await t.test("canonical refunds drive the Postgres entitlement lifecycle", async () => {
+      const productId = "prod_UpwXh6oO1OmPyQ";
+      const priceId = "price_lifecycle_once_999";
+      const account = await pool.query(
+        `insert into public.sidestream_accounts (google_sub, email, stripe_customer_id)
+         values ('lifecycle-owner', 'lifecycle-owner@example.com', 'cus_lifecycle')
+         returning id`,
+      );
+      const accountId = account.rows[0].id;
+      const license = await pool.query(
+        `insert into public.sidestream_licenses (
+           account_id, stripe_customer_id, stripe_subscription_id,
+           stripe_checkout_session_id, stripe_payment_intent_id, stripe_charge_id,
+           stripe_price_id, stripe_product_id, plan_key, status, features,
+           amount_paid, amount_refunded, currency, entitlement_status, status_reason,
+           reconciled_at, stripe_state_event_created_at, stripe_state_event_id
+         ) values (
+           $1, 'cus_lifecycle', null, 'cs_lifecycle', 'pi_lifecycle', 'ch_lifecycle',
+           $2, $3, 'sidestream_pro', 'active',
+           '{"unlimited_downloads":true,"customer_portal":true,"one_time_purchase":true}'::jsonb,
+           999, 0, 'usd', 'active', 'payment_paid', now(), to_timestamp(1000), 'evt_paid'
+         ) returning id`,
+        [accountId, priceId, productId],
+      );
+      const licenseId = license.rows[0].id;
+      await pool.query(
+        `insert into public.sidestream_license_tokens (
+           account_id, license_id, device_id_hash, token_hash, expires_at,
+           refresh_token_hash, refresh_expires_at
+         ) values ($1, $2, $3, $4, now() + interval '30 days', $5, now() + interval '30 days')`,
+        [accountId, licenseId, "d".repeat(64), "a".repeat(64), "b".repeat(64)],
+      );
+
+      const stripeState = createLifecycleStripeState({ accountId, priceId, productId });
+      runtime.account.__setStripeLifecycleTestClient(
+        createLifecycleStripeClient(stripeState),
+      );
+      try {
+        const reconcileRefund = (id, type, created) =>
+          runtime.account.reconcileOneTimePaymentLifecycle(
+            type,
+            {
+              id,
+              charge: "ch_lifecycle",
+              payment_intent: "pi_lifecycle",
+            },
+            { eventId: `evt_${id}_${created}`, created },
+          );
+        const readLicense = async () => (await pool.query(
+          `select entitlement_status, status_reason, amount_refunded,
+             features ->> 'unlimited_downloads' as unlimited_downloads,
+             stripe_state_event_id, revoked_at, suspended_at
+           from public.sidestream_licenses where id = $1`,
+          [licenseId],
+        )).rows[0];
+        const resetLicense = (options = {}) => resetLifecycleLicense(pool, {
+          licenseId,
+          priceId,
+          productId,
+          ...options,
+        });
+
+        setLifecycleRefund(stripeState, "re_partial", "succeeded", 300);
+        stripeState.charge.amount_refunded = 300;
+        assert.deepEqual(await reconcileRefund(
+          "re_partial",
+          "refund.updated",
+          1_700_020_100,
+        ), {
+          fulfilled: true,
+          applied: true,
+          entitlementStatus: "active",
+        });
+        assert.equal((await readLicense()).status_reason, "partial_refund");
+
+        setLifecycleRefund(stripeState, "re_second", "succeeded", 699);
+        stripeState.charge.amount_refunded = 999;
+        assert.deepEqual(await reconcileRefund(
+          "re_second",
+          "refund.updated",
+          1_700_020_200,
+        ), {
+          fulfilled: true,
+          applied: true,
+          entitlementStatus: "revoked",
+        });
+        let stored = await readLicense();
+        assert.equal(stored.amount_refunded, "999");
+        assert.equal(stored.status_reason, "full_refund");
+        assert.equal(stored.unlimited_downloads, "false");
+        assert.deepEqual((await pool.query(
+          `select revoked_at is not null as revoked, refresh_token_hash,
+             previous_refresh_token_hash
+           from public.sidestream_license_tokens where license_id = $1`,
+          [licenseId],
+        )).rows[0], {
+          revoked: true,
+          refresh_token_hash: null,
+          previous_refresh_token_hash: null,
+        });
+
+        assert.deepEqual(await reconcileRefund(
+          "re_second",
+          "refund.updated",
+          1_700_020_200,
+        ), {
+          fulfilled: true,
+          applied: false,
+          entitlementStatus: "revoked",
+        });
+        setLifecycleRefund(stripeState, "re_failed", "failed", 699);
+        stripeState.charge.amount_refunded = 300;
+        assert.deepEqual(await reconcileRefund(
+          "re_failed",
+          "refund.failed",
+          1_700_020_150,
+        ), {
+          fulfilled: true,
+          applied: false,
+          entitlementStatus: "revoked",
+        });
+        assert.equal((await readLicense()).amount_refunded, "999");
+
+        assert.deepEqual(await reconcileRefund(
+          "re_failed",
+          "refund.failed",
+          1_700_020_300,
+        ), {
+          fulfilled: true,
+          applied: true,
+          entitlementStatus: "active",
+        });
+        stored = await readLicense();
+        assert.equal(stored.amount_refunded, "300");
+        assert.equal(stored.status_reason, "partial_refund");
+        assert.equal(stored.unlimited_downloads, "true");
+        assert.equal(stored.revoked_at, null);
+        assert.equal((await pool.query(
+          `select revoked_at is not null as revoked
+           from public.sidestream_license_tokens where license_id = $1`,
+          [licenseId],
+        )).rows[0].revoked, true);
+
+        await resetLicense({
+          status: "revoked",
+          reason: "full_refund",
+          amountRefunded: 999,
+          created: 1_700_020_400,
+          eventId: "evt_full_before_wrong_product",
+        });
+        stripeState.checkout.line_items.data[0].price.product = "prod_wrong";
+        assert.equal((await reconcileRefund(
+          "re_failed",
+          "refund.failed",
+          1_700_020_500,
+        )).entitlementStatus, "revoked");
+        stored = await readLicense();
+        assert.equal(stored.status_reason, "full_refund");
+        assert.equal(stored.amount_refunded, "300");
+
+        stripeState.checkout.line_items.data[0].price.product = productId;
+        await resetLicense({
+          status: "revoked",
+          reason: "full_refund",
+          amountRefunded: 999,
+          created: 1_700_020_600,
+          eventId: "evt_full_before_incomplete",
+          storedPriceId: null,
+        });
+        assert.equal((await reconcileRefund(
+          "re_failed",
+          "refund.failed",
+          1_700_020_700,
+        )).entitlementStatus, "revoked");
+        assert.equal((await readLicense()).status_reason, "full_refund");
+
+        await resetLicense({
+          status: "revoked",
+          reason: "full_refund",
+          amountRefunded: 999,
+          created: 1_700_020_720,
+          eventId: "evt_full_before_wrong_owner",
+        });
+        await pool.query(
+          `update public.sidestream_accounts set stripe_customer_id = null where id = $1`,
+          [accountId],
+        );
+        assert.equal((await reconcileRefund(
+          "re_failed",
+          "refund.failed",
+          1_700_020_750,
+        )).entitlementStatus, "revoked");
+        assert.equal((await readLicense()).status_reason, "full_refund");
+        await pool.query(
+          `update public.sidestream_accounts set stripe_customer_id = 'cus_lifecycle'
+           where id = $1`,
+          [accountId],
+        );
+
+        await resetLicense({
+          status: "revoked",
+          reason: "full_refund",
+          amountRefunded: 999,
+          created: 1_700_020_800,
+          eventId: "evt_full_before_unpaid",
+        });
+        stripeState.paymentIntent.status = "requires_payment_method";
+        assert.equal((await reconcileRefund(
+          "re_failed",
+          "refund.failed",
+          1_700_020_900,
+        )).entitlementStatus, "revoked");
+        assert.equal((await readLicense()).status_reason, "full_refund");
+      } finally {
+        runtime.account.__setStripeLifecycleTestClient(null);
+      }
+    });
+
+    await t.test("canonical dispute closure restores except after a loss", async () => {
+      const productId = "prod_UpwXh6oO1OmPyQ";
+      const priceId = "price_dispute_once_999";
+      const account = await pool.query(
+        `insert into public.sidestream_accounts (google_sub, email, stripe_customer_id)
+         values ('dispute-owner', 'dispute-owner@example.com', 'cus_dispute') returning id`,
+      );
+      const accountId = account.rows[0].id;
+      const license = await pool.query(
+        `insert into public.sidestream_licenses (
+           account_id, stripe_customer_id, stripe_subscription_id,
+           stripe_checkout_session_id, stripe_payment_intent_id, stripe_charge_id,
+           stripe_price_id, stripe_product_id, plan_key, status, features,
+           amount_paid, amount_refunded, currency, entitlement_status, status_reason,
+           reconciled_at, stripe_state_event_created_at, stripe_state_event_id
+         ) values (
+           $1, 'cus_dispute', null, 'cs_dispute', 'pi_dispute', 'ch_dispute',
+           $2, $3, 'sidestream_pro', 'active', '{"unlimited_downloads":true}'::jsonb,
+           999, 0, 'usd', 'active', 'payment_paid', now(), to_timestamp(1000), 'evt_paid'
+         ) returning id`,
+        [accountId, priceId, productId],
+      );
+      const stripeState = createLifecycleStripeState({
+        accountId,
+        priceId,
+        productId,
+        prefix: "dispute",
+      });
+      runtime.account.__setStripeLifecycleTestClient(
+        createLifecycleStripeClient(stripeState),
+      );
+      try {
+        const reconcileDispute = async (status, created) => {
+          const dispute = {
+            id: `dp_${status}_${created}`,
+            charge: "ch_dispute",
+            status,
+          };
+          stripeState.disputes = [dispute];
+          stripeState.charge.disputed = [
+            "warning_needs_response",
+            "warning_under_review",
+            "needs_response",
+            "under_review",
+          ].includes(status);
+          return runtime.account.reconcileOneTimePaymentLifecycle(
+            "charge.dispute.updated",
+            { id: dispute.id, charge: dispute.charge },
+            { eventId: `evt_${dispute.id}`, created },
+          );
+        };
+        const readReason = async () => (await pool.query(
+          `select status_reason from public.sidestream_licenses where id = $1`,
+          [license.rows[0].id],
+        )).rows[0].status_reason;
+
+        assert.equal((await reconcileDispute(
+          "needs_response",
+          1_700_021_100,
+        )).entitlementStatus, "suspended");
+        assert.equal((await reconcileDispute(
+          "prevented",
+          1_700_021_200,
+        )).entitlementStatus, "active");
+        assert.equal(await readReason(), "dispute_prevented");
+        assert.equal((await reconcileDispute(
+          "under_review",
+          1_700_021_300,
+        )).entitlementStatus, "suspended");
+        assert.equal((await reconcileDispute(
+          "won",
+          1_700_021_400,
+        )).entitlementStatus, "active");
+        assert.equal(await readReason(), "dispute_won");
+        assert.equal((await reconcileDispute(
+          "lost",
+          1_700_021_500,
+        )).entitlementStatus, "revoked");
+        assert.equal((await reconcileDispute(
+          "won",
+          1_700_021_600,
+        )).entitlementStatus, "revoked");
+        assert.equal(await readReason(), "dispute_lost");
+      } finally {
+        runtime.account.__setStripeLifecycleTestClient(null);
+      }
+    });
+
     await t.test("trusted deployment namespace rejects signed livemode mismatch", async () => {
       runtime.stub.reset();
       let queried = false;
@@ -966,12 +1314,14 @@ test("Stripe events use a durable claimed queue with bounded retry and protected
           {
             ...stripeEvent(
               "evt_live_mismatch",
-              "checkout.session.completed",
+              "refund.failed",
               1_700_004_700,
               {
-                id: "cs_live_mismatch",
-                payment_status: "paid",
-                amount_total: 100,
+                id: "re_live_mismatch",
+                charge: "ch_live_mismatch",
+                payment_intent: "pi_live_mismatch",
+                status: "failed",
+                amount: 100,
                 currency: "usd",
               },
             ),
@@ -1101,13 +1451,52 @@ test("Stripe events use a durable claimed queue with bounded retry and protected
         `,
       );
       const accountId = account.rows[0].id;
+      process.env.SIDESTREAM_LEGACY_SUBSCRIPTION_PRICE_IDS = "price_orderingguard";
+      process.env.SIDESTREAM_LEGACY_SUBSCRIPTION_PRODUCT_IDS = "prod_orderingguard";
+      runtime.account.__setStripeLifecycleTestClient({
+        prices: {
+          async retrieve(id) {
+            assert.equal(id, "price_orderingguard");
+            return {
+              id,
+              product: "prod_orderingguard",
+              active: true,
+              type: "recurring",
+              currency: "usd",
+              unit_amount: 499,
+              recurring: {
+                interval: "month",
+                interval_count: 1,
+                usage_type: "licensed",
+              },
+            };
+          },
+        },
+        products: {
+          async retrieve(id) {
+            assert.equal(id, "prod_orderingguard");
+            return { id, active: true };
+          },
+        },
+      });
       const subscription = (status) => ({
         id: "sub_ordering_guard",
         customer: "cus_ordering_guard",
         status,
-        items: { data: [{ price: { lookup_key: "sidestream_pro" } }] },
+        items: {
+          data: [{ quantity: 1, price: "price_orderingguard" }],
+          has_more: false,
+        },
       });
 
+      assert.deepEqual(
+        await runtime.account.upsertLicenseFromSubscription(
+          subscription("active"),
+          accountId,
+          { eventId: "evt_order_seed", created: 1_700_010_000 },
+        ),
+        { fulfilled: true, applied: true },
+      );
       assert.deepEqual(
         await runtime.account.upsertLicenseFromSubscription(
           subscription("canceled"),
@@ -1166,6 +1555,7 @@ test("Stripe events use a durable claimed queue with bounded retry and protected
         event_created: "1700010300",
         stripe_state_event_id: "evt_order_newest",
       });
+      runtime.account.__setStripeLifecycleTestClient(null);
     });
 
     await t.test("webhook acknowledges after durable insert and never waits for its drain", async () => {
@@ -1330,6 +1720,139 @@ test("Stripe events use a durable claimed queue with bounded retry and protected
   }
 });
 
+function createLifecycleStripeState({
+  accountId,
+  priceId,
+  productId,
+  prefix = "lifecycle",
+}) {
+  return {
+    paymentIntent: {
+      id: `pi_${prefix}`,
+      customer: `cus_${prefix}`,
+      latest_charge: `ch_${prefix}`,
+      amount_received: 999,
+      currency: "usd",
+      status: "succeeded",
+    },
+    charge: {
+      id: `ch_${prefix}`,
+      customer: `cus_${prefix}`,
+      payment_intent: `pi_${prefix}`,
+      amount_refunded: 0,
+      currency: "usd",
+      paid: true,
+      disputed: false,
+    },
+    refunds: new Map(),
+    disputes: [],
+    checkout: {
+      id: `cs_${prefix}`,
+      mode: "payment",
+      status: "complete",
+      payment_status: "paid",
+      customer: `cus_${prefix}`,
+      payment_intent: `pi_${prefix}`,
+      metadata: {
+        sidestream_plan: "sidestream_pro",
+        sidestream_price_id: priceId,
+        sidestream_account_id: accountId,
+      },
+      line_items: {
+        data: [{ quantity: 1, price: { id: priceId, product: productId } }],
+        has_more: false,
+      },
+    },
+  };
+}
+
+function createLifecycleStripeClient(state) {
+  return {
+    charges: {
+      async retrieve(id) {
+        assert.equal(id, state.charge.id);
+        return structuredClone(state.charge);
+      },
+    },
+    paymentIntents: {
+      async retrieve(id) {
+        assert.equal(id, state.paymentIntent.id);
+        return structuredClone(state.paymentIntent);
+      },
+    },
+    refunds: {
+      async retrieve(id) {
+        assert.ok(state.refunds.has(id), `missing canonical refund ${id}`);
+        return structuredClone(state.refunds.get(id));
+      },
+    },
+    disputes: {
+      async retrieve(id) {
+        const dispute = state.disputes.find((entry) => entry.id === id);
+        assert.ok(dispute, `missing canonical dispute ${id}`);
+        return structuredClone(dispute);
+      },
+      async list() {
+        return { data: structuredClone(state.disputes), has_more: false };
+      },
+    },
+    checkout: {
+      sessions: {
+        async retrieve(id) {
+          assert.equal(id, state.checkout.id);
+          return structuredClone(state.checkout);
+        },
+      },
+    },
+  };
+}
+
+function setLifecycleRefund(state, id, status, amount) {
+  state.refunds.set(id, {
+    id,
+    object: "refund",
+    charge: state.charge.id,
+    payment_intent: state.paymentIntent.id,
+    status,
+    amount,
+    currency: "usd",
+  });
+}
+
+async function resetLifecycleLicense(pool, {
+  licenseId,
+  priceId,
+  productId,
+  status = "active",
+  reason = "payment_paid",
+  amountRefunded = 0,
+  created = 1_700_020_000,
+  eventId = "evt_reset",
+  storedPriceId = priceId,
+  storedProductId = productId,
+}) {
+  await pool.query(
+    `update public.sidestream_licenses
+     set status = $2, entitlement_status = $2, status_reason = $3,
+       amount_refunded = $4, stripe_price_id = $5, stripe_product_id = $6,
+       revoked_at = case when $2 = 'revoked' then now() else null end,
+       suspended_at = case when $2 = 'suspended' then now() else null end,
+       features = features || jsonb_build_object('unlimited_downloads', $2 = 'active'),
+       stripe_state_event_created_at = to_timestamp($7), stripe_state_event_id = $8
+     where id = $1`,
+    [
+      licenseId,
+      status,
+      reason,
+      amountRefunded,
+      storedPriceId,
+      storedProductId,
+      created,
+      eventId,
+    ],
+  );
+}
+
 function stripeEvent(id, type, created, object = { id: `object_${id}` }) {
   return {
     id,
@@ -1383,12 +1906,14 @@ async function loadRuntimeModules() {
 let stripeClient = null;
 let subscriptionResult = { fulfilled: true, applied: true };
 let checkoutResult = { fulfilled: true, activationBound: false };
+let lifecycleResult = { fulfilled: true, applied: true, entitlementStatus: "active" };
 export const calls = [];
 export function reset() {
   calls.length = 0;
   stripeClient = null;
   subscriptionResult = { fulfilled: true, applied: true };
   checkoutResult = { fulfilled: true, activationBound: false };
+  lifecycleResult = { fulfilled: true, applied: true, entitlementStatus: "active" };
 }
 export function setStripeClient(value) { stripeClient = value; }
 export function getStripe() {
@@ -1406,6 +1931,10 @@ export async function upsertLicenseFromCheckoutSession(...args) {
 export async function upsertLicenseFromSubscription(...args) {
   calls.push(["subscription", ...args]);
   return subscriptionResult;
+}
+export async function reconcileOneTimePaymentLifecycle(...args) {
+  calls.push(["lifecycle", ...args]);
+  return lifecycleResult;
 }
 export function getStripeWebhookSecret() { return "webhook-secret"; }
 export function methodNotAllowed(response, allowed) {
@@ -1504,6 +2033,11 @@ async function loadAccountRuntime(directory) {
       "./maintenance.js": maintenanceUrl,
       "./postgres.js": postgresUrl,
     },
+    `
+export function __setStripeLifecycleTestClient(value: Stripe | null) {
+  stripeClient = value;
+}
+`,
   );
   const [account, accountPostgres] = await Promise.all([
     import(`${accountUrl}?test=${randomUUID()}`),
@@ -1512,12 +2046,13 @@ async function loadAccountRuntime(directory) {
   return { account, accountPostgres };
 }
 
-async function writeAdaptedModule(directory, name, sourcePath, replacements) {
+async function writeAdaptedModule(directory, name, sourcePath, replacements, suffix = "") {
   let source = await readFile(sourcePath, "utf8");
   for (const [original, replacement] of Object.entries(replacements)) {
     assert.match(source, new RegExp(escapeRegExp(JSON.stringify(original))));
     source = source.replaceAll(JSON.stringify(original), JSON.stringify(replacement));
   }
+  source += suffix;
   const destination = join(directory, `${name}-under-test.ts`);
   await writeFile(destination, source, { mode: 0o600 });
   return pathToFileURL(destination).href;

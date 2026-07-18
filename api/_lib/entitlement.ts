@@ -52,6 +52,7 @@ export type CanonicalOneTimePaymentFacts = Readonly<{
   currency: string;
   paymentProven: boolean;
   disputeStatus: string;
+  fullRefundRecoveryProven?: boolean;
 }>;
 
 export type StoredOneTimeEntitlementState = Readonly<{
@@ -451,11 +452,20 @@ export function planOneTimeEntitlementTransition(options: {
   }
 
   const previousReason = options.stored.statusReason || "";
-  if (previousReason === "dispute_lost") {
+  const disputeStatus = options.facts.disputeStatus.trim().toLowerCase();
+  const openDispute = [
+    "warning_needs_response",
+    "warning_under_review",
+    "needs_response",
+    "under_review",
+  ].includes(disputeStatus);
+  const closedDispute = ["warning_closed", "prevented", "won"].includes(
+    disputeStatus,
+  );
+  const noBlockingDispute = disputeStatus === "none" || closedDispute;
+
+  if (previousReason === "dispute_lost" || disputeStatus === "lost") {
     return inactiveOneTimeTransition("dispute_lost", "revoked");
-  }
-  if (previousReason === "full_refund") {
-    return inactiveOneTimeTransition("full_refund", "revoked");
   }
   if (
     options.facts.amountPaid > 0 &&
@@ -463,23 +473,29 @@ export function planOneTimeEntitlementTransition(options: {
   ) {
     return inactiveOneTimeTransition("full_refund", "revoked");
   }
-
-  const disputeStatus = options.facts.disputeStatus.trim().toLowerCase();
-  if (disputeStatus === "lost") {
-    return inactiveOneTimeTransition("dispute_lost", "revoked");
+  if (previousReason === "full_refund") {
+    if (
+      options.facts.fullRefundRecoveryProven !== true ||
+      !options.facts.paymentProven ||
+      options.facts.amountPaid <= 0 ||
+      !noBlockingDispute
+    ) {
+      return inactiveOneTimeTransition("full_refund", "revoked");
+    }
   }
-  if (disputeStatus && disputeStatus !== "won" && disputeStatus !== "none") {
+
+  if (openDispute || (disputeStatus && !noBlockingDispute)) {
     return inactiveOneTimeTransition("dispute_open", "suspended");
   }
-  if (previousReason === "dispute_open" && disputeStatus !== "won") {
+  if (previousReason === "dispute_open" && !closedDispute) {
     return inactiveOneTimeTransition("dispute_open", "suspended");
   }
   if (!options.facts.paymentProven) {
     return inactiveOneTimeTransition("payment_not_paid", "revoked");
   }
 
-  const statusReason = disputeStatus === "won"
-    ? "dispute_won"
+  const statusReason = closedDispute
+    ? `dispute_${disputeStatus}`
     : options.facts.amountRefunded > 0
     ? "partial_refund"
     : "payment_paid";

@@ -3325,6 +3325,8 @@ export async function fulfillCheckoutSession(
         accountId,
         customerId,
         checkoutSessionId,
+        priceId: expectedPriceId,
+        productId: expectedProductId,
         paymentFacts: canonicalPayment.facts,
         noPaymentRequired: canonicalPayment.noPaymentRequired,
         currency: canonicalPayment.currency,
@@ -3504,7 +3506,7 @@ async function retrieveCanonicalPaymentFacts(options: {
   }
   const disputeStatus = canonicalDisputeStatus(
     disputes,
-    disputesHaveMore || Boolean(charge.disputed),
+    disputesHaveMore || (Boolean(charge.disputed) && disputes.length === 0),
   );
 
   return {
@@ -3537,10 +3539,24 @@ function canonicalDisputeStatus(
 ) {
   const statuses = disputes.map((dispute) => cleanString(dispute.status, 80).toLowerCase());
   if (statuses.includes("lost")) return "lost";
-  const open = statuses.find((status) => status && status !== "won");
+  const open = statuses.find((status) => [
+    "warning_needs_response",
+    "warning_under_review",
+    "needs_response",
+    "under_review",
+  ].includes(status));
   if (open) return open;
+  const unknown = statuses.find((status) => status && ![
+    "warning_closed",
+    "prevented",
+    "won",
+  ].includes(status));
+  if (unknown) return "unknown";
+  if (disputedWithoutFinalProof) return "unknown";
   if (statuses.includes("won")) return "won";
-  return disputedWithoutFinalProof ? "unknown" : "none";
+  if (statuses.includes("prevented")) return "prevented";
+  if (statuses.includes("warning_closed")) return "warning_closed";
+  return "none";
 }
 
 export async function reconcileOneTimePaymentLifecycle(
@@ -3552,6 +3568,7 @@ export async function reconcileOneTimePaymentLifecycle(
   const eventWatermark = normalizeStripeEventWatermark(stripeEvent);
   let chargeId = "";
   let canonicalDispute: Stripe.Dispute | undefined;
+  let canonicalRefund: Stripe.Refund | undefined;
   if (eventType.startsWith("charge.dispute.")) {
     const disputeId = normalizeStripeId(payload.id);
     if (!disputeId) {
@@ -3571,7 +3588,35 @@ export async function reconcileOneTimePaymentLifecycle(
       return { fulfilled: false as const, reason: "event_charge_mismatch" };
     }
   } else if (eventType.startsWith("refund.")) {
-    chargeId = normalizeStripeId(payload.charge);
+    const refundId = normalizeStripeId(payload.id);
+    if (!refundId) {
+      return { fulfilled: false as const, reason: "missing_refund_id" };
+    }
+    canonicalRefund = await getStripe().refunds.retrieve(
+      refundId,
+      { expand: ["charge", "payment_intent"] },
+      getStripeRequestOptions(),
+    );
+    if (canonicalRefund.id !== refundId) {
+      return { fulfilled: false as const, reason: "refund_identity_mismatch" };
+    }
+    if (eventType === "refund.failed" && canonicalRefund.status !== "failed") {
+      return { fulfilled: false as const, reason: "refund_status_mismatch" };
+    }
+    chargeId = normalizeStripeId(canonicalRefund.charge);
+    const payloadChargeId = normalizeStripeId(payload.charge);
+    if (payloadChargeId && payloadChargeId !== chargeId) {
+      return { fulfilled: false as const, reason: "event_charge_mismatch" };
+    }
+    const canonicalPaymentIntentId = normalizeStripeId(canonicalRefund.payment_intent);
+    const payloadPaymentIntentId = normalizeStripeId(payload.payment_intent);
+    if (
+      payloadPaymentIntentId &&
+      canonicalPaymentIntentId &&
+      payloadPaymentIntentId !== canonicalPaymentIntentId
+    ) {
+      return { fulfilled: false as const, reason: "event_payment_intent_mismatch" };
+    }
   } else if (eventType === "charge.refunded" || eventType === "charge.updated") {
     chargeId = normalizeStripeId(payload.id);
   } else {
@@ -3579,16 +3624,39 @@ export async function reconcileOneTimePaymentLifecycle(
   }
   if (!chargeId) return { fulfilled: false as const, reason: "missing_charge_id" };
 
-  const expectedPaymentIntentId = normalizeStripeId(payload.payment_intent);
+  const expectedPaymentIntentId = normalizeStripeId(
+    canonicalRefund?.payment_intent || payload.payment_intent,
+  );
   const canonical = await retrieveCanonicalPaymentFacts({
     chargeId,
     expectedPaymentIntentId: expectedPaymentIntentId || undefined,
     canonicalDispute,
-    forceDisputeLookup: eventType.startsWith("charge.dispute."),
+    forceDisputeLookup: true,
   });
   if (!canonical.ok) {
     return { fulfilled: false as const, reason: canonical.reason };
   }
+
+  const candidates = await selectOneTimeLifecycleLicenses(
+    getPool(),
+    canonical.facts.paymentIntentId,
+    canonical.facts.chargeId,
+  );
+  if (candidates.length !== 1) {
+    return {
+      fulfilled: false as const,
+      reason: candidates.length ? "ambiguous_payment_identity" : "missing_license",
+    };
+  }
+  const candidate = candidates[0];
+  if (!oneTimeLifecycleIdentityMatches(candidate, canonical.facts)) {
+    return { fulfilled: false as const, reason: "payment_identity_mismatch" };
+  }
+  const fullRefundRecoveryProven = candidate.status_reason === "full_refund" &&
+      canonical.facts.amountPaid > 0 &&
+      canonical.facts.amountRefunded < canonical.facts.amountPaid
+    ? await proveCanonicalFullRefundRecovery(candidate, canonical.facts)
+    : false;
 
   return withPgClient(async (client) => {
     await client.query("begin");
@@ -3596,47 +3664,45 @@ export async function reconcileOneTimePaymentLifecycle(
       await client.query("select pg_advisory_xact_lock(hashtext($1))", [
         `one_time_payment:${canonical.facts.paymentIntentId}`,
       ]);
-      const selected = await client.query<{
-        account_id: string;
-        stripe_customer_id: string;
-        stripe_checkout_session_id: string;
-        stripe_payment_intent_id: string;
-        stripe_charge_id: string | null;
-      }>(
-        `
-          select account_id, stripe_customer_id, stripe_checkout_session_id,
-            stripe_payment_intent_id, stripe_charge_id
-          from public.sidestream_licenses
-          where stripe_payment_intent_id = $1
-             or stripe_charge_id = $2
-          order by created_at asc
-          limit 2
-          for update
-        `,
-        [canonical.facts.paymentIntentId, canonical.facts.chargeId],
+      const selected = await selectOneTimeLifecycleLicenses(
+        client,
+        canonical.facts.paymentIntentId,
+        canonical.facts.chargeId,
+        true,
       );
-      if (selected.rows.length !== 1) {
+      if (selected.length !== 1) {
         await client.query("rollback");
         return {
           fulfilled: false as const,
-          reason: selected.rows.length ? "ambiguous_payment_identity" : "missing_license",
+          reason: selected.length ? "ambiguous_payment_identity" : "missing_license",
         };
       }
-      const license = selected.rows[0];
-      if (
-        license.stripe_payment_intent_id !== canonical.facts.paymentIntentId ||
-        license.stripe_customer_id !== canonical.facts.customerId ||
-        (license.stripe_charge_id && license.stripe_charge_id !== canonical.facts.chargeId)
-      ) {
+      const license = selected[0];
+      if (!oneTimeLifecycleIdentityMatches(license, canonical.facts)) {
         await client.query("rollback");
         return { fulfilled: false as const, reason: "payment_identity_mismatch" };
       }
+
+      const recoveryProofStillMatches = fullRefundRecoveryProven &&
+        license.id === candidate.id &&
+        license.account_id === candidate.account_id &&
+        license.account_stripe_customer_id === candidate.account_stripe_customer_id &&
+        license.stripe_checkout_session_id === candidate.stripe_checkout_session_id &&
+        license.stripe_price_id === candidate.stripe_price_id &&
+        license.stripe_product_id === candidate.stripe_product_id &&
+        license.plan_key === candidate.plan_key &&
+        license.status_reason === candidate.status_reason;
 
       const result = await upsertLicenseFromOneTimeCheckoutSession({
         accountId: license.account_id,
         customerId: license.stripe_customer_id,
         checkoutSessionId: license.stripe_checkout_session_id,
-        paymentFacts: canonical.facts,
+        priceId: license.stripe_price_id || "",
+        productId: license.stripe_product_id || "",
+        paymentFacts: {
+          ...canonical.facts,
+          fullRefundRecoveryProven: recoveryProofStillMatches,
+        },
         noPaymentRequired: false,
         currency: canonical.facts.currency,
         eventWatermark,
@@ -3658,10 +3724,97 @@ export async function reconcileOneTimePaymentLifecycle(
   });
 }
 
+type OneTimeLifecycleLicense = Readonly<{
+  id: string;
+  account_id: string;
+  account_stripe_customer_id: string | null;
+  stripe_customer_id: string;
+  stripe_checkout_session_id: string;
+  stripe_payment_intent_id: string;
+  stripe_charge_id: string | null;
+  stripe_price_id: string | null;
+  stripe_product_id: string | null;
+  plan_key: string;
+  status_reason: string;
+}>;
+
+async function selectOneTimeLifecycleLicenses(
+  runner: Pick<Pool | PoolClient, "query">,
+  paymentIntentId: string,
+  chargeId: string,
+  forUpdate = false,
+) {
+  const selected = await runner.query<OneTimeLifecycleLicense>(
+    `
+      select l.id, l.account_id,
+        (select a.stripe_customer_id
+         from public.sidestream_accounts a
+         where a.id = l.account_id) as account_stripe_customer_id,
+        l.stripe_customer_id, l.stripe_checkout_session_id,
+        l.stripe_payment_intent_id, l.stripe_charge_id,
+        l.stripe_price_id, l.stripe_product_id, l.plan_key, l.status_reason
+      from public.sidestream_licenses l
+      where l.stripe_payment_intent_id = $1
+         or l.stripe_charge_id = $2
+      order by l.created_at asc
+      limit 2
+      ${forUpdate ? "for update" : ""}
+    `,
+    [paymentIntentId, chargeId],
+  );
+  return selected.rows;
+}
+
+function oneTimeLifecycleIdentityMatches(
+  license: OneTimeLifecycleLicense,
+  facts: CanonicalOneTimePaymentFacts,
+) {
+  return license.stripe_payment_intent_id === facts.paymentIntentId &&
+    license.stripe_customer_id === facts.customerId &&
+    (!license.stripe_charge_id || license.stripe_charge_id === facts.chargeId);
+}
+
+async function proveCanonicalFullRefundRecovery(
+  license: OneTimeLifecycleLicense,
+  facts: CanonicalOneTimePaymentFacts,
+) {
+  if (
+    !license.stripe_checkout_session_id ||
+    !license.stripe_price_id ||
+    !license.stripe_product_id ||
+    license.plan_key !== SIDESTREAM_PRO_PLAN_KEY ||
+    license.stripe_product_id !== getSidestreamProProductId() ||
+    license.account_stripe_customer_id !== facts.customerId
+  ) {
+    return false;
+  }
+  const checkoutSession = await getStripe().checkout.sessions.retrieve(
+    license.stripe_checkout_session_id,
+    { expand: ["line_items.data.price.product"] },
+    getStripeRequestOptions(),
+  );
+  const verification = verifyPaidCheckoutSession(checkoutSession, {
+    sessionId: license.stripe_checkout_session_id,
+    priceId: license.stripe_price_id,
+    productId: license.stripe_product_id,
+    paidPlanKeys: SIDESTREAM_PAID_PLAN_KEYS,
+  });
+  const metadataAccountId = cleanString(
+    checkoutSession.metadata?.sidestream_account_id,
+    80,
+  );
+  return verification.ok &&
+    normalizeStripeId(checkoutSession.customer) === facts.customerId &&
+    normalizeStripeId(checkoutSession.payment_intent) === facts.paymentIntentId &&
+    (!metadataAccountId || metadataAccountId === license.account_id);
+}
+
 async function upsertLicenseFromOneTimeCheckoutSession(options: {
   accountId: string;
   customerId: string;
   checkoutSessionId: string;
+  priceId: string;
+  productId: string;
   paymentFacts: CanonicalOneTimePaymentFacts | null;
   noPaymentRequired: boolean;
   currency: string;
@@ -3673,6 +3826,8 @@ async function upsertLicenseFromOneTimeCheckoutSession(options: {
     stripe_customer_id: string;
     stripe_payment_intent_id: string | null;
     stripe_charge_id: string | null;
+    stripe_price_id: string | null;
+    stripe_product_id: string | null;
     currency: string | null;
     entitlement_status: "unknown" | "active" | "suspended" | "revoked";
     status_reason: string;
@@ -3681,7 +3836,8 @@ async function upsertLicenseFromOneTimeCheckoutSession(options: {
   }>(
     `
       select id, account_id, stripe_customer_id, stripe_payment_intent_id,
-        stripe_charge_id, currency, entitlement_status, status_reason,
+        stripe_charge_id, stripe_price_id, stripe_product_id, currency,
+        entitlement_status, status_reason,
         stripe_state_event_created_at, stripe_state_event_id
       from public.sidestream_licenses
       where stripe_checkout_session_id = $1
@@ -3700,6 +3856,8 @@ async function upsertLicenseFromOneTimeCheckoutSession(options: {
       existing.stripe_customer_id !== options.customerId ||
       (existing.stripe_payment_intent_id && existing.stripe_payment_intent_id !== paymentIntentId) ||
       (existing.stripe_charge_id && existing.stripe_charge_id !== chargeId) ||
+      (existing.stripe_price_id && existing.stripe_price_id !== options.priceId) ||
+      (existing.stripe_product_id && existing.stripe_product_id !== options.productId) ||
       (existing.currency && existing.currency !== options.currency)
     )
   ) {
@@ -3770,6 +3928,7 @@ async function upsertLicenseFromOneTimeCheckoutSession(options: {
         insert into public.sidestream_licenses (
           account_id, stripe_customer_id, stripe_subscription_id,
           stripe_checkout_session_id, stripe_payment_intent_id, stripe_charge_id,
+          stripe_price_id, stripe_product_id,
           plan_key, status, current_period_end, cancel_at_period_end, grace_until,
           features, amount_paid, amount_refunded, currency,
           entitlement_status, status_reason, revoked_at, suspended_at,
@@ -3777,11 +3936,11 @@ async function upsertLicenseFromOneTimeCheckoutSession(options: {
           created_at, updated_at
         )
         values (
-          $1, $2, null, $3, $4, $5, $6, $7, null, false, null, $8::jsonb,
-          $9, $10, $11, $12, $13,
-          case when $12 = 'revoked' then now() else null end,
-          case when $12 = 'suspended' then now() else null end,
-          now(), $14::timestamptz, $15, now(), now()
+          $1, $2, null, $3, $4, $5, $6, $7, $8, $9, null, false, null, $10::jsonb,
+          $11, $12, $13, $14, $15,
+          case when $14 = 'revoked' then now() else null end,
+          case when $14 = 'suspended' then now() else null end,
+          now(), $16::timestamptz, $17, now(), now()
         )
         returning id
       `,
@@ -3791,6 +3950,8 @@ async function upsertLicenseFromOneTimeCheckoutSession(options: {
         options.checkoutSessionId,
         paymentIntentId || null,
         chargeId || null,
+        options.priceId,
+        options.productId,
         SIDESTREAM_PRO_PLAN_KEY,
         entitlementStatus,
         JSON.stringify({
@@ -3818,32 +3979,36 @@ async function upsertLicenseFromOneTimeCheckoutSession(options: {
         update public.sidestream_licenses
         set stripe_payment_intent_id = coalesce(stripe_payment_intent_id, $2),
             stripe_charge_id = coalesce(stripe_charge_id, $3),
-            amount_paid = greatest(coalesce(amount_paid, 0), $4),
-            amount_refunded = greatest(coalesce(amount_refunded, 0), $5),
-            currency = coalesce(currency, $6),
-            plan_key = $7,
-            status = case when $8 then $9 else status end,
-            entitlement_status = case when $8 then $9 else entitlement_status end,
-            status_reason = case when $8 then $10 else status_reason end,
+            stripe_price_id = coalesce(stripe_price_id, nullif($4, '')),
+            stripe_product_id = coalesce(stripe_product_id, nullif($5, '')),
+            amount_paid = case when $10 then $6 else amount_paid end,
+            amount_refunded = case when $10 then $7 else amount_refunded end,
+            currency = coalesce(currency, $8),
+            plan_key = $9,
+            status = case when $10 then $11 else status end,
+            entitlement_status = case when $10 then $11 else entitlement_status end,
+            status_reason = case when $10 then $12 else status_reason end,
             revoked_at = case
-              when $8 and $9 = 'revoked' then coalesce(revoked_at, now())
+              when $10 and $11 = 'revoked' then coalesce(revoked_at, now())
+              when $10 and $11 = 'active' then null
               else revoked_at
             end,
             suspended_at = case
-              when $8 and $9 = 'suspended' then coalesce(suspended_at, now())
+              when $10 and $11 = 'suspended' then coalesce(suspended_at, now())
+              when $10 and $11 = 'active' then null
               else suspended_at
             end,
             reconciled_at = now(),
             stripe_state_event_created_at = case
-              when $8 and $11::timestamptz is not null then $11::timestamptz
+              when $10 and $13::timestamptz is not null then $13::timestamptz
               else stripe_state_event_created_at
             end,
             stripe_state_event_id = case
-              when $8 and $11::timestamptz is not null then $12
+              when $10 and $13::timestamptz is not null then $14
               else stripe_state_event_id
             end,
             features = features || jsonb_build_object(
-              'unlimited_downloads', $13::boolean,
+              'unlimited_downloads', $15::boolean,
               'customer_portal', true,
               'one_time_purchase', true
             ),
@@ -3858,6 +4023,8 @@ async function upsertLicenseFromOneTimeCheckoutSession(options: {
         existing.id,
         paymentIntentId || null,
         chargeId || null,
+        options.priceId,
+        options.productId,
         amountPaid,
         amountRefunded,
         options.currency,

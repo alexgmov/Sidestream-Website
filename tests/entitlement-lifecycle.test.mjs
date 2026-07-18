@@ -78,6 +78,111 @@ test("partial refunds stay active while full and cumulative refunds revoke", () 
   assert.equal(cumulative.revokeCredentials, true);
 });
 
+test("a failed full refund restores only with complete newer canonical proof", () => {
+  const fullRefundStored = {
+    ...activeStored,
+    entitlementStatus: "revoked",
+    statusReason: "full_refund",
+    stripeEventCreatedAtMs: 2_000,
+    stripeEventId: "evt_full_refund",
+  };
+  const recovered = planOneTimeEntitlementTransition({
+    stored: fullRefundStored,
+    facts: {
+      ...paidFacts,
+      amountRefunded: 400,
+      fullRefundRecoveryProven: true,
+    },
+    event: event(3_000, "evt_refund_failed"),
+  });
+  assert.deepEqual(recovered, {
+    apply: true,
+    entitlementStatus: "active",
+    statusReason: "partial_refund",
+    revokeCredentials: false,
+  });
+
+  for (const [name, facts] of [
+    ["missing ownership proof", { ...paidFacts, amountRefunded: 400 }],
+    ["payment not paid", {
+      ...paidFacts,
+      amountRefunded: 400,
+      paymentProven: false,
+      fullRefundRecoveryProven: true,
+    }],
+    ["open dispute", {
+      ...paidFacts,
+      amountRefunded: 400,
+      disputeStatus: "under_review",
+      fullRefundRecoveryProven: true,
+    }],
+  ]) {
+    assert.deepEqual(planOneTimeEntitlementTransition({
+      stored: fullRefundStored,
+      facts,
+      event: event(3_000, `evt_refused_${name.replaceAll(" ", "_")}`),
+    }), {
+      apply: true,
+      entitlementStatus: "revoked",
+      statusReason: "full_refund",
+      revokeCredentials: true,
+    }, name);
+  }
+
+  assert.deepEqual(planOneTimeEntitlementTransition({
+    stored: fullRefundStored,
+    facts: {
+      ...paidFacts,
+      amountRefunded: 400,
+      disputeStatus: "lost",
+      fullRefundRecoveryProven: true,
+    },
+    event: event(3_000, "evt_refused_lost"),
+  }), {
+    apply: true,
+    entitlementStatus: "revoked",
+    statusReason: "dispute_lost",
+    revokeCredentials: true,
+  });
+});
+
+test("every Stripe dispute status has an explicit entitlement outcome", () => {
+  for (const status of [
+    "warning_needs_response",
+    "warning_under_review",
+    "needs_response",
+    "under_review",
+  ]) {
+    assert.deepEqual(planOneTimeEntitlementTransition({
+      stored: activeStored,
+      facts: { ...paidFacts, disputeStatus: status },
+      event: event(2_000, `evt_${status}`),
+    }), {
+      apply: true,
+      entitlementStatus: "suspended",
+      statusReason: "dispute_open",
+      revokeCredentials: true,
+    }, status);
+  }
+
+  for (const status of ["warning_closed", "prevented", "won"]) {
+    assert.deepEqual(planOneTimeEntitlementTransition({
+      stored: {
+        ...activeStored,
+        entitlementStatus: "suspended",
+        statusReason: "dispute_open",
+      },
+      facts: { ...paidFacts, disputeStatus: status },
+      event: event(2_000, `evt_${status}`),
+    }), {
+      apply: true,
+      entitlementStatus: "active",
+      statusReason: `dispute_${status}`,
+      revokeCredentials: false,
+    }, status);
+  }
+});
+
 test("disputes suspend immediately, lost stays revoked, and won restores only paid truth", () => {
   const opened = planOneTimeEntitlementTransition({
     stored: activeStored,
@@ -370,6 +475,7 @@ test("runtime wiring persists lifecycle facts and atomically clears both credent
   assert.match(eventsSource, /materializeCustomerCommerceEvent/);
   for (const eventType of [
     "charge.refunded",
+    "refund.failed",
     "charge.dispute.created",
     "charge.dispute.closed",
   ]) {

@@ -480,6 +480,7 @@ async function reconcileInheritedEntitlement(
     case "charge.updated":
     case "refund.created":
     case "refund.updated":
+    case "refund.failed":
     case "charge.dispute.created":
     case "charge.dispute.updated":
     case "charge.dispute.closed": {
