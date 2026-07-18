@@ -31,16 +31,20 @@ history or tickets.
   webhook backlog.
 - Download leads converge on one Postgres identity. Private Blob is a bounded
   fallback, not a second source of truth, and replay is explicit and observable.
-- Three `CRON_SECRET`-protected jobs process Stripe events, replay fallback leads,
-  and run retention maintenance.
-- The repository does not currently contain a production maintenance rule,
-  operator WAF bypass, per-job cron kill switch, Stripe dead-letter reset/replay
-  tool, qualified runtime-distinct rollback artifact, failed-refund recovery
-  transition, complete current-dispute-status mapping, a claim-side total-attempt
-  cap, authenticated-transport support in the migration/legacy/device/reporting
-  tools, or historical lifecycle repair tool.
-  Every one remains an explicit Production blocker, never an existing
-  capability.
+- Four `CRON_SECRET`-protected jobs process Stripe events, replay fallback leads,
+  run retention maintenance, and synchronize Customer 360 usage.
+- Local code now contains a tested `refund.failed` recovery transition, explicit
+  mapping for every current dispute status, an absolute normal-claim attempt cap,
+  authenticated TLS enforcement for the Customer 360 telemetry reader, a
+  fail-closed Customer 360 retention inventory, and audited exact-event
+  dead-letter recovery restricted to Test. None was deployed or exercised
+  against a connected provider target.
+- The repository still does not contain a production maintenance rule, operator
+  WAF bypass, per-job cron kill switch, Production/livemode dead-letter recovery,
+  qualified runtime-distinct rollback artifact, authenticated-transport support
+  in the migration/legacy/device/reporting tools, historical lifecycle repair
+  tool, or Customer 360 retention mutation policy/implementation. Those remain
+  explicit Production blockers, never existing capabilities.
 
 ## HTTP and release contract
 
@@ -179,17 +183,17 @@ rules.
 Only `entitlement_status=active` with plan `sidestream_pro` or the compatible
 `sidestream_unlimited` is paid access.
 
-The following table describes current code; it is not yet complete canonical
-Stripe truth and must not be used to approve production cutover:
+The following table describes current code. It must not be used to approve
+Production cutover without provider configuration and live Preview/Test proof:
 
 | Stripe fact | Current result | Credential effect / limitation |
 | --- | --- | --- |
 | Exact one-time payment paid | `active / payment_paid` | May issue credentials |
 | Partial refund | `active / partial_refund` | Remains active |
-| Full refund | `revoked / full_refund` | Irreversible in current code; later Checkout or a failed-refund update cannot restore access |
+| Full refund | `revoked / full_refund` | A newer canonical failed-refund state may recover only with complete locked ownership/Product/Price/payment/dispute/watermark proof; incomplete historical rows remain revoked |
 | `warning_needs_response`, `warning_under_review`, `needs_response`, or `under_review` dispute | `suspended / dispute_open` | Conservative suspension while inquiry/dispute is open |
-| `warning_closed` or `prevented` dispute | **Incorrectly** `suspended / dispute_open` | Stripe defines these as non-open terminal outcomes, but current code treats every nonempty status other than `won` as open |
-| Dispute won | `active / dispute_won` | May reactivate only when the stored reason is not already irreversible `dispute_lost` |
+| `warning_closed` or `prevented` dispute | `active / dispute_warning_closed` or `active / dispute_prevented` | Closed outcome; may reactivate only when the stored reason is not irreversible `dispute_lost` |
+| Dispute won | `active / dispute_won` | Closed outcome; may reactivate only when the stored reason is not irreversible `dispute_lost` |
 | Dispute lost | `revoked / dispute_lost` | Irreversible in current code, including if later canonical Stripe truth reports `won` |
 | Payment not paid | `revoked / payment_not_paid` | No credentials |
 | Unknown or unallowlisted legacy subscription | `unknown` or quarantined `revoked` | No paid access |
@@ -198,20 +202,21 @@ The `(stripe_created_at, event_id)` watermark makes lifecycle application
 deterministic under duplicate or out-of-order delivery. Never edit entitlement
 state by hand to jump ahead of that watermark.
 
-Two implementation gaps block production. First, Stripe returns failed refund
-funds to the merchant balance and emits `refund.failed`, but
-`reconcileStripeEvent()` neither subscribes to nor handles that type. The current
-`full_refund` transition and persisted maximum refunded amount are irreversible,
-so later canonical recovery cannot restore access. A separate code-owned change
-must add `refund.failed` handling, tests, and a reviewed recovery transition (or
-obtain explicit business approval for permanent refund-intent revocation plus a
-tested manual customer-recovery procedure). No such approval or procedure exists
-today. Second, Stripe's current Dispute object includes `warning_closed` and
-`prevented` as non-open outcomes, while the current mapper suspends both; it also
-makes `lost` irreversible. A separate change must explicitly map and test every
-current status, or obtain documented approval for a conservative anti-abuse
-policy and its recovery consequences. Until both gaps are resolved and proved in
-Preview/Test, this runbook is not executable in production. Primary contracts:
+The two mapper implementation gaps are closed in local code. `refund.failed` now
+re-retrieves canonical Refund, Charge, PaymentIntent, Checkout Session, and
+dispute-list state; it can reduce the stored successful refunded total and
+recover a full-refund license only when the locked license owner, configured
+Product, stored Price/Product, canonical Checkout line item, Stripe Customer,
+PaymentIntent, payment state, dispute state, and watermark all agree. Historical
+rows without stored Price/Product fail closed. All eight current dispute statuses
+are explicit: four warning/review states suspend, `warning_closed`, `prevented`,
+and `won` are closed, and `lost` remains irreversible. Recovery clears license
+status but never revives revoked tokens or erased refresh hashes.
+
+This is code proof, not provider or rollout proof. No Stripe endpoint selection,
+deployment, delivery, connected target, or Preview/Test lifecycle was verified.
+The historical reconciliation blocker below remains because events terminalized
+under the previous mapper cannot be repaired by resending them. Primary contracts:
 [Stripe refunds](https://docs.stripe.com/refunds) and the
 [Stripe Dispute object](https://docs.stripe.com/api/disputes/object).
 
@@ -328,8 +333,8 @@ evidence.
 
 ### Required Stripe webhook subscriptions
 
-After the lifecycle blockers above are fixed and tested, the target production
-endpoint must select exactly the reviewed lifecycle events:
+A future reviewed target endpoint must select exactly the reviewed lifecycle
+events:
 
 - Checkout completion: `checkout.session.completed`
 - Refund lifecycle: `charge.refunded`, `charge.updated`, `refund.created`,
@@ -339,10 +344,11 @@ endpoint must select exactly the reviewed lifecycle events:
 - Allowlisted legacy subscriptions: `customer.subscription.created`,
   `customer.subscription.updated`, `customer.subscription.deleted`
 
-The current exhaustive switch implements every item above **except**
-`refund.failed`; an unimplemented event is durably recorded and then ignored.
-Do not add that event to the live destination and do not cut over while this gap
-exists. Expanding behavior requires code, tests, endpoint selection, and this
+The current exhaustive switch implements every item above, including
+`refund.failed`, with local fixture/disposable-Postgres proof. No live endpoint
+configuration was read or changed, so that implementation does not prove the
+target's `enabled_events`, delivery history, or canonical historical state.
+Expanding behavior still requires code, tests, endpoint selection, and this
 contract to change together. Stripe's endpoint `enabled_events` is the selection
 for that endpoint, while Workbench Event deliveries show attempts to that
 endpoint; neither is an account-wide event inventory. See the primary
@@ -357,7 +363,9 @@ received ──claim──> processing ──success──> processed (terminal)
                         │        └────────> ignored (terminal)
                         ├─caught failure, attempt < 8──> retryable ──due claim──┐
                         ├─caught failure, attempt >= 8─> dead_letter (terminal)│
-                        └─process termination──> expired lease ────────────────┘
+                        └─process termination──> expired lease                 │
+                                                   ├─attempt < 8───────────────┘
+                                                   └─attempt >= 8─> dead_letter
 ```
 
 Claims use `FOR UPDATE SKIP LOCKED`, a UUID claim token, an incremented attempt,
@@ -368,26 +376,47 @@ failure uses a maximum-attempt argument of eight: below it the row becomes
 Backoff is exponential from five seconds, jittered to 50-100%, capped at 15
 minutes, and at least one second.
 
-That is not an absolute eight-claim bound. If the process terminates after claim,
-the failure handler never runs. After lease expiry, the claim query has no
-`attempt_count` predicate, reclaims the row, and increments the counter again.
-Repeated termination/reclaim cycles can therefore continue indefinitely. This is
-an explicit Production blocker: a separately owned code change must impose a
-claim/reclaim-side total-attempt terminal cap, preserve race-safe claim semantics,
-and test repeated process termination plus lease expiry. Until that exists, any
-nonterminal row at or above attempt eight is a critical incident and no document
-may call local processing absolutely bounded. Poison events still cannot make
-`/api/auth/session` or other customer reads process the queue.
+The same bounded `maxAttempts` now governs claim and failure handling. One
+race-safe statement uses separate bounded `FOR UPDATE SKIP LOCKED` candidate
+sets: received/retryable rows at the cap terminalize immediately, an active final
+processing lease remains processable, and only after that lease expires does it
+terminalize without increment or another processor call. Claim-side terminal
+rows preserve `attempt_count`, clear claim/lease fields, set `terminal_at`, and
+record `claim_attempt_limit_exhausted`; drain summaries and safe logs count the
+dead letter. Repeated crash/expiry cycles therefore cannot create a ninth normal
+processing attempt. This closes the code-owned absolute-cap gap, but does not
+prove a deployed worker, cron, database state, alert, or connected target.
+Poison events still cannot make `/api/auth/session` or other customer reads
+process the queue.
 
-`dead_letter` is terminal: the row has `terminal_at` set and the claim query
-cannot select it. This repository currently has no Stripe dead-letter reset or
-replay CLI, API route, or audited SQL procedure. Do not change queue status,
-`terminal_at`, watermarks, or entitlement rows by hand. Any dead letter in
-Preview/Test blocks production promotion. A production dead letter is a critical
-incident: preserve its payload before retention redacts it, globally disable
-project cron scheduling if processing must stop, fix the cause, and add separately
-reviewed event-specific recovery tooling plus tests before any replay attempt.
-Until that tooling exists, the event remains terminal.
+`dead_letter` is terminal to the normal claim path: the row has `terminal_at`
+set and ordinary workers cannot select it. Read-only
+`npm run stripe-events:recover-test -- --event-id evt_...` inspects exactly one
+row and returns only safe status/type/attempt/timestamp/error/outcome fields,
+digests, a non-secret target fingerprint, and the exact required confirmation.
+It can run before the recovery schema exists.
+
+Apply is a separate, human-reviewed Test-only exception. It requires
+`SIDESTREAM_TEST_POSTGRES_URL`, an isolated Test target, authenticated remote TLS,
+`licenseNamespace=test`, a Stripe test key, a non-livemode payload, no livemode
+events in the database, the exact attempt-8 dead letter, target fingerprint,
+payload digest, terminal expectation, approved reason, and confirmation from the
+read-only report. Migration
+`20260717230000_add_stripe_event_recovery_audit.sql` adds an immutable digest-only
+audit and queue binding; it was locally checksummed/validated, not applied. One
+authorization advances only that exact row to attempt 9 and processes it through
+the normal single-claim interface. Lost responses are idempotent, the binding is
+retained, and failure terminalizes again. There is no bulk selector, reset,
+configurable cap, direct entitlement edit, audit mutation, Production, or
+livemode path.
+
+Do not change queue status, `terminal_at`, watermarks, audit rows, or entitlement
+rows by hand. Any dead letter still blocks Preview/Test until the isolated target,
+migration, separate approval, exact execution, terminal result, and audit
+evidence pass review. A Production dead letter remains a critical incident with
+no recovery code path: preserve its payload before retention redacts it and use a
+separately reviewed Production plan. Local tooling does not authorize cron,
+provider, migration, or replay changes.
 
 Any future maintenance or fallback plan must keep the live Stripe event
 destination enabled. Stripe documents that events created while a destination
@@ -440,13 +469,13 @@ Never paste values into this document, tickets, chat, browser code, or CEP code.
 
 | Area | Variables and bounded contract |
 | --- | --- |
-| Scheduler | `CRON_SECRET`: one stable random value, 16-512 printable non-space ASCII characters (`U+0021`-`U+007E`), sent as `Authorization: Bearer ...` to every internal route. Generate 32 random bytes as a 64-character hexadecimal token in the approved secret manager; spaces, tabs, newlines, and non-ASCII are outside the shared contract because lead replay rejects them even though the other two validators do not enforce this character class. |
+| Scheduler | `CRON_SECRET`: one stable random value, 16-512 printable non-space ASCII characters (`U+0021`-`U+007E`), sent as `Authorization: Bearer ...` to every internal route. Generate 32 random bytes as a 64-character hexadecimal token in the approved secret manager; spaces, tabs, newlines, and non-ASCII are outside the shared contract because lead replay rejects them even though the other three validators do not enforce this character class. |
 | Runtime database | Pooled URL precedence above; `POSTGRES_POOL_MAX` default 4, range 2-20; `POSTGRES_POOL_IDLE_TIMEOUT_MS` 10000, 1000-60000; `POSTGRES_CONNECTION_TIMEOUT_MS` 5000, 250-30000; `POSTGRES_QUERY_TIMEOUT_MS` and `POSTGRES_STATEMENT_TIMEOUT_MS` 10000, 250-60000; `POSTGRES_SSL=0` only for a known local target |
 | Migration database | `SIDESTREAM_POSTGRES_URL_NON_POOLING` preferred; `POSTGRES_MIGRATION_STATEMENT_TIMEOUT_MS` defaults to 300000 and is bounded 1000-1800000; runner pool max is 1 |
 | Test database | `SIDESTREAM_TEST_POSTGRES_URL` is mandatory for integration tests, must be disposable, and must not normalize to any runtime host/port/database target |
 | Rate limiter | `SIDESTREAM_RATE_LIMIT_HASH_SECRET`, at least 32 characters and stable; no production fallback. Checkout is fixed at 8/intent and 20/IP per 15 minutes; lead capture is fixed at 5/email and 20/IP per 10 minutes |
 | Checkout intent | Signed confirmation TTL 10 minutes; database intent TTL 24 hours; fixed code constants. Product/Price variables are `SIDESTREAM_PRO_PRODUCT_ID`, `SIDESTREAM_PRO_PRICE_ID`, and legacy `SIDESTREAM_UNLIMITED_PRICE_ID` |
-| Stripe retries | Batch/lease/backoff and caught-failure attempt-8 behavior are described above. Crash/lease-reclaim attempts are currently unbounded because the claim query has no total-attempt cap; that is a Production blocker. Legacy allowlists are `SIDESTREAM_LEGACY_SUBSCRIPTION_PRODUCT_IDS` and `SIDESTREAM_LEGACY_SUBSCRIPTION_PRICE_IDS` |
+| Stripe retries | Batch/lease/backoff and the absolute normal-processing attempt-8 bound are described above. Exhausted ordinary work terminalizes without a ninth normal processor call; separately approved exact-event Test recovery is the only attempt-9 path. Legacy allowlists are `SIDESTREAM_LEGACY_SUBSCRIPTION_PRODUCT_IDS` and `SIDESTREAM_LEGACY_SUBSCRIPTION_PRICE_IDS` |
 | Lead fallback | `SIDESTREAM_LEAD_HASH_SECRET` at least 32 characters (may intentionally share the rate-limit secret), `SIDESTREAM_DOWNLOAD_LEADS_BLOB_PREFIX`, plus Vercel Blob auth variables |
 | License/device | If `SIDESTREAM_LICENSE_HASH_SECRET` is absent, the current device HMAC secret falls back to the first configured runtime value in this order: `SIDESTREAM_POSTGRES_URL`, `SIDESTREAM_POSTGRES_PRISMA_URL`, `POSTGRES_URL`, `POSTGRES_PRISMA_URL`. The runtime trims/selects and URL-normalizes that connection value before hashing; before any URL/pool change, securely capture the exact resulting bytes and duplicate them into `SIDESTREAM_LICENSE_HASH_SECRET` without logging or further parsing/re-encoding/normalization. Prove continuity with the same real device/token before and after promotion. `SIDESTREAM_DEVICE_POLICY_MODE` is `off`, `observe`, or `enforce`; `SIDESTREAM_TEST_API_HOSTS` strictly identifies Test hosts. |
 | Maintenance | `SIDESTREAM_MAINTENANCE_BATCH_SIZE` 100 (1-500); `SIDESTREAM_LICENSE_WRITE_THROTTLE_SECONDS` 3600 (60-86400); `SIDESTREAM_LEGACY_TOKEN_RENEWAL_THRESHOLD_DAYS` 30 (1-180); `SIDESTREAM_WEB_SESSION_GRACE_DAYS` 7 (1-90); `SIDESTREAM_ACTIVATION_SESSION_GRACE_DAYS` and `SIDESTREAM_CREDENTIAL_AUDIT_GRACE_DAYS` 30 (7-365); `SIDESTREAM_RATE_LIMIT_GRACE_HOURS` 24 (1-168); `SIDESTREAM_CHECKOUT_INTENT_GRACE_DAYS` 7 (1-90); `SIDESTREAM_STRIPE_PAYLOAD_RETENTION_DAYS` 14 (1-90); `SIDESTREAM_STRIPE_DEAD_LETTER_PAYLOAD_RETENTION_DAYS` 90 (14-365 and not below processed retention) |
@@ -473,8 +502,8 @@ tokens, device IDs, full Stripe payloads, or lead email addresses.
 | Signal | Metric/query | Alert threshold and response |
 | --- | --- | --- |
 | Pending/retry Stripe events | Count `received`, due `retryable`, and expired `processing` leases | Warning when any due work remains for 10 minutes; critical at 30 minutes. Check cron auth, database, then worker errors. |
-| Dead-letter Stripe events | Count `processing_status='dead_letter'` and newest transition | Critical on any new dead-letter. Preserve payload and fix the root cause. No reset/replay tool currently exists, so Preview/Test promotion is blocked and production recovery requires separately reviewed tooling; never mutate queue or entitlement rows manually. |
-| Crash/reclaim attempt overflow | Count `terminal_at is null and attempt_count >= 8`, including future retryable rows and unexpired processing leases | Critical on any row. The current claim path can reclaim indefinitely after repeated process termination; stop promotion and require the total-attempt implementation blocker to close. |
+| Dead-letter Stripe events | Count `processing_status='dead_letter'` and newest transition | Critical on any new dead-letter. Preserve payload and fix the root cause. Exact-event recovery exists only for separately approved isolated Test use after its pending migration; Production/livemode and bulk recovery remain unavailable. Never mutate queue, audit, or entitlement rows manually. |
+| Crash/reclaim attempt overflow | Count `terminal_at is null and attempt_count >= 8`, including future retryable rows and unexpired processing leases | Critical on any row. Code now terminalizes exhausted work after any active final lease expires, so this indicates stale deployment, stuck scan/lease, database drift, or missing live proof. Stop promotion and investigate; do not call the local cap deployed. |
 | Oldest event age | Age of oldest due nonterminal event | Warning over 10 minutes, critical over 30 minutes; the processor runs every five minutes. |
 | Event failures | `retryable + deadLetter` divided by claimed, plus `processing_failed` route outcomes | Warning above 5% with at least 5 claims in 15 minutes; critical above 20% or any route-level failure for 5 minutes. |
 | Checkout volume | Confirmation GETs, confirmed POSTs, created/reused Sessions, `csrf_rejected`, dependency errors | Warning when create failures exceed 1% or 5 in 15 minutes. A GET without a matching confirmation POST is abandonment, not a Stripe failure. |
@@ -530,9 +559,10 @@ The exact `counts` fields are `credentialRowsDeleted`,
 | `*/5 * * * *` | `GET /api/internal/stripe-events/process` | 25 events, ten-minute leases |
 | `*/10 * * * *` | `GET /api/internal/download-leads/replay` | 25 Blobs, delete only after commit and ETag match |
 | `13 4 * * *` | `GET /api/internal/maintenance` | Configured batch per retention category, advisory locked |
+| `27 5 * * *` | `GET /api/internal/customer-usage/sync` | Once-daily namespace sync, advisory locked and same-day idempotent |
 
 Vercel exposes a project-level **Disable Cron Jobs** control. It does not expose
-an operator control that pauses or resumes these three declared schedules one at
+an operator control that pauses or resumes these four declared schedules one at
 a time; changing one schedule requires configuration plus a new deployment. The
 repository also has no per-job kill switch. A future plan would need either a
 reviewed project-wide pause/invoke/re-enable sequence or separately reviewed
@@ -588,11 +618,17 @@ sections record current API/HTTP/data-model/telemetry facts and blockers only;
 any such action is not authorized, and they are not an executable Production
 sequence. No Production action was performed by this documentation change.
 
-The existing blockers remain open: unresolved refund/dispute policy and tested
-customer recovery, Stripe dead-letter recovery, a total crash/reclaim attempt
-cap, authenticated Production database tooling, safe device support/backfill,
-historical lifecycle repair, license-secret continuity, a runtime-distinct
-qualified fallback, reviewed WAF maintenance controls, and safe cron control.
+The code-owned refund/dispute mapper, absolute normal-claim cap, authenticated
+Customer 360 telemetry TLS options, Test-only exact-event recovery, and
+read-only retention-inventory gaps are closed locally. The existing Production
+blockers remain open: historical lifecycle repair; Production/livemode
+dead-letter recovery; authenticated Production migration, legacy, device, and
+reporting tooling; safe device support/backfill; license-secret continuity; a
+runtime-distinct qualified fallback; reviewed WAF maintenance controls; safe
+cron control; provider-attested configuration and artifact evidence; connected
+target proof; and a fresh human-reviewed Production plan. Customer 360 also
+still needs approved retention periods/actions and a separately reviewed
+dependency-aware mutation implementation. No local test closes any live gate.
 
 The removed recipe also failed independent review because its provider output
 did not expose the claimed deployment metadata or actual selectors, its mutable

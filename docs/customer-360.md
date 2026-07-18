@@ -16,6 +16,24 @@ and hard exit criteria. The current Vercel Preview environment is rejected
 because its database, Stripe, Google, and base URL values match Production.
 Provisioning and approving an isolated Preview target is a human-owned gate.
 
+Local implementation closure does not change that decision. The repository now
+has fixture/local proof for authenticated remote telemetry TLS options, an
+absolute normal Stripe claim cap, `refund.failed` recovery plus exhaustive
+current dispute mapping, audited exact-event Test-only dead-letter recovery, and
+a fail-closed read-only retention inventory. No test in that closure contacted a
+provider or proved a live target. The recovery migration was validated but not
+applied, and no retention mutation path exists.
+
+The remaining gates are human- or live-evidence owned: name and provision a
+fully isolated Preview target; rerun the environment verifier against fresh
+Preview and Production snapshots; prove provider configuration, immutable
+artifact, and authenticated connected runtime/telemetry targets; apply and
+verify checksummed migrations only on the approved non-Production database;
+approve backfill dry-run and any Test apply separately; approve retention periods
+and dependency-aware actions; choose lag/read budgets, alert destinations, and
+owners; complete live FlowState Preview QA and rollback/recreate evidence; then
+write a fresh Production plan. None of those actions or approvals has occurred.
+
 The website repository owns the Customer 360 database, Stripe money projection,
 telemetry aggregate import, and private read API. FlowState may provide durable
 association values such as `installIdHash`, but it does not select the database,
@@ -153,9 +171,11 @@ This ledger is money truth only. It never reads, writes, derives, or blesses
 `sidestream_licenses` or device state. The nullable `entitlementStatus` field is
 a separate snapshot and must not be inferred from `money`, `billingModel`, or an
 upgrade timestamp. Entitlement enforcement remains blocked on the separately
-documented `refund.failed` recovery, complete current dispute-status mapping,
-bounded Stripe claim/reclaim behavior, and the other Production prerequisites in
-`docs/api-hardening-runbook.md`. Customer 360 must not grant or revoke access.
+documented historical lifecycle repair and the other Production prerequisites in
+`docs/api-hardening-runbook.md`. The local code-owned `refund.failed`, current
+dispute-status, and absolute claim/reclaim-cap gaps are closed, but provider
+configuration, connected-target proof, and Preview/Test acceptance are not.
+Customer 360 must not grant or revoke access.
 
 ## Usage source and aggregate semantics
 
@@ -165,9 +185,12 @@ bounded Stripe claim/reclaim behavior, and the other Production prerequisites in
   source and must identify a different database from every website runtime URL.
   The source role gets `SELECT` only; the sync pool also sets transaction
   read-only, uses one connection, and applies 15-second query/statement limits.
-  The current remote client disables certificate-chain verification, so it is
-  not Production-approved; authenticated hostname/certificate verification and
-  connected-target evidence are prerequisites for any future Production plan.
+  Remote URLs always use authenticated Node/Postgres TLS defaults and reject
+  non-TLS, no-verify, libpq downgrade, certificate-file, host, pool, timeout, and
+  read-only option overrides before constructing the pool. Only literal loopback
+  hosts may use non-TLS. Fixture tests prove option construction, refusal, and
+  secret-safe logging; they do not prove a live handshake, provider trust chain,
+  source role, or connected target. Those remain Preview/Test evidence gates.
 - The only source relation is `public.sidestream_telemetry_events`. The current
   accepted schema version is exactly `0.2.0`. Production accepts build channels
   `production` and `prod`; Test accepts only `test`. Rows require a lowercase
@@ -388,13 +411,26 @@ The private read models additionally exclude identity link values,
 `installIdHash`, Stripe object/event IDs, merged tombstones, and raw conflict
 evidence.
 
-The current repository has no Customer 360 deletion or aggregate-expiry job.
-Profiles, identity links, install memberships, daily aggregate buckets, money
-materializations, and totals therefore persist until a separately reviewed data
-retention policy and deletion implementation exist. Merge audits and identity
-review rows are intentionally immutable. Stripe queue payload redaction and the
-90-day installer-referral request-row policy are separate retention domains and
-do not delete Customer 360 canonical facts. Do not claim a shorter Customer 360
+The current repository has no Customer 360 deletion, anonymization, or
+aggregate-expiry job. `npm run customer-360:retention` is read-only inventory
+groundwork, not one: it requires an explicit `production` or `test` namespace and
+a version-1 policy covering `profileRoots`, `identityLinks`,
+`installMemberships`, `dailyUsageBuckets`, `usageProfiles`,
+`commerceMaterializations`, `immutableMergeAudits`, and
+`pendingIdentityReviews`. Each entry specifies `action`, `ageBucketsDays`, and
+`minimumAgeDays`; immutable merge audits and pending reviews must be preserved.
+The report contains aggregate age buckets, proposed actions, a policy digest,
+and a non-secret target fingerprint, never customer rows or target names.
+
+Both Test and Production `--apply` fail before file or database access. Test
+reads only `SIDESTREAM_TEST_POSTGRES_URL`; Production reads only `POSTGRES_URL`;
+remote inventory requires credentials and exact `sslmode=verify-full`. Profiles,
+links, memberships, usage aggregates, commerce materializations, and totals
+therefore persist until humans approve every retention period/action and a
+separately reviewed dependency-aware mutation design is implemented. Merge
+audits and pending reviews remain immutable. Stripe queue payload redaction and
+the 90-day installer-referral request-row policy are separate domains and do not
+delete Customer 360 canonical facts. Do not claim a shorter Customer 360
 retention period until code enforces it.
 
 Reviewed backfill input, checkpoint, and reports are restricted operator
@@ -443,6 +479,7 @@ Run the contract with only that disposable selector configured:
 
 ```bash
 npm run test:customer-360
+node --test tests/customer-360/retention-ops.test.mjs tests/customer-360/telemetry-tls.test.mjs
 SIDESTREAM_TEST_POSTGRES_URL='<disposable-postgres-url>' npm run test:customer-360-postgres
 npm run test:api
 SIDESTREAM_TEST_POSTGRES_URL='<disposable-postgres-url>' npm run test:postgres-integration
@@ -455,7 +492,9 @@ npm run typecheck
 npm run build
 ```
 
-`test:customer-360-postgres` exercises core merge/identity, commerce,
+The explicit non-Postgres registry makes both `test:customer-360` and `test:api`
+execute the retention and telemetry-TLS suites; neither suite opens Postgres or
+proves a live connection. `test:customer-360-postgres` exercises core merge/identity, commerce,
 once-daily usage sync and rolling decay, list/detail privacy/cursors, dry-run and
 test-only backfill recovery, and the end-to-end merge/replay pipeline. The
 complete pipeline proves Stripe/Vercel/network isolation and verifies that
@@ -499,7 +538,8 @@ This is the only rollout sequence. Execute it through the evidence and stop
 conditions in `customer-360-preview-test-plan.md`:
 
 1. Review the exact commit, contract, migration chain, test evidence, privacy
-   decision, retention gap, open entitlement blockers, and cross-repo interface;
+   decision, retention inventory plus still-unapproved periods/actions, open
+   entitlement blockers, and cross-repo interface;
    then merge through normal review. This step authorizes no deployment.
 2. A human names and approves a non-Production Preview/Test database and a
    separate read-only telemetry source. Capture connected-target evidence and
