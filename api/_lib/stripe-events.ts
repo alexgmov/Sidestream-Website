@@ -79,6 +79,21 @@ type StripeEventDrainOptions = Readonly<{
   log?: (entry: StripeEventLog) => void;
 }>;
 
+export type StripeEventClaimProcessingResult = Readonly<{
+  status: "processed" | "ignored" | "retryable" | "dead_letter" | "claim_lost";
+  outcome: string;
+  durationMs: number;
+}>;
+
+export type StripeEventClaimProcessingOptions = Readonly<{
+  maxAttempts?: number;
+  query?: StripeEventQuery;
+  processEvent?: (event: Stripe.Event) => Promise<StripeEventProcessingResult>;
+  random?: () => number;
+  now?: () => number;
+  log?: (entry: StripeEventLog) => void;
+}>;
+
 const runtimeQuery: StripeEventQuery = async (text, params = []) =>
   account.query(text, [...params]);
 
@@ -348,45 +363,88 @@ export async function drainStripeEventQueue(
   }
 
   for (const row of claimed) {
-    const startedAt = now();
-    try {
-      assertClaimedPayload(row);
-      const result = await processEvent(row.payload);
-      const durationMs = elapsedMilliseconds(startedAt, now());
-      const completed = await markStripeEventTerminal(
-        row,
-        result,
-        durationMs,
-        query,
-      );
-      if (!completed) {
-        log(stripeEventLog(row, "claim_lost", durationMs));
-        continue;
-      }
+    const result = await processClaimedStripeEvent(row, {
+      maxAttempts,
+      query,
+      processEvent,
+      random,
+      now,
+      log,
+    });
+    if (result.status === "processed" || result.status === "ignored") {
       summary[result.status] += 1;
-      log(stripeEventLog(row, result.outcome, durationMs));
-    } catch (error) {
-      const durationMs = elapsedMilliseconds(startedAt, now());
-      const errorCode = safeStripeEventErrorCode(error);
-      const failure = await markStripeEventFailure({
-        row,
-        durationMs,
-        errorCode,
-        maxAttempts,
-        retryDelayMs: computeStripeEventRetryDelayMs(row.attemptCount, random),
-        query,
-      });
-      if (!failure) {
-        log(stripeEventLog(row, "claim_lost", durationMs));
-        continue;
-      }
-      if (failure === "dead_letter") summary.deadLetter += 1;
-      else summary.retryable += 1;
-      log(stripeEventLog(row, failure, durationMs));
+    } else if (result.status === "dead_letter") {
+      summary.deadLetter += 1;
+    } else if (result.status === "retryable") {
+      summary.retryable += 1;
     }
   }
 
   return Object.freeze(summary);
+}
+
+/**
+ * Processes one already-claimed row with the same payload checks, CAS terminal
+ * writes, retry delay, and absolute failure bound used by the queue drain.
+ * Test-only recovery tooling may supply one exact audited claim; this function
+ * never claims work, changes the attempt cap, or mutates entitlements directly.
+ */
+export async function processClaimedStripeEvent(
+  row: ClaimedStripeEvent,
+  options: StripeEventClaimProcessingOptions = {},
+): Promise<StripeEventClaimProcessingResult> {
+  const query = options.query || runtimeQuery;
+  const processEvent = options.processEvent ||
+    ((event: Stripe.Event) => reconcileStripeEvent(event, query));
+  const now = options.now || Date.now;
+  const random = options.random || Math.random;
+  const log = options.log || logStripeEventOutcome;
+  const maxAttempts = boundedInteger(
+    options.maxAttempts,
+    DEFAULT_STRIPE_EVENT_MAX_ATTEMPTS,
+    1,
+    20,
+  );
+  const startedAt = now();
+
+  try {
+    assertClaimedPayload(row);
+    const result = await processEvent(row.payload);
+    const durationMs = elapsedMilliseconds(startedAt, now());
+    const completed = await markStripeEventTerminal(
+      row,
+      result,
+      durationMs,
+      query,
+    );
+    if (!completed) {
+      log(stripeEventLog(row, "claim_lost", durationMs));
+      return Object.freeze({ status: "claim_lost", outcome: "claim_lost", durationMs });
+    }
+    log(stripeEventLog(row, result.outcome, durationMs));
+    return Object.freeze({
+      status: result.status,
+      outcome: safeOutcome(result.outcome),
+      durationMs,
+    });
+  } catch (error) {
+    const durationMs = elapsedMilliseconds(startedAt, now());
+    const errorCode = safeStripeEventErrorCode(error);
+    const failure = await markStripeEventFailure({
+      row,
+      durationMs,
+      errorCode,
+      maxAttempts,
+      retryDelayMs: computeStripeEventRetryDelayMs(row.attemptCount, random),
+      query,
+    });
+    if (!failure) {
+      log(stripeEventLog(row, "claim_lost", durationMs));
+      return Object.freeze({ status: "claim_lost", outcome: "claim_lost", durationMs });
+    }
+    log(stripeEventLog(row, failure, durationMs));
+    return Object.freeze({ status: failure, outcome: failure, durationMs });
+  }
 }
 
 export async function reconcileStripeEvent(
