@@ -36,7 +36,7 @@ function knownBaselineSnapshot(rowSecurityEnabled = false) {
 
 test("migration files are ordered, checksummed, and append-only baseline files are pinned", async () => {
   const migrations = validateMigrationFiles(await loadMigrationFiles());
-  assert.equal(migrations.length, 23);
+  assert.equal(migrations.length, 24);
   assert.deepEqual(
     migrations.map((migration) => migration.filename),
     [...migrations.map((migration) => migration.filename)].sort(),
@@ -59,6 +59,7 @@ test("migration files are ordered, checksummed, and append-only baseline files a
     "20260715122000_add_customer_commerce_ledger.sql",
     "20260715123000_add_customer_usage_aggregates.sql",
     "20260715124000_add_customer_360_read_model.sql",
+    "20260717230000_add_stripe_event_recovery_audit.sql",
   ]) {
     assert.ok(migrations.some((migration) => migration.filename === filename));
   }
@@ -279,4 +280,41 @@ test("operational migration defines the immutable ledger contract and supporting
   assert.match(migration, /applied_at timestamptz not null/);
   assert.match(migration, /duration_ms bigint not null/);
   assert.match(migration, /sidestream_schema_migrations_applied_idx/);
+});
+
+test("Stripe recovery migration is append-only, immutable, Test-only, and digest-bound", async () => {
+  const migration = await readFile(new URL(
+    "../db/migrations/20260717230000_add_stripe_event_recovery_audit.sql",
+    import.meta.url,
+  ), "utf8");
+  const auditTable = migration.slice(
+    migration.indexOf("create table public.sidestream_stripe_event_recovery_audit"),
+    migration.indexOf("comment on table public.sidestream_stripe_event_recovery_audit"),
+  );
+
+  assert.match(migration, /create table public\.sidestream_stripe_event_recovery_audit/);
+  assert.match(migration, /request_digest text not null unique/);
+  assert.match(migration, /event_reference_digest text not null/);
+  assert.match(migration, /payload_digest text not null/);
+  assert.match(migration, /target_fingerprint text not null/);
+  assert.match(migration, /check \(license_namespace = 'test'\)/);
+  assert.match(migration, /check \(prior_processing_status = 'dead_letter'\)/);
+  assert.match(migration, /check \(prior_attempt_count = 8\)/);
+  assert.match(migration, /pending_recovery_audit_id uuid/);
+  assert.match(migration, /references public\.sidestream_stripe_event_recovery_audit\(id\)/);
+  assert.match(migration, /on delete restrict/);
+  assert.match(migration, /attempt_count = 9/);
+  assert.match(migration, /sidestream_stripe_events_pending_recovery_audit_unique/);
+  assert.match(migration, /before update or delete on public\.sidestream_stripe_event_recovery_audit/);
+  assert.match(migration, /before truncate on public\.sidestream_stripe_event_recovery_audit/);
+  assert.match(migration, /sidestream_stripe_event_recovery_audit is immutable/);
+  assert.match(migration, /enable row level security/);
+  assert.match(migration, /revoke all privileges .* from public/);
+  assert.doesNotMatch(auditTable, /\bevent_id\b|raw_payload|\bpayload jsonb\b|customer_id|stripe_customer/i);
+  assert.doesNotMatch(migration, /update public\.sidestream_licenses/i);
+  assert.doesNotMatch(migration, /alter table public\.sidestream_licenses/i);
+  assert.doesNotMatch(
+    migration,
+    /delete\s+from\s+public\.sidestream_stripe_event_recovery_audit/i,
+  );
 });
