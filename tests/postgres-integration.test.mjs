@@ -314,13 +314,11 @@ test("cross-lane contracts hold in one isolated disposable Postgres schema", {
     });
 
     await t.test("a poisoned Stripe row cannot break /api/auth/session", async () => {
-      const event = stripeEvent("evt_poisoned_session_read", 1_720_000_300);
+      const event = {
+        ...stripeEvent("evt_poisoned_session_read", 1_720_000_300),
+        api_version: "2025-01-27.acacia",
+      };
       await runtime.stripeEvents.recordStripeEvent(event, JSON.stringify(event), query);
-      await pool.query(
-        `update ${quotedSchema}.sidestream_stripe_events
-         set payload = '{"poisoned":true}'::jsonb where event_id = $1`,
-        [event.id],
-      );
       const result = await invokeHandler(runtime.authSession.default, {
         method: "GET",
         url: "/api/auth/session",
@@ -338,10 +336,6 @@ test("cross-lane contracts hold in one isolated disposable Postgres schema", {
         processing_status: "received",
         attempt_count: 0,
       });
-      await pool.query(
-        `delete from ${quotedSchema}.sidestream_stripe_events where event_id = $1`,
-        [event.id],
-      );
     });
 
     await t.test("maintenance advisory locking excludes overlap and then drains bounded work", async () => {

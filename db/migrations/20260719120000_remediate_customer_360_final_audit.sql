@@ -79,7 +79,85 @@ returns trigger
 language plpgsql
 set search_path = pg_catalog
 as $$
+declare
+  expected_redacted_payload jsonb;
 begin
+  if new.event_id is distinct from old.event_id
+    or new.event_type is distinct from old.event_type
+    or new.stripe_created_at is distinct from old.stripe_created_at
+    or new.ingress_event_id is distinct from old.ingress_event_id
+    or new.ingress_event_type is distinct from old.ingress_event_type
+    or new.ingress_created is distinct from old.ingress_created
+    or new.ingress_livemode is distinct from old.ingress_livemode
+    or new.ingress_api_version is distinct from old.ingress_api_version
+    or new.ingress_payload_sha256 is distinct from old.ingress_payload_sha256
+    or new.ingress_raw_sha256 is distinct from old.ingress_raw_sha256
+  then
+    raise exception using errcode = '55000', message = 'Stripe ingress evidence is immutable';
+  end if;
+
+  if new.payload is not distinct from old.payload
+    and new.raw_payload is not distinct from old.raw_payload
+    and new.payload_redacted_at is not distinct from old.payload_redacted_at
+  then
+    return new;
+  end if;
+
+  expected_redacted_payload := jsonb_strip_nulls(jsonb_build_object(
+    'redacted', true,
+    'id', old.event_id,
+    'object', 'event',
+    'type', old.event_type,
+    'created', extract(epoch from old.stripe_created_at)::bigint,
+    'livemode', old.payload -> 'livemode',
+    'data', jsonb_build_object(
+      'object', jsonb_strip_nulls(jsonb_build_object(
+        'id', old.payload #> '{data,object,id}',
+        'object', old.payload #> '{data,object,object}',
+        'customer', case
+          when jsonb_typeof(old.payload #> '{data,object,customer}') = 'string'
+            then old.payload #> '{data,object,customer}'
+          else old.payload #> '{data,object,customer,id}'
+        end,
+        'payment_intent', case
+          when jsonb_typeof(old.payload #> '{data,object,payment_intent}') = 'string'
+            then old.payload #> '{data,object,payment_intent}'
+          else old.payload #> '{data,object,payment_intent,id}'
+        end,
+        'charge', case
+          when jsonb_typeof(old.payload #> '{data,object,charge}') = 'string'
+            then old.payload #> '{data,object,charge}'
+          else old.payload #> '{data,object,charge,id}'
+        end,
+        'subscription', case
+          when jsonb_typeof(old.payload #> '{data,object,subscription}') = 'string'
+            then old.payload #> '{data,object,subscription}'
+          else old.payload #> '{data,object,subscription,id}'
+        end,
+        'invoice', case
+          when jsonb_typeof(old.payload #> '{data,object,invoice}') = 'string'
+            then old.payload #> '{data,object,invoice}'
+          else old.payload #> '{data,object,invoice,id}'
+        end,
+        'amount', old.payload #> '{data,object,amount}',
+        'amount_paid', old.payload #> '{data,object,amount_paid}',
+        'amount_refunded', old.payload #> '{data,object,amount_refunded}',
+        'currency', old.payload #> '{data,object,currency}',
+        'payment_status', old.payload #> '{data,object,payment_status}',
+        'status', old.payload #> '{data,object,status}',
+        'disputed', old.payload #> '{data,object,disputed}'
+      ))
+    )
+  ));
+
+  if old.payload_redacted_at is null
+    and new.payload_redacted_at is not null
+    and new.raw_payload is null
+    and new.payload = expected_redacted_payload
+  then
+    return new;
+  end if;
+
   raise exception using errcode = '55000', message = 'Stripe ingress evidence is immutable';
 end;
 $$;

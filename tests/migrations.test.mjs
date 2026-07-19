@@ -399,7 +399,14 @@ test("final audit remediation binds database identity, ingress, and migration ev
   assert.match(migration, /sidestream_database_identity_no_truncate/);
   assert.match(migration, /sidestream_customer_profile_merges_no_truncate/);
   assert.match(migration, /sidestream_customer_identity_reviews_no_truncate/);
-  assert.match(migration, /before update of event_id, event_type, stripe_created_at, payload, raw_payload/);
+  assert.match(
+    migration,
+    /before update of event_id, event_type, stripe_created_at, payload, raw_payload/,
+  );
+  assert.match(migration, /old\.payload_redacted_at is null/);
+  assert.match(migration, /new\.payload_redacted_at is not null/);
+  assert.match(migration, /new\.raw_payload is null/);
+  assert.match(migration, /new\.payload = expected_redacted_payload/);
   for (const column of [
     "ingress_event_id",
     "ingress_event_type",

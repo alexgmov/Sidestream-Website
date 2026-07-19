@@ -14,6 +14,7 @@ export const CUSTOMER_360_NON_POSTGRES_TESTS = Object.freeze([
   "customer-360/commerce.test.mjs",
   "customer-360/core.test.mjs",
   "customer-360/harness.test.mjs",
+  "customer-360/isolated-postgres-gate.test.mjs",
   "customer-360/preview-deployment.test.mjs",
   "customer-360/preview-environment.test.mjs",
   "customer-360/query-api.test.mjs",
