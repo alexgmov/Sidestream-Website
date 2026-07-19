@@ -2,37 +2,49 @@
 
 ## Status and authority
 
-Customer 360 is not deployed. Production is not migrated, its backfill has not
-run, and no Production Customer 360 API or usage cron is authorized. This file
-documents the repository contract and a human-gated Preview/Test-first rollout;
-it is not evidence of live state and it contains no Production deployment,
-migration, or backfill-apply procedure.
+No accepted Customer 360 Preview or Production release exists. Production is
+not migrated, its backfill has not run, and no Production Customer 360 API or
+usage cron is authorized. An adversarial read-only audit observed an earlier
+candidate auto-deployment in the shared Preview project; it is retained only as
+evidence of the unsafe boundary and is not Preview acceptance, rollout proof, or
+a rollback artifact. This file documents the repository contract and a
+human-gated Preview/Test-first rollout; it is not a deployment, migration, or
+backfill-apply procedure.
 
 The canonical operator matrix is
 [`customer-360-preview-test-plan.md`](customer-360-preview-test-plan.md). It owns
 the ordered Preview/Test gates, current environment rejection, evidence format,
 exact supported commands, stop conditions, non-Production rollback/recreate,
-and hard exit criteria. The current Vercel Preview environment is rejected
-because its database, Stripe, Google, and base URL values match Production.
-Provisioning and approving an isolated Preview target is a human-owned gate.
+and hard exit criteria. The shared Vercel Preview environment is rejected; the
+next candidate requires a dedicated isolated non-Production project and
+scheduler boundary. Provisioning and approving that target is a human-owned
+gate.
 
-Local implementation closure does not change that decision. The repository now
-has fixture/local proof for authenticated remote telemetry TLS options, an
-absolute normal Stripe claim cap, `refund.failed` recovery plus exhaustive
-current dispute mapping, audited exact-event Test-only dead-letter recovery, and
-a fail-closed read-only retention inventory. No test in that closure contacted a
-provider or proved a live target. The recovery migration was validated but not
-applied, and no retention mutation path exists.
+The adversarial product/runtime, payment/queue, and data/privacy audits drove a
+local remediation pass. A final real-Postgres audit then exposed stale backfill
+fixtures containing prohibited identity/behavior fields and a migration trigger
+that incorrectly blocked maintenance redaction. Both are closed in local code
+and tests. The database now keeps Stripe event identity and ingress evidence
+immutable while permitting only the maintenance job's exact first irreversible
+transition to its bounded redacted payload with `raw_payload = null`; arbitrary
+payload rewrites, restoration, and later mutation remain rejected.
 
-The remaining gates are human- or live-evidence owned: name and provision a
-fully isolated Preview target; rerun the environment verifier against fresh
-Preview and Production snapshots; prove provider configuration, immutable
-artifact, and authenticated connected runtime/telemetry targets; apply and
-verify checksummed migrations only on the approved non-Production database;
-approve backfill dry-run and any Test apply separately; approve retention periods
-and dependency-aware actions; choose lag/read budgets, alert destinations, and
-owners; complete live FlowState Preview QA and rollback/recreate evidence; then
-write a fresh Production plan. None of those actions or approvals has occurred.
+The reproducible isolated gate creates its own authenticated loopback Postgres
+and runs `test:customer-360-postgres`, `test:postgres-integration`, and
+`test:single-device`. It contacted no provider and proves no connected target,
+deployment, migration application, backfill, or live rail. The earlier recovery
+and final remediation migrations remain unapplied to any provider target, and no
+Customer 360 retention mutation path exists.
+
+The same read-only audit observed two Production incidents that local
+remediation did not resolve or reverify: canonical browser base/OAuth origins
+disagreed, and all four registered cron routes returned sanitized unavailable
+responses. The remaining gates are human- or live-evidence owned: incident
+remediation; complete provider configuration; immutable artifact and connected
+runtime/telemetry proof; approved non-Production migrations; separate paid and
+FREEDEV sandbox journeys; clean paired website/FlowState provenance; backfill
+and retention decisions; named tested alerts; rollback/recreate evidence; and a
+fresh Production plan. None is claimed complete here.
 
 The website repository owns the Customer 360 database, Stripe money projection,
 telemetry aggregate import, and private read API. FlowState may provide durable
@@ -433,6 +445,14 @@ the 90-day installer-referral request-row policy are separate domains and do not
 delete Customer 360 canonical facts. Do not claim a shorter Customer 360
 retention period until code enforces it.
 
+Stripe queue payload retention has a deliberately narrower immutability rule.
+The canonical event ID, event type, Stripe creation time, live/test mode,
+account, API version, ingress sequence, received time, and raw-payload digest are
+immutable ingress evidence. Maintenance may perform only the exact first
+irreversible redaction transition derived from the existing row, set
+`raw_payload` to null, and set the first redaction timestamp. It cannot rewrite
+identity, restore raw payload, or alter the bounded redacted payload later.
+
 Reviewed backfill input, checkpoint, and reports are restricted operator
 artifacts, not repository assets or application logs. They may contain durable
 identifiers even though reports use opaque component references. Store and
@@ -467,23 +487,45 @@ non-Production scheduling path.
 
 ## Disposable test harness
 
-`SIDESTREAM_TEST_POSTGRES_URL` must point at a disposable database and is rejected
-if it shares a normalized runtime target or even the same host/port endpoint
-with any configured runtime, Production, Preview, deployed-Test, generic, or
-telemetry URL. Postgres suites use random schemas, run serially, drop them in
-cleanup, scrub ambient runtime URL selectors, and block HTTP, HTTPS, fetch,
-WebSocket, Unix sockets, and TCP destinations other than the approved test
-Postgres endpoint.
+The preferred reproducible database gate accepts no selector. From the exact
+candidate checkout, install its lockfile dependencies, leave database/runtime,
+Postgres override, Node hook, and deployed-target variables unset, then run:
 
-Run the contract with only that disposable selector configured:
+```bash
+npm ci --ignore-scripts --no-audit --no-fund
+node scripts/run-customer-360-isolated-postgres-gate.mjs
+```
+
+The gate refuses root and arguments, verifies this checkout's non-symlinked
+lock-matching `node_modules`, requires `initdb`, `postgres`, and `pg_ctl`, and
+creates the only child database URL. Its private `scram-sha-256` cluster listens
+only on a random `127.0.0.1` port with Unix sockets disabled. An allowlisted child
+environment keeps npm offline and blocks non-loopback HTTP, HTTPS, TLS, TCP,
+fetch, and WebSocket access. Cleanup stops Postgres and removes the private
+cluster root on success, failure, `SIGINT`, or `SIGTERM`.
+
+The command executes these aggregates in order:
+
+```text
+test:customer-360-postgres
+test:postgres-integration
+test:single-device
+```
+
+`test:customer-360-postgres` exercises core merge/identity, commerce, once-daily
+usage sync and rolling decay, list/detail privacy/cursors, dry-run and Test-only
+backfill recovery, and the end-to-end merge/replay pipeline. The broader
+integration and single-device aggregates cover migration/queue/maintenance and
+database concurrency while proving Customer 360 does not change entitlement or
+single-device state.
+
+The remaining local non-Postgres/release checks are separate:
 
 ```bash
 npm run test:customer-360
 node --test tests/customer-360/retention-ops.test.mjs tests/customer-360/telemetry-tls.test.mjs
-SIDESTREAM_TEST_POSTGRES_URL='<disposable-postgres-url>' npm run test:customer-360-postgres
 npm run test:api
-SIDESTREAM_TEST_POSTGRES_URL='<disposable-postgres-url>' npm run test:postgres-integration
-SIDESTREAM_TEST_POSTGRES_URL='<disposable-postgres-url>' npm run test:single-device
+npm run test:entitlement
 npm run test:download-referral
 npm run test:migrations
 node scripts/assert-no-runtime-ddl.mjs
@@ -494,11 +536,9 @@ npm run build
 
 The explicit non-Postgres registry makes both `test:customer-360` and `test:api`
 execute the retention and telemetry-TLS suites; neither suite opens Postgres or
-proves a live connection. `test:customer-360-postgres` exercises core merge/identity, commerce,
-once-daily usage sync and rolling decay, list/detail privacy/cursors, dry-run and
-test-only backfill recovery, and the end-to-end merge/replay pipeline. The
-complete pipeline proves Stripe/Vercel/network isolation and verifies that
-Customer 360 leaves entitlement and single-device state unchanged.
+proves a live connection. The isolated gate also proves no provider or deployed
+target: it is disposable local database evidence, not D01/D02, Preview, or
+Production evidence.
 
 ## Dry-run backfill contract
 
@@ -541,9 +581,10 @@ conditions in `customer-360-preview-test-plan.md`:
    decision, retention inventory plus still-unapproved periods/actions, open
    entitlement blockers, and cross-repo interface;
    then merge through normal review. This step authorizes no deployment.
-2. A human names and approves a non-Production Preview/Test database and a
-   separate read-only telemetry source. Capture connected-target evidence and
-   prove neither is Production and neither shares the disposable harness target.
+2. A human names and approves a dedicated non-Production Vercel project and
+   scheduler boundary, its Preview/Test database, and a separate read-only
+   telemetry source. Capture connected-target evidence and prove none is
+   Production or the disposable harness target.
 3. Apply the checksummed migrations to that approved non-Production target only.
    Verify the ledger/checksums, RLS, private function grants, runtime-DDL
    prohibition, and a documented non-Production rollback/recreate path.
@@ -572,11 +613,11 @@ conditions in `customer-360-preview-test-plan.md`:
    decay, and unchanged entitlement/single-device rows. Use the matrix's one-time
    verifier mode for the approved Test sync while project-wide scheduling stays
    disabled; never claim that only the usage cron was enabled.
-8. Only then run live upstream integration and QA from the separately reviewed
-   FlowState plan against Preview/Test. Local or fixture-backed FlowState work
-   may already exist; live verification must confirm existing activation/license
-   behavior first, then optional `installIdHash` association without changing
-   device or entitlement decisions.
+8. Only then run live upstream integration and QA from a clean, reviewed
+   FlowState SHA paired with the exact website artifact. Local or fixture-backed
+   FlowState work may already exist; live verification must confirm existing
+   activation/license behavior first, then optional `installIdHash` association
+   without changing device or entitlement decisions.
 
 For non-Production rollback, stop the approved usage-sync invocation path. If
 project-wide Vercel scheduling was approved, disabling it affects all four jobs
@@ -589,5 +630,5 @@ checkpoints for review, but do not copy them into Production.
 
 There is no Production rollback procedure here because no Production action is
 authorized. A future Production plan requires a fresh human review after all
-runbook blockers and Preview/Test gates are closed. Until then, Customer 360
-remains not deployed and Production remains not migrated.
+runbook blockers and Preview/Test gates are closed. Until then, no accepted
+Customer 360 release exists and Production remains not migrated.
