@@ -4,11 +4,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import test from "node:test";
-import {
+
+import "./helpers/register-typescript-source-resolution.mjs";
+
+const {
   buildPostgresPoolOptions,
   normalizePostgresConnectionString,
   resolveRuntimePostgresTarget,
-} from "../api/_lib/postgres.ts";
+} = await import("../api/_lib/postgres.ts");
 
 const rateLimitModule = await loadRateLimitModule();
 const {
@@ -83,10 +86,16 @@ test("pool defaults remove the max=1 bottleneck and reject unsafe size/timeout v
 test("connection parsing is strict and never needs to expose a credential", () => {
   assert.equal(
     normalizePostgresConnectionString("postgres://user:pass@localhost:5432/app?sslmode=disable"),
-    "postgres://user:pass@localhost:5432/app?sslmode=disable",
+    "postgres://user:pass@localhost:5432/app",
   );
   assert.throws(() => normalizePostgresConnectionString("https://example.invalid/db"), /must use postgres/);
-  assert.throws(() => normalizePostgresConnectionString("not-a-url"), /is invalid/);
+  assert.throws(
+    () => normalizePostgresConnectionString("not-a-url"),
+    {
+      name: "Error",
+      message: "Runtime Postgres connection must be a valid Postgres URL",
+    },
+  );
 });
 
 test("account and lead capture share the serverless-aware runtime pool", async () => {
