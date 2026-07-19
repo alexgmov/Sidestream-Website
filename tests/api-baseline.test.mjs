@@ -469,6 +469,58 @@ test("OAuth start and callback collapse every unsafe next path to the account ro
   assert.equal(allowedCallback.response.getHeader("location"), allowedPath);
 });
 
+test("OAuth start reuses an active server session without sending the user through Google", async () => {
+  const harness = createApiContractHarness();
+  const start = await loadAccountHandler("../api/auth/google/start.ts", harness);
+  const result = await invokeHandler(start, {
+    method: "GET",
+    url: "/api/auth/google/start?next=%2Faccount.html",
+    session: { accountId: "account-owner" },
+  });
+
+  assert.equal(result.response.statusCode, 303);
+  assert.equal(result.response.getHeader("location"), "/account.html");
+  assert.equal(result.response.getHeader("set-cookie"), undefined);
+  assert.equal(harness.oauth.state, "");
+});
+
+test("OAuth start fails before setting state cookies when callback configuration is invalid", async (t) => {
+  const harness = createApiContractHarness();
+  const start = await loadAccountHandler("../api/auth/google/start.ts", harness);
+  const originalConsoleError = console.error;
+  t.after(() => {
+    console.error = originalConsoleError;
+  });
+  console.error = () => {};
+  harness.oauth.authUrlError = new Error("callback origin mismatch");
+
+  const result = await invokeHandler(start, {
+    method: "GET",
+    url: "/api/auth/google/start?next=%2Faccount.html",
+  });
+
+  assert.equal(result.response.statusCode, 503);
+  assert.equal(result.response.getHeader("content-type"), "text/html; charset=utf-8");
+  assert.equal(result.response.getHeader("set-cookie"), undefined);
+  assert.match(result.response.body, /Continue with Google/);
+  assert.equal(harness.oauth.state, "");
+});
+
+test("OAuth callback renders a safe retry page for invalid state", async () => {
+  const harness = createApiContractHarness();
+  const callback = await loadAccountHandler("../api/auth/google/callback.ts", harness);
+  const result = await invokeHandler(callback, {
+    method: "GET",
+    url: "/api/auth/google/callback?state=stale&code=unused",
+  });
+
+  assert.equal(result.response.statusCode, 400);
+  assert.equal(result.response.getHeader("content-type"), "text/html; charset=utf-8");
+  assert.match(result.response.body, /Continue with Google/);
+  assert.doesNotMatch(result.response.body, /Invalid Google sign-in state/);
+  assert.equal(harness.oauth.cleared, 1);
+});
+
 async function loadAccountHandler(relativePath, harness) {
   return loadInjectedHandler(new URL(relativePath, import.meta.url), {
     "../_lib/account.js": harness.dependencies,

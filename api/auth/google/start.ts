@@ -1,10 +1,12 @@
 import type { ServerResponse } from "node:http";
 import {
   getGoogleAuthUrl,
+  getSession,
   methodNotAllowed,
   randomToken,
   redirect,
   sanitizeNextPath,
+  sendGoogleSignInError,
   setOAuthCookies,
   type AccountRequest,
 } from "../../_lib/account.js";
@@ -17,9 +19,20 @@ export default async function handler(
   if (method !== "GET") return methodNotAllowed(response, "GET");
 
   const url = new URL(request.url || "/", "http://sidestream.local");
-  const state = randomToken(24);
   const nextPath = sanitizeNextPath(url.searchParams.get("next"));
+  const session = await getSession(request);
+  if (session) return redirect(response, nextPath, 303);
+
+  const state = randomToken(24);
+  let authUrl = "";
+
+  try {
+    authUrl = getGoogleAuthUrl(request, { state });
+  } catch (error) {
+    console.error("[sidestream auth] Google sign-in configuration rejected", error);
+    return sendGoogleSignInError(response, 503, "unavailable");
+  }
 
   setOAuthCookies(request, response, { state, nextPath });
-  return redirect(response, getGoogleAuthUrl(request, { state }), 302);
+  return redirect(response, authUrl, 302);
 }

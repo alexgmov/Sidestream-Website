@@ -1,39 +1,46 @@
 import { BlobError } from "@vercel/blob";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { isIP } from "node:net";
-import { writeDeterministicDownloadLeadFallback } from "./_lib/download-lead-blob.js";
+import {
+  consumeBlobRateLimit,
+  writeDeterministicDownloadLeadFallback,
+} from "./_lib/download-lead-blob.js";
 import {
   buildCanonicalDownloadLead,
-  captureDownloadLeadInPostgres,
   DownloadLeadConfigurationError,
-  DownloadLeadIdempotencyConflictError,
   DownloadLeadValidationError,
   getDeterministicLeadBlobPathname,
   MAX_DOWNLOAD_LEAD_BODY_BYTES,
   parseIdempotencyKey,
   type CanonicalDownloadLead,
-  type DownloadLeadCaptureResult,
   type DownloadLeadPayload,
 } from "./_lib/download-leads.js";
 import {
-  isPostgresConfigured,
-  safePostgresErrorCode,
-} from "./_lib/postgres.js";
+  DownloadLinkEmailConfigurationError,
+  DownloadLinkEmailDeliveryError,
+  sendDownloadLinkEmail,
+} from "./_lib/download-link-email.js";
 import {
   applyRateLimitHeaders,
   sendRateLimitExceeded,
+  type RateLimitResult,
 } from "./_lib/rate-limit.js";
 
-type LeadRequest = IncomingMessage & { method?: string };
+const MOBILE_DOWNLOAD_SOURCE = "mobile-download-handoff";
+const EMAIL_RATE_LIMIT_WINDOW_SECONDS = 60 * 60;
+const EMAIL_RATE_LIMIT_PER_EMAIL = 3;
+const EMAIL_RATE_LIMIT_PER_IP = 10;
 
-type DownloadLeadHandlerDependencies = Readonly<{
+type DownloadLinkRequest = IncomingMessage & { method?: string };
+
+type DownloadLinkHandlerDependencies = Readonly<{
   now: () => Date;
-  postgresConfigured: () => boolean;
-  capturePostgres: (
+  consumeLimit: (
     lead: CanonicalDownloadLead,
     options: { ipAddress: string; now: Date },
-  ) => Promise<DownloadLeadCaptureResult>;
-  writeFallback: (pathname: string, lead: CanonicalDownloadLead) => Promise<void>;
+  ) => Promise<RateLimitResult>;
+  storeLead: (lead: CanonicalDownloadLead) => Promise<void>;
+  sendEmail: (lead: CanonicalDownloadLead) => Promise<void>;
   log: (entry: Record<string, string | number>) => void;
 }>;
 
@@ -48,21 +55,34 @@ class RequestBodyError extends Error {
   }
 }
 
-const defaultDependencies: DownloadLeadHandlerDependencies = {
+const defaultDependencies: DownloadLinkHandlerDependencies = {
   now: () => new Date(),
-  postgresConfigured: () => isPostgresConfigured(),
-  capturePostgres: (lead, options) => captureDownloadLeadInPostgres(lead, options),
-  writeFallback: writeDeterministicDownloadLeadFallback,
+  consumeLimit: consumeMobileDownloadLinkRateLimit,
+  storeLead: async (lead) => {
+    await writeDeterministicDownloadLeadFallback(
+      getDeterministicLeadBlobPathname(lead.leadKey),
+      lead,
+    );
+  },
+  sendEmail: async (lead) => {
+    if (!lead.idempotencyKeyHash) {
+      throw new DownloadLinkEmailConfigurationError("Missing idempotency hash");
+    }
+    await sendDownloadLinkEmail({
+      recipient: lead.email,
+      idempotencyKeyHash: lead.idempotencyKeyHash,
+    });
+  },
   log: (entry) => console.info(JSON.stringify(entry)),
 };
 
-export function createDownloadLeadHandler(
-  overrides: Partial<DownloadLeadHandlerDependencies> = {},
+export function createDownloadLinkHandler(
+  overrides: Partial<DownloadLinkHandlerDependencies> = {},
 ) {
   const dependencies = { ...defaultDependencies, ...overrides };
 
-  return async function downloadLeadHandler(
-    request: LeadRequest,
+  return async function downloadLinkHandler(
+    request: DownloadLinkRequest,
     response: ServerResponse,
   ) {
     const method = (request.method || "GET").toUpperCase();
@@ -70,7 +90,6 @@ export function createDownloadLeadHandler(
       response.setHeader("Allow", "POST");
       return sendJson(response, 405, { error: "Method not allowed" });
     }
-
     if (!isJsonContentType(firstHeaderValue(request.headers["content-type"]))) {
       return sendJson(response, 415, {
         error: "Content-Type must be application/json",
@@ -96,93 +115,142 @@ export function createDownloadLeadHandler(
       const idempotencyKey = parseIdempotencyKey(
         request.headers["idempotency-key"],
       );
-      lead = buildCanonicalDownloadLead(payload, {
-        capturedAt: now,
-        referrer: firstHeaderValue(request.headers.referer),
-        idempotencyKey,
-      });
+      if (!idempotencyKey) {
+        throw new DownloadLeadValidationError(
+          "missing_idempotency_key",
+          "Idempotency-Key is required",
+        );
+      }
+      lead = buildCanonicalDownloadLead(
+        { ...payload, source: MOBILE_DOWNLOAD_SOURCE },
+        {
+          capturedAt: now,
+          referrer: firstHeaderValue(request.headers.referer),
+          idempotencyKey,
+        },
+      );
     } catch (error) {
       if (error instanceof DownloadLeadValidationError) {
         return sendJson(response, 400, {
-          error: "Invalid lead payload",
+          error: "Invalid email request",
           code: error.code,
         });
       }
       if (error instanceof DownloadLeadConfigurationError) {
         dependencies.log({
-          event: "download_lead_capture",
+          event: "mobile_download_link_email",
           outcome: "configuration_error",
           count: 1,
         });
         return sendJson(response, 503, {
-          error: "Lead capture temporarily unavailable",
-          code: "capture_unavailable",
+          error: "Email delivery temporarily unavailable",
+          code: "email_unavailable",
         });
       }
       throw error;
     }
 
-    const ipAddress = getClientIp(request);
-    let postgresErrorCode = "not_configured";
-    let postgresAvailable = false;
+    let rateLimit: RateLimitResult;
     try {
-      postgresAvailable = dependencies.postgresConfigured();
-    } catch (error) {
-      postgresErrorCode = safePostgresErrorCode(error);
-    }
-
-    if (postgresAvailable) {
-      try {
-        const result = await dependencies.capturePostgres(lead, { ipAddress, now });
-        if (!result.rateLimit.allowed) {
-          dependencies.log({
-            event: "download_lead_capture",
-            outcome: "rate_limited",
-            count: 1,
-          });
-          return sendRateLimitExceeded(response, result.rateLimit);
-        }
-        applyRateLimitHeaders(response, result.rateLimit);
-        return sendJson(response, 200, { ok: true });
-      } catch (error) {
-        if (error instanceof DownloadLeadIdempotencyConflictError) {
-          return sendJson(response, 409, {
-            error: "Idempotency key conflict",
-            code: "idempotency_conflict",
-          });
-        }
-        postgresErrorCode = safePostgresErrorCode(error);
-      }
-    }
-
-    const pathname = getDeterministicLeadBlobPathname(lead.leadKey);
-    try {
-      await dependencies.writeFallback(pathname, lead);
-      dependencies.log({
-        event: "download_lead_capture",
-        outcome: "blob_fallback",
-        count: 1,
-        databaseCode: postgresErrorCode,
+      rateLimit = await dependencies.consumeLimit(lead, {
+        ipAddress: getClientIp(request),
+        now,
       });
-      return sendJson(response, 200, { ok: true, queued: true });
     } catch (error) {
       dependencies.log({
-        event: "download_lead_capture",
-        outcome: "failed",
+        event: "mobile_download_link_email",
+        outcome: "rate_limit_storage_failed",
         count: 1,
-        databaseCode: postgresErrorCode,
-        blobCode: safeOperationalErrorCode(error),
+        storageCode: error instanceof BlobError ? "blob_error" : "storage_error",
       });
       return sendJson(response, 503, {
-        error: "Lead capture temporarily unavailable",
-        code: error instanceof BlobError ? "blob_unavailable" : "capture_unavailable",
+        error: "Email delivery temporarily unavailable",
+        code: "email_unavailable",
+      });
+    }
+    if (!rateLimit.allowed) {
+      dependencies.log({
+        event: "mobile_download_link_email",
+        outcome: "rate_limited",
+        count: 1,
+      });
+      return sendRateLimitExceeded(response, rateLimit);
+    }
+    applyRateLimitHeaders(response, rateLimit);
+
+    try {
+      await dependencies.storeLead(lead);
+    } catch (error) {
+      dependencies.log({
+        event: "mobile_download_link_email",
+        outcome: "lead_storage_failed",
+        count: 1,
+        storageCode: error instanceof BlobError ? "blob_error" : "storage_error",
+      });
+      return sendJson(response, 503, {
+        error: "Email delivery temporarily unavailable",
+        code: "email_unavailable",
+      });
+    }
+
+    try {
+      await dependencies.sendEmail(lead);
+      dependencies.log({
+        event: "mobile_download_link_email",
+        outcome: "accepted",
+        count: 1,
+      });
+      return sendJson(response, 200, { ok: true });
+    } catch (error) {
+      if (error instanceof DownloadLinkEmailConfigurationError) {
+        dependencies.log({
+          event: "mobile_download_link_email",
+          outcome: "email_configuration_error",
+          count: 1,
+        });
+        return sendJson(response, 503, {
+          error: "Email delivery temporarily unavailable",
+          code: "email_unavailable",
+        });
+      }
+      const providerStatus = error instanceof DownloadLinkEmailDeliveryError
+        ? error.providerStatus
+        : null;
+      dependencies.log({
+        event: "mobile_download_link_email",
+        outcome: "provider_failed",
+        count: 1,
+        providerStatus: providerStatus || 0,
+      });
+      return sendJson(response, 502, {
+        error: "Email could not be sent",
+        code: "email_send_failed",
       });
     }
   };
 }
 
-const handler = createDownloadLeadHandler();
+const handler = createDownloadLinkHandler();
 export default handler;
+
+async function consumeMobileDownloadLinkRateLimit(
+  lead: CanonicalDownloadLead,
+  options: { ipAddress: string; now: Date },
+): Promise<RateLimitResult> {
+  return consumeBlobRateLimit({
+    scope: "mobile-download-link-email",
+    dimensions: [
+      { name: "email", value: lead.email, limit: EMAIL_RATE_LIMIT_PER_EMAIL },
+      {
+        name: "ip",
+        value: options.ipAddress || "unknown",
+        limit: EMAIL_RATE_LIMIT_PER_IP,
+      },
+    ],
+    windowSeconds: EMAIL_RATE_LIMIT_WINDOW_SECONDS,
+    now: options.now,
+  });
+}
 
 function getClientIp(request: IncomingMessage) {
   const candidates = [
@@ -192,7 +260,6 @@ function getClientIp(request: IncomingMessage) {
     firstHeaderValue(request.headers["x-vercel-forwarded-for"]).split(",")[0],
     request.socket?.remoteAddress || "",
   ];
-
   for (const candidate of candidates) {
     const ipAddress = normalizeIpAddress(candidate);
     if (ipAddress) return ipAddress;
@@ -212,8 +279,7 @@ function normalizeIpAddress(value: string) {
 }
 
 function isJsonContentType(value: string) {
-  const mediaType = value.split(";", 1)[0].trim().toLowerCase();
-  return mediaType === "application/json";
+  return value.split(";", 1)[0].trim().toLowerCase() === "application/json";
 }
 
 function readRequestBody(request: IncomingMessage, maxBytes: number) {
@@ -226,7 +292,6 @@ function readRequestBody(request: IncomingMessage, maxBytes: number) {
       throw new RequestBodyError(413, "payload_too_large", "Request body too large");
     }
   }
-
   return new Promise<string>((resolve, reject) => {
     let size = 0;
     let body = "";
@@ -257,11 +322,6 @@ function readRequestBody(request: IncomingMessage, maxBytes: number) {
       reject(error);
     });
   });
-}
-
-function safeOperationalErrorCode(error: unknown) {
-  const name = error instanceof Error ? error.name : "operation_error";
-  return /^[A-Za-z][A-Za-z0-9_]{0,39}$/.test(name) ? name : "operation_error";
 }
 
 function firstHeaderValue(value: string | string[] | undefined) {

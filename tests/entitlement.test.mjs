@@ -9,6 +9,7 @@ import {
   deriveRefreshRotationTokens,
   getActivationCheckoutIdempotencyKey,
   getStripeCheckoutWindow,
+  hasSameOrigin,
   isLegacyVercelHost,
   isActivationClaimReplay,
   isActivationTokenReplayAllowed,
@@ -226,6 +227,24 @@ test("OAuth next paths allow only account and restore confirmation routes", () =
   assert.equal(sanitizeAccountNextPath("/%5c%5cevil.example/path"), "/account.html");
   assert.equal(sanitizeAccountNextPath("//evil.example/path"), "/account.html");
   assert.equal(sanitizeAccountNextPath("/api/checkout/start"), "/account.html");
+});
+
+test("OAuth redirect origins must match the browser-facing start origin", () => {
+  assert.equal(
+    hasSameOrigin(
+      "https://sidestream.tv/api/auth/google/callback",
+      "https://sidestream.tv/api/auth/google/start",
+    ),
+    true,
+  );
+  assert.equal(
+    hasSameOrigin(
+      "https://sidestream-xi.vercel.app/api/auth/google/callback",
+      "https://sidestream.tv/api/auth/google/start",
+    ),
+    false,
+  );
+  assert.equal(hasSameOrigin("not a URL", "https://sidestream.tv"), false);
 });
 
 test("activation issuance and refresh lost-response replay derive one stable token family", () => {

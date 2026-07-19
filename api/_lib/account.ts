@@ -19,6 +19,7 @@ import {
   getStripeCustomerIdempotencyKey,
   getStripeCheckoutWindow,
   getStripePriceIdempotencyKey,
+  hasSameOrigin,
   isActivationClaimReplay,
   isCanonicalLicenseEntitlementUsable,
   needsLegacyLicenseCompatibility,
@@ -106,6 +107,20 @@ const SIDESTREAM_PRO_PRICE = {
   unitAmount: 999,
   currency: "usd",
 };
+// Production can still use the pre-lifecycle license schema. JSON extraction
+// avoids a parse-time column lookup while preserving canonical migrated state
+// whenever the lifecycle field exists.
+const LICENSE_ENTITLEMENT_STATUS_SQL = `
+  case
+    when l.id is null then null
+    when to_jsonb(l) ? 'entitlement_status'
+      then to_jsonb(l) ->> 'entitlement_status'
+    when l.stripe_checkout_session_id is not null
+      and l.status in ('active', 'trialing')
+      and l.plan_key in ('sidestream_pro', 'sidestream_unlimited') then 'active'
+    else 'unknown'
+  end
+`;
 const BASIC_SUBSCRIPTION_RESOURCE_KEY_BASE = "basic_subscription";
 const BASIC_SUBSCRIPTION_PRODUCT = {
   name: "Basic subscription",
@@ -213,6 +228,64 @@ export function sendJson(
   response.end(JSON.stringify(payload));
 }
 
+export function sendGoogleSignInError(
+  response: ServerResponse,
+  statusCode: number,
+  kind: "invalid_state" | "unavailable" | "failed",
+) {
+  const content = kind === "invalid_state"
+    ? {
+      title: "Let's try that again.",
+      message: "The secure Google sign-in check expired or no longer matches this browser.",
+    }
+    : kind === "unavailable"
+    ? {
+      title: "Sign-in is temporarily unavailable.",
+      message: "Sidestream could not start Google sign-in. Please try again in a moment.",
+    }
+    : {
+      title: "Google sign-in did not finish.",
+      message: "No account was changed. You can safely restart the sign-in flow.",
+    };
+
+  response.statusCode = statusCode;
+  response.setHeader("Content-Type", "text/html; charset=utf-8");
+  response.setHeader("Cache-Control", "no-store");
+  response.end(`<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="robots" content="noindex,nofollow">
+    <title>${content.title} | Sidestream</title>
+    <style>
+      :root { color-scheme: dark; font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Helvetica Neue", Arial, sans-serif; }
+      * { box-sizing: border-box; }
+      body { min-height: 100vh; margin: 0; display: grid; place-items: center; padding: 24px; background: #0b0b0d; color: #e2e8f0; }
+      main { width: min(100%, 560px); padding: clamp(28px, 6vw, 52px); border: 1px solid #303038; border-radius: 24px; background: #111114; }
+      .eyebrow { margin: 0 0 14px; color: #8f9099; font-size: 13px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; }
+      h1 { margin: 0; font-size: clamp(34px, 7vw, 58px); line-height: .98; letter-spacing: -.04em; }
+      p { margin: 22px 0 28px; color: #afb0b8; font-size: 17px; line-height: 1.55; }
+      .actions { display: flex; flex-wrap: wrap; gap: 12px; }
+      a { display: inline-flex; min-height: 48px; align-items: center; justify-content: center; padding: 0 20px; border-radius: 999px; font-weight: 700; text-decoration: none; }
+      .primary { background: #f8fafc; color: #09090b; }
+      .secondary { border: 1px solid #393941; color: #e2e8f0; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <p class="eyebrow">Sidestream account</p>
+      <h1>${content.title}</h1>
+      <p>${content.message}</p>
+      <div class="actions">
+        <a class="primary" href="/api/auth/google/start?next=%2Faccount.html">Continue with Google</a>
+        <a class="secondary" href="/">Back to site</a>
+      </div>
+    </main>
+  </body>
+</html>`);
+}
+
 export function redirect(
   response: ServerResponse,
   location: string,
@@ -288,8 +361,18 @@ export function resolveRequestLicenseEnvironment(request: IncomingMessage) {
 }
 
 export function getGoogleRedirectUri(request: IncomingMessage) {
-  return process.env.GOOGLE_REDIRECT_URI ||
+  const redirectUri = process.env.GOOGLE_REDIRECT_URI ||
     `${getBaseUrl(request)}/api/auth/google/callback`;
+  const requestOrigin = getOAuthRequestOrigin(request);
+
+  if (!hasSameOrigin(redirectUri, requestOrigin)) {
+    const configuredOrigin = safeUrlOrigin(redirectUri) || "invalid";
+    throw new Error(
+      `GOOGLE_REDIRECT_URI origin ${configuredOrigin} must match OAuth request origin ${requestOrigin}`,
+    );
+  }
+
+  return redirectUri;
 }
 
 export function getGoogleAuthUrl(
@@ -591,7 +674,7 @@ export async function getSession(
         a.stripe_customer_id,
         l.status as license_status,
         l.plan_key,
-        l.entitlement_status,
+        license_state.entitlement_status,
         l.current_period_end,
         l.cancel_at_period_end,
         l.grace_until,
@@ -599,12 +682,15 @@ export async function getSession(
       from public.sidestream_account_sessions s
       join public.sidestream_accounts a on a.id = s.account_id
       left join public.sidestream_licenses l on l.account_id = a.id
+      left join lateral (
+        select ${LICENSE_ENTITLEMENT_STATUS_SQL} as entitlement_status
+      ) license_state on true
       where s.session_token_hash = $1
         and s.revoked_at is null
         and s.expires_at > now()
       -- Only canonically reconciled paid rows may outrank another license.
       order by (case
-          when l.entitlement_status = 'active'
+          when license_state.entitlement_status = 'active'
             and l.plan_key in ('sidestream_pro', 'sidestream_unlimited') then 0
           else 1
         end),
@@ -2171,16 +2257,19 @@ export async function getActivationStatus(
         a.stripe_checkout_session_id,
         l.status as license_status,
         l.plan_key,
-        l.entitlement_status,
+        license_state.entitlement_status,
         l.current_period_end,
         l.cancel_at_period_end,
         l.grace_until,
         l.features
       from public.sidestream_activation_sessions a
       left join public.sidestream_licenses l on l.account_id = a.account_id
+      left join lateral (
+        select ${LICENSE_ENTITLEMENT_STATUS_SQL} as entitlement_status
+      ) license_state on true
       where a.activation_key = $1
       order by (case
-          when l.entitlement_status = 'active'
+          when license_state.entitlement_status = 'active'
             and l.plan_key in ('sidestream_pro', 'sidestream_unlimited') then 0
           else 1
         end),
@@ -2433,7 +2522,7 @@ export async function verifyLicenseToken(
             a.build_channel as activation_build_channel,
             l.status,
             l.plan_key,
-            l.entitlement_status,
+            ${LICENSE_ENTITLEMENT_STATUS_SQL} as entitlement_status,
             l.current_period_end,
             l.cancel_at_period_end,
             l.grace_until,
@@ -4462,7 +4551,7 @@ export async function authorizeLicenseDownload(options: {
             t.revoked_at,
             l.status,
             l.plan_key,
-            l.entitlement_status,
+            ${LICENSE_ENTITLEMENT_STATUS_SQL} as entitlement_status,
             l.current_period_end,
             l.cancel_at_period_end,
             l.grace_until,
@@ -5001,7 +5090,7 @@ export async function refreshLicenseToken(
             a.build_channel as activation_build_channel,
             l.status,
             l.plan_key,
-            l.entitlement_status,
+            ${LICENSE_ENTITLEMENT_STATUS_SQL} as entitlement_status,
             l.current_period_end,
             l.cancel_at_period_end,
             l.grace_until,
@@ -5042,7 +5131,7 @@ export async function refreshLicenseToken(
               a.build_channel as activation_build_channel,
               l.status,
               l.plan_key,
-              l.entitlement_status,
+              ${LICENSE_ENTITLEMENT_STATUS_SQL} as entitlement_status,
               l.current_period_end,
               l.cancel_at_period_end,
               l.grace_until,
@@ -5693,4 +5782,26 @@ function normalizeIpAddress(value: string) {
 
 function firstHeaderValue(value: string | string[] | undefined) {
   return Array.isArray(value) ? value[0] || "" : value || "";
+}
+
+function getOAuthRequestOrigin(request: IncomingMessage) {
+  const forwardedHost = firstHeaderValue(request.headers["x-forwarded-host"])
+    .split(",")[0]
+    .trim();
+  const host = forwardedHost || firstHeaderValue(request.headers.host).trim();
+  const forwardedProto = firstHeaderValue(request.headers["x-forwarded-proto"])
+    .split(",")[0]
+    .trim();
+  const proto = forwardedProto || (process.env.VERCEL ? "https" : "http");
+
+  if (!host) return new URL(getBaseUrl(request)).origin;
+  return new URL(`${proto}://${host}`).origin;
+}
+
+function safeUrlOrigin(value: string) {
+  try {
+    return new URL(value).origin;
+  } catch {
+    return "";
+  }
 }

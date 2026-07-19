@@ -7,7 +7,7 @@ import {
   getOAuthState,
   methodNotAllowed,
   redirect,
-  sendJson,
+  sendGoogleSignInError,
   type AccountRequest,
   upsertGoogleAccount,
 } from "../../_lib/account.js";
@@ -28,7 +28,7 @@ export default async function handler(
   clearOAuthCookies(request, response);
 
   if (!code || !expectedState || returnedState !== expectedState) {
-    return sendJson(response, 400, { error: "Invalid Google sign-in state" });
+    return sendGoogleSignInError(response, 400, "invalid_state");
   }
 
   try {
@@ -37,7 +37,7 @@ export default async function handler(
     await createWebSession(request, response, accountId);
     return redirect(response, nextPath, 303);
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Google sign-in failed";
-    return sendJson(response, 500, { error: message });
+    console.error("[sidestream auth] Google sign-in callback failed", error);
+    return sendGoogleSignInError(response, 502, "failed");
   }
 }

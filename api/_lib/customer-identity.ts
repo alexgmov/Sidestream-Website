@@ -139,6 +139,13 @@ export async function attachCustomerIdentity(
     return { profileId: null, attached: false, reviewRequired: false };
   }
 
+  // Customer 360 is additive to the account and license path. Older deployed
+  // databases intentionally do not have its schema yet, so identity attachment
+  // must stay dormant until the complete core table set is present.
+  if (!await hasCustomerIdentitySchema(client)) {
+    return { profileId: null, attached: false, reviewRequired: false };
+  }
+
   // Coordinate with the core merge primitive so every link we inspect or add
   // points at a live root for the entire attachment transaction.
   await client.query("select pg_advisory_xact_lock(hashtext($1))", [
@@ -186,6 +193,31 @@ export async function attachCustomerIdentity(
   }
 
   return { profileId, attached: true, reviewRequired };
+}
+
+async function hasCustomerIdentitySchema(client: PoolClient): Promise<boolean> {
+  const result = await client.query<{
+    profiles: string | null;
+    links: string | null;
+    installs: string | null;
+    reviews: string | null;
+  }>(
+    `
+      select
+        to_regclass('public.sidestream_customer_profiles')::text as profiles,
+        to_regclass('public.sidestream_customer_identity_links')::text as links,
+        to_regclass('public.sidestream_customer_installs')::text as installs,
+        to_regclass('public.sidestream_customer_identity_reviews')::text as reviews
+    `,
+  );
+  const schema = result.rows[0];
+
+  return Boolean(
+    schema?.profiles &&
+    schema.links &&
+    schema.installs &&
+    schema.reviews
+  );
 }
 
 const ATTACHMENT_SOURCES = new Set<CustomerIdentityAttachmentSource>([

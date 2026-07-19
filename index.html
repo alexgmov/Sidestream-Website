@@ -500,6 +500,84 @@
   .email-gate-message.is-success {
     color: rgba(226, 232, 240, 0.82);
   }
+  .mobile-download-handoff {
+    display: none;
+    width: min(440px, 100%);
+    margin-top: 12px;
+    padding: 20px;
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    border-radius: 18px;
+    background: rgba(4, 6, 10, 0.72);
+    backdrop-filter: blur(18px) saturate(112%);
+    -webkit-backdrop-filter: blur(18px) saturate(112%);
+  }
+  .mobile-download-handoff-title {
+    margin: 0;
+    color: var(--ink);
+    font-size: 21px;
+    font-weight: 700;
+    line-height: 1.2;
+    letter-spacing: -0.02em;
+  }
+  .mobile-download-handoff-copy {
+    margin: 7px 0 16px;
+    color: var(--ink-soft);
+    font-size: 14px;
+    line-height: 1.45;
+  }
+  .mobile-download-handoff-fields {
+    display: grid;
+    gap: 10px;
+  }
+  .mobile-download-handoff-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+  .mobile-download-handoff-input {
+    width: 100%;
+    min-width: 0;
+    height: 52px;
+    padding: 0 15px;
+    border: 1px solid rgba(255, 255, 255, 0.24);
+    border-radius: 11px;
+    background: rgba(255, 255, 255, 0.09);
+    color: var(--ink);
+    font: inherit;
+    font-size: 16px;
+    outline: 0;
+  }
+  .mobile-download-handoff-input::placeholder {
+    color: rgba(226, 232, 240, 0.46);
+  }
+  .mobile-download-handoff-input:focus {
+    border-color: rgba(255, 255, 255, 0.64);
+    box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.1);
+  }
+  .mobile-download-handoff-submit {
+    min-height: 52px;
+    width: 100%;
+  }
+  .mobile-download-handoff-submit:disabled {
+    cursor: wait;
+    opacity: 0.72;
+    transform: none;
+  }
+  .mobile-download-handoff-status {
+    min-height: 19px;
+    margin: 10px 0 0;
+    color: rgba(226, 232, 240, 0.6);
+    font-size: 12.5px;
+    line-height: 1.45;
+  }
+  .mobile-download-handoff-status.is-error { color: #ff9b9b; }
+  .mobile-download-handoff-status.is-success { color: rgba(226, 232, 240, 0.88); }
 
   /* ---------- Section rhythm ---------- */
   section { position: relative; }
@@ -541,12 +619,8 @@
   }
   .feature-corner-demo {
     position: absolute;
-    top: 0;
-    left: 40vw;
-    z-index: 1;
-    width: 60vw;
-    height: calc(100vh + 8px);
-    height: calc(100svh + 8px);
+    inset: 0 0 0 40vw;
+    z-index: 0;
     overflow: hidden;
     pointer-events: none;
   }
@@ -555,9 +629,9 @@
     left: 5vw;
     top: 25vh;
     display: block;
-    width: max(1000px, 90vw);
+    width: auto;
     max-width: none;
-    height: auto;
+    height: max(1000px, 90vw, 125%);
     opacity: 0.9;
     mix-blend-mode: screen;
     filter: brightness(1.3) contrast(1.04) saturate(1.02);
@@ -993,6 +1067,8 @@
     h1 { font-size: 3.08rem; }
     .hero-subline { font-size: 1.86rem; }
     .hero-copy.reveal { transform: none; }
+    #hero .desktop-download-ctas { display: none; }
+    .mobile-download-handoff { display: block; }
     .feat-copy p { max-width: none; }
     #pricing { padding-top: 74px; }
     .pricing-head { margin-bottom: 74px; }
@@ -1107,7 +1183,7 @@
         <nav>
           <a href="#features">Features</a>
           <a href="#pricing">Pricing</a>
-          <a href="/account.html">Account</a>
+          <a href="/api/auth/google/start?next=/account.html">Account</a>
         </nav>
       </div>
     </div>
@@ -1117,6 +1193,11 @@
 
     <!-- ===================== HERO ===================== -->
     <section class="hero-pad" id="hero">
+      <div class="feature-corner-demo" aria-hidden="true">
+        <video class="feature-corner-demo-video" autoplay muted loop playsinline preload="metadata">
+          <source src="demos/sidestream-panel-corner.webm" type="video/webm" media="(min-width: 901px)">
+        </video>
+      </div>
       <div class="wrap hero-split">
         <div class="hero-copy reveal">
           <h1 aria-label="Download YouTube videos, songs, overlays, b-roll, references, and tutorials">
@@ -1131,19 +1212,23 @@
             </span>
           </h1>
           <p class="hero-subline">in Premiere Pro</p>
-          <div class="cta-row">
+          <div class="cta-row desktop-download-ctas">
             <a class="btn btn-primary btn-lg" href="https://sidestream.tv/api/download" data-download aria-label="Download Sidestream for Mac">Download</a>
-            <a class="btn btn-primary btn-lg" href="https://sidestream.tv/api/download?platform=win32-x64" data-windows-download aria-label="Download Sidestream for Windows">Download for Windows</a>
+            <a class="btn btn-primary btn-lg" href="https://sidestream.tv/api/download?platform=win32-x64" data-windows-download aria-label="Download Sidestream for Windows">Download</a>
           </div>
+          <form class="mobile-download-handoff" id="mobile-download-handoff" novalidate>
+            <p class="mobile-download-handoff-title">Get Sidestream on your computer</p>
+            <p class="mobile-download-handoff-copy">Enter your email and we'll send download links for Mac and Windows.</p>
+            <div class="mobile-download-handoff-fields">
+              <label class="mobile-download-handoff-label" for="mobile-download-email">Email address</label>
+              <input class="mobile-download-handoff-input" id="mobile-download-email" name="email" type="email" inputmode="email" autocomplete="email" enterkeyhint="send" placeholder="you@email.com" required>
+              <button class="btn btn-primary mobile-download-handoff-submit" id="mobile-download-submit" type="submit">Send me the links</button>
+            </div>
+            <p class="mobile-download-handoff-status" id="mobile-download-status" aria-live="polite">One email. No account required.</p>
+          </form>
         </div>
       </div>
     </section>
-
-    <div class="feature-corner-demo" aria-hidden="true">
-      <video class="feature-corner-demo-video" autoplay muted loop playsinline preload="metadata">
-        <source src="demos/sidestream-panel-corner.webm" type="video/webm" media="(min-width: 901px)">
-      </video>
-    </div>
 
     <!-- ===================== FEATURES ===================== -->
     <div id="features"></div>
@@ -1518,10 +1603,17 @@
     const windowsWaitlistStatus = document.getElementById("windows-waitlist-status");
     const windowsWaitlistOpenControls = Array.from(document.querySelectorAll("[data-windows-waitlist-open]"));
     const windowsWaitlistCloseControls = Array.from(document.querySelectorAll("[data-windows-waitlist-close]"));
+    const mobileDownloadForm = document.getElementById("mobile-download-handoff");
+    const mobileDownloadInput = document.getElementById("mobile-download-email");
+    const mobileDownloadSubmit = document.getElementById("mobile-download-submit");
+    const mobileDownloadStatus = document.getElementById("mobile-download-status");
+    const mobileDownloadMedia = window.matchMedia("(max-width: 900px)");
     const downloadEmailStorageKey = "sidestream.download.email";
     const windowsWaitlistStorageKey = "sidestream.windows.email";
     let pendingDownloadLink = null;
     let pendingDownloadUrl = "/api/download";
+    let mobileDownloadAttemptEmail = "";
+    let mobileDownloadAttemptKey = "";
     let toastTimer;
 
     function ping(msg) {
@@ -1646,6 +1738,41 @@
       }
     }
 
+    function getMobileDownloadIdempotencyKey(email) {
+      if (mobileDownloadAttemptEmail === email && mobileDownloadAttemptKey) {
+        return mobileDownloadAttemptKey;
+      }
+      mobileDownloadAttemptEmail = email;
+      if (window.crypto && typeof window.crypto.randomUUID === "function") {
+        mobileDownloadAttemptKey = window.crypto.randomUUID();
+      } else {
+        mobileDownloadAttemptKey = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      }
+      return mobileDownloadAttemptKey;
+    }
+
+    function getMobileDownloadCampaign() {
+      const params = new URLSearchParams(window.location.search);
+      const safeCampaignValue = (name) => {
+        const value = (params.get(name) || "").trim().toLowerCase();
+        return value.length <= 100 && /^[a-z0-9][a-z0-9._~-]*$/.test(value)
+          ? value
+          : undefined;
+      };
+      return {
+        utmSource: safeCampaignValue("utm_source"),
+        utmMedium: safeCampaignValue("utm_medium"),
+        utmCampaign: safeCampaignValue("utm_campaign"),
+        utmContent: safeCampaignValue("utm_content")
+      };
+    }
+
+    function focusMobileDownloadForm() {
+      if (!mobileDownloadForm || !mobileDownloadInput) return;
+      mobileDownloadForm.scrollIntoView({ behavior: reduceMotion ? "auto" : "smooth", block: "center" });
+      window.setTimeout(() => mobileDownloadInput.focus(), reduceMotion ? 0 : 350);
+    }
+
     function continuePendingDownload() {
       const url = pendingDownloadUrl;
       pendingDownloadLink = null;
@@ -1654,6 +1781,11 @@
 
     function handleDownloadRequest(ev, el) {
       if (ev.type === "auxclick") {
+        return;
+      }
+      if (mobileDownloadMedia.matches && mobileDownloadForm) {
+        ev.preventDefault();
+        focusMobileDownloadForm();
         return;
       }
       ping("Starting your download...");
@@ -1699,6 +1831,64 @@
       closeEmailGate({ keepPending: true });
       continuePendingDownload();
     });
+    if (mobileDownloadForm && mobileDownloadInput && mobileDownloadSubmit && mobileDownloadStatus) {
+      mobileDownloadInput.value = getStoredDownloadEmail();
+      mobileDownloadForm.addEventListener("submit", async (ev) => {
+        ev.preventDefault();
+        const email = mobileDownloadInput.value.trim().toLowerCase();
+
+        mobileDownloadStatus.classList.remove("is-error", "is-success");
+        if (!isValidDownloadEmail(email)) {
+          mobileDownloadStatus.textContent = "Enter a valid email address.";
+          mobileDownloadStatus.classList.add("is-error");
+          mobileDownloadInput.focus();
+          return;
+        }
+
+        mobileDownloadSubmit.disabled = true;
+        mobileDownloadSubmit.textContent = "Sending...";
+        mobileDownloadStatus.textContent = "Sending your Mac and Windows links...";
+        const controller = new AbortController();
+        const timeout = window.setTimeout(() => controller.abort(), 10_000);
+
+        try {
+          const response = await fetch("/api/send-download-links", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "Idempotency-Key": getMobileDownloadIdempotencyKey(email)
+            },
+            body: JSON.stringify({
+              email,
+              page: window.location.pathname,
+              ...getMobileDownloadCampaign()
+            }),
+            signal: controller.signal
+          });
+          if (!response.ok) {
+            const error = new Error("Download-link email returned " + response.status);
+            error.status = response.status;
+            throw error;
+          }
+
+          setStoredDownloadEmail(email);
+          mobileDownloadInput.blur();
+          mobileDownloadStatus.textContent = "Sent. Check your inbox on your computer.";
+          mobileDownloadStatus.classList.add("is-success");
+          mobileDownloadSubmit.textContent = "Sent";
+        } catch (error) {
+          console.warn("Sidestream download-link email failed", error);
+          mobileDownloadStatus.textContent = error && error.status === 429
+            ? "Too many requests. Try again in a few minutes."
+            : "Could not send the email. Try again.";
+          mobileDownloadStatus.classList.add("is-error");
+          mobileDownloadSubmit.disabled = false;
+          mobileDownloadSubmit.textContent = "Send me the links";
+        } finally {
+          window.clearTimeout(timeout);
+        }
+      });
+    }
     if (windowsWaitlistForm && windowsWaitlistInput && windowsWaitlistSubmit && windowsWaitlistStatus) {
       windowsWaitlistForm.addEventListener("submit", async (ev) => {
         ev.preventDefault();
