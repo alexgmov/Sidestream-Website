@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import {
@@ -111,6 +113,9 @@ test("Customer 360 guarded children cannot inherit runtime database URL selector
 
 test("Customer 360 suites are complete, disjoint, and API-safe", async () => {
   const discovered = await assertCustomer360TestsClassified();
+  assert.ok(CUSTOMER_360_NON_POSTGRES_TESTS.includes(
+    "customer-360/isolated-postgres-gate.test.mjs",
+  ));
   assert.equal(new Set([
     ...CUSTOMER_360_NON_POSTGRES_TESTS,
     ...CUSTOMER_360_POSTGRES_TESTS,
@@ -128,6 +133,17 @@ test("Customer 360 suites are complete, disjoint, and API-safe", async () => {
   for (const filename of CUSTOMER_360_POSTGRES_TESTS) {
     assert.equal(apiFiles.has(filename), false, `test:api must exclude ${filename}`);
   }
+});
+
+test("API registry rejects a new unclassified Postgres-looking suite", async (t) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "sidestream-api-registry-"));
+  t.after(() => rm(directory, { force: true, recursive: true }));
+  await writeFile(path.join(directory, "new-postgres-suite.test.mjs"), "");
+
+  await assert.rejects(
+    listApiTestFiles(directory),
+    /Classify new Postgres tests explicitly: new-postgres-suite\.test\.mjs/,
+  );
 });
 
 function guardEnvironment(overrides) {
