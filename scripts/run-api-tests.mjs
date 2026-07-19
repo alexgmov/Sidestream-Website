@@ -10,6 +10,9 @@ import {
 } from "./run-customer-360-tests.mjs";
 
 const TESTS_DIRECTORY = path.resolve("tests");
+const TYPESCRIPT_SOURCE_RESOLUTION_BOOTSTRAP = path.resolve(
+  "tests/helpers/register-typescript-source-resolution.mjs",
+);
 const ROOT_POSTGRES_ONLY_TESTS = new Set([
   "postgres-integration.test.mjs",
   "single-device-postgres.test.mjs",
@@ -41,6 +44,7 @@ export async function listApiTestFiles(directory = TESTS_DIRECTORY) {
     path.basename(filename).includes("postgres") &&
     filename !== "postgres-config.test.mjs" &&
     !ROOT_POSTGRES_ONLY_TESTS.has(filename) &&
+    !CUSTOMER_360_CLASSIFIED_TESTS.has(filename) &&
     !CUSTOMER_360_POSTGRES_ONLY_TESTS.has(filename)
   );
   if (unknownPostgresTests.length > 0) {
@@ -77,6 +81,8 @@ async function main() {
   const files = await listApiTestFiles();
   const child = spawn(process.execPath, [
     "--experimental-strip-types",
+    "--import",
+    TYPESCRIPT_SOURCE_RESOLUTION_BOOTSTRAP,
     "--test",
     "--test-concurrency=1",
     ...files,
