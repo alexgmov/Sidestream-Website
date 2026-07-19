@@ -130,6 +130,7 @@ export class CustomerCommerceNormalizationError extends TypeError {
 export function normalizeCustomerCommerceEvent(
   event: Stripe.Event,
   trustedNamespace: CustomerCommerceNamespace,
+  projectionObservedAt?: string,
 ): readonly CustomerCommerceObservation[] {
   assertEvent(event);
   assertTrustedNamespace(event, trustedNamespace);
@@ -137,7 +138,9 @@ export function normalizeCustomerCommerceEvent(
   const sourceObjectId = boundedId(object.id);
   if (!sourceObjectId) return [];
 
-  const eventCreatedAt = unixTimestamp(event.created, "event_created");
+  const eventCreatedAt = projectionObservedAt
+    ? verifiedProjectionTimestamp(projectionObservedAt)
+    : unixTimestamp(event.created, "event_created");
   const type = event.type;
 
   if (type === "charge.refund.updated") {
@@ -187,8 +190,13 @@ export async function materializeCustomerCommerceEvent(
   event: Stripe.Event,
   query: CustomerCommerceQuery,
   trustedNamespace: CustomerCommerceNamespace,
+  options: Readonly<{ projectionObservedAt?: string }> = {},
 ): Promise<CustomerCommerceProjectionResult> {
-  const observations = normalizeCustomerCommerceEvent(event, trustedNamespace);
+  const observations = normalizeCustomerCommerceEvent(
+    event,
+    trustedNamespace,
+    options.projectionObservedAt,
+  );
   if (observations.length === 0) {
     return Object.freeze({
       recognized: false,
@@ -842,7 +850,14 @@ function money(value: unknown) {
 
 function sumAmounts(value: unknown) {
   if (!Array.isArray(value)) return 0;
-  return value.reduce((total, item) => total + money(recordValue(item).amount), 0);
+  const total = value.reduce(
+    (sum, item) => sum + BigInt(money(recordValue(item).amount)),
+    0n,
+  );
+  if (total > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw new CustomerCommerceNormalizationError("minor_unit_amount_overflow");
+  }
+  return Number(total);
 }
 
 function legacyInvoicePayments(object: Record<string, unknown>) {
@@ -934,6 +949,16 @@ function unixTimestamp(seconds: number, field: string) {
     throw new CustomerCommerceNormalizationError(`invalid_${field}`);
   }
   return date.toISOString();
+}
+
+function verifiedProjectionTimestamp(value: string) {
+  if (
+    !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$/.test(value) ||
+    !Number.isFinite(Date.parse(value))
+  ) {
+    throw new CustomerCommerceNormalizationError("invalid_projection_observed_at");
+  }
+  return value;
 }
 
 function hasId(value: unknown) {

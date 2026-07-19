@@ -1,13 +1,17 @@
 import assert from "node:assert/strict";
+import { createHmac } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import {
   classifyMigrationState,
+  buildMigrationApprovalMessage,
   loadMigrationFiles,
+  migrationSetFingerprint,
   migrationSqlForTransaction,
   parseMigrationArguments,
   selectMigrationDatabase,
   validateMigrationFiles,
+  verifyMigrationApproval,
 } from "../scripts/apply-postgres-migrations.mjs";
 import {
   ACTIVATION_ROTATION_MIGRATION,
@@ -36,7 +40,7 @@ function knownBaselineSnapshot(rowSecurityEnabled = false) {
 
 test("migration files are ordered, checksummed, and append-only baseline files are pinned", async () => {
   const migrations = validateMigrationFiles(await loadMigrationFiles());
-  assert.equal(migrations.length, 24);
+  assert.equal(migrations.length, 25);
   assert.deepEqual(
     migrations.map((migration) => migration.filename),
     [...migrations.map((migration) => migration.filename)].sort(),
@@ -60,6 +64,7 @@ test("migration files are ordered, checksummed, and append-only baseline files a
     "20260715123000_add_customer_usage_aggregates.sql",
     "20260715124000_add_customer_360_read_model.sql",
     "20260717230000_add_stripe_event_recovery_audit.sql",
+    "20260719120000_remediate_customer_360_final_audit.sql",
   ]) {
     assert.ok(migrations.some((migration) => migration.filename === filename));
   }
@@ -230,7 +235,8 @@ test("baseline refuses unknown tables, columns, missing constraints, and unknown
 });
 
 test("CLI operations are mutually exclusive and migration URLs prefer direct endpoints", () => {
-  assert.equal(parseMigrationArguments([]), "apply");
+  assert.equal(parseMigrationArguments([]), "validate");
+  assert.equal(parseMigrationArguments(["--apply"]), "apply");
   assert.equal(parseMigrationArguments(["--status"]), "status");
   assert.equal(parseMigrationArguments(["--validate"]), "validate");
   assert.equal(parseMigrationArguments(["--baseline"]), "baseline");
@@ -238,11 +244,69 @@ test("CLI operations are mutually exclusive and migration URLs prefer direct end
   assert.throws(() => parseMigrationArguments(["--mystery"]), /Unknown migration option/);
 
   const selected = selectMigrationDatabase({
-    SIDESTREAM_POSTGRES_URL: "postgres://pooled:secret@pool.invalid/app",
     POSTGRES_URL_NON_POOLING: "postgres://direct:secret@db.invalid/app",
   });
   assert.equal(selected.environmentVariable, "POSTGRES_URL_NON_POOLING");
   assert.equal(selected.direct, true);
+  assert.throws(() => selectMigrationDatabase({
+    SIDESTREAM_POSTGRES_URL: "postgres://pooled:secret@pool.invalid/app",
+    POSTGRES_URL_NON_POOLING: "postgres://direct:secret@db.invalid/app",
+  }), /ambiguous/);
+});
+
+test("migration mutation approval binds Test, target, set, candidate, mode, and expiry", async () => {
+  const migrations = validateMigrationFiles(await loadMigrationFiles());
+  const targetFingerprint = "1".repeat(64);
+  const setFingerprint = migrationSetFingerprint(migrations);
+  const candidateSha = "3".repeat(40);
+  const expiresAt = new Date(Date.now() + 60 * 60 * 1_000).toISOString();
+  const secret = "migration-approval-secret-with-at-least-32-bytes";
+  const approval = {
+    mode: "apply",
+    targetFingerprint,
+    migrationSetFingerprint: setFingerprint,
+    candidateSha,
+    expiresAt,
+  };
+  const environment = {
+    SIDESTREAM_MIGRATION_TARGET_FINGERPRINT: targetFingerprint,
+    SIDESTREAM_MIGRATION_SET_FINGERPRINT: setFingerprint,
+    SIDESTREAM_MIGRATION_CANDIDATE_SHA: candidateSha,
+    SIDESTREAM_MIGRATION_NAMESPACE: "test",
+    SIDESTREAM_MIGRATION_APPROVAL_EXPIRES_AT: expiresAt,
+    SIDESTREAM_MIGRATION_APPROVAL_SECRET: secret,
+    SIDESTREAM_MIGRATION_CONFIRM:
+      `MIGRATE_TEST:apply:${targetFingerprint.slice(0, 12)}:${
+        setFingerprint.slice(0, 12)
+      }:${candidateSha}`,
+  };
+  environment.SIDESTREAM_MIGRATION_APPROVAL_TOKEN = createHmac("sha256", secret)
+    .update(buildMigrationApprovalMessage(approval))
+    .digest("hex");
+
+  assert.doesNotThrow(() => verifyMigrationApproval(approval, environment));
+  for (const mutation of [
+    { SIDESTREAM_MIGRATION_NAMESPACE: "production" },
+    { SIDESTREAM_MIGRATION_TARGET_FINGERPRINT: "4".repeat(64) },
+    { SIDESTREAM_MIGRATION_SET_FINGERPRINT: "5".repeat(64) },
+    { SIDESTREAM_MIGRATION_CANDIDATE_SHA: "6".repeat(40) },
+    { SIDESTREAM_MIGRATION_CONFIRM: "MIGRATE_TEST:apply:wrong" },
+    { SIDESTREAM_MIGRATION_APPROVAL_TOKEN: "0".repeat(64) },
+  ]) {
+    assert.throws(() => verifyMigrationApproval(approval, {
+      ...environment,
+      ...mutation,
+    }));
+  }
+  assert.throws(() => verifyMigrationApproval({ ...approval, mode: "baseline" }, environment));
+  assert.throws(() => verifyMigrationApproval({
+    ...approval,
+    expiresAt: new Date(Date.now() + 25 * 60 * 60 * 1_000).toISOString(),
+  }, {
+    ...environment,
+    SIDESTREAM_MIGRATION_APPROVAL_EXPIRES_AT:
+      new Date(Date.now() + 25 * 60 * 60 * 1_000).toISOString(),
+  }));
 });
 
 test("runner holds one global lock and persists each ledger row with its migration transaction", async () => {
@@ -317,4 +381,44 @@ test("Stripe recovery migration is append-only, immutable, Test-only, and digest
     migration,
     /delete\s+from\s+public\.sidestream_stripe_event_recovery_audit/i,
   );
+});
+
+test("final audit remediation binds database identity, ingress, and migration evidence", async () => {
+  const migration = await readFile(new URL(
+    "../db/migrations/20260719120000_remediate_customer_360_final_audit.sql",
+    import.meta.url,
+  ), "utf8");
+  const runner = await readFile(new URL(
+    "../scripts/apply-postgres-migrations.mjs",
+    import.meta.url,
+  ), "utf8");
+
+  assert.match(migration, /create table public\.sidestream_database_identity/);
+  assert.match(migration, /environment in \('production', 'test'\)/);
+  assert.doesNotMatch(migration, /insert into public\.sidestream_database_identity/i);
+  assert.match(migration, /sidestream_database_identity_no_truncate/);
+  assert.match(migration, /sidestream_customer_profile_merges_no_truncate/);
+  assert.match(migration, /sidestream_customer_identity_reviews_no_truncate/);
+  assert.match(migration, /before update of event_id, event_type, stripe_created_at, payload, raw_payload/);
+  for (const column of [
+    "ingress_event_id",
+    "ingress_event_type",
+    "ingress_created",
+    "ingress_livemode",
+    "ingress_api_version",
+    "ingress_payload_sha256",
+    "ingress_raw_sha256",
+    "recovery_runner_token",
+    "recovery_runner_lease_expires_at",
+    "recovery_runner_epoch",
+  ]) {
+    assert.match(migration, new RegExp(`\\b${column}\\b`));
+  }
+  assert.match(migration, /create table public\.sidestream_migration_attestations/);
+  assert.match(migration, /sidestream_schema_migrations_no_truncate/);
+  assert.match(migration, /sidestream_migration_attestations_no_truncate/);
+  assert.match(runner, /assertPendingCreateTargetsAbsent/);
+  assert.match(runner, /to_regclass\(\$1\)/);
+  assert.match(runner, /attestMigrationSet/);
+  assert.match(runner, /Migration attestation target or migration-set fingerprint mismatch/);
 });

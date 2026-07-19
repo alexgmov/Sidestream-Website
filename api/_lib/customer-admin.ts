@@ -83,7 +83,27 @@ export function authorizeCustomerAdminRequest(
 }
 
 export async function readCustomerAdminJson(request: CustomerAdminRequest) {
-  if (request.body !== undefined) return parseJsonObject(request.body);
+  if (request.body !== undefined) {
+    let byteLength: number;
+    try {
+      const serialized = Buffer.isBuffer(request.body)
+        ? request.body
+        : typeof request.body === "string"
+          ? Buffer.from(request.body)
+          : Buffer.from(JSON.stringify(request.body));
+      byteLength = serialized.byteLength;
+    } catch {
+      throw new CustomerAdminRequestError(400, "invalid_json", "Malformed JSON body");
+    }
+    if (byteLength > MAX_JSON_BODY_BYTES) {
+      throw new CustomerAdminRequestError(
+        413,
+        "request_too_large",
+        "Request body is too large",
+      );
+    }
+    return parseJsonObject(request.body);
+  }
 
   const declaredLength = Number(request.headers["content-length"] || 0);
   if (Number.isFinite(declaredLength) && declaredLength > MAX_JSON_BODY_BYTES) {

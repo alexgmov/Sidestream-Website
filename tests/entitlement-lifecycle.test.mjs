@@ -92,6 +92,7 @@ test("a failed full refund restores only with complete newer canonical proof", (
       ...paidFacts,
       amountRefunded: 400,
       fullRefundRecoveryProven: true,
+      reactivationProven: true,
     },
     event: event(3_000, "evt_refund_failed"),
   });
@@ -155,7 +156,7 @@ test("every Stripe dispute status has an explicit entitlement outcome", () => {
   ]) {
     assert.deepEqual(planOneTimeEntitlementTransition({
       stored: activeStored,
-      facts: { ...paidFacts, disputeStatus: status },
+      facts: { ...paidFacts, disputeStatus: status, reactivationProven: true },
       event: event(2_000, `evt_${status}`),
     }), {
       apply: true,
@@ -172,7 +173,7 @@ test("every Stripe dispute status has an explicit entitlement outcome", () => {
         entitlementStatus: "suspended",
         statusReason: "dispute_open",
       },
-      facts: { ...paidFacts, disputeStatus: status },
+      facts: { ...paidFacts, disputeStatus: status, reactivationProven: true },
       event: event(2_000, `evt_${status}`),
     }), {
       apply: true,
@@ -218,7 +219,12 @@ test("disputes suspend immediately, lost stays revoked, and won restores only pa
       stripeEventCreatedAtMs: 2_000,
       stripeEventId: "evt_dispute_open",
     },
-    facts: { ...paidFacts, amountRefunded: 200, disputeStatus: "won" },
+    facts: {
+      ...paidFacts,
+      amountRefunded: 200,
+      disputeStatus: "won",
+      reactivationProven: true,
+    },
     event: event(3_000, "evt_dispute_won"),
   });
   assert.equal(won.entitlementStatus, "active");
@@ -255,7 +261,7 @@ test("disputes suspend immediately, lost stays revoked, and won restores only pa
       entitlementStatus: "revoked",
       statusReason: "dispute_lost",
     },
-    facts: { ...paidFacts, disputeStatus: "won" },
+    facts: { ...paidFacts, disputeStatus: "won", reactivationProven: true },
     event: event(4_000, "evt_late_won"),
   });
   assert.equal(lostCannotResurrect.entitlementStatus, "revoked");

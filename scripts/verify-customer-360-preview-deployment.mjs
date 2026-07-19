@@ -152,6 +152,10 @@ export function parsePreviewDeploymentArguments(argv) {
   const allowed = new Set([
     "--origin",
     "--expected-deployment-host",
+    "--expected-deployment-id",
+    "--expected-project-id",
+    "--expected-team-id",
+    "--expected-candidate-sha",
     "--mode",
     "--confirm",
   ]);
@@ -173,12 +177,22 @@ export function parsePreviewDeploymentArguments(argv) {
 
   const origin = values.get("--origin");
   const expectedDeploymentHost = values.get("--expected-deployment-host");
-  if (!origin || !expectedDeploymentHost) {
+  const expectedDeploymentId = values.get("--expected-deployment-id");
+  const expectedProjectId = values.get("--expected-project-id");
+  const expectedTeamId = values.get("--expected-team-id");
+  const expectedCandidateSha = values.get("--expected-candidate-sha");
+  if (
+    !origin || !expectedDeploymentHost ||
+    !validProviderId(expectedDeploymentId, "dpl_") ||
+    !validProviderId(expectedProjectId, "prj_") ||
+    !validProviderId(expectedTeamId, "team_") ||
+    !/^[0-9a-f]{40}$/.test(expectedCandidateSha || "")
+  ) {
     throw new PreviewDeploymentInputError("missing_required_selector");
   }
 
   const mode = values.get("--mode") || READ_ONLY_MODE;
-  if (mode !== READ_ONLY_MODE && mode !== USAGE_SYNC_MODE) {
+  if (mode !== READ_ONLY_MODE) {
     throw new PreviewDeploymentInputError("invalid_mode");
   }
   const confirmation = values.get("--confirm");
@@ -187,17 +201,15 @@ export function parsePreviewDeploymentArguments(argv) {
   }
 
   const target = validatePreviewTarget(origin, expectedDeploymentHost);
-  if (mode === USAGE_SYNC_MODE) {
-    if (confirmation !== usageSyncConfirmationForHost(target.hostname)) {
-      throw new PreviewDeploymentInputError("usage_sync_confirmation_required");
-    }
-  }
-
   return {
     origin: target.origin,
     expectedDeploymentHost: target.hostname,
     mode,
     confirmation,
+    expectedDeploymentId,
+    expectedProjectId,
+    expectedTeamId,
+    expectedCandidateSha,
   };
 }
 
@@ -256,7 +268,7 @@ export async function verifyCustomer360PreviewDeployment(options, dependencies =
   }
 
   const mode = options?.mode || READ_ONLY_MODE;
-  if (mode !== READ_ONLY_MODE && mode !== USAGE_SYNC_MODE) {
+  if (mode !== READ_ONLY_MODE) {
     checks.push(check("configuration.mode", false));
     return verificationResult(mode, checks, 0);
   }
@@ -268,10 +280,12 @@ export async function verifyCustomer360PreviewDeployment(options, dependencies =
     return verificationResult(mode, checks, 0);
   }
   if (
-    mode === USAGE_SYNC_MODE &&
-    options?.confirmation !== usageSyncConfirmationForHost(target.hostname)
+    !validProviderId(options?.expectedDeploymentId, "dpl_") ||
+    !validProviderId(options?.expectedProjectId, "prj_") ||
+    !validProviderId(options?.expectedTeamId, "team_") ||
+    !/^[0-9a-f]{40}$/.test(options?.expectedCandidateSha || "")
   ) {
-    checks.push(check("configuration.usage_sync_confirmation", false));
+    checks.push(check("configuration.deployment_provenance", false));
     return verificationResult(mode, checks, 0);
   }
 
@@ -281,11 +295,10 @@ export async function verifyCustomer360PreviewDeployment(options, dependencies =
     checks.push(check("configuration.admin_secret", false));
     return verificationResult(mode, checks, 0);
   }
-  const cronSecret = mode === USAGE_SYNC_MODE
-    ? validSecret(environment.CRON_SECRET)
-    : null;
-  if (mode === USAGE_SYNC_MODE && !cronSecret) {
-    checks.push(check("configuration.cron_secret", false));
+  const bypassSecret = validSecret(environment.VERCEL_AUTOMATION_BYPASS_SECRET);
+  const vercelAccessToken = validSecret(environment.VERCEL_ACCESS_TOKEN);
+  if (!bypassSecret || !vercelAccessToken) {
+    checks.push(check("configuration.vercel_credentials", false));
     return verificationResult(mode, checks, 0);
   }
 
@@ -298,6 +311,19 @@ export async function verifyCustomer360PreviewDeployment(options, dependencies =
     AbortSignal.timeout(REQUEST_TIMEOUT_MS));
   let requestCount = 0;
 
+  const verifyProvenance = dependencies.verifyProvenance ||
+    ((verificationOptions) => verifyVercelDeploymentProvenance(
+      verificationOptions,
+      { fetch: fetchImplementation, environment, createSignal },
+    ));
+  await runResponseCheck(checks, "deployment.owner_provenance", async () => {
+    requestCount += 1;
+    return verifyProvenance({ ...options, ...target });
+  });
+  if (!checks.at(-1)?.pass) {
+    return verificationResult(mode, checks, requestCount);
+  }
+
   const request = async (pathname, init) => {
     const url = new URL(pathname, `${target.origin}/`);
     if (url.origin !== target.origin) throw new Error("request_target_rejected");
@@ -305,6 +331,10 @@ export async function verifyCustomer360PreviewDeployment(options, dependencies =
     const signal = createSignal();
     return fetchImplementation(url.href, {
       ...init,
+      headers: {
+        ...(init.headers || {}),
+        "x-vercel-protection-bypass": bypassSecret,
+      },
       redirect: "manual",
       credentials: "omit",
       cache: "no-store",
@@ -391,16 +421,36 @@ export async function verifyCustomer360PreviewDeployment(options, dependencies =
     });
   }
 
-  const readOnlyPassed = checks.every((entry) => entry.pass);
-  if (mode === USAGE_SYNC_MODE && readOnlyPassed) {
-    await runJsonResponseCheck(checks, "usage_sync.once", async () =>
-      request(USAGE_SYNC_PATH, jsonGet(cronSecret)), (response, body) =>
-      response.status === 200 &&
-        hasNoStore(response) &&
-        isUsageSyncResponse(body));
-  }
-
   return verificationResult(mode, checks, requestCount);
+}
+
+export async function verifyVercelDeploymentProvenance(options, dependencies = {}) {
+  const token = validSecret(dependencies.environment?.VERCEL_ACCESS_TOKEN);
+  const fetchImplementation = dependencies.fetch || globalThis.fetch;
+  if (!token || typeof fetchImplementation !== "function") return false;
+  const url = new URL(
+    `https://api.vercel.com/v13/deployments/${encodeURIComponent(options.expectedDeploymentId)}`,
+  );
+  url.searchParams.set("teamId", options.expectedTeamId);
+  const response = await fetchImplementation(url.href, {
+    method: "GET",
+    headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
+    redirect: "error",
+    credentials: "omit",
+    cache: "no-store",
+    signal: dependencies.createSignal?.(),
+  });
+  if (response.status !== 200) return false;
+  const deployment = await readBoundedJson(response);
+  const sha = deployment.gitSource?.sha || deployment.meta?.githubCommitSha ||
+    deployment.meta?.gitCommitSha || "";
+  const hosts = new Set([deployment.url, ...(deployment.alias || [])].filter(Boolean));
+  return deployment.id === options.expectedDeploymentId &&
+    deployment.projectId === options.expectedProjectId &&
+    deployment.target !== "production" &&
+    deployment.readyState === "READY" &&
+    sha === options.expectedCandidateSha &&
+    hosts.has(options.hostname);
 }
 
 export function formatPreviewDeploymentVerification(verification) {
@@ -412,11 +462,11 @@ export function formatPreviewDeploymentVerification(verification) {
 export function previewDeploymentUsage() {
   return [
     "Usage:",
-    "  npm run verify:customer-360-preview-deployment -- --origin https://preview.example --expected-deployment-host preview.example",
-    "  npm run verify:customer-360-preview-deployment -- --origin https://preview.example --expected-deployment-host preview.example --mode usage-sync --confirm RUN_CUSTOMER_360_USAGE_SYNC_ONCE:preview.example",
+    "  npm run verify:customer-360-preview-deployment -- --origin https://preview.example --expected-deployment-host preview.example --expected-deployment-id dpl_... --expected-project-id prj_... --expected-team-id team_... --expected-candidate-sha HEX40",
     "Environment:",
     "  SIDESTREAM_CRM_ADMIN_SECRET is required for read-only verification.",
-    "  CRON_SECRET is additionally required only for usage-sync mode.",
+    "  VERCEL_ACCESS_TOKEN and VERCEL_AUTOMATION_BYPASS_SECRET are required.",
+    "  Usage mutation is disabled until a database-audited one-time approval exists.",
   ].join("\n");
 }
 
@@ -474,6 +524,12 @@ function validSecret(value) {
     /^[\x21-\x7e]+$/.test(value)
     ? value
     : null;
+}
+
+function validProviderId(value, prefix) {
+  return typeof value === "string" &&
+    value.startsWith(prefix) &&
+    /^[A-Za-z0-9_]{8,128}$/.test(value);
 }
 
 function jsonPost(body, bearer) {

@@ -4,6 +4,7 @@ import test from "node:test";
 import { loadInjectedModule } from "./helpers/handler-loader.mjs";
 import { invokeHandler } from "./helpers/http.mjs";
 import { validateVercelContract } from "../scripts/validate-vercel-contract.mjs";
+import { hasFatalProviderDiagnostic } from "../scripts/verify-vercel-build.mjs";
 
 const CRON_SECRET = "integration-cron-secret";
 const INTERNAL_CRON_PATHS = Object.freeze([
@@ -38,7 +39,15 @@ test("the human-only bundle verifier requires both customer functions", async ()
   );
   assert.match(source, /api\/internal\/customers\/index\.func/);
   assert.match(source, /api\/internal\/customers\/\[customerId\]\.func/);
-  assert.match(source, /A human must run `npx vercel build` first/);
+  assert.match(source, /Run `npm run build:vercel`/);
+  assert.match(source, /fatal TypeScript or compilation diagnostic/);
+});
+
+test("the Vercel build gate treats provider compiler diagnostics as fatal", () => {
+  assert.equal(hasFatalProviderDiagnostic("Build completed successfully"), false);
+  assert.equal(hasFatalProviderDiagnostic("api/example.ts(1,2): error TS2322: mismatch"), true);
+  assert.equal(hasFatalProviderDiagnostic("TypeScript error: invalid handler"), true);
+  assert.equal(hasFatalProviderDiagnostic("Failed to compile\nroute output"), true);
 });
 
 test("missing and incorrect CRON_SECRET authorization is rejected by every internal route", async () => {

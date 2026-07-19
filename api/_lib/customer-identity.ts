@@ -154,7 +154,12 @@ export async function attachCustomerIdentity(
   await lockEvidence(client, namespace, anonymousEvidence);
 
   const owners = await findEvidenceOwners(client, namespace, anonymousEvidence);
-  const profileId = firstEvidenceOwner(anonymousEvidence, owners) ||
+  // Client-carried support and receipt associations may identify an existing
+  // profile, but possession is not proof that a fresh activation/install belongs
+  // to it. Only the server activation record or the same install may select an
+  // existing root. Replayed association keys then create review evidence rather
+  // than polluting the prior profile with a new install.
+  const profileId = firstContextEvidenceOwner(anonymousEvidence, owners) ||
     await createAnonymousProfile(client, namespace);
 
   let reviewRequired = false;
@@ -590,6 +595,18 @@ function firstEvidenceOwner(
     if (owner) return owner;
   }
   return null;
+}
+
+function firstContextEvidenceOwner(
+  evidence: readonly IdentityEvidence[],
+  owners: ReadonlyMap<string, string>,
+): string | null {
+  return firstEvidenceOwner(
+    evidence.filter((item) =>
+      item.linkType === "activation_record" || item.linkType === "install_identity_hash"
+    ),
+    owners,
+  );
 }
 
 async function createAnonymousProfile(

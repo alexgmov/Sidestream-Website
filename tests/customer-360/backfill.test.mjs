@@ -1,14 +1,24 @@
 import assert from "node:assert/strict";
+import { createHmac } from "node:crypto";
+import { chmod, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import test from "node:test";
 import {
   Customer360BackfillError,
+  buildBackfillApprovalMessage,
   buildBackfillPlan,
   buildDryRunReport,
   deterministicProfileId,
   normalizeBackfillInput,
   parseBackfillArgs,
   runCustomer360Backfill,
+  verifyBackfillApproval,
 } from "../../scripts/backfill-customer-360.mjs";
+import {
+  readRegularFile,
+  writeRegularFileAtomically,
+} from "../../scripts/lib/safe-file.mjs";
 import { assertPrivacySafeReport } from "../../scripts/verify-customer-360-backfill.mjs";
 
 const ACCOUNT_A = "11111111-1111-4111-8111-111111111111";
@@ -38,7 +48,13 @@ const PRIVATE_FIELDS = Object.freeze({
   installerRequestHmac: "installer-private-hmac",
 });
 
-test("normalization retains only exact durable evidence and discards PII", () => {
+test("normalization retains exact durable evidence and rejects PII", () => {
+  for (const [field, value] of Object.entries(PRIVATE_FIELDS)) {
+    assert.throws(
+      () => normalizeBackfillInput([{ recordId: opaqueRecordId(99), [field]: value }]),
+      new RegExp(`prohibited field "${field}"`),
+    );
+  }
   const records = normalizeBackfillInput({
     version: 1,
     records: [{
@@ -52,7 +68,6 @@ test("normalization retains only exact durable evidence and discards PII", () =>
       installIdHash: INSTALL_A,
       supportCode: SUPPORT_A,
       installerReceiptIdHash: RECEIPT_A,
-      ...PRIVATE_FIELDS,
     }],
   });
 
@@ -132,8 +147,8 @@ test("recordId accepts only canonical opaque idempotency tokens", () => {
 
 test("only durable evidence joins records; unbridged historical rows remain separate", () => {
   const ignoredOnly = [
-    { recordId: opaqueRecordId(10), ...PRIVATE_FIELDS },
-    { recordId: opaqueRecordId(11), ...PRIVATE_FIELDS },
+    { recordId: opaqueRecordId(10) },
+    { recordId: opaqueRecordId(11) },
   ];
   const orphanPlan = buildBackfillPlan(ignoredOnly, "test");
   assert.equal(orphanPlan.components.length, 2);
@@ -181,15 +196,13 @@ test("conflict and orphan reports are privacy-safe and contain no identity value
       recordId: conflictRecordA,
       accountId: ACCOUNT_A,
       installIdHash: INSTALL_A,
-      ...PRIVATE_FIELDS,
     },
     {
       recordId: conflictRecordB,
       accountId: ACCOUNT_B,
       installIdHash: INSTALL_A,
-      ...PRIVATE_FIELDS,
     },
-    { recordId: orphanRecord, ...PRIVATE_FIELDS },
+    { recordId: orphanRecord },
   ];
   const report = buildDryRunReport(conflictInput, { namespace: "test" });
   assert.equal(report.summary.conflictComponents, 1);
@@ -279,6 +292,76 @@ test("Production apply is rejected before any connection and CLI apply is explic
     /Production --apply is disabled/,
   );
   assert.equal(connections, 0);
+});
+
+test("Test apply approval is expiring and binds every reviewed artifact", () => {
+  const secret = "backfill-approval-secret-with-at-least-32-bytes";
+  const evidence = {
+    inputDigest: "1".repeat(64),
+    targetFingerprint: "2".repeat(64),
+    candidateSha: "4".repeat(40),
+    migrationDigest: "5".repeat(64),
+  };
+  const unsigned = {
+    apply: true,
+    expectedInputDigest: evidence.inputDigest,
+    expectedTargetFingerprint: evidence.targetFingerprint,
+    expectedConnectedFingerprint: "3".repeat(64),
+    expectedCandidateSha: evidence.candidateSha,
+    expectedMigrationDigest: evidence.migrationDigest,
+    batchSize: 100,
+    approvalExpiresAt: new Date(Date.now() + 60 * 60 * 1_000).toISOString(),
+    approvalToken: "",
+  };
+  const options = {
+    ...unsigned,
+    approvalToken: createHmac("sha256", secret)
+      .update(buildBackfillApprovalMessage(unsigned))
+      .digest("hex"),
+  };
+
+  assert.doesNotThrow(() => verifyBackfillApproval(options, evidence, {
+    SIDESTREAM_C360_BACKFILL_APPROVAL_SECRET: secret,
+  }));
+  assert.throws(
+    () => verifyBackfillApproval({
+      ...options,
+      expectedConnectedFingerprint: "6".repeat(64),
+    }, evidence, { SIDESTREAM_C360_BACKFILL_APPROVAL_SECRET: secret }),
+    /token is invalid/,
+  );
+  assert.throws(
+    () => verifyBackfillApproval({ ...options, approvalToken: "0".repeat(64) }, evidence, {
+      SIDESTREAM_C360_BACKFILL_APPROVAL_SECRET: secret,
+    }),
+    /token is invalid/,
+  );
+  assert.throws(
+    () => verifyBackfillApproval({
+      ...options,
+      approvalExpiresAt: new Date(Date.now() + 25 * 60 * 60 * 1_000).toISOString(),
+    }, evidence, { SIDESTREAM_C360_BACKFILL_APPROVAL_SECRET: secret }),
+    /expired or exceeds 24 hours/,
+  );
+});
+
+test("operator files reject symlinks, special files, and oversized inputs", async (t) => {
+  const directory = await mkdtemp(path.join(tmpdir(), "sidestream-safe-file-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const regular = path.join(directory, "input.json");
+  const link = path.join(directory, "input-link.json");
+  const checkpoint = path.join(directory, "checkpoint.json");
+  await writeFile(regular, "123456789", { mode: 0o600 });
+  await symlink(regular, link);
+
+  assert.equal(await readRegularFile(regular, { maximumBytes: 9 }), "123456789");
+  await assert.rejects(readRegularFile(regular, { maximumBytes: 8 }));
+  await assert.rejects(readRegularFile(link));
+  await assert.rejects(readRegularFile("/dev/null"), /operator_file_rejected/);
+  await chmod(regular, 0o644);
+  await assert.rejects(readRegularFile(regular, { requirePrivate: true }), /operator_file_rejected/);
+  await writeRegularFileAtomically(checkpoint, "checkpoint");
+  assert.equal(await readRegularFile(checkpoint), "checkpoint");
 });
 
 test("deterministic profile IDs and checkpoints bind resume to exact normalized input", () => {

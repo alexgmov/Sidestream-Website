@@ -7,6 +7,7 @@
     "analytics:installer": "node scripts/report-installer-referrals.mjs",
     "dev": "vite",
     "build": "tsc -b && vite build && node scripts/generate-sitemap.mjs",
+    "build:vercel": "node scripts/run-verified-vercel-build.mjs",
     "billing:ensure-freedev": "node scripts/ensure-freedev-promo.mjs",
     "customer-360:retention": "node scripts/plan-customer-360-retention.mjs",
     "db:migrate": "node scripts/apply-postgres-migrations.mjs",

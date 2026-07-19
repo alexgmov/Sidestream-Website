@@ -1,9 +1,15 @@
 #!/usr/bin/env node
 
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
+import { createHash, createHmac, timingSafeEqual } from "node:crypto";
+import { readdir } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import {
+  parsePostgresTarget,
+  readConnectedPostgresFingerprint,
+} from "../api/_lib/postgres-target.ts";
+import { readRegularFile, writeRegularFileAtomically } from "./lib/safe-file.mjs";
 
 export const BACKFILL_CHECKPOINT_VERSION = 3;
 export const DEFAULT_BACKFILL_BATCH_SIZE = 100;
@@ -20,8 +26,8 @@ export const DURABLE_EVIDENCE_FIELDS = Object.freeze({
   installerReceiptIdHash: "installer_receipt_hash",
 });
 
-// These fields may exist in reviewed historical exports, but are discarded
-// before planning, hashing, checkpointing, reporting, or database access.
+// These privacy-forbidden fields fail the input gate. Their values are never
+// included in errors, plans, digests, checkpoints, or reports.
 export const IGNORED_NON_IDENTITY_FIELDS = Object.freeze([
   "email",
   "contactEmail",
@@ -56,8 +62,8 @@ const STRIPE_ID_PATTERNS = Object.freeze({
 const ALLOWED_RECORD_FIELDS = new Set([
   "recordId",
   ...Object.keys(DURABLE_EVIDENCE_FIELDS),
-  ...IGNORED_NON_IDENTITY_FIELDS,
 ]);
+const FORBIDDEN_RECORD_FIELDS = new Set(IGNORED_NON_IDENTITY_FIELDS);
 const VALID_NAMESPACES = new Set(["production", "test"]);
 const ACTIONABLE_REPORT_KEYS = Object.freeze([
   "componentRef",
@@ -90,6 +96,13 @@ export function parseBackfillArgs(argv) {
     inputPath: "",
     checkpointPath: "",
     batchSize: DEFAULT_BACKFILL_BATCH_SIZE,
+    expectedInputDigest: "",
+    expectedTargetFingerprint: "",
+    expectedConnectedFingerprint: "",
+    expectedCandidateSha: "",
+    expectedMigrationDigest: "",
+    approvalExpiresAt: "",
+    approvalToken: "",
   };
   let sawDryRun = false;
 
@@ -128,6 +141,28 @@ export function parseBackfillArgs(argv) {
       const [rawBatchSize, nextIndex] = readOption(argv, index, "--batch-size");
       index = nextIndex;
       options.batchSize = parseBatchSize(rawBatchSize);
+    } else if ([
+      "--expected-input-digest",
+      "--expected-target-fingerprint",
+      "--expected-connected-fingerprint",
+      "--expected-candidate-sha",
+      "--expected-migration-digest",
+      "--approval-expires-at",
+      "--approval-token",
+    ].some((name) => argument === name || argument.startsWith(`${name}=`))) {
+      const mapping = {
+        "--expected-input-digest": "expectedInputDigest",
+        "--expected-target-fingerprint": "expectedTargetFingerprint",
+        "--expected-connected-fingerprint": "expectedConnectedFingerprint",
+        "--expected-candidate-sha": "expectedCandidateSha",
+        "--expected-migration-digest": "expectedMigrationDigest",
+        "--approval-expires-at": "approvalExpiresAt",
+        "--approval-token": "approvalToken",
+      };
+      const name = Object.keys(mapping).find((candidate) =>
+        argument === candidate || argument.startsWith(`${candidate}=`)
+      );
+      [options[mapping[name]], index] = readOption(argv, index, name);
     } else {
       throw new Customer360BackfillError(
         `Unknown option ${JSON.stringify(argument)}. Use --help for supported options.`,
@@ -155,7 +190,66 @@ export function parseBackfillArgs(argv) {
   if (options.apply && !options.checkpointPath) {
     throw new Customer360BackfillError("Apply requires an explicit --checkpoint file.");
   }
+  if (options.apply) {
+    for (const property of [
+      "expectedInputDigest",
+      "expectedTargetFingerprint",
+      "expectedConnectedFingerprint",
+      "expectedMigrationDigest",
+      "approvalToken",
+    ]) {
+      if (!/^[0-9a-f]{64}$/.test(options[property])) {
+        throw new Customer360BackfillError(`Apply requires a valid ${property}.`);
+      }
+    }
+    if (!/^[0-9a-f]{40}$/.test(options.expectedCandidateSha)) {
+      throw new Customer360BackfillError("Apply requires the exact candidate SHA.");
+    }
+    const expiresAt = Date.parse(options.approvalExpiresAt);
+    if (!Number.isFinite(expiresAt)) {
+      throw new Customer360BackfillError("Apply requires an expiring approval timestamp.");
+    }
+  }
   return Object.freeze(options);
+}
+
+export function buildBackfillApprovalMessage(options) {
+  return [
+    "sidestream-customer-360-backfill-approval:v1",
+    "test",
+    options.expectedInputDigest,
+    options.expectedTargetFingerprint,
+    options.expectedConnectedFingerprint,
+    options.expectedCandidateSha,
+    options.expectedMigrationDigest,
+    String(options.batchSize),
+    new Date(options.approvalExpiresAt).toISOString(),
+  ].join("\0");
+}
+
+export function verifyBackfillApproval(options, evidence, environment = process.env) {
+  if (!options.apply) throw new Customer360BackfillError("Backfill approval is apply-only.");
+  if (
+    evidence.inputDigest !== options.expectedInputDigest ||
+    evidence.targetFingerprint !== options.expectedTargetFingerprint ||
+    evidence.candidateSha !== options.expectedCandidateSha ||
+    evidence.migrationDigest !== options.expectedMigrationDigest
+  ) {
+    throw new Customer360BackfillError("Backfill approval evidence changed.");
+  }
+  const expiresAt = Date.parse(options.approvalExpiresAt);
+  if (!Number.isFinite(expiresAt) || expiresAt <= Date.now() || expiresAt > Date.now() + 24 * 60 * 60 * 1_000) {
+    throw new Customer360BackfillError("Backfill approval is expired or exceeds 24 hours.");
+  }
+  const secret = environment.SIDESTREAM_C360_BACKFILL_APPROVAL_SECRET || "";
+  if (secret.length < 32) throw new Customer360BackfillError("Backfill approval secret is unavailable.");
+  const expected = createHmac("sha256", secret)
+    .update(buildBackfillApprovalMessage(options))
+    .digest();
+  const actual = Buffer.from(options.approvalToken, "hex");
+  if (actual.length !== expected.length || !timingSafeEqual(actual, expected)) {
+    throw new Customer360BackfillError("Backfill approval token is invalid.");
+  }
 }
 
 export function normalizeBackfillInput(input) {
@@ -670,6 +764,11 @@ function normalizeBackfillRecord(record, index) {
     throw new Customer360BackfillError(`Backfill record ${index + 1} must be an object.`);
   }
   for (const field of Object.keys(record)) {
+    if (FORBIDDEN_RECORD_FIELDS.has(field)) {
+      throw new Customer360BackfillError(
+        `Backfill record ${index + 1} contains prohibited field ${JSON.stringify(field)}.`,
+      );
+    }
     if (!ALLOWED_RECORD_FIELDS.has(field)) {
       throw new Customer360BackfillError(
         `Backfill record ${index + 1} contains unsupported field ${JSON.stringify(field)}.`,
@@ -1166,10 +1265,12 @@ class UnionFind {
 }
 
 async function readJsonFile(filename) {
-  const { readFile } = await import("node:fs/promises");
   let parsed;
   try {
-    parsed = JSON.parse(await readFile(filename, "utf8"));
+    parsed = JSON.parse(await readRegularFile(filename, {
+      maximumBytes: 16 * 1024 * 1024,
+      requirePrivate: true,
+    }));
   } catch (error) {
     throw new Customer360BackfillError(
       `Unable to read valid JSON from ${path.basename(filename)}: ${error instanceof Error ? error.message : "unknown error"}`,
@@ -1179,9 +1280,11 @@ async function readJsonFile(filename) {
 }
 
 async function readCheckpointFile(filename) {
-  const { readFile } = await import("node:fs/promises");
   try {
-    return JSON.parse(await readFile(filename, "utf8"));
+    return JSON.parse(await readRegularFile(filename, {
+      maximumBytes: 4 * 1024 * 1024,
+      requirePrivate: true,
+    }));
   } catch (error) {
     if (error?.code === "ENOENT") return null;
     throw new Customer360BackfillError(
@@ -1191,30 +1294,29 @@ async function readCheckpointFile(filename) {
 }
 
 async function writeCheckpointFile(filename, checkpoint) {
-  const { rename, writeFile } = await import("node:fs/promises");
-  const temporaryPath = `${filename}.tmp-${process.pid}`;
-  await writeFile(temporaryPath, `${JSON.stringify(checkpoint)}\n`, {
-    encoding: "utf8",
-    mode: 0o600,
-  });
-  await rename(temporaryPath, filename);
+  await writeRegularFileAtomically(filename, `${JSON.stringify(checkpoint)}\n`);
 }
 
 function printHelp() {
   console.log(`Usage:
   node scripts/backfill-customer-360.mjs [--dry-run] [--input FILE]
   node scripts/backfill-customer-360.mjs --apply --namespace test \\
-    --input FILE --checkpoint FILE [--batch-size N]
+    --input FILE --checkpoint FILE [--batch-size N] \\
+    --expected-input-digest HEX64 --expected-target-fingerprint HEX64 \\
+    --expected-connected-fingerprint HEX64 --expected-candidate-sha HEX40 \\
+    --expected-migration-digest HEX64 --approval-expires-at ISO8601 \\
+    --approval-token HMAC_HEX64
   node scripts/backfill-customer-360.mjs --self-test --dry-run
 
 Dry-run is the default and never opens a database connection or writes a
 checkpoint. Apply is restricted to the disposable test database selected by
-SIDESTREAM_TEST_POSTGRES_URL. Production apply is intentionally unavailable.
+SIDESTREAM_TEST_POSTGRES_URL and requires a separately generated, expiring HMAC
+approval bound to every reviewed digest. Production apply is unavailable.
 
 Input is a reviewed JSON array (or {"version":1,"records":[]}). Each record
 requires an opaque UUID or lowercase hex64 recordId and may contain only the
 documented durable identity fields. Email, name, IP, timing, behavior, and Gmail
-campaign fields are ignored.`);
+campaign fields are rejected before planning.`);
 }
 
 async function main() {
@@ -1246,9 +1348,28 @@ async function main() {
   );
   const { Pool } = await loadPostgresModule(repositoryRootFromScript());
   const databaseUrl = requireSafeTestDatabaseUrl(process.env);
-  const pool = new Pool(createTestPoolOptions(databaseUrl));
+  const target = parsePostgresTarget(databaseUrl, "SIDESTREAM_TEST_POSTGRES_URL");
+  const plan = buildBackfillPlan(input, options.namespace);
+  const migrationDigest = await customer360MigrationDigest();
+  const candidateSha = process.env.SIDESTREAM_CANDIDATE_SHA || "";
+  verifyBackfillApproval(options, {
+    inputDigest: plan.inputDigest,
+    targetFingerprint: target.fingerprint,
+    candidateSha,
+    migrationDigest,
+  });
+  const pool = new Pool({ ...createTestPoolOptions(databaseUrl), max: 1 });
   try {
+    const connectedFingerprint = await readConnectedPostgresFingerprint(pool);
+    if (connectedFingerprint !== options.expectedConnectedFingerprint) {
+      throw new Customer360BackfillError("Connected backfill target changed after approval.");
+    }
     const checkpoint = await readCheckpointFile(options.checkpointPath);
+    if (!checkpoint) {
+      throw new Customer360BackfillError(
+        "Apply requires an existing checkpoint created from the approved dry run.",
+      );
+    }
     const result = await runCustomer360Backfill({
       input,
       namespace: options.namespace,
@@ -1263,6 +1384,22 @@ async function main() {
   } finally {
     await pool.end();
   }
+}
+
+async function customer360MigrationDigest() {
+  const directory = path.join(repositoryRootFromScript(), "db", "migrations");
+  const filenames = (await readdir(directory))
+    .filter((filename) => /^\d{14}_[a-z0-9_]+\.sql$/.test(filename))
+    .sort();
+  const hash = createHash("sha256").update("sidestream-customer-360-migrations:v1\0");
+  for (const filename of filenames) {
+    const sql = await readRegularFile(path.join(directory, filename), {
+      maximumBytes: 4 * 1024 * 1024,
+    });
+    hash.update(filename).update("\0");
+    hash.update(createHash("sha256").update(sql).digest("hex"));
+  }
+  return hash.digest("hex");
 }
 
 function repositoryRootFromScript() {

@@ -4,6 +4,7 @@ import {
   getPostgresPool,
   RUNTIME_POSTGRES_URL_ENV_NAMES,
 } from "./postgres.js";
+import { parsePostgresTarget } from "./postgres-target.js";
 
 export const CUSTOMER_USAGE_SOURCE_TABLE = "sidestream_telemetry_events";
 export const CUSTOMER_USAGE_SCHEMA_VERSIONS = Object.freeze(["0.2.0"]);
@@ -80,7 +81,7 @@ type ConnectableQueryRunner = QueryRunner & Readonly<{
 }>;
 
 export type CustomerUsageHighWater = Readonly<{
-  receivedAt: Date;
+  receivedAt: string;
   telemetryEventId: string;
 }>;
 
@@ -181,25 +182,27 @@ export function loadCustomerUsageSyncConfiguration(
 }
 
 export function buildTelemetryPoolOptions(connectionString: string) {
-  const url = parsePostgresUrl(connectionString, "SIDESTREAM_TELEMETRY_POSTGRES_URL");
-  const ssl = normalizeTelemetryTlsConfiguration(url);
+  const target = parsePostgresTarget(
+    connectionString,
+    "SIDESTREAM_TELEMETRY_POSTGRES_URL",
+  );
   return {
-    connectionString: url.toString(),
+    connectionString: target.connectionString,
     max: 1,
     connectionTimeoutMillis: 5_000,
     idleTimeoutMillis: 10_000,
     query_timeout: 15_000,
     statement_timeout: 15_000,
     options: "-c default_transaction_read_only=on",
-    ssl,
+    ssl: target.ssl,
   };
 }
 
 export function getCustomerUsageTelemetryPool(connectionString: string) {
-  const normalized = parsePostgresUrl(
+  const normalized = parsePostgresTarget(
     connectionString,
     "SIDESTREAM_TELEMETRY_POSTGRES_URL",
-  ).toString();
+  ).connectionString;
   if (telemetryPool) {
     if (telemetryPoolIdentity !== normalized) {
       throw new Error("Telemetry pool is already attached to a different database target");
@@ -218,9 +221,10 @@ export function compareCustomerUsageHighWater(
   left: CustomerUsageHighWater,
   right: CustomerUsageHighWater,
 ) {
-  const timestampDifference = left.receivedAt.getTime() - right.receivedAt.getTime();
-  if (timestampDifference !== 0) return timestampDifference < 0 ? -1 : 1;
-  return left.telemetryEventId.localeCompare(right.telemetryEventId);
+  if (left.receivedAt !== right.receivedAt) {
+    return left.receivedAt < right.receivedAt ? -1 : 1;
+  }
+  return comparePostgresText(left.telemetryEventId, right.telemetryEventId);
 }
 
 export function utcUsageWindow(referenceTime: Date) {
@@ -389,8 +393,11 @@ export async function runCustomerUsageSync(
     }
 
     const checkpoint = start.checkpoint;
-    const lowerReceivedAt = new Date(
-      (checkpoint?.receivedAt.getTime() ?? now.getTime()) - overlapMs,
+    const checkpointMs = checkpoint
+      ? Date.parse(checkpoint.receivedAt)
+      : now.getTime();
+    const lowerReceivedAt = canonicalMicrosecondTimestamp(
+      new Date(checkpointMs - overlapMs),
     );
     const upper = await readSourceUpperHighWater(
       sourcePool,
@@ -418,6 +425,12 @@ export async function runCustomerUsageSync(
         );
         if (!sourceBatch) break;
         const batchCheckpoint = sourceBatch.checkpoint;
+        if (
+          compareCustomerUsageHighWater(batchCheckpoint, cursor) <= 0 ||
+          compareCustomerUsageHighWater(batchCheckpoint, upper) > 0
+        ) {
+          throw new Error("Telemetry aggregate checkpoint did not make bounded progress");
+        }
         let written = 0;
         await runClientTransaction(targetClient, async () => {
           for (const aggregate of sourceBatch.aggregates) {
@@ -472,7 +485,7 @@ export async function runCustomerUsageSync(
       sourceRowsScanned,
       dailyBucketsWritten,
       profilesRefreshed,
-      sourceFreshnessAt: (upper?.receivedAt || start.sourceFreshnessDate)?.toISOString() || null,
+      sourceFreshnessAt: upper?.receivedAt || start.sourceFreshnessDate?.toISOString() || null,
     };
   } finally {
     if (locked) {
@@ -489,7 +502,7 @@ export async function materializeCustomerUsageProfiles(options: Readonly<{
   targetSchema?: string;
   licenseNamespace: LicenseNamespace;
   now: Date;
-  sourceFreshnessAt?: Date | null;
+  sourceFreshnessAt?: Date | string | null;
 }>) {
   const schema = validatedIdentifier(options.targetSchema || "public", "target schema");
   const window = utcUsageWindow(options.now);
@@ -642,7 +655,10 @@ async function beginCustomerUsageRun(
       [licenseNamespace],
     );
     const state = await client.query(
-      `select checkpoint_received_at, checkpoint_telemetry_event_id,
+      `select
+         to_char(checkpoint_received_at at time zone 'UTC',
+           'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as checkpoint_received_at,
+         checkpoint_telemetry_event_id,
          last_sync_completed_at, source_freshness_at
        from ${schema}.sidestream_customer_usage_sync_state
        where license_namespace = $1 for update`,
@@ -665,7 +681,7 @@ async function beginCustomerUsageRun(
        where license_namespace = $1`,
       [licenseNamespace, now],
     );
-    const checkpointReceivedAt = optionalDate(row.checkpoint_received_at);
+    const checkpointReceivedAt = optionalMicrosecondTimestamp(row.checkpoint_received_at);
     const checkpointId = optionalString(row.checkpoint_telemetry_event_id, 200);
     return {
       skipped: false as const,
@@ -682,10 +698,12 @@ async function readSourceUpperHighWater(
   source: QueryRunner,
   schema: string,
   licenseNamespace: LicenseNamespace,
-  lowerReceivedAt: Date,
+  lowerReceivedAt: string,
 ) {
   const result = await source.query(
-    `select received_at, telemetry_event_id
+    `select to_char(received_at at time zone 'UTC',
+        'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as received_at,
+       telemetry_event_id
      from ${schema}.${CUSTOMER_USAGE_SOURCE_TABLE}
      where received_at >= $1
        and schema_version = any($2::text[])
@@ -1053,7 +1071,8 @@ function buildSourceAggregateSql(schema: string) {
     coalesce(downloads.download_pending_count, 0)::bigint as download_pending_count,
     coalesce(downloads.download_unknown_count, 0)::bigint as download_unknown_count,
     activity.platform, activity.app_version,
-    checkpoint.received_at as checkpoint_received_at,
+    to_char(checkpoint.received_at at time zone 'UTC',
+      'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as checkpoint_received_at,
     checkpoint.telemetry_event_id as checkpoint_telemetry_event_id
   from days
   left join daily_activity activity using (install_id_hash, activity_day)
@@ -1303,7 +1322,7 @@ async function commitCustomerUsageCheckpoint(
   schema: string,
   licenseNamespace: LicenseNamespace,
   checkpoint: CustomerUsageHighWater,
-  sourceFreshnessAt: Date,
+  sourceFreshnessAt: Date | string,
   now: Date,
 ) {
   await client.query(
@@ -1370,9 +1389,36 @@ async function runClientTransaction<T>(client: PoolClient, callback: () => Promi
 
 function highWaterFromRow(row: QueryRow): CustomerUsageHighWater {
   return Object.freeze({
-    receivedAt: requiredDate(row.received_at, "received_at"),
+    receivedAt: requiredMicrosecondTimestamp(row.received_at, "received_at"),
     telemetryEventId: requiredString(row.telemetry_event_id, "telemetry_event_id", 200),
   });
+}
+
+function canonicalMicrosecondTimestamp(value: Date) {
+  if (!Number.isFinite(value.getTime())) throw new Error("Telemetry timestamp is invalid");
+  return value.toISOString().replace(/\.(\d{3})Z$/, ".$1000Z");
+}
+
+function requiredMicrosecondTimestamp(value: unknown, label: string) {
+  if (
+    typeof value !== "string" ||
+    !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$/.test(value) ||
+    !Number.isFinite(Date.parse(value))
+  ) {
+    throw new Error(`Telemetry aggregate ${label} is invalid`);
+  }
+  return value;
+}
+
+function optionalMicrosecondTimestamp(value: unknown) {
+  if (value === null || value === undefined || value === "") return null;
+  return requiredMicrosecondTimestamp(value, "timestamp");
+}
+
+function comparePostgresText(left: string, right: string) {
+  const leftBytes = Buffer.from(left, "utf8");
+  const rightBytes = Buffer.from(right, "utf8");
+  return Math.sign(Buffer.compare(leftBytes, rightBytes));
 }
 
 function sourceChannels(namespace: LicenseNamespace) {
@@ -1392,115 +1438,7 @@ function resolveUsageNamespace(environment: Environment): LicenseNamespace {
 }
 
 function databaseIdentity(connectionString: string, environmentName: string) {
-  const url = parsePostgresUrl(connectionString, environmentName);
-  const database = decodeURIComponent(url.pathname.replace(/^\/+/, ""));
-  return `${url.hostname.toLowerCase()}:${url.port || "5432"}/${database}`;
-}
-
-function parsePostgresUrl(connectionString: string, environmentName: string) {
-  let url: URL;
-  try {
-    url = new URL(connectionString);
-  } catch {
-    throw new Error(`${environmentName} must be a valid Postgres URL`);
-  }
-  if (!['postgres:', 'postgresql:'].includes(url.protocol) || !url.hostname || !url.pathname.slice(1)) {
-    throw new Error(`${environmentName} must identify a Postgres database`);
-  }
-  return url;
-}
-
-function normalizeTelemetryTlsConfiguration(url: URL) {
-  // pg parses connection-string parameters after top-level client options. Strip
-  // accepted TLS aliases and reject parameters that could override this pool's
-  // authenticated TLS, read-only, or timeout settings.
-  const hostname = url.hostname.toLowerCase().replace(/^\[|\]$/g, "");
-  const loopback = TELEMETRY_LOOPBACK_HOSTS.has(hostname);
-  const parametersToRemove = new Set<string>();
-  const requestedTls = new Set<boolean>();
-  const sslModes: string[] = [];
-  const libpqCompatibility = new Set<boolean>();
-
-  for (const [rawName, rawValue] of url.searchParams.entries()) {
-    const name = rawName.toLowerCase();
-    const value = rawValue.trim().toLowerCase();
-
-    if (TELEMETRY_POOL_OWNED_PARAMETERS.has(name)) {
-      throw unsafeTelemetryTlsConfiguration();
-    }
-    if (name === "rejectunauthorized" || name === "checkserveridentity") {
-      throw unsafeTelemetryTlsConfiguration();
-    }
-    if (name === "sslmode") {
-      parametersToRemove.add(rawName);
-      sslModes.push(value);
-      if (TELEMETRY_AUTHENTICATED_TLS_MODES.has(value)) {
-        requestedTls.add(true);
-      } else if (TELEMETRY_NON_TLS_MODES.has(value)) {
-        if (!loopback) throw remoteTelemetryTlsRequired();
-        requestedTls.add(false);
-      } else {
-        throw unsafeTelemetryTlsConfiguration();
-      }
-      continue;
-    }
-    if (name === "ssl") {
-      parametersToRemove.add(rawName);
-      if (value === "true" || value === "1") {
-        requestedTls.add(true);
-      } else if (value === "false" || value === "0") {
-        if (!loopback) throw remoteTelemetryTlsRequired();
-        requestedTls.add(false);
-      } else {
-        throw unsafeTelemetryTlsConfiguration();
-      }
-      continue;
-    }
-    if (name === "uselibpqcompat") {
-      parametersToRemove.add(rawName);
-      if (value === "true" || value === "1") {
-        libpqCompatibility.add(true);
-      } else if (value === "false" || value === "0") {
-        libpqCompatibility.add(false);
-      } else {
-        throw unsafeTelemetryTlsConfiguration();
-      }
-      continue;
-    }
-    if (name === "sslnegotiation") {
-      parametersToRemove.add(rawName);
-      if (value === "direct") {
-        requestedTls.add(true);
-      } else if (value !== "postgres") {
-        throw unsafeTelemetryTlsConfiguration();
-      }
-      continue;
-    }
-    if (name.startsWith("ssl")) {
-      throw unsafeTelemetryTlsConfiguration();
-    }
-  }
-
-  if (libpqCompatibility.size > 1 || requestedTls.size > 1) {
-    throw unsafeTelemetryTlsConfiguration();
-  }
-  if (
-    libpqCompatibility.has(true) &&
-    sslModes.some((mode) => mode !== "verify-full")
-  ) {
-    throw unsafeTelemetryTlsConfiguration();
-  }
-  for (const name of parametersToRemove) url.searchParams.delete(name);
-
-  return requestedTls.values().next().value ?? !loopback;
-}
-
-function remoteTelemetryTlsRequired() {
-  return new Error("Remote telemetry database must use authenticated TLS");
-}
-
-function unsafeTelemetryTlsConfiguration() {
-  return new Error("SIDESTREAM_TELEMETRY_POSTGRES_URL has an unsafe TLS configuration");
+  return parsePostgresTarget(connectionString, environmentName).identity;
 }
 
 function readBoundedInteger(

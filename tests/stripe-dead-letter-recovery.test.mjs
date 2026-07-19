@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import {
@@ -106,13 +107,17 @@ test("database selection accepts only an isolated Test URL, Test namespace, and 
     }, { apply: true }),
     /test_database_not_isolated/,
   );
-  assert.throws(
-    () => createRecoveryPoolOptions({
+  assert.deepEqual(
+    createRecoveryPoolOptions({
       connectionString: "postgres://test:secret@db.example.test/sidestream_test?sslmode=require",
       local: false,
-    }),
-    /authenticated_tls_required/,
+    }).ssl,
+    { rejectUnauthorized: true },
   );
+  assert.throws(() => createRecoveryPoolOptions({
+    connectionString: "postgres://test:secret@db.example.test/sidestream_test?sslmode=disable",
+    local: false,
+  }), /test_database_url_invalid/);
   assert.deepEqual(
     createRecoveryPoolOptions({
       connectionString: "postgres://test:secret@db.example.test/sidestream_test?sslmode=verify-full",
@@ -163,6 +168,40 @@ test("livemode, redacted, identity-mismatched, and unresolved payloads fail clos
   assert.throws(() => deadLetterSnapshot({ payload: { type: "radar.early_fraud_warning.created" } }), /event_type_unresolved/);
 });
 
+test("one-field ingress evidence tampering fails closed before recovery authorization", () => {
+  const original = databaseRow(deadLetterSnapshot());
+  const mutations = [
+    { event_type: "refund.created" },
+    { ingress_event_id: "evt_tampered_001" },
+    { ingress_event_type: "refund.created" },
+    { ingress_created: original.ingress_created + 1 },
+    { ingress_livemode: true },
+    { ingress_api_version: "2025-01-01.unknown" },
+    { ingress_payload_sha256: "0".repeat(64) },
+    { ingress_raw_sha256: "1".repeat(64) },
+    { raw_payload_text: `${original.raw_payload_text} ` },
+    {
+      payload_text: JSON.stringify({
+        ...JSON.parse(original.payload_text),
+        data: { object: { id: "re_tampered" } },
+      }),
+    },
+  ];
+
+  for (const mutation of mutations) {
+    assert.throws(
+      () => snapshotFromRow(
+        { ...original, ...mutation },
+        EVENT_ID,
+        "a".repeat(64),
+        "11111111-1111-4111-8111-111111111111",
+      ),
+      /payload_identity_mismatch|ingress_evidence_mismatch/,
+      JSON.stringify(Object.keys(mutation)),
+    );
+  }
+});
+
 test("only an untouched attempt-8 dead letter may receive one attempt-9 authorization", () => {
   validateNewRecoveryState(deadLetterSnapshot());
   assert.throws(
@@ -197,6 +236,8 @@ test("atomic claim writes one digest-only audit row and claims only the exact ev
             audit_table: "sidestream_stripe_event_recovery_audit",
             queue_column: true,
             production_events_present: false,
+            database_environment: "test",
+            database_instance_id: "11111111-1111-4111-8111-111111111111",
           }],
         };
       }
@@ -249,6 +290,8 @@ test("atomic claim refuses a database containing any livemode Stripe event", asy
             audit_table: "sidestream_stripe_event_recovery_audit",
             queue_column: true,
             production_events_present: true,
+            database_environment: "test",
+            database_instance_id: "11111111-1111-4111-8111-111111111111",
           }],
         };
       }
@@ -265,6 +308,66 @@ test("atomic claim refuses a database containing any livemode Stripe event", asy
     /production_recovery_disabled/,
   );
   assert.equal(statements.at(-1), "rollback");
+});
+
+test("a concurrent attempt-9 invocation cannot process an active recovery lease", async () => {
+  const initial = deadLetterSnapshot();
+  const cliOptions = validApplyOptions(initial);
+  const request = buildRecoveryRequest(cliOptions, initial);
+  const active = processingSnapshot({
+    recoveryRunnerLeaseExpiresAt: "2099-07-17T00:10:00.000Z",
+  });
+  const statements = [];
+  const client = {
+    async query(text) {
+      statements.push(text.trim());
+      if (text === "begin" || text === "commit") return { rows: [] };
+      if (text.includes("to_regclass('public.sidestream_stripe_event_recovery_audit')")) {
+        return {
+          rows: [{
+            audit_table: "sidestream_stripe_event_recovery_audit",
+            queue_column: true,
+            production_events_present: false,
+            database_environment: "test",
+            database_instance_id: active.databaseInstanceId,
+          }],
+        };
+      }
+      if (text.includes("from public.sidestream_stripe_events") && text.includes("for update")) {
+        return { rows: [databaseRow(active)] };
+      }
+      if (text.includes("from public.sidestream_stripe_event_recovery_audit")) {
+        return {
+          rows: [{
+            id: RECOVERY_ID,
+            request_digest: request.requestDigest,
+            event_reference_digest: request.eventReferenceDigest,
+            event_type: request.eventType,
+            payload_digest: request.payloadDigest,
+            target_fingerprint: request.targetFingerprint,
+            license_namespace: "test",
+            reviewed_reason_code: request.reason,
+            prior_processing_status: "dead_letter",
+            prior_attempt_count: STRIPE_EVENT_MAX_ATTEMPTS,
+            database_instance_id: active.databaseInstanceId,
+          }],
+        };
+      }
+      throw new Error("active recovery lease must not be mutated");
+    },
+  };
+
+  const result = await atomicallyClaimStripeDeadLetter({
+    client,
+    eventId: EVENT_ID,
+    cliOptions,
+    targetFingerprint: active.targetFingerprint,
+    createRunnerToken: () => "00000000-0000-4000-8000-000000000903",
+  });
+  assert.equal(result.action, "busy");
+  assert.equal(result.claimed, null);
+  assert.equal(statements.at(-1), "commit");
+  assert.equal(statements.some((statement) => statement.startsWith("update ")), false);
 });
 
 test("lost response after atomic authorization resumes exactly once", async () => {
@@ -397,6 +500,7 @@ function deadLetterSnapshot(overrides = {}) {
     type: "refund.failed",
     created: 1_752_710_400,
     livemode: false,
+    api_version: "2026-06-24.dahlia",
     data: {
       object: {
         id: "re_private",
@@ -411,9 +515,11 @@ function deadLetterSnapshot(overrides = {}) {
   const attemptCount = overrides.attemptCount ?? STRIPE_EVENT_MAX_ATTEMPTS;
   const pendingRecoveryAuditId = overrides.pendingRecoveryAuditId ?? null;
   const terminal = ["dead_letter", "processed", "ignored"].includes(processingStatus);
+  const payloadText = JSON.stringify(payload);
+  const rawPayloadText = payloadText;
   return snapshotFromRow({
     event_type: payload.type,
-    stripe_created_at: "2026-07-17T00:00:00.000Z",
+    stripe_created_at: "2025-07-17T00:00:00.000Z",
     received_at: "2026-07-17T00:00:01.000Z",
     processed_at: processingStatus === "processed" ? "2026-07-17T00:06:00.000Z" : null,
     processing_status: processingStatus,
@@ -427,14 +533,30 @@ function deadLetterSnapshot(overrides = {}) {
     processing_duration_ms: 20,
     terminal_at: terminal ? "2026-07-17T00:06:00.000Z" : null,
     payload_redacted_at: overrides.payloadRedactedAt ?? null,
-    payload_text: JSON.stringify(payload),
+    payload_text: payloadText,
+    raw_payload_text: rawPayloadText,
+    ingress_event_id: payload.id,
+    ingress_event_type: payload.type,
+    ingress_created: payload.created,
+    ingress_livemode: payload.livemode,
+    ingress_api_version: payload.api_version,
+    ingress_payload_sha256: canonicalJsonDigest(payload),
+    ingress_raw_sha256: sha256(rawPayloadText),
+    recovery_runner_token: processingStatus === "processing"
+      ? overrides.recoveryRunnerToken || "00000000-0000-4000-8000-000000000902"
+      : null,
+    recovery_runner_lease_expires_at: processingStatus === "processing"
+      ? overrides.recoveryRunnerLeaseExpiresAt || "2026-07-17T00:10:00.000Z"
+      : null,
+    recovery_runner_epoch: processingStatus === "processing" ? 1 : 0,
     pending_recovery_audit_id: pendingRecoveryAuditId,
     updated_at: "2026-07-17T00:06:00.000Z",
-  }, EVENT_ID, "a".repeat(64));
+  }, EVENT_ID, "a".repeat(64), "11111111-1111-4111-8111-111111111111");
 }
 
-function processingSnapshot() {
+function processingSnapshot(overrides = {}) {
   return deadLetterSnapshot({
+    ...overrides,
     processingStatus: "processing",
     attemptCount: STRIPE_EVENT_RECOVERY_ATTEMPT,
     pendingRecoveryAuditId: RECOVERY_ID,
@@ -455,6 +577,14 @@ function claimedFrom(snapshot) {
     eventType: snapshot.eventType,
     stripeCreatedAt: snapshot.stripeCreatedAt,
     payload: snapshot.payload,
+    rawPayload: snapshot.rawPayloadText,
+    ingressEventId: snapshot.ingressEventId,
+    ingressEventType: snapshot.ingressEventType,
+    ingressPayloadSha256: snapshot.ingressPayloadDigest,
+    ingressRawSha256: snapshot.ingressRawDigest,
+    ingressApiVersion: snapshot.ingressApiVersion,
+    ingressLivemode: snapshot.ingressLivemode,
+    ingressCreated: snapshot.ingressCreated,
     attemptCount: snapshot.attemptCount,
     claimToken: snapshot.claimToken,
   };
@@ -478,7 +608,34 @@ function databaseRow(snapshot) {
     terminal_at: snapshot.terminalAt,
     payload_redacted_at: snapshot.payloadRedactedAt,
     payload_text: snapshot.payloadText,
+    raw_payload_text: snapshot.rawPayloadText,
+    ingress_event_id: snapshot.ingressEventId,
+    ingress_event_type: snapshot.ingressEventType,
+    ingress_created: snapshot.ingressCreated,
+    ingress_livemode: snapshot.ingressLivemode,
+    ingress_api_version: snapshot.ingressApiVersion,
+    ingress_payload_sha256: snapshot.ingressPayloadDigest,
+    ingress_raw_sha256: snapshot.ingressRawDigest,
+    recovery_runner_token: snapshot.recoveryRunnerToken || null,
+    recovery_runner_lease_expires_at: snapshot.recoveryRunnerLeaseExpiresAt,
+    recovery_runner_epoch: snapshot.recoveryRunnerEpoch,
     pending_recovery_audit_id: snapshot.pendingRecoveryAuditId || null,
     updated_at: snapshot.updatedAt,
   };
+}
+
+function sha256(value) {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function canonicalJsonDigest(value) {
+  return sha256(JSON.stringify(sortJsonValue(JSON.parse(JSON.stringify(value)))));
+}
+
+function sortJsonValue(value) {
+  if (Array.isArray(value)) return value.map(sortJsonValue);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(Object.entries(value)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, entry]) => [key, sortJsonValue(entry)]));
 }

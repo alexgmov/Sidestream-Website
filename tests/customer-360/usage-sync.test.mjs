@@ -47,9 +47,9 @@ test("telemetry configuration is read-only, separate, bounded, and namespace-sco
 
   assert.throws(() => loadCustomerUsageSyncConfiguration({
     SIDESTREAM_TELEMETRY_POSTGRES_URL:
-      "postgres://reader:reader@db.internal:5432/shared?application_name=telemetry",
+      "postgres://reader:reader@db.internal:5432/shared?sslmode=require",
     POSTGRES_URL:
-      "postgres://writer:writer@DB.INTERNAL/shared?application_name=runtime",
+      "postgres://writer:writer@DB.INTERNAL/shared?sslmode=require",
     VERCEL_ENV: "production",
   }), /separate from runtime database POSTGRES_URL/);
   assert.throws(() => loadCustomerUsageSyncConfiguration({
@@ -152,8 +152,8 @@ test("download outcomes prefer finalization and preserve pending and unknown", (
   }), "failure");
 });
 
-test("high-water ordering preserves equal timestamps with the telemetry event id tie-breaker", () => {
-  const timestamp = new Date("2026-07-15T12:00:00.000Z");
+test("high-water ordering preserves Postgres microseconds and bytewise event ids", () => {
+  const timestamp = "2026-07-15T12:00:00.000001Z";
   assert.equal(compareCustomerUsageHighWater(
     { receivedAt: timestamp, telemetryEventId: "event-a" },
     { receivedAt: timestamp, telemetryEventId: "event-b" },
@@ -164,8 +164,12 @@ test("high-water ordering preserves equal timestamps with the telemetry event id
   ), 1);
   assert.equal(compareCustomerUsageHighWater(
     { receivedAt: timestamp, telemetryEventId: "event-a" },
-    { receivedAt: new Date(timestamp), telemetryEventId: "event-a" },
+    { receivedAt: timestamp, telemetryEventId: "event-a" },
   ), 0);
+  assert.equal(compareCustomerUsageHighWater(
+    { receivedAt: "2026-07-15T12:00:00.000001Z", telemetryEventId: "event-z" },
+    { receivedAt: "2026-07-15T12:00:00.000002Z", telemetryEventId: "event-a" },
+  ), -1);
 });
 
 test("rolling boundaries are UTC across Los Angeles spring-forward and fall-back", () => {
