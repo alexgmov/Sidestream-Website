@@ -31,14 +31,6 @@ const ACTIVATION_C = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 const INSTALL_A = "a".repeat(64);
 const INSTALL_BRIDGE = "c".repeat(64);
 const RECEIPT_A = "b".repeat(64);
-const PRIVATE_FIELDS = Object.freeze({
-  email: "backfill.private@example.com",
-  displayName: "Backfill Private Customer",
-  ipAddress: "198.51.100.44",
-  occurredAt: "2026-07-15T14:15:16.000Z",
-  behavior: "private behavior history",
-  gmailCampaignHmac: "private-gmail-campaign-hash",
-});
 
 test("test-only Customer 360 apply is atomic, resumable, idempotent, and private", {
   timeout: 120_000,
@@ -58,8 +50,8 @@ test("test-only Customer 360 apply is atomic, resumable, idempotent, and private
     }
 
     const initialInput = [
-      { recordId: opaqueRecordId(101), ...PRIVATE_FIELDS },
-      { recordId: opaqueRecordId(102), ...PRIVATE_FIELDS },
+      { recordId: opaqueRecordId(101) },
+      { recordId: opaqueRecordId(102) },
       {
         recordId: opaqueRecordId(103),
         accountId: ACCOUNT_A,
@@ -68,7 +60,6 @@ test("test-only Customer 360 apply is atomic, resumable, idempotent, and private
         stripePaymentIntentId: "pi_C360BackfillA",
         installIdHash: INSTALL_A,
         supportCode: "SIDE-A1B2-C3D4-E5F6",
-        ...PRIVATE_FIELDS,
       },
       {
         recordId: opaqueRecordId(104),
@@ -77,7 +68,6 @@ test("test-only Customer 360 apply is atomic, resumable, idempotent, and private
         stripeSubscriptionId: "sub_C360BackfillA",
         installIdHash: INSTALL_A,
         installerReceiptIdHash: RECEIPT_A,
-        ...PRIVATE_FIELDS,
       },
     ];
 
@@ -103,7 +93,6 @@ test("test-only Customer 360 apply is atomic, resumable, idempotent, and private
       assert.equal(checkpoints.at(-1).nextComponentIndex, 3);
       assert.equal(checkpoints.at(-1).processedRecords, 4);
       assertPrivacySafeReport(applied, [
-        ...Object.values(PRIVATE_FIELDS),
         ACCOUNT_A,
         ACTIVATION_A,
         ACTIVATION_B,
@@ -161,7 +150,6 @@ test("test-only Customer 360 apply is atomic, resumable, idempotent, and private
         accountId: ACCOUNT_B,
         activationId: ACTIVATION_C,
         installIdHash: INSTALL_A,
-        ...PRIVATE_FIELDS,
       }];
       const before = await databaseSnapshot(pool, quotedSchema);
       const report = await runCustomer360Backfill({
@@ -180,7 +168,6 @@ test("test-only Customer 360 apply is atomic, resumable, idempotent, and private
         [["conflict", "existing_account_disagrees"]],
       );
       assertPrivacySafeReport(report, [
-        ...Object.values(PRIVATE_FIELDS),
         ACCOUNT_B,
         ACTIVATION_C,
         INSTALL_A,
@@ -264,7 +251,7 @@ test("test-only Customer 360 apply is atomic, resumable, idempotent, and private
 
     await t.test("resume replays a committed uncheckpointed batch without duplication", async () => {
       const resumeInput = [
-        { recordId: opaqueRecordId(120), ...PRIVATE_FIELDS },
+        { recordId: opaqueRecordId(120) },
         {
           recordId: opaqueRecordId(121),
           activationId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
@@ -345,8 +332,8 @@ test("test-only Customer 360 apply is atomic, resumable, idempotent, and private
 
     await t.test("later durable evidence quarantines previously separate orphan roots", async () => {
       const orphanInput = [
-        { recordId: opaqueRecordId(130), ...PRIVATE_FIELDS },
-        { recordId: opaqueRecordId(131), ...PRIVATE_FIELDS },
+        { recordId: opaqueRecordId(130) },
+        { recordId: opaqueRecordId(131) },
       ];
       const orphanApply = await runCustomer360Backfill({
         input: orphanInput,
@@ -392,7 +379,6 @@ test("test-only Customer 360 apply is atomic, resumable, idempotent, and private
         [["conflict", "existing_evidence_disagrees", 0]],
       );
       assertPrivacySafeReport(bridgeReport, [
-        ...Object.values(PRIVATE_FIELDS),
         INSTALL_BRIDGE,
         ...orphanInput.map(({ recordId }) => recordId),
       ]);

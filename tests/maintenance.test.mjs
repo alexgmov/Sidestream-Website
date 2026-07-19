@@ -349,6 +349,40 @@ test("maintenance throttles hot writes and retains only bounded audit data", {
         ["evt_dead_diagnostic", "evt_processed_fresh"],
       );
 
+      const immutableEventId = redacted[0].event_id;
+      await assert.rejects(
+        pool.query(
+          `update public.sidestream_stripe_events
+           set raw_payload = '{"restored":true}' where event_id = $1`,
+          [immutableEventId],
+        ),
+        /Stripe ingress evidence is immutable/,
+      );
+      await assert.rejects(
+        pool.query(
+          `update public.sidestream_stripe_events
+           set payload = '{"redacted":true}'::jsonb where event_id = $1`,
+          [immutableEventId],
+        ),
+        /Stripe ingress evidence is immutable/,
+      );
+      await assert.rejects(
+        pool.query(
+          `update public.sidestream_stripe_events
+           set event_type = 'customer.updated' where event_id = $1`,
+          [immutableEventId],
+        ),
+        /Stripe ingress evidence is immutable/,
+      );
+      await assert.rejects(
+        pool.query(
+          `update public.sidestream_stripe_events
+           set ingress_event_id = 'evt_rewritten' where event_id = $1`,
+          [immutableEventId],
+        ),
+        /Stripe ingress evidence is immutable/,
+      );
+
       const durableTruth = await pool.query(
         `
           select l.entitlement_status, l.stripe_state_event_id,
