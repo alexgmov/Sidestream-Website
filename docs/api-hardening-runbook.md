@@ -5,9 +5,11 @@ reviewed implementation, current contracts, and unresolved release blockers. No
 executable Production cutover procedure exists. This document is not evidence
 that a Production migration, Stripe configuration change, Vercel WAF rule,
 deployment, secret change, cron change, traffic change, query, or cutover has
-occurred. The documentation-remediation worker that wrote this revision ran
-local checks only; it did not call live Stripe or Vercel endpoints or read or
-mutate Production data.
+occurred. The database-closure worker that wrote this revision ran local checks
+only; it did not call live Stripe or Vercel endpoints or read or mutate
+Production data. The preceding adversarial audit did perform secret-safe,
+read-only provider and HTTP metadata inspection. It changed no provider state or
+customer data.
 
 This document records API, HTTP, data-model, telemetry, and operational facts,
 plus the capabilities that a future separately reviewed Production plan would
@@ -45,6 +47,14 @@ history or tickets.
   in the migration/legacy/device/reporting tools, historical lifecycle repair
   tool, or Customer 360 retention mutation policy/implementation. Those remain
   explicit Production blockers, never existing capabilities.
+- The adversarial audit observed two current Production incidents: the canonical
+  browser base/OAuth origin disagreed with configured application origins, and
+  all four registered cron routes returned their sanitized unavailable response.
+  Local remediation did not reconfigure, drain, or reverify either live surface.
+- The final real-Postgres gate is local and self-contained. It exposed and closed
+  stale privacy-forbidden backfill fixtures and an ingress trigger that blocked
+  the maintenance job's exact irreversible payload redaction. It is not provider,
+  deployment, migration-application, or Preview evidence.
 
 ## HTTP and release contract
 
@@ -288,6 +298,30 @@ as development/test fallback and for operator tools. A production runtime with
 only a direct URL fails closed. Do not give direct migration credentials to a
 browser, CEP build, or normal serverless runtime.
 
+### Reproducible isolated real-Postgres gate
+
+From the exact clean candidate, with database/runtime/deployed-target selectors
+unset, run:
+
+```bash
+npm ci --ignore-scripts --no-audit --no-fund
+node scripts/run-customer-360-isolated-postgres-gate.mjs
+```
+
+The command accepts no arguments or external database URL. It refuses root,
+ambient Postgres/Node/provider overrides, unsafe temporary roots, and installs
+that are symlinked, cross-checkout, or do not match this lockfile. It creates a
+private `scram-sha-256` cluster on a random `127.0.0.1` port with Unix sockets
+disabled, gives children only its generated URL, keeps npm offline, and blocks
+non-loopback HTTP, HTTPS, TLS, TCP, fetch, and WebSocket access. It always stops
+Postgres and removes the cluster on success, failure, `SIGINT`, or `SIGTERM`.
+
+The gate runs `test:customer-360-postgres`, `test:postgres-integration`, and
+`test:single-device`. This closes the audit's previously unexecuted local
+database aggregates only. It does not prove provider identity, connected roles,
+an applied migration ledger, RLS/grants on a remote target, or Preview/Production
+state.
+
 The ordered SQL chain is checksummed in
 `public.sidestream_schema_migrations`. The runner takes a global advisory lock,
 refuses checksum drift, and commits each migration plus its ledger row in one
@@ -310,9 +344,11 @@ An existing non-empty schema without the ledger is not automatically assumed to
 be current. `--status` reports that a baseline is required; `--baseline` checks
 the known pre-hardening schema and records only migrations it can prove. Applying
 refuses an unbaselined non-empty schema. The chain currently ends with
-`20260714200000_remove_redundant_download_lead_key_unique.sql`: canonical lead
-uniqueness is `(email, cta_source)` and `lead_key` remains a non-unique lookup
-index. Runtime DDL is prohibited and checked by
+`20260719120000_remediate_customer_360_final_audit.sql`; local validation or the
+isolated gate does not mean that migration is applied to any provider target.
+The earlier `20260714200000_remove_redundant_download_lead_key_unique.sql` keeps
+canonical lead uniqueness at `(email, cta_source)` and `lead_key` as a
+non-unique lookup index. Runtime DDL is prohibited and checked by
 `node scripts/assert-no-runtime-ddl.mjs`.
 
 `npm run db:migrate -- --status` is the authoritative read-only applied/pending
@@ -472,7 +508,7 @@ Never paste values into this document, tickets, chat, browser code, or CEP code.
 | Scheduler | `CRON_SECRET`: one stable random value, 16-512 printable non-space ASCII characters (`U+0021`-`U+007E`), sent as `Authorization: Bearer ...` to every internal route. Generate 32 random bytes as a 64-character hexadecimal token in the approved secret manager; spaces, tabs, newlines, and non-ASCII are outside the shared contract because lead replay rejects them even though the other three validators do not enforce this character class. |
 | Runtime database | Pooled URL precedence above; `POSTGRES_POOL_MAX` default 4, range 2-20; `POSTGRES_POOL_IDLE_TIMEOUT_MS` 10000, 1000-60000; `POSTGRES_CONNECTION_TIMEOUT_MS` 5000, 250-30000; `POSTGRES_QUERY_TIMEOUT_MS` and `POSTGRES_STATEMENT_TIMEOUT_MS` 10000, 250-60000; `POSTGRES_SSL=0` only for a known local target |
 | Migration database | `SIDESTREAM_POSTGRES_URL_NON_POOLING` preferred; `POSTGRES_MIGRATION_STATEMENT_TIMEOUT_MS` defaults to 300000 and is bounded 1000-1800000; runner pool max is 1 |
-| Test database | `SIDESTREAM_TEST_POSTGRES_URL` is mandatory for integration tests, must be disposable, and must not normalize to any runtime host/port/database target |
+| Test database | Direct integration-test commands require a disposable `SIDESTREAM_TEST_POSTGRES_URL` that does not normalize to any runtime target. The preferred isolated gate rejects ambient selectors and supplies its own generated loopback URL. |
 | Rate limiter | `SIDESTREAM_RATE_LIMIT_HASH_SECRET`, at least 32 characters and stable; no production fallback. Checkout is fixed at 8/intent and 20/IP per 15 minutes; lead capture is fixed at 5/email and 20/IP per 10 minutes |
 | Checkout intent | Signed confirmation TTL 10 minutes; database intent TTL 24 hours; fixed code constants. Product/Price variables are `SIDESTREAM_PRO_PRODUCT_ID`, `SIDESTREAM_PRO_PRICE_ID`, and legacy `SIDESTREAM_UNLIMITED_PRICE_ID` |
 | Stripe retries | Batch/lease/backoff and the absolute normal-processing attempt-8 bound are described above. Exhausted ordinary work terminalizes without a ninth normal processor call; separately approved exact-event Test recovery is the only attempt-9 path. Legacy allowlists are `SIDESTREAM_LEGACY_SUBSCRIPTION_PRODUCT_IDS` and `SIDESTREAM_LEGACY_SUBSCRIPTION_PRICE_IDS` |
@@ -498,6 +534,14 @@ limit before deployment. Do not compensate by using the direct URL at runtime.
 
 Logs must preserve event IDs/outcomes and aggregate counts, never raw secrets,
 tokens, device IDs, full Stripe payloads, or lead email addresses.
+
+The read-only provider audit found only a generic alert rule with no notification
+destination and no named owner; it did not surface the unavailable cron routes.
+That is a current external blocker. Before Preview rails or Production recovery,
+install and failure-inject named alerts for worker unavailability, oldest due or
+leased work, dead letters/failed claims, webhook-to-reconciliation lag, replay
+and maintenance failures, and usage freshness/read budget. Retain sanitized
+notification evidence without payloads or customer identifiers.
 
 | Signal | Metric/query | Alert threshold and response |
 | --- | --- | --- |
@@ -546,7 +590,12 @@ Maintenance runs under an advisory transaction lock and deletes only expired
 credential, activation, web-session, rate-limit, and Checkout-intent rows. It
 redacts retained Stripe payloads while preserving event identity and billing
 audit metadata. It does not delete canonical leads or active entitlements.
-The exact `counts` fields are `credentialRowsDeleted`,
+The redaction exception does not weaken ingress immutability: canonical event
+ID/type, Stripe creation time, livemode/account/API-version facts, ingress
+sequence/time, and raw-payload digest cannot change. Only the exact first
+maintenance transition to the bounded redacted payload, `raw_payload = null`,
+and a first redaction timestamp is allowed; arbitrary rewrites, restoration, and
+later payload mutation are rejected. The exact `counts` fields are `credentialRowsDeleted`,
 `activationSessionsDeleted`, `webSessionsDeleted`, `rateLimitBucketsDeleted`,
 `checkoutIntentsDeleted`, and `stripePayloadsRedacted`.
 
@@ -569,6 +618,15 @@ reviewed project-wide pause/invoke/re-enable sequence or separately reviewed
 per-job kill switches. The repository also has no approved maintenance WAF
 bypass or secret-safe invocation launcher, so no Production invocation is
 authorized here. See Vercel's primary [cron management contract](https://vercel.com/docs/cron-jobs/manage-cron-jobs).
+
+The read-only audit observed all four Production schedules registered while the
+four routes returned `processor_unavailable`, `replay_unavailable`,
+`maintenance_unavailable`, and `customer_usage_sync_unavailable`. Treat that as
+an external incident until a separately approved owner proves the connected
+Production target/schema, restores auth/configuration, measures and reconciles
+the bounded backlog, and installs tested route/queue alerts. Do not add a secret
+or invoke a worker from this document: releasing accumulated work into an
+unproved schema is unsafe.
 
 Any future protected invocation capability must validate `CRON_SECRET` as
 16-512 printable non-space ASCII characters, keep it out of shell history and
@@ -620,8 +678,11 @@ sequence. No Production action was performed by this documentation change.
 
 The code-owned refund/dispute mapper, absolute normal-claim cap, authenticated
 Customer 360 telemetry TLS options, Test-only exact-event recovery, and
-read-only retention-inventory gaps are closed locally. The existing Production
-blockers remain open: historical lifecycle repair; Production/livemode
+read-only retention-inventory gaps are closed locally. The real-Postgres audit's
+fixture and maintenance-redaction findings are also closed locally. The existing
+Production blockers remain open: the canonical base/OAuth origin incident; the
+four unavailable cron routes and unknown backlog; historical lifecycle repair;
+Production/livemode
 dead-letter recovery; authenticated Production migration, legacy, device, and
 reporting tooling; safe device support/backfill; license-secret continuity; a
 runtime-distinct qualified fallback; reviewed WAF maintenance controls; safe
@@ -629,6 +690,18 @@ cron control; provider-attested configuration and artifact evidence; connected
 target proof; and a fresh human-reviewed Production plan. Customer 360 also
 still needs approved retention periods/actions and a separately reviewed
 dependency-aware mutation implementation. No local test closes any live gate.
+
+A future Customer 360 Preview must use a dedicated isolated non-Production
+Vercel project/scheduler boundary, not the shared project that auto-deployed the
+audited candidate. It must prove exact provider configuration and connected
+database roles, clean immutable website/FlowState provenance, named tested
+alerts, and a recreate-first non-Production rollback. Payment acceptance requires
+two separate Stripe sandbox journeys: a nonzero $9.99 card rail proving
+PaymentIntent/Charge/invoice/receipt/portal and lifecycle behavior, and a
+product-bound FREEDEV rail proving `no_payment_required`, no paid receipt
+expectation, comped projection, and active entitlement. No such live rail or
+Preview evidence is claimed. Only after every timestamped Preview/Test gate
+passes may a separate Production plan be commissioned.
 
 The removed recipe also failed independent review because its provider output
 did not expose the claimed deployment metadata or actual selectors, its mutable

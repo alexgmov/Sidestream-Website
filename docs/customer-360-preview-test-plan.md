@@ -9,23 +9,32 @@ provisioned, human-approved non-Production Preview deployment and the Test
 license namespace. It is not a Production procedure, a deployment record, or
 permission to migrate, backfill, query, or change Production.
 
-**Current decision as of 2026-07-17: Blocked.** The inspected Vercel Preview
-environment is rejected because its database, Stripe, Google, and base URL
-values match Production. No secret values are reproduced here. Provisioning and
-approving an isolated Preview target is a human-owned gate. Until that happens,
-do not deploy the Customer 360 candidate, contact protected Preview routes,
-apply migrations, invoke usage sync, apply backfill, or run live FlowState QA.
+**Current decision as of 2026-07-19: Blocked.** A read-only adversarial audit
+observed an earlier candidate auto-deploy in the shared Vercel Preview project;
+its database, Stripe, Google, base URL, project cron, and protection boundary
+cannot satisfy isolation. That deployment is unsafe-exposure evidence only, not
+Preview acceptance or a rollback artifact. The next candidate requires a
+dedicated isolated non-Production project and scheduler boundary. No secret
+values are reproduced here. Until every prerequisite passes, do not deploy a
+replacement candidate, contact protected Preview routes, apply migrations,
+invoke usage sync, apply backfill, or run live FlowState QA.
 The supplied current-state evidence did not include an exact UTC observation
 time; capture a fresh verifier run instead of inventing or backdating one.
 
-Local code has since closed five bounded implementation gaps: authenticated TLS
-enforcement for remote telemetry reads, an absolute normal Stripe claim cap,
-`refund.failed` recovery and exhaustive current dispute mapping, audited
-exact-event recovery restricted to isolated Test, and a no-write retention
-inventory. Those are fixture/local results only. No deployment, migration,
-backfill, usage sync, Stripe/provider configuration, cron enablement, live
-FlowState QA, connected-target check, or Preview observation occurred, so E01
-and every dependent row remain Blocked.
+The adversarial product/runtime, payment/queue, and data/privacy audits drove a
+local remediation pass. The final real-Postgres audit then exposed and closed
+two residual defects: privacy-forbidden fields in stale backfill fixtures and an
+immutability trigger that also blocked required maintenance redaction. The
+repaired trigger preserves immutable ingress identity/evidence while allowing
+only the exact first irreversible bounded redaction with `raw_payload = null`.
+No provider/database query, deployment, migration application, recovery,
+backfill, usage sync, live rail, provider configuration change, cron change,
+live FlowState QA, or connected-target check occurred during that closure.
+
+The read-only provider audit also observed two Production incidents that remain
+external blockers: canonical browser base/OAuth origins disagreed, and all four
+registered cron routes returned their sanitized unavailable responses. This plan
+records no incident remediation, backlog drain, or live re-verification.
 
 Passing this plan means only that the named Customer 360 candidate satisfied the
 recorded Preview/Test gates. It does not authorize Production, enable device
@@ -64,6 +73,10 @@ steps when any of the following is true:
 - the candidate commit, deployed artifact, or immutable hostname cannot be
   proved, the candidate worktree is dirty, or the reviewed file scope differs
   from the deployed scope;
+- the canonical base/OAuth origin incident or the four unavailable Production
+  cron routes lack a separately approved incident disposition and fresh proof;
+- Preview is attached to the shared Production Vercel project/scheduler boundary
+  instead of a dedicated isolated non-Production project;
 - any Preview database alias resolves to Production, Preview Stripe is not an
   isolated test-mode account/key, the Google client or secret is shared with
   Production, the Preview base URL equals Production, or CRM, cron, webhook, or
@@ -78,8 +91,9 @@ steps when any of the following is true:
   design and separate approval; the inventory planner is not an apply tool;
 - migration state has unexplained files, order drift, checksum drift, runtime
   DDL, overly broad grants, or an unreviewed baseline;
-- Vercel project-wide cron is enabled. This plan keeps all four project jobs
-  disabled and uses only the separately confirmed one-time usage-sync verifier;
+- the dedicated Preview project's project-wide cron is enabled. This plan keeps
+  all four Preview jobs disabled, leaves Production scheduling untouched, and
+  uses only the separately confirmed one-time usage-sync verifier;
 - the hostname is mutable/ambiguous, redirects to another host, resolves to a
   Production alias, does not return Vercel deployment evidence, or does not map
   to the reviewed commit/artifact;
@@ -111,28 +125,32 @@ stdout/stderr plus exit status to the evidence bundle.
 
 ### Website repository: current locally supported closure gate
 
-This gate uses fixtures, source contracts, local build output, and the lifecycle
-suite's self-managed ephemeral loopback Postgres. It requires no external
-database selector or provider target and proves none of the manual rows.
+Run this from the clean exact integration candidate. The isolated Postgres gate
+requires the checkout's own lock-matching install, local `initdb`, `postgres`,
+and `pg_ctl`, and no ambient database/runtime/deployed-target selectors. It
+creates and removes its own authenticated loopback cluster, supplies the only
+database URL, blocks provider/non-loopback access, and proves none of the manual
+provider rows.
 
 ```bash
+npm ci --ignore-scripts --no-audit --no-fund
 npm run test:customer-360
 npm run test:api
+npm run test:entitlement
 npm run test:download-referral
 npm run test:migrations
 npm run verify:vercel-contract
-node --experimental-strip-types --test tests/entitlement-lifecycle.test.mjs
-node --test tests/stripe-events.test.mjs
-node --test tests/customer-360/retention-ops.test.mjs tests/customer-360/telemetry-tls.test.mjs tests/stripe-dead-letter-recovery.test.mjs tests/stripe-event-claim-cap.test.mjs
+node scripts/run-customer-360-isolated-postgres-gate.mjs
 npm run typecheck
 npm run build
 git diff --check
 ```
 
-`retention-ops.test.mjs` and `telemetry-tls.test.mjs` are explicitly classified
-as non-Postgres Customer 360 tests. Therefore both `test:customer-360` and
-`test:api` execute them. The Postgres-dependent suites remain in the separate
-registry and must not be relabeled as fixture tests.
+The isolated command runs `test:customer-360-postgres`,
+`test:postgres-integration`, and `test:single-device`. Its infrastructure
+self-test is explicitly classified in the closed Customer 360 registry.
+`retention-ops.test.mjs` and `telemetry-tls.test.mjs` remain non-Postgres and run
+through both `test:customer-360` and `test:api`.
 
 ### Website repository: local and fixture gates
 
@@ -239,26 +257,20 @@ These FlowState commands are fixture/local gates. They do not prove a live
 Customer API, Preview deployment, migration, backfill, scheduler, or Production
 state.
 
-### Human return checklist: database and live gates
+### Human return checklist: provider and live gates
 
-The local closure gate does not run these database aggregates. A human must
-provide a reviewed disposable URL that passes the repository collision guards,
-then retain their output with the candidate evidence:
-
-```bash
-SIDESTREAM_TEST_POSTGRES_URL='<reviewed-disposable-postgres-url>' npm run test:customer-360-postgres
-SIDESTREAM_TEST_POSTGRES_URL='<reviewed-disposable-postgres-url>' npm run test:postgres-integration
-SIDESTREAM_TEST_POSTGRES_URL='<reviewed-disposable-postgres-url>' npm run test:single-device
-```
-
-Even those disposable suites do not clear E01 onward. The same human return must
-name the isolated Preview target; capture fresh environment comparison and
-provider/artifact proof; prove authenticated connected runtime and telemetry
-targets; snapshot, apply, and verify checksummed non-Production migrations;
-approve backfill dry-run and any Test apply separately; approve retention
-periods/actions, lag/read budgets, alerts, and owners; keep project cron disabled;
-complete the protected API, failure, rollback, and live FlowState Preview QA
-rows; and commission a fresh Production plan only afterward.
+The isolated local command closes the previously unexecuted disposable-Postgres
+aggregate gate but does not clear E01 onward. A human return must incident-check
+the canonical origin/OAuth and unavailable-cron findings; create and name the
+dedicated isolated Preview project/scheduler boundary; capture fresh environment,
+provider, protection, and artifact proof; prove authenticated connected runtime
+and read-only telemetry targets; snapshot, apply, and verify checksummed
+non-Production migrations; approve backfill dry-run and any Test apply
+separately; approve retention periods/actions and lag/read budgets; install named
+tested alerts; pair clean website and FlowState SHAs; execute the separate paid
+and FREEDEV sandbox journeys; complete protected API, failure-injection,
+rollback/recreate, and live FlowState Preview QA rows; and commission a fresh
+Production plan only afterward.
 
 ## Ordered acceptance matrix
 
@@ -266,17 +278,17 @@ Rows are dependency ordered. A blocked or failed row blocks every dependent row.
 
 | ID | Gate and required proof | Expected result | Stop or rollback trigger |
 | --- | --- | --- | --- |
-| P01 | Candidate provenance and clean-tree scope | Website and FlowState SHAs, reviewed diffs, clean status, automated output, immutable artifact ID, and deployment-to-SHA evidence all agree. | Dirty tree, unreviewed files, mutable alias only, artifact/commit mismatch, or missing build provenance. |
-| E01 | Preview/Production isolation | Offline verifier passes; provider evidence shows a unique Preview runtime database, unique telemetry source, Stripe test mode, unique webhook/Google/CRM/cron secrets, unique Google callback, and unique HTTPS base URL. | Any collision, malformed/missing value, live Stripe key, provider ambiguity, or shared owner/resource. Current Vercel Preview is Blocked here. |
+| P01 | Candidate provenance and clean-tree scope | Clean website and FlowState SHAs, reviewed diffs, automated output, immutable artifact ID, and deployment-to-SHA evidence all agree; FlowState pins the exact website contract SHA. | Dirty tree, stale cross-repo pin, unreviewed files, mutable alias only, artifact/commit mismatch, or missing build provenance. |
+| E01 | Preview/Production isolation | Offline verifier passes; provider evidence shows a dedicated non-Production Vercel project/scheduler boundary, unique runtime database and telemetry source, Stripe test mode, unique webhook/Google/CRM/cron/hash secrets, exact Test Product/Price, unique Google callback, and unique HTTPS base URL. | Any collision, malformed/missing value, live Stripe key, provider ambiguity, shared owner/resource/project, or inherited Production/generic selector. Shared Preview is Blocked here. |
 | D01 | Database snapshot and authenticated target proof | Reviewer records provider project/branch/database identifiers or fingerprints, authenticated hostname/certificate evidence, runtime versus telemetry role, pre-migration snapshot ID, restore/recreate owner, and successful isolated restore drill. | Target cannot be distinguished from Production/disposable test, TLS identity is unauthenticated, snapshot is absent/unrestorable, or telemetry role is not read-only. |
 | D02 | Checksummed migrations, RLS, and grants | Local validation passes; approved non-Production apply produces exact ledger filenames/checksums; live catalog shows all expected tables/functions/indexes, RLS enabled, and no direct `anon`/`authenticated` access. Runtime role has only required access and no runtime DDL. | Pending/unexpected file, checksum drift, unexplained baseline, RLS disabled, broad schema/table/function grant, runtime DDL, or partial migration. Restore/recreate from D01. |
-| V01 | Vercel Preview artifact and scheduling | Immutable Preview hostname maps to P01 artifact and E01 environment. Vercel project-wide cron is disabled for all four declared jobs. No scheduled invocation occurred. | Alias/redirect ambiguity, wrong commit/environment, Production host, or any project-wide cron enablement. Revoke access and redeploy last known Preview artifact. |
+| V01 | Vercel Preview artifact and scheduling | Immutable hostname in the dedicated Preview project maps to P01 and E01. Its project-wide cron is disabled for all four jobs; the Production project's scheduler is untouched. No scheduled Preview invocation occurred. | Shared Production project, alias/protection ambiguity, wrong commit/environment, Production host, any Preview cron enablement, or any Production scheduler mutation. Revoke access; do not use the unsafe auto-deploy as rollback. |
 | A01 | Protected admin API transport and auth | Missing, wrong, duplicate, and combined bearer credentials return `401`; missing server config returns `503`; any Origin returns `403`; unsupported methods return `405`; JSON/no-store/nosniff/Vary headers match contract; no secret appears anywhere. | Credential accepted incorrectly, browser/CORS access, cacheable response, redirect, body/header leak, or unstable error. |
 | A02 | Namespace, filters, cursor, pagination, nullability, and privacy | List/detail require explicit `test`; `production` results never appear; allowed filters work; unknown/search/identity filters fail; cursors bind namespace/limit/all filters and reject tamper/reuse; pages are stable with terminal null cursor; detail/list shapes match; null-heavy rows render; all excluded fields remain absent. | Cross-namespace row, unbound/decodable cursor, duplicate/missing page row, schema/nullability mismatch, raw identity/provider/telemetry/content field, or merged tombstone returned. |
 | I01 | Anonymous install and association keys | A new valid Test `installIdHash` creates one sparse profile. Canonical support code and only a locally verified `verificationStatus="passed"` receipt hash associate to that same root through supported JSON bodies. Missing/null/empty values omit cleanly; malformed/caller-injected values fail/are stripped. | Raw install ID stored, identity placed in URL/browser state, receipt without passed verification sent, association used as authentication/entitlement, or a second profile created. |
 | I02 | Sign-in, purchase, restore, and merge continuity | Starting from I01, Google sign-in, sandbox purchase, activation/license verify/refresh, signed-in restore, and eligible merge retain one live Test customer root. Tombstone stays hidden; contact comes only from verified account; entitlement/device rows change only through their existing flows. | Duplicate live roots, email-driven merge, namespace crossing, unverified Stripe attachment, lost activation continuity, unexpected device/entitlement mutation, or tombstone exposure. |
 | I03 | Conflict and pending-review behavior | Contradictory unique identity creates immutable `pending_review` with hashed evidence and visible quality flag; no overwrite/automatic merge occurs. Payment-group ownership conflict quarantines the whole group until explicit deterministic resolution/recompute. | Silent winner replacement, partial evidence, leaked raw evidence, cleared sticky conflict without explicit recomputation, money assigned across owners, or cross-namespace merge. |
-| C01 | One-time, subscription, comped, mixed, and multi-currency commerce | Sandbox fixtures/events produce each billing history model; settled instruments replace fallbacks; renewals remain distinct; comped may be zero; at least two currencies remain separate minor-unit rows; `offStripePaidMinor` stays a subset; no commerce field grants entitlement or implies current subscription. | Double count, float parsing, cross-currency sum, fallback retained after instrument, model/current-state confusion, or commerce-driven entitlement change. |
+| C01 | Separate paid and FREEDEV rails plus one-time, subscription, comped, mixed, and multi-currency commerce | One nonzero $9.99 card journey proves Session, PaymentIntent, Charge, invoice, completion, receipt, and portal. A separate product-bound FREEDEV journey proves `no_payment_required`, no PaymentIntent/receipt expectation, comped money, and active entitlement. Other sandbox fixtures/events cover each billing model and currency without conflating the rails. | A single FREEDEV journey is used as paid proof, paid receipt/portal is absent, FREEDEV creates or expects a PaymentIntent, double count, cross-currency sum, fallback drift, or commerce drives entitlement. |
 | C02 | Refund/dispute and negative commerce cases | Partial/full/failed refunds and all eight current dispute statuses reconcile from canonical Stripe test state. The independent entitlement lifecycle suspends for four open states, closes `warning_closed`, `prevented`, and `won`, keeps `lost` irreversible, requires complete ownership/Product/Price/payment/dispute proof for failed full-refund recovery, and never revives old credentials. Customer 360 projects money separately: net changes exactly once, floors at zero, and never drives entitlement. Duplicate/out-of-order events are idempotent. Unpaid Checkout, open/canceled InvoicePayment, uncaptured charge, wrong product, unrelated Checkout, and conflicting ownership do not inflate money. | Negative/duplicated totals, wrong event routing, unsupported status silently accepted, incomplete proof recovers access, old credentials revive, invalid product is included, Customer 360 commerce drives entitlement, or identity conflict is ignored. |
 | Q01 | Stripe claim bound and Test-only dead-letter recovery | Repeated final-attempt crash/lease expiry terminalizes without a ninth normal processor call. If a synthetic Test dead letter is intentionally recovered, a separate approval binds the isolated target, pending recovery migration, attempt-8 row, non-livemode payload digest, terminal expectation, reason, and exact confirmation to one audited attempt 9; a lost-response retry is idempotent. No recovery is required or authorized when the row is not part of the reviewed Test case. | Nonterminal work at/above cap, ninth normal claim, bulk/reset/cap override, missing/mutable audit, livemode/Production target, manual queue/entitlement edit, or recovery without separate approval. |
 | T01 | Retention inventory and policy decision | Read-only inventory covers all eight domains with aggregate age buckets, stable policy digest, and target fingerprint. Reviewer explicitly approves periods/actions for every domain; merge audits and pending reviews remain preserved. Any future Test mutation is separately designed and approved. | Customer data/target name leaks, incomplete policy, mutable immutable domain, apply path presented as implemented, unapproved period/action, or dependency-unsafe deletion/anonymization proposal. |
@@ -285,8 +297,8 @@ Rows are dependency ordered. A blocked or failed row blocks every dependent row.
 | B02 | Test-only backfill recovery, if separately authorized | A new human approval names the isolated Test target, digest, checkpoint, batch size, and rollback owner. Batches are atomic/append-only; injected failure rolls back a batch; post-commit checkpoint failure resumes safely; mismatched checkpoint fails closed; complete rerun is idempotent/no-op. | Dry-run approval reused as apply approval, wrong target/digest, partial batch, incomplete/mismatched checkpoint, non-idempotent rerun, audit deletion, or improvised down SQL. Restore/recreate, never apply Production. |
 | F01 | FlowState Test origin, receipt, proxy, cache, UI, and privacy | Server-only origin is the exact V01 HTTPS origin; `/test` maps only to Test; credential is absent from CEP/browser/bundle/logs; proxy is loopback-only; non-loopback Host/Origin fails before egress; Customers loads only when selected; 25-row cursor pages work; exact-key 15-minute cache and manual refresh behave; refresh failure preserves page; receipt gating and exclusions hold. | Production/wrong origin, public/LAN/tunnel bind, browser secret, eager/background fetch, fixture fallback during configured failure, cache cross-key bleed, malformed receipt sent, or excluded data exposed. |
 | R01 | Existing website and FlowState regression | Account/session, activation start/status/claim, license verify/refresh, transfer/deactivation, download authorization, Checkout completion, webhook queue/retry, maintenance, installer Mac/Windows downloads, update manifest, public root/redirect/assets/SEO, FlowState downloads, telemetry, and updater retain documented behavior. | Any existing route, public page, installer, release manifest, entitlement, device, webhook, or download regression. |
-| O01 | Observability, alerts, and failure injection | Evidence captures structured usage outcome/counts, lag, quality/conflict counts, auth/error rates without payloads/secrets, read budget, and owner/alert destination. Inject wrong auth/Origin/cursor, upstream timeout/invalid schema, sync lock/failure/retry, Stripe duplicate/out-of-order negative cases, and backfill checkpoint failure; alerts fire and sanitized behavior matches. | Missing owner/alert, secret/customer payload in log, expected failure not detected, unsafe automatic retry/fallback, stale page discarded, or no retained failure evidence. |
-| RB1 | Non-Production rollback/recreate drill | With project-wide cron already disabled, revoke Preview admin/cron access, stop any approved invocation, redeploy last known Preview artifact, restore/recreate only the isolated database from D01, restart FlowState to clear cache, and prove Production untouched. Preserve evidence/checkpoints; use no down SQL and delete no audit rows. | Production access/change, inability to restore/recreate, deleted audit evidence, improvised reverse migration, or unbounded outage/egress. |
+| O01 | Observability, alerts, and failure injection | Named alerts with explicit owner and tested destination cover cron/worker unavailability, oldest due/leased/dead-letter age, failed claims, webhook reconciliation lag, replay/maintenance failure, usage freshness/read budget, quality/conflicts, and auth/error rates without payloads or secrets. Inject every corresponding failure and retain sanitized notification evidence. | Generic alert without destination, missing owner, repeated cron `503` not paged, secret/customer payload in log, expected failure not detected, unsafe retry/fallback, or no retained notification evidence. |
+| RB1 | Non-Production rollback/recreate drill | With dedicated Preview cron disabled and Production scheduling untouched, revoke Preview admin/cron access, stop any approved invocation, redeploy the proved last-known-safe Preview artifact, restore/recreate only the isolated database from D01, restart FlowState to clear cache, and prove Production untouched. Preserve evidence/checkpoints; use no down SQL and delete no audit rows. | Unsafe auto-deploy used as rollback, Production access/change, inability to restore/recreate, deleted audit evidence, improvised reverse migration, or unbounded outage/egress. |
 
 ## Manual evidence table
 
@@ -298,13 +310,13 @@ reference, candidate SHA, immutable host, or reviewer makes the row Blocked.
 | Matrix ID | Status (Pass/Fail/Blocked) | UTC timestamp (`YYYY-MM-DDTHH:MM:SSZ`) | Website SHA / FlowState SHA | Immutable Preview host or local fixture | Secret-safe evidence reference | Reviewer / notes |
 | --- | --- | --- | --- | --- | --- | --- |
 | P01 | Blocked | `<capture actual UTC>` | `<sha> / <sha>` | `<host or local>` | `<bundle path/id>` | Awaiting execution |
-| E01 | Blocked | `<capture actual UTC>` | `<sha> / n/a` | `<host>` | `<preflight output + provider proof>` | Current Vercel Preview is rejected; isolated provisioning is human-owned |
+| E01 | Blocked | `<capture actual UTC>` | `<sha> / n/a` | `<dedicated project and host>` | `<preflight output + provider proof>` | Shared Preview is rejected; dedicated isolated provisioning is human-owned |
 | D01-D02 | Blocked | `<capture actual UTC>` | `<sha> / n/a` | `<database fingerprint>` | `<snapshot, target, ledger, RLS/grant proof>` | Awaiting isolated target |
 | V01-A02 | Blocked | `<capture actual UTC>` | `<sha> / n/a` | `<immutable host>` | `<deployment/verifier/manual API evidence>` | Depends on E01-D02 |
 | I01-I03 | Blocked | `<capture actual UTC>` | `<sha> / <sha>` | `<immutable host>` | `<privacy-safe lineage/conflict evidence>` | Depends on API gates |
-| C01-C02 | Blocked | `<capture actual UTC>` | `<sha> / n/a` | `<Stripe test account fingerprint>` | `<currency/event/totals evidence>` | Sandbox only |
+| C01-C02 | Blocked | `<capture actual UTC>` | `<sha> / n/a` | `<Stripe test account fingerprint>` | `<paid rail + FREEDEV rail + lifecycle evidence>` | Two separate sandbox journeys required |
 | Q01-T01 | Blocked | `<capture actual UTC>` | `<sha> / n/a` | `<isolated Test DB / inventory target fingerprint>` | `<claim, recovery, audit, policy evidence>` | Separate recovery and retention decisions remain human-owned |
-| U01 | Blocked | `<capture actual UTC>` | `<sha> / n/a` | `<immutable host>` | `<budget, one-time sync, lag/decay evidence>` | Project-wide cron stays disabled |
+| U01 | Blocked | `<capture actual UTC>` | `<sha> / n/a` | `<immutable host>` | `<budget, one-time sync, lag/decay evidence>` | Dedicated Preview cron stays disabled; Production is untouched |
 | B01-B02 | Blocked | `<capture actual UTC>` | `<sha> / n/a` | `<offline / isolated DB>` | `<digest/report/checkpoint evidence>` | B02 requires separate approval; no Production apply |
 | F01 | Blocked | `<capture actual UTC>` | `<sha> / <sha>` | `<loopback + immutable host>` | `<proxy/UI/cache/privacy evidence>` | Live FlowState QA is last integration gate |
 | R01-O01 | Blocked | `<capture actual UTC>` | `<sha> / <sha>` | `<host or local>` | `<regression, alert, injection evidence>` | Awaiting execution |
@@ -417,7 +429,12 @@ not rerun until its disposition and rollback decision are recorded.
 
 ## Non-Production rollback and recreate
 
-1. Keep Vercel project-wide cron disabled. If a one-time usage sync is active,
+No rollback/recreate drill has occurred. The unsafe shared-project auto-deploy is
+not the last-known-safe artifact, and no isolated snapshot, restore owner, or
+approved Preview database is recorded.
+
+1. Keep the dedicated Preview project's cron disabled and leave Production
+   scheduling untouched. If a one-time usage sync is active,
    let the bounded request finish or terminate it through the approved provider
    control; do not create a new scheduler.
 2. Revoke/rotate Preview CRM and cron access, remove the FlowState Preview
@@ -444,12 +461,18 @@ Preview/Test acceptance is complete only when all of the following are true:
 - every applicable P01 through RB1 row, including Q01 and T01, is Pass, none is Fail or Blocked, and each
   has an exact UTC timestamp, reviewer, candidate SHA, target, and evidence link;
 - the fresh isolation preflight and provider proof show fully distinct Preview
-  database, telemetry, Stripe test, Google, base URL, and secrets;
+  project/scheduler, database, telemetry, Stripe test, Google, base URL, and
+  secrets;
+- the two observed Production incidents have fresh, separately reviewed
+  dispositions; no local gate is used as proof of origin/OAuth or cron recovery;
 - commit/artifact/immutable-host provenance is exact and both worktrees are clean;
 - snapshot restore/recreate, authenticated target, checksummed ledger, RLS, and
   least-privilege grants are proved against the isolated target;
-- project-wide cron stayed disabled and the only usage mutation was the one
-  separately confirmed Test invocation after all prerequisites passed;
+- dedicated Preview project-wide cron stayed disabled, Production scheduling was
+  untouched, and the only usage mutation was the one separately confirmed Test
+  invocation after all prerequisites passed;
+- the nonzero paid and FREEDEV journeys have separate evidence and do not use a
+  comped Checkout as proof of PaymentIntent, Charge, receipt, or refund rails;
 - API, identity/merge/conflict, commerce, usage, backfill, FlowState, regression,
   observability, failure-injection, and rollback/recreate evidence all match this
   plan and `customer-360.md`;
