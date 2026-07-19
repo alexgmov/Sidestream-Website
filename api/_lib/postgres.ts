@@ -187,8 +187,9 @@ export async function queryPostgres<
 
 export async function withPostgresClient<T>(
   callback: (client: PoolClient) => Promise<T>,
+  targetInput?: RuntimePostgresTargetInput,
 ) {
-  const client = await getPostgresPool().connect();
+  const client = await getPostgresPool(targetInput).connect();
   try {
     return await callback(client);
   } finally {
@@ -199,6 +200,7 @@ export async function withPostgresClient<T>(
 export async function withPostgresTransaction<T>(
   callback: (client: PoolClient) => Promise<T>,
   options: PostgresTransactionOptions = {},
+  targetInput?: RuntimePostgresTargetInput,
 ) {
   return withPostgresClient(async (client) => {
     const isolationLevel = options.isolationLevel || "read committed";
@@ -216,7 +218,7 @@ export async function withPostgresTransaction<T>(
       }
       throw error;
     }
-  });
+  }, targetInput);
 }
 
 export async function acquireTransactionAdvisoryLock(

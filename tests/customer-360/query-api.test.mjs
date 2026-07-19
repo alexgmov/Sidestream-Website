@@ -7,13 +7,32 @@ import { invokeHandler } from "../helpers/http.mjs";
 const ADMIN_SECRET = "customer-admin-integration-secret-2026";
 const LIST_PATH = "/api/internal/customers";
 const DETAIL_PATH = "/api/internal/customers/00000000-0000-4000-8000-000000000001";
+const PRODUCTION_DATABASE =
+  "postgresql://prod-user:secret@prod.db.example/sidestream";
+const TEST_DATABASE =
+  "postgresql://test-user:secret@test.db.example/sidestream_test";
+const LICENSE_ENVIRONMENT_KEYS = [
+  "SIDESTREAM_LICENSE_NAMESPACE",
+  "VERCEL_ENV",
+  "SIDESTREAM_PRODUCTION_API_HOSTS",
+  "SIDESTREAM_TEST_API_HOSTS",
+  "SIDESTREAM_POSTGRES_URL",
+  "SIDESTREAM_TEST_POSTGRES_URL",
+];
+
+const defaultTransactionCalls = [];
+let defaultTransactionDelegate = null;
 
 const queryModule = await loadInjectedModule(
   new URL("../../api/_lib/customer-query.ts", import.meta.url),
   {
     "./postgres.js": {
-      withPostgresTransaction: async () => {
-        throw new Error("Customer query tests inject a transaction");
+      withPostgresTransaction: async (callback, options, target) => {
+        defaultTransactionCalls.push({ options, target });
+        if (!defaultTransactionDelegate) {
+          throw new Error("Unexpected default Customer 360 transaction");
+        }
+        return defaultTransactionDelegate(callback);
       },
     },
   },
@@ -143,6 +162,104 @@ test("authorized list and detail responses stay compact and no-store", async () 
   assert.equal(detail.response.statusCode, 200);
   assert.deepEqual(detail.response.json, { customer });
   assertCustomerHeaders(detail.response);
+});
+
+test("default list transaction uses only the trusted deployment database target", async () => {
+  const scenarios = [
+    {
+      name: "Preview/Test",
+      environment: {
+        SIDESTREAM_LICENSE_NAMESPACE: "test",
+        VERCEL_ENV: "preview",
+        SIDESTREAM_TEST_API_HOSTS: "preview.sidestream.example",
+        SIDESTREAM_POSTGRES_URL: PRODUCTION_DATABASE,
+        SIDESTREAM_TEST_POSTGRES_URL: TEST_DATABASE,
+      },
+      requestNamespace: "production",
+      expectedTarget: {
+        connectionString: TEST_DATABASE,
+        environmentVariable: "SIDESTREAM_TEST_POSTGRES_URL",
+        pooled: true,
+      },
+    },
+    {
+      name: "Production",
+      environment: {
+        SIDESTREAM_LICENSE_NAMESPACE: "production",
+        VERCEL_ENV: "production",
+        SIDESTREAM_POSTGRES_URL: PRODUCTION_DATABASE,
+        SIDESTREAM_TEST_POSTGRES_URL: TEST_DATABASE,
+      },
+      requestNamespace: "test",
+      expectedTarget: {
+        connectionString: PRODUCTION_DATABASE,
+        environmentVariable: "SIDESTREAM_POSTGRES_URL",
+        pooled: true,
+      },
+    },
+  ];
+
+  for (const scenario of scenarios) {
+    await withLicenseEnvironment(scenario.environment, async () => {
+      const mock = mockTransaction([[]], []);
+      defaultTransactionCalls.length = 0;
+      defaultTransactionDelegate = mock.transaction;
+
+      const result = await queryModule.queryCustomerList(
+        { licenseNamespace: scenario.requestNamespace },
+        ADMIN_SECRET,
+      );
+
+      assert.deepEqual(result, { customers: [], nextCursor: null }, scenario.name);
+      assert.deepEqual(defaultTransactionCalls, [{
+        options: {
+          isolationLevel: "repeatable read",
+          readOnly: true,
+        },
+        target: scenario.expectedTarget,
+      }], scenario.name);
+      assert.equal(
+        mock.profileCalls[0].params[0],
+        scenario.requestNamespace,
+        `${scenario.name} request namespace remains only a row filter`,
+      );
+    });
+  }
+});
+
+test("default list transaction opens no connection for invalid or conflicting trusted state", async () => {
+  const invalidEnvironments = [
+    {
+      SIDESTREAM_LICENSE_NAMESPACE: "test",
+      VERCEL_ENV: "production",
+      SIDESTREAM_TEST_API_HOSTS: "preview.sidestream.example",
+      SIDESTREAM_POSTGRES_URL: PRODUCTION_DATABASE,
+      SIDESTREAM_TEST_POSTGRES_URL: TEST_DATABASE,
+    },
+    {
+      SIDESTREAM_LICENSE_NAMESPACE: "test",
+      VERCEL_ENV: "preview",
+      SIDESTREAM_TEST_API_HOSTS: "preview.sidestream.example",
+      SIDESTREAM_POSTGRES_URL: TEST_DATABASE,
+      SIDESTREAM_TEST_POSTGRES_URL: TEST_DATABASE,
+    },
+  ];
+
+  for (const environment of invalidEnvironments) {
+    await withLicenseEnvironment(environment, async () => {
+      defaultTransactionCalls.length = 0;
+      defaultTransactionDelegate = mockTransaction([[]], []).transaction;
+
+      await assert.rejects(
+        queryModule.queryCustomerList(
+          { licenseNamespace: "test" },
+          ADMIN_SECRET,
+        ),
+        /trusted server-resolved license environment/,
+      );
+      assert.equal(defaultTransactionCalls.length, 0);
+    });
+  }
 });
 
 test("list defaults to 50, caps at 100, and signs filters into stable cursors", async () => {
@@ -371,6 +488,24 @@ function mockTransaction(profilePages, moneyRows) {
       },
     }),
   };
+}
+
+async function withLicenseEnvironment(environment, callback) {
+  const previous = Object.fromEntries(
+    LICENSE_ENVIRONMENT_KEYS.map((key) => [key, process.env[key]]),
+  );
+  try {
+    for (const key of LICENSE_ENVIRONMENT_KEYS) delete process.env[key];
+    Object.assign(process.env, environment);
+    await callback();
+  } finally {
+    defaultTransactionDelegate = null;
+    for (const key of LICENSE_ENVIRONMENT_KEYS) {
+      const value = previous[key];
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
 }
 
 function assertCustomerHeaders(response) {
