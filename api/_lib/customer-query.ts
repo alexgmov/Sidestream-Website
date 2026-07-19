@@ -1,5 +1,6 @@
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import type { QueryResult, QueryResultRow } from "pg";
+import { resolveLicenseEnvironment } from "./license-environment.js";
 import { withPostgresTransaction } from "./postgres.js";
 
 const DEFAULT_LIMIT = 50;
@@ -170,10 +171,22 @@ export class CustomerQueryValidationError extends Error {
 }
 
 const defaultDependencies: CustomerQueryDependencies = {
-  transaction: (callback) => withPostgresTransaction(callback, {
-    isolationLevel: "repeatable read",
-    readOnly: true,
-  }),
+  transaction: (callback) => {
+    const environment = resolveLicenseEnvironment({ serverEnv: process.env });
+    if (!environment) {
+      throw new Error(
+        "Customer 360 requires a trusted server-resolved license environment",
+      );
+    }
+    return withPostgresTransaction(callback, {
+      isolationLevel: "repeatable read",
+      readOnly: true,
+    }, {
+      connectionString: environment.database.connectionString,
+      environmentVariable: environment.database.environmentVariable,
+      pooled: true,
+    });
+  },
 };
 
 const PROFILE_COLUMNS = `
