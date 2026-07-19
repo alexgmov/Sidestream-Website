@@ -2,17 +2,20 @@
 
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
-import { access, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
-import { createRequire } from "node:module";
+import { access, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { parsePostgresTarget } from "../api/_lib/postgres-target.ts";
 
 export const TEST_DATABASE_ENV = "SIDESTREAM_TEST_POSTGRES_URL";
 export const TEST_LICENSE_NAMESPACE = "test";
 export const STRIPE_EVENT_MAX_ATTEMPTS = 8;
 export const STRIPE_EVENT_RECOVERY_ATTEMPT = 9;
 export const STRIPE_EVENT_RECOVERY_LEASE_MS = 5 * 60 * 1_000;
+export const SUPPORTED_RECOVERY_API_VERSIONS = Object.freeze([
+  "2026-06-24.dahlia",
+]);
 export const RECOVERY_REASONS = Object.freeze([
   "handler_fix_verified",
   "canonical_state_repair",
@@ -58,7 +61,12 @@ const TARGET_SQL = `
     current_database() as database_name,
     current_user as database_user,
     coalesce(inet_server_addr()::text, 'local') as server_address,
-    coalesce(inet_server_port(), 0) as server_port
+    coalesce(inet_server_port(), 0) as server_port,
+    identity.environment as database_environment,
+    identity.instance_id::text as database_instance_id,
+    identity.provider_resource_id
+  from public.sidestream_database_identity identity
+  where identity.singleton = true
 `;
 
 const EVENT_SELECT = `
@@ -79,6 +87,17 @@ const EVENT_SELECT = `
     terminal_at,
     payload_redacted_at,
     payload::text as payload_text,
+    raw_payload as raw_payload_text,
+    ingress_event_id,
+    ingress_event_type,
+    ingress_created,
+    ingress_livemode,
+    ingress_api_version,
+    ingress_payload_sha256,
+    ingress_raw_sha256,
+    recovery_runner_token,
+    recovery_runner_lease_expires_at,
+    recovery_runner_epoch,
     to_jsonb(public.sidestream_stripe_events) ->> 'pending_recovery_audit_id'
       as pending_recovery_audit_id,
     updated_at
@@ -214,11 +233,21 @@ export function selectRecoveryDatabase(environment = process.env, { apply = fals
   }
   const connectionString = configuredValue(environment[TEST_DATABASE_ENV]);
   if (!connectionString) throw recoveryError("test_database_required");
-  const selected = parsePostgresTarget(connectionString, TEST_DATABASE_ENV);
+  let selected;
+  try {
+    selected = parsePostgresTarget(connectionString, TEST_DATABASE_ENV);
+  } catch {
+    throw recoveryError("test_database_url_invalid");
+  }
   for (const name of RUNTIME_DATABASE_ENV_NAMES) {
     const runtimeConnectionString = configuredValue(environment[name]);
     if (!runtimeConnectionString) continue;
-    const runtime = parsePostgresTarget(runtimeConnectionString, name);
+    let runtime;
+    try {
+      runtime = parsePostgresTarget(runtimeConnectionString, name);
+    } catch {
+      throw recoveryError("runtime_database_url_invalid");
+    }
     if (runtime.endpoint === selected.endpoint) {
       throw recoveryError("test_database_not_isolated");
     }
@@ -227,24 +256,26 @@ export function selectRecoveryDatabase(environment = process.env, { apply = fals
     throw recoveryError("stripe_test_key_required");
   }
   return Object.freeze({
-    connectionString,
-    local: isLocalHost(selected.hostname),
+    connectionString: selected.connectionString,
+    local: selected.local,
+    ssl: selected.ssl,
   });
 }
 
 export function createRecoveryPoolOptions(selected) {
-  const url = new URL(selected.connectionString);
-  if (!selected.local && url.searchParams.get("sslmode") !== "verify-full") {
-    throw recoveryError("authenticated_tls_required");
+  let target;
+  try {
+    target = parsePostgresTarget(selected.connectionString, TEST_DATABASE_ENV);
+  } catch {
+    throw recoveryError("test_database_url_invalid");
   }
-  url.searchParams.delete("sslmode");
   return Object.freeze({
-    connectionString: url.toString(),
+    connectionString: target.connectionString,
     application_name: "sidestream-test-dead-letter-recovery",
     max: 2,
     connectionTimeoutMillis: 10_000,
     idleTimeoutMillis: 10_000,
-    ssl: selected.local ? false : { rejectUnauthorized: true },
+    ssl: target.ssl,
   });
 }
 
@@ -252,19 +283,33 @@ export async function inspectStripeDeadLetter(query, eventId) {
   const targetResult = await query(TARGET_SQL);
   const target = targetResult.rows[0];
   if (!target) throw recoveryError("target_fingerprint_unavailable");
+  if (
+    target.database_environment !== "test" ||
+    !isUuid(String(target.database_instance_id || "")) ||
+    !/^[A-Za-z0-9][A-Za-z0-9._:/-]{2,239}$/.test(String(target.provider_resource_id || ""))
+  ) {
+    throw recoveryError("database_test_identity_required");
+  }
   const targetFingerprint = sha256([
-    "sidestream-stripe-recovery-target:v1",
+    "sidestream-stripe-recovery-target:v2",
     target.server_address,
     target.server_port,
     target.database_name,
     target.database_user,
+    target.database_instance_id,
+    target.provider_resource_id,
   ].join("\0"));
   const result = await query(EVENT_SELECT, [eventId]);
   if (!result.rows[0]) throw recoveryError("event_not_found");
-  return snapshotFromRow(result.rows[0], eventId, targetFingerprint);
+  return snapshotFromRow(
+    result.rows[0],
+    eventId,
+    targetFingerprint,
+    String(target.database_instance_id),
+  );
 }
 
-export function snapshotFromRow(row, eventId, targetFingerprint) {
+export function snapshotFromRow(row, eventId, targetFingerprint, databaseInstanceId = "") {
   const payloadText = typeof row.payload_text === "string"
     ? row.payload_text
     : JSON.stringify(row.payload_text);
@@ -295,10 +340,22 @@ export function snapshotFromRow(row, eventId, targetFingerprint) {
     payloadRedactedAt: timestampValue(row.payload_redacted_at),
     payloadText,
     payload,
-    payloadDigest: sha256(payloadText),
+    payloadDigest: canonicalJsonDigest(payload),
+    rawPayloadText: stringValue(row.raw_payload_text),
+    ingressEventId: stringValue(row.ingress_event_id),
+    ingressEventType: stringValue(row.ingress_event_type),
+    ingressCreated: Number(row.ingress_created),
+    ingressLivemode: row.ingress_livemode,
+    ingressApiVersion: stringValue(row.ingress_api_version),
+    ingressPayloadDigest: stringValue(row.ingress_payload_sha256),
+    ingressRawDigest: stringValue(row.ingress_raw_sha256),
+    recoveryRunnerToken: stringValue(row.recovery_runner_token),
+    recoveryRunnerLeaseExpiresAt: timestampValue(row.recovery_runner_lease_expires_at),
+    recoveryRunnerEpoch: Number(row.recovery_runner_epoch || 0),
     pendingRecoveryAuditId: stringValue(row.pending_recovery_audit_id),
     updatedAt: timestampValue(row.updated_at),
     targetFingerprint,
+    databaseInstanceId,
   };
   validatePayloadIdentity(snapshot);
   return Object.freeze(snapshot);
@@ -369,6 +426,7 @@ export function buildRecoveryRequest(options, snapshot) {
     snapshot.targetFingerprint,
     snapshot.eventReferenceDigest,
     snapshot.payloadDigest,
+    snapshot.databaseInstanceId,
     options.expectedTerminalState,
     options.reason,
   ].join("\0"));
@@ -378,6 +436,7 @@ export function buildRecoveryRequest(options, snapshot) {
     eventType: snapshot.eventType,
     payloadDigest: snapshot.payloadDigest,
     targetFingerprint: snapshot.targetFingerprint,
+    databaseInstanceId: snapshot.databaseInstanceId,
     licenseNamespace: TEST_LICENSE_NAMESPACE,
     expectedTerminalState: options.expectedTerminalState,
     reason: options.reason,
@@ -392,7 +451,14 @@ export function validateNewRecoveryState(snapshot) {
   if (snapshot.attemptCount !== STRIPE_EVENT_MAX_ATTEMPTS) {
     throw recoveryError("attempt_cap_mismatch");
   }
-  if (snapshot.claimToken || snapshot.leaseExpiresAt || snapshot.pendingRecoveryAuditId) {
+  if (
+    snapshot.claimToken ||
+    snapshot.leaseExpiresAt ||
+    snapshot.pendingRecoveryAuditId ||
+    snapshot.recoveryRunnerToken ||
+    snapshot.recoveryRunnerLeaseExpiresAt ||
+    snapshot.recoveryRunnerEpoch !== 0
+  ) {
     throw recoveryError("terminal_state_inconsistent");
   }
 }
@@ -404,7 +470,10 @@ export async function atomicallyClaimStripeDeadLetter(options) {
     cliOptions,
     targetFingerprint,
     createRecoveryId = randomUUID,
+    createRunnerToken = randomUUID,
   } = options;
+  const runnerToken = createRunnerToken();
+  if (!isUuid(runnerToken)) throw recoveryError("recovery_runner_token_invalid");
   await client.query("begin");
   try {
     const schema = await client.query(`
@@ -421,7 +490,11 @@ export async function atomicallyClaimStripeDeadLetter(options) {
           select 1
           from public.sidestream_stripe_events
           where payload ->> 'livemode' = 'true'
-        ) as production_events_present
+        ) as production_events_present,
+        (select environment from public.sidestream_database_identity where singleton = true)
+          as database_environment,
+        (select instance_id::text from public.sidestream_database_identity where singleton = true)
+          as database_instance_id
     `);
     if (!schema.rows[0]?.audit_table || schema.rows[0]?.queue_column !== true) {
       throw recoveryError("recovery_schema_missing");
@@ -429,9 +502,20 @@ export async function atomicallyClaimStripeDeadLetter(options) {
     if (schema.rows[0]?.production_events_present === true) {
       throw recoveryError("production_recovery_disabled");
     }
+    if (
+      schema.rows[0]?.database_environment !== "test" ||
+      !isUuid(String(schema.rows[0]?.database_instance_id || ""))
+    ) {
+      throw recoveryError("database_test_identity_required");
+    }
     const locked = await client.query(`${EVENT_SELECT}\nfor update`, [eventId]);
     if (!locked.rows[0]) throw recoveryError("event_not_found");
-    const snapshot = snapshotFromRow(locked.rows[0], eventId, targetFingerprint);
+    const snapshot = snapshotFromRow(
+      locked.rows[0],
+      eventId,
+      targetFingerprint,
+      String(schema.rows[0].database_instance_id),
+    );
     const request = buildRecoveryRequest(cliOptions, snapshot);
     const existingResult = await client.query(`
       select
@@ -444,7 +528,8 @@ export async function atomicallyClaimStripeDeadLetter(options) {
         license_namespace,
         reviewed_reason_code,
         prior_processing_status,
-        prior_attempt_count
+        prior_attempt_count,
+        database_instance_id::text as database_instance_id
       from public.sidestream_stripe_event_recovery_audit
       where request_digest = $1
       for share
@@ -452,18 +537,47 @@ export async function atomicallyClaimStripeDeadLetter(options) {
     const existing = existingResult.rows[0];
     if (existing) {
       validateExistingAudit(existing, request, snapshot);
-      await client.query("commit");
       if (
         snapshot.processingStatus === "processing" &&
         snapshot.claimToken === String(existing.id)
       ) {
+        if (
+          snapshot.recoveryRunnerLeaseExpiresAt &&
+          Date.parse(snapshot.recoveryRunnerLeaseExpiresAt) > Date.now()
+        ) {
+          await client.query("commit");
+          return Object.freeze({ action: "busy", snapshot, claimed: null });
+        }
+        const reclaimed = await client.query(`
+          update public.sidestream_stripe_events
+          set recovery_runner_token = $3::uuid,
+              recovery_runner_lease_expires_at =
+                clock_timestamp() + ($4::bigint * interval '1 millisecond'),
+              recovery_runner_epoch = recovery_runner_epoch + 1,
+              updated_at = now()
+          where event_id = $1
+            and claim_token = $2::uuid
+            and processing_status = 'processing'
+            and recovery_runner_lease_expires_at <= clock_timestamp()
+          returning event_id
+        `, [eventId, existing.id, runnerToken, STRIPE_EVENT_RECOVERY_LEASE_MS]);
+        if (!reclaimed.rows[0]) throw recoveryError("recovery_runner_claim_lost");
+        const reclaimedRow = await client.query(EVENT_SELECT, [eventId]);
+        const reclaimedSnapshot = snapshotFromRow(
+          reclaimedRow.rows[0],
+          eventId,
+          targetFingerprint,
+          String(schema.rows[0].database_instance_id),
+        );
+        await client.query("commit");
         return Object.freeze({
-          action: "resumed",
-          snapshot,
-          claimed: claimedRow(snapshot),
+          action: "reclaimed",
+          snapshot: reclaimedSnapshot,
+          claimed: claimedRow(reclaimedSnapshot),
         });
       }
       if (["processed", "ignored", "dead_letter"].includes(snapshot.processingStatus)) {
+        await client.query("commit");
         return Object.freeze({ action: "already_applied", snapshot, claimed: null });
       }
       throw recoveryError("recovery_state_inconsistent");
@@ -486,9 +600,11 @@ export async function atomicallyClaimStripeDeadLetter(options) {
         prior_attempt_count,
         prior_terminal_at,
         prior_last_error_code,
-        prior_outcome_code
+        prior_outcome_code,
+        database_instance_id
       ) values (
-        $1::uuid, $2, $3, $4, $5, $6, 'test', $7, $8, $9, $10, $11, $12
+        $1::uuid, $2, $3, $4, $5, $6, 'test', $7, $8, $9, $10, $11, $12,
+        $13::uuid
       )
     `, [
       recoveryId,
@@ -503,6 +619,7 @@ export async function atomicallyClaimStripeDeadLetter(options) {
       snapshot.terminalAt,
       snapshot.lastErrorCode,
       snapshot.outcomeCode,
+      snapshot.databaseInstanceId,
     ]);
     const claimedResult = await client.query(`
       update public.sidestream_stripe_events
@@ -517,6 +634,10 @@ export async function atomicallyClaimStripeDeadLetter(options) {
           terminal_at = null,
           outcome = null,
           pending_recovery_audit_id = $2::uuid,
+          recovery_runner_token = $5::uuid,
+          recovery_runner_lease_expires_at =
+            clock_timestamp() + ($3::bigint * interval '1 millisecond'),
+          recovery_runner_epoch = 1,
           updated_at = now()
       where event_id = $1
         and processing_status = 'dead_letter'
@@ -542,14 +663,32 @@ export async function atomicallyClaimStripeDeadLetter(options) {
         terminal_at,
         payload_redacted_at,
         payload::text as payload_text,
+        raw_payload as raw_payload_text,
+        ingress_event_id,
+        ingress_event_type,
+        ingress_created,
+        ingress_livemode,
+        ingress_api_version,
+        ingress_payload_sha256,
+        ingress_raw_sha256,
+        recovery_runner_token,
+        recovery_runner_lease_expires_at,
+        recovery_runner_epoch,
         pending_recovery_audit_id,
         updated_at
-    `, [eventId, recoveryId, STRIPE_EVENT_RECOVERY_LEASE_MS, STRIPE_EVENT_MAX_ATTEMPTS]);
+    `, [
+      eventId,
+      recoveryId,
+      STRIPE_EVENT_RECOVERY_LEASE_MS,
+      STRIPE_EVENT_MAX_ATTEMPTS,
+      runnerToken,
+    ]);
     if (!claimedResult.rows[0]) throw recoveryError("dead_letter_claim_lost");
     const claimedSnapshot = snapshotFromRow(
       claimedResult.rows[0],
       eventId,
       targetFingerprint,
+      String(schema.rows[0].database_instance_id),
     );
     await client.query("commit");
     return Object.freeze({
@@ -631,6 +770,22 @@ function validatePayloadIdentity(snapshot) {
   ) {
     throw recoveryError("payload_identity_mismatch");
   }
+  const storedCreated = Math.floor(Date.parse(snapshot.stripeCreatedAt) / 1_000);
+  if (
+    snapshot.ingressEventId !== snapshot.eventId ||
+    snapshot.ingressEventType !== snapshot.eventType ||
+    snapshot.ingressCreated !== snapshot.payload.created ||
+    snapshot.ingressCreated !== storedCreated ||
+    snapshot.ingressLivemode !== snapshot.payload.livemode ||
+    snapshot.ingressPayloadDigest !== snapshot.payloadDigest ||
+    !snapshot.rawPayloadText ||
+    snapshot.ingressRawDigest !== sha256(snapshot.rawPayloadText) ||
+    snapshot.ingressApiVersion !== snapshot.payload.api_version ||
+    !SUPPORTED_RECOVERY_API_VERSIONS.includes(snapshot.ingressApiVersion) ||
+    !isUuid(snapshot.databaseInstanceId)
+  ) {
+    throw recoveryError("ingress_evidence_mismatch");
+  }
   if (snapshot.payload.livemode !== false) {
     throw recoveryError("livemode_recovery_disabled");
   }
@@ -658,7 +813,8 @@ function validateExistingAudit(audit, request, snapshot) {
     String(audit.reviewed_reason_code) === request.reason &&
     String(audit.prior_processing_status) === request.expectedTerminalState &&
     Number(audit.prior_attempt_count) === STRIPE_EVENT_MAX_ATTEMPTS;
-  if (!matches) throw recoveryError("recovery_audit_mismatch");
+  const instanceMatches = String(audit.database_instance_id) === snapshot.databaseInstanceId;
+  if (!matches || !instanceMatches) throw recoveryError("recovery_audit_mismatch");
   if (snapshot.pendingRecoveryAuditId !== String(audit.id)) {
     throw recoveryError("recovery_state_inconsistent");
   }
@@ -677,6 +833,14 @@ function claimedRow(snapshot) {
     eventType: snapshot.eventType,
     stripeCreatedAt: snapshot.stripeCreatedAt,
     payload: snapshot.payload,
+    rawPayload: snapshot.rawPayloadText,
+    ingressEventId: snapshot.ingressEventId,
+    ingressEventType: snapshot.ingressEventType,
+    ingressPayloadSha256: snapshot.ingressPayloadDigest,
+    ingressRawSha256: snapshot.ingressRawDigest,
+    ingressApiVersion: snapshot.ingressApiVersion,
+    ingressLivemode: snapshot.ingressLivemode,
+    ingressCreated: snapshot.ingressCreated,
     attemptCount: snapshot.attemptCount,
     claimToken: snapshot.claimToken,
   });
@@ -701,6 +865,7 @@ function selfTestSnapshot(eventId) {
     type: "refund.failed",
     created: 1_752_710_400,
     livemode: false,
+    api_version: SUPPORTED_RECOVERY_API_VERSIONS[0],
     data: {
       object: {
         id: "re_private",
@@ -711,7 +876,7 @@ function selfTestSnapshot(eventId) {
   };
   return snapshotFromRow({
     event_type: payload.type,
-    stripe_created_at: "2026-07-17T00:00:00.000Z",
+    stripe_created_at: "2025-07-17T00:00:00.000Z",
     received_at: "2026-07-17T00:00:01.000Z",
     processed_at: null,
     processing_status: "dead_letter",
@@ -726,30 +891,41 @@ function selfTestSnapshot(eventId) {
     terminal_at: "2026-07-17T00:04:01.000Z",
     payload_redacted_at: null,
     payload_text: JSON.stringify(payload),
+    raw_payload_text: JSON.stringify(payload),
+    ingress_event_id: payload.id,
+    ingress_event_type: payload.type,
+    ingress_created: payload.created,
+    ingress_livemode: payload.livemode,
+    ingress_api_version: payload.api_version,
+    ingress_payload_sha256: canonicalJsonDigest(payload),
+    ingress_raw_sha256: sha256(JSON.stringify(payload)),
+    recovery_runner_token: null,
+    recovery_runner_lease_expires_at: null,
+    recovery_runner_epoch: 0,
     pending_recovery_audit_id: null,
     updated_at: "2026-07-17T00:04:01.000Z",
-  }, eventId, "a".repeat(64));
+  }, eventId, "a".repeat(64), "11111111-1111-4111-8111-111111111111");
 }
 
-async function loadPostgresModule(worktreeRoot) {
+async function loadPostgresModule() {
   try {
     return await import("pg");
   } catch (error) {
-    if (error?.code !== "ERR_MODULE_NOT_FOUND") throw error;
+    if (error?.code === "ERR_MODULE_NOT_FOUND") {
+      throw recoveryError("dependencies_unavailable");
+    }
+    throw error;
   }
-  const dependencyRoot = await findDependencyRoot(worktreeRoot);
-  return createRequire(path.join(dependencyRoot, "package.json"))("pg");
 }
 
 export async function loadStripeEventsRuntime(worktreeRoot) {
   const dependencyRoot = await findDependencyRoot(worktreeRoot);
-  let typescriptModule;
-  try {
-    typescriptModule = await import("typescript");
-  } catch (error) {
-    if (error?.code !== "ERR_MODULE_NOT_FOUND") throw error;
-    typescriptModule = createRequire(path.join(dependencyRoot, "package.json"))("typescript");
-  }
+  const typescriptModule = await import("typescript").catch((error) => {
+    if (error?.code === "ERR_MODULE_NOT_FOUND") {
+      throw recoveryError("dependencies_unavailable");
+    }
+    throw error;
+  });
   const ts = typescriptModule.default || typescriptModule;
   const directory = await mkdtemp(path.join(tmpdir(), "sidestream-stripe-recovery-"));
   try {
@@ -794,24 +970,9 @@ async function findDependencyRoot(worktreeRoot) {
   try {
     await access(path.join(worktreeRoot, "node_modules"));
     return worktreeRoot;
-  } catch {}
-  let gitPointer;
-  try {
-    gitPointer = (await readFile(path.join(worktreeRoot, ".git"), "utf8")).trim();
   } catch {
     throw recoveryError("dependencies_unavailable");
   }
-  const match = /^gitdir:\s*(.+)$/i.exec(gitPointer);
-  const marker = `${path.sep}.git${path.sep}worktrees${path.sep}`;
-  const markerIndex = match?.[1].indexOf(marker) ?? -1;
-  if (!match || markerIndex < 0) throw recoveryError("dependencies_unavailable");
-  const baseRoot = match[1].slice(0, markerIndex);
-  try {
-    await access(path.join(baseRoot, "node_modules"));
-  } catch {
-    throw recoveryError("dependencies_unavailable");
-  }
-  return baseRoot;
 }
 
 function configureTestProcessingEnvironment(environment, connectionString) {
@@ -852,7 +1013,7 @@ async function main() {
 
   const worktreeRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
   const selected = selectRecoveryDatabase(process.env, { apply: cliOptions.apply });
-  const { Pool } = await loadPostgresModule(worktreeRoot);
+  const { Pool } = await loadPostgresModule();
   const pool = new Pool(createRecoveryPoolOptions(selected));
   const client = await pool.connect();
   let runtime = null;
@@ -903,30 +1064,6 @@ function readOption(argv, index, name) {
   return [value, index + 1];
 }
 
-function parsePostgresTarget(connectionString, environmentName) {
-  let url;
-  try {
-    url = new URL(connectionString);
-  } catch {
-    throw recoveryError("test_database_url_invalid");
-  }
-  if (!["postgres:", "postgresql:"].includes(url.protocol)) {
-    throw recoveryError("test_database_url_invalid");
-  }
-  const database = decodeURIComponent(url.pathname.replace(/^\/+/, ""));
-  if (!url.hostname || !database) throw recoveryError("test_database_url_invalid");
-  return Object.freeze({
-    environmentName,
-    hostname: url.hostname.toLowerCase(),
-    endpoint: `${url.hostname.toLowerCase()}:${url.port || "5432"}`,
-    database,
-  });
-}
-
-function isLocalHost(hostname) {
-  return ["localhost", "127.0.0.1", "::1"].includes(hostname.toLowerCase());
-}
-
 function timestampValue(value) {
   if (value === null || value === undefined || value === "") return null;
   const date = value instanceof Date ? value : new Date(value);
@@ -958,6 +1095,20 @@ function stringValue(value) {
 
 function sha256(value) {
   return createHash("sha256").update(String(value)).digest("hex");
+}
+
+function canonicalJsonDigest(value) {
+  return sha256(JSON.stringify(sortJsonValue(JSON.parse(JSON.stringify(value)))));
+}
+
+function sortJsonValue(value) {
+  if (Array.isArray(value)) return value.map(sortJsonValue);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(
+    Object.entries(value)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, entry]) => [key, sortJsonValue(entry)]),
+  );
 }
 
 function isHexDigest(value) {

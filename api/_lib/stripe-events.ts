@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type Stripe from "stripe";
 import * as account from "./account.js";
 import {
@@ -16,6 +16,9 @@ export const DEFAULT_STRIPE_EVENT_LEASE_MS = 5 * 60 * 1_000;
 export const DEFAULT_STRIPE_EVENT_MAX_ATTEMPTS = 8;
 export const STRIPE_EVENT_RETRY_BASE_MS = 5_000;
 export const STRIPE_EVENT_RETRY_CAP_MS = 15 * 60 * 1_000;
+export const SUPPORTED_STRIPE_EVENT_API_VERSIONS = Object.freeze([
+  "2026-06-24.dahlia",
+]);
 
 type StripeEventQueryResult = Readonly<{
   rows: readonly Record<string, any>[];
@@ -31,6 +34,14 @@ export type ClaimedStripeEvent = Readonly<{
   eventType: string;
   stripeCreatedAt: Date | string;
   payload: Stripe.Event;
+  rawPayload: string;
+  ingressEventId: string;
+  ingressEventType: string;
+  ingressPayloadSha256: string;
+  ingressRawSha256: string;
+  ingressApiVersion: string;
+  ingressLivemode: boolean;
+  ingressCreated: number;
   attemptCount: number;
   claimToken: string;
 }>;
@@ -103,6 +114,8 @@ export async function recordStripeEvent(
   query: StripeEventQuery = runtimeQuery,
 ) {
   assertStripeEventIdentity(event);
+  const payloadText = JSON.stringify(event);
+  const apiVersion = typeof event.api_version === "string" ? event.api_version : "";
   const result = await query(
     `
       insert into public.sidestream_stripe_events (
@@ -111,15 +124,36 @@ export async function recordStripeEvent(
         stripe_created_at,
         payload,
         raw_payload,
+        ingress_event_id,
+        ingress_event_type,
+        ingress_created,
+        ingress_livemode,
+        ingress_api_version,
+        ingress_payload_sha256,
+        ingress_raw_sha256,
         received_at,
         created_at,
         updated_at
       )
-      values ($1, $2, to_timestamp($3), $4::jsonb, $5, now(), now(), now())
+      values (
+        $1, $2, to_timestamp($3), $4::jsonb, $5,
+        $1, $2, $3, $6, $7, $8, $9,
+        now(), now(), now()
+      )
       on conflict (event_id) do nothing
       returning event_id
     `,
-    [event.id, event.type, event.created, JSON.stringify(event), rawPayload],
+    [
+      event.id,
+      event.type,
+      event.created,
+      payloadText,
+      rawPayload,
+      event.livemode,
+      apiVersion,
+      canonicalJsonDigest(event),
+      sha256(rawPayload),
+    ],
   );
   return Boolean(result.rows[0]);
 }
@@ -211,6 +245,14 @@ async function claimStripeEventBatch(options: {
           event.event_type,
           event.stripe_created_at,
           event.payload,
+          event.raw_payload,
+          event.ingress_event_id,
+          event.ingress_event_type,
+          event.ingress_payload_sha256,
+          event.ingress_raw_sha256,
+          event.ingress_api_version,
+          event.ingress_livemode,
+          event.ingress_created,
           event.attempt_count,
           event.claim_token
       ),
@@ -241,7 +283,7 @@ async function claimStripeEventBatch(options: {
           end asc,
           stripe_created_at asc,
           event_id asc
-        limit $1
+        limit greatest($1 - (select count(*) from dead_lettered), 0)
         for update skip locked
       ),
       claimed as (
@@ -263,6 +305,14 @@ async function claimStripeEventBatch(options: {
           event.event_type,
           event.stripe_created_at,
           event.payload,
+          event.raw_payload,
+          event.ingress_event_id,
+          event.ingress_event_type,
+          event.ingress_payload_sha256,
+          event.ingress_raw_sha256,
+          event.ingress_api_version,
+          event.ingress_livemode,
+          event.ingress_created,
           event.attempt_count,
           event.claim_token
       ),
@@ -273,6 +323,14 @@ async function claimStripeEventBatch(options: {
           claimed.event_type,
           claimed.stripe_created_at,
           claimed.payload,
+          claimed.raw_payload,
+          claimed.ingress_event_id,
+          claimed.ingress_event_type,
+          claimed.ingress_payload_sha256,
+          claimed.ingress_raw_sha256,
+          claimed.ingress_api_version,
+          claimed.ingress_livemode,
+          claimed.ingress_created,
           claimed.attempt_count,
           claimed.claim_token,
           claimable_candidates.eligible_at
@@ -285,6 +343,14 @@ async function claimStripeEventBatch(options: {
           dead_lettered.event_type,
           dead_lettered.stripe_created_at,
           dead_lettered.payload,
+          dead_lettered.raw_payload,
+          dead_lettered.ingress_event_id,
+          dead_lettered.ingress_event_type,
+          dead_lettered.ingress_payload_sha256,
+          dead_lettered.ingress_raw_sha256,
+          dead_lettered.ingress_api_version,
+          dead_lettered.ingress_livemode,
+          dead_lettered.ingress_created,
           dead_lettered.attempt_count,
           dead_lettered.claim_token,
           exhausted_candidates.eligible_at
@@ -314,6 +380,14 @@ async function claimStripeEventBatch(options: {
       eventType: String(row.event_type),
       stripeCreatedAt: row.stripe_created_at as Date | string,
       payload: row.payload as Stripe.Event,
+      rawPayload: String(row.raw_payload || ""),
+      ingressEventId: String(row.ingress_event_id || ""),
+      ingressEventType: String(row.ingress_event_type || ""),
+      ingressPayloadSha256: String(row.ingress_payload_sha256 || ""),
+      ingressRawSha256: String(row.ingress_raw_sha256 || ""),
+      ingressApiVersion: String(row.ingress_api_version || ""),
+      ingressLivemode: row.ingress_livemode === true,
+      ingressCreated: Number(row.ingress_created),
       attemptCount: Number(row.attempt_count),
       claimToken: String(row.claim_token),
     });
@@ -468,10 +542,19 @@ export async function reconcileStripeEvent(
   // independent projection: if its schema or normalization fails, the durable
   // queue retries the money work without changing the entitlement result.
   const entitlement = await reconcileInheritedEntitlement(event);
+  const projectionClock = await commerceQuery(`
+    select to_char(clock_timestamp() at time zone 'UTC',
+      'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as projection_observed_at
+  `);
+  const projectionObservedAt = String(
+    projectionClock.rows[0]?.projection_observed_at || "",
+  );
+  const canonicalCommerceEvent = await retrieveCanonicalCommerceEvent(event);
   const commerce = await materializeCustomerCommerceEvent(
-    event,
+    canonicalCommerceEvent,
     commerceQuery,
     environment.namespace,
+    { projectionObservedAt },
   );
   if (entitlement) return entitlement;
 
@@ -484,6 +567,61 @@ export async function reconcileStripeEvent(
     };
   }
   return { status: "ignored", outcome: "unsupported_event_type" };
+}
+
+async function retrieveCanonicalCommerceEvent(event: Stripe.Event): Promise<Stripe.Event> {
+  const objectId = stripeObjectId(event.data.object);
+  if (!objectId) return event;
+  const stripe = account.getStripe();
+  let object: Stripe.Event["data"]["object"] | null = null;
+  if (event.type.startsWith("checkout.session.")) {
+    object = await stripe.checkout.sessions.retrieve(
+      objectId,
+      { expand: ["line_items.data.price.product"] },
+      account.getStripeRequestOptions(),
+    );
+  } else if (event.type.startsWith("payment_intent.")) {
+    object = await stripe.paymentIntents.retrieve(
+      objectId,
+      { expand: ["latest_charge"] },
+      account.getStripeRequestOptions(),
+    );
+  } else if (event.type.startsWith("charge.dispute.")) {
+    object = await stripe.disputes.retrieve(
+      objectId,
+      {},
+      account.getStripeRequestOptions(),
+    );
+  } else if (event.type.startsWith("charge.")) {
+    object = await stripe.charges.retrieve(
+      objectId,
+      { expand: ["payment_intent"] },
+      account.getStripeRequestOptions(),
+    );
+  } else if (event.type.startsWith("refund.")) {
+    object = await stripe.refunds.retrieve(
+      objectId,
+      { expand: ["charge", "payment_intent"] },
+      account.getStripeRequestOptions(),
+    );
+  } else if (event.type.startsWith("invoice.")) {
+    object = await stripe.invoices.retrieve(
+      objectId,
+      { expand: ["payments"] },
+      account.getStripeRequestOptions(),
+    );
+  } else if (event.type.startsWith("customer.subscription.")) {
+    object = await stripe.subscriptions.retrieve(
+      objectId,
+      {},
+      account.getStripeRequestOptions(),
+    );
+  }
+  if (!object || stripeObjectId(object) !== objectId) return event;
+  return {
+    ...event,
+    data: { ...event.data, object },
+  } as Stripe.Event;
 }
 
 async function reconcileInheritedEntitlement(
@@ -543,7 +681,7 @@ async function reconcileInheritedEntitlement(
     case "charge.dispute.updated":
     case "charge.dispute.closed": {
       if (!("reconcileOneTimePaymentLifecycle" in account)) {
-        return { status: "ignored", outcome: "lifecycle_reconciler_unavailable" };
+        throw new StripeEventProcessingError("lifecycle_reconciler_unavailable");
       }
       const result = await account.reconcileOneTimePaymentLifecycle(
         event.type,
@@ -551,10 +689,12 @@ async function reconcileInheritedEntitlement(
         { eventId: event.id, created: event.created },
       );
       if (!result.fulfilled) {
-        return {
-          status: "ignored",
-          outcome: safeOutcome(`lifecycle_${result.reason}`),
-        };
+        if (result.reason === "stale_event") {
+          return { status: "processed", outcome: "lifecycle_stale_noop" };
+        }
+        throw new StripeEventProcessingError(
+          safeOutcome(`lifecycle_${result.reason}`),
+        );
       }
       return {
         status: "processed",
@@ -673,9 +813,50 @@ function assertStripeEventIdentity(event: Stripe.Event) {
 
 function assertClaimedPayload(row: ClaimedStripeEvent) {
   assertStripeEventIdentity(row.payload);
-  if (row.payload.id !== row.eventId || row.payload.type !== row.eventType) {
+  const storedCreated = Math.floor(new Date(row.stripeCreatedAt).getTime() / 1_000);
+  if (
+    row.payload.id !== row.eventId ||
+    row.payload.type !== row.eventType ||
+    row.ingressEventId !== row.eventId ||
+    row.ingressEventType !== row.eventType ||
+    row.payload.created !== row.ingressCreated ||
+    row.ingressCreated !== storedCreated ||
+    row.payload.livemode !== row.ingressLivemode ||
+    canonicalJsonDigest(row.payload) !== row.ingressPayloadSha256 ||
+    !row.rawPayload ||
+    sha256(row.rawPayload) !== row.ingressRawSha256
+  ) {
     throw new StripeEventProcessingError("payload_identity_mismatch");
   }
+  const apiVersion = typeof row.payload.api_version === "string"
+    ? row.payload.api_version
+    : "";
+  if (
+    apiVersion !== row.ingressApiVersion ||
+    !SUPPORTED_STRIPE_EVENT_API_VERSIONS.includes(
+      apiVersion as typeof SUPPORTED_STRIPE_EVENT_API_VERSIONS[number],
+    )
+  ) {
+    throw new StripeEventProcessingError("unsupported_event_api_version");
+  }
+}
+
+function sha256(value: string) {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function canonicalJsonDigest(value: unknown) {
+  return sha256(JSON.stringify(sortJsonValue(JSON.parse(JSON.stringify(value)))));
+}
+
+function sortJsonValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sortJsonValue);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, entry]) => [key, sortJsonValue(entry)]),
+  );
 }
 
 function stripeObjectId(value: unknown) {

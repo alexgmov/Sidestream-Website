@@ -238,20 +238,21 @@ test("invalid policy fails before a pool can connect", async () => {
   assert.equal(connections, 0);
 });
 
-test("remote targets require authenticated verify-full TLS and fingerprint safely", () => {
-  assert.throws(
-    () => fingerprintDatabaseTarget(
-      "postgresql://operator:password@db.example.test/database?sslmode=require",
-      "test",
-    ),
-    /sslmode=verify-full/,
-  );
+test("remote targets force authenticated TLS and fingerprint safely", () => {
+  assert.match(fingerprintDatabaseTarget(
+    "postgresql://operator:password@db.example.test/database?sslmode=require",
+    "test",
+  ), /^sha256:[0-9a-f]{64}$/);
+  assert.throws(() => fingerprintDatabaseTarget(
+    "postgresql://operator:password@db.example.test/database?sslmode=disable",
+    "test",
+  ));
   assert.throws(
     () => fingerprintDatabaseTarget(
       "postgresql://db.example.test/database?sslmode=verify-full",
       "test",
     ),
-    /authenticated database credentials/,
+    /database URL is invalid/,
   );
   const first = fingerprintDatabaseTarget(
     "postgresql://operator:first@db.example.test:5432/database?sslmode=verify-full",

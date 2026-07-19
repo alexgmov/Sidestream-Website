@@ -53,6 +53,7 @@ export type CanonicalOneTimePaymentFacts = Readonly<{
   paymentProven: boolean;
   disputeStatus: string;
   fullRefundRecoveryProven?: boolean;
+  reactivationProven?: boolean;
 }>;
 
 export type StoredOneTimeEntitlementState = Readonly<{
@@ -400,7 +401,10 @@ export function shouldApplyStripeEventWatermark(
   if (next.createdAtMs !== current.createdAtMs) {
     return next.createdAtMs > current.createdAtMs;
   }
-  return next.eventId > current.eventId;
+  // Stripe IDs are idempotency keys, not causal clocks. Distinct events in the
+  // same Stripe second must both run fresh canonical convergence under the
+  // payment fence; only the exact duplicate is stale here.
+  return next.eventId !== current.eventId;
 }
 
 export function planOneTimeEntitlementTransition(options: {
@@ -492,6 +496,16 @@ export function planOneTimeEntitlementTransition(options: {
   }
   if (!options.facts.paymentProven) {
     return inactiveOneTimeTransition("payment_not_paid", "revoked");
+  }
+  if (
+    options.stored.entitlementStatus &&
+    options.stored.entitlementStatus !== "active" &&
+    options.facts.reactivationProven !== true
+  ) {
+    return inactiveOneTimeTransition(
+      previousReason || "reactivation_unproven",
+      options.stored.entitlementStatus === "suspended" ? "suspended" : "revoked",
+    );
   }
 
   const statusReason = closedDispute

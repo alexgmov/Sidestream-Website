@@ -3,6 +3,8 @@
 import { createHash } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { parsePostgresTarget } from "../api/_lib/postgres-target.ts";
+import { readRegularFile } from "./lib/safe-file.mjs";
 
 export const RETENTION_POLICY_VERSION = 1;
 
@@ -235,11 +237,10 @@ export function fingerprintDatabaseTarget(databaseUrl, namespace) {
   assertNamespace(namespace);
   const parsed = parseSafeDatabaseUrl(databaseUrl);
   const normalizedTarget = JSON.stringify({
-    protocol: parsed.protocol,
-    username: parsed.username,
+    protocol: "postgresql:",
     hostname: parsed.hostname.toLowerCase(),
-    port: parsed.port || "5432",
-    database: parsed.pathname.slice(1),
+    port: parsed.port,
+    database: parsed.database,
     namespace,
   });
   return `sha256:${createHash("sha256")
@@ -566,52 +567,26 @@ function assertNamespace(namespace) {
 }
 
 function parseSafeDatabaseUrl(databaseUrl) {
-  let parsed;
   try {
-    parsed = new URL(databaseUrl);
+    const target = parsePostgresTarget(databaseUrl, "Retention inventory database URL");
+    const parsed = new URL(target.connectionString);
+    if (!target.local && (!parsed.username || !parsed.password)) {
+      throw new Error("missing credentials");
+    }
+    return target;
   } catch {
     throw new Customer360RetentionError("Retention inventory database URL is invalid.");
   }
-  if (
-    !["postgres:", "postgresql:"].includes(parsed.protocol) ||
-    !parsed.hostname ||
-    parsed.pathname.length < 2 ||
-    parsed.hash
-  ) {
-    throw new Customer360RetentionError("Retention inventory database URL is invalid.");
-  }
-
-  const local = isLocalDatabaseHost(parsed.hostname);
-  if (!local) {
-    if (!parsed.username || !parsed.password) {
-      throw new Customer360RetentionError(
-        "Remote retention inventory requires authenticated database credentials.",
-      );
-    }
-    if (parsed.searchParams.get("sslmode") !== "verify-full") {
-      throw new Customer360RetentionError(
-        "Remote retention inventory requires sslmode=verify-full.",
-      );
-    }
-  }
-  return parsed;
-}
-
-function isLocalDatabaseHost(hostname) {
-  const normalized = hostname.toLowerCase();
-  return normalized === "localhost" || normalized === "127.0.0.1" || normalized === "[::1]";
 }
 
 async function createPostgresPool(databaseUrl) {
   const parsed = parseSafeDatabaseUrl(databaseUrl);
   const { Pool } = await loadPostgresModule(repositoryRootFromScript());
   return new Pool({
-    connectionString: databaseUrl,
+    connectionString: parsed.connectionString,
     application_name: "sidestream-customer-360-retention-inventory",
     max: 1,
-    ssl: isLocalDatabaseHost(parsed.hostname)
-      ? false
-      : { rejectUnauthorized: true },
+    ssl: parsed.ssl,
   });
 }
 
@@ -643,9 +618,8 @@ async function loadPostgresModule(worktreeRoot) {
 }
 
 async function readPolicyFile(filename) {
-  const { readFile } = await import("node:fs/promises");
   try {
-    return JSON.parse(await readFile(filename, "utf8"));
+    return JSON.parse(await readRegularFile(filename, { maximumBytes: 256 * 1024 }));
   } catch {
     throw new Customer360RetentionError(
       "Unable to read a valid retention policy file.",

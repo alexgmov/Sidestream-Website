@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -22,7 +22,7 @@ function isolatedFixtures() {
       SIDESTREAM_TEST_POSTGRES_URL:
         "postgresql://preview-license:preview-db-secret@preview-db.example.invalid/sidestream_preview?sslmode=require",
       SIDESTREAM_POSTGRES_URL:
-        "postgres://preview-runtime:other-preview-secret@PREVIEW-DB.example.invalid:5432/sidestream_preview?pgbouncer=true",
+        "postgres://preview-runtime:other-preview-secret@PREVIEW-DB.example.invalid:5432/sidestream_preview?sslmode=require",
       SIDESTREAM_TELEMETRY_POSTGRES_URL:
         "postgresql://preview-reader:preview-telemetry-secret@preview-telemetry.example.invalid/telemetry_preview",
       STRIPE_SECRET_KEY: "sk_test_preview_checkout_secret",
@@ -34,6 +34,14 @@ function isolatedFixtures() {
         "https://preview.sidestream.example/api/auth/google/callback",
       SIDESTREAM_CRM_ADMIN_SECRET: "preview-crm-admin-secret",
       CRON_SECRET: "preview-cron-secret-value",
+      SIDESTREAM_TEST_API_HOSTS: "preview.sidestream.example",
+      SIDESTREAM_LICENSE_HASH_SECRET: "preview-license-hash-secret-value-0001",
+      SIDESTREAM_RATE_LIMIT_HASH_SECRET: "preview-rate-hash-secret-value-000002",
+      SIDESTREAM_LEAD_HASH_SECRET: "preview-lead-hash-secret-value-000003",
+      SIDESTREAM_STRIPE_ACCOUNT_ID: "acct_previewCustomer360",
+      SIDESTREAM_PRO_PRODUCT_ID: "prod_previewCustomer360",
+      SIDESTREAM_PRO_PRICE_ID: "price_previewCustomer360",
+      VERCEL_AUTOMATION_BYPASS_SECRET: "preview-vercel-bypass-secret",
     },
     production: {
       SIDESTREAM_POSTGRES_URL:
@@ -49,6 +57,12 @@ function isolatedFixtures() {
         "https://sidestream.example/api/auth/google/callback",
       SIDESTREAM_CRM_ADMIN_SECRET: "production-crm-admin-secret",
       CRON_SECRET: "production-cron-secret-value",
+      SIDESTREAM_LICENSE_HASH_SECRET: "production-license-hash-secret-value-01",
+      SIDESTREAM_RATE_LIMIT_HASH_SECRET: "production-rate-hash-secret-value-002",
+      SIDESTREAM_LEAD_HASH_SECRET: "production-lead-hash-secret-value-003",
+      SIDESTREAM_STRIPE_ACCOUNT_ID: "acct_productionCustomer360",
+      SIDESTREAM_PRO_PRODUCT_ID: "prod_productionCustomer360",
+      SIDESTREAM_PRO_PRICE_ID: "price_productionCustomer360",
     },
   };
 }
@@ -149,6 +163,21 @@ test("a live Stripe secret in Preview fails closed", async (t) => {
   assert.equal(result.status, 1);
   assert.match(result.stdout, /FAIL PREVIEW\.STRIPE_SECRET_KEY/);
   assertRedacted(result, fixtures);
+});
+
+test("FREEDEV is sandbox-only and bound to the reviewed account, Product, and Price", async () => {
+  const source = await readFile(new URL(
+    "../../scripts/ensure-freedev-promo.mjs",
+    import.meta.url,
+  ), "utf8");
+  assert.match(source, /\^sk_test_/);
+  assert.doesNotMatch(source, /allow-live|sk_live_/i);
+  assert.match(source, /SIDESTREAM_STRIPE_ACCOUNT_ID/);
+  assert.match(source, /stripe\.accounts\.retrieve\(\)/);
+  assert.match(source, /applies_to: \{ products: \[productId\] \}/);
+  assert.match(source, /price\.unit_amount !== 999/);
+  assert.match(source, /price\.lookup_key !== PRICE_LOOKUP_KEY/);
+  assert.match(source, /sidestream_stripe_account_id/);
 });
 
 test("shared CRM, cron, webhook, and Google secrets are rejected", async (t) => {

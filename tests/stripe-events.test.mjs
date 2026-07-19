@@ -26,6 +26,14 @@ const queueMigrationPath = join(
   repositoryRoot,
   "db/migrations/20260713202000_harden_stripe_event_processing.sql",
 );
+const operationalControlsMigrationPath = join(
+  repositoryRoot,
+  "db/migrations/20260713200000_add_api_operational_controls.sql",
+);
+const recoveryMigrationPaths = [
+  "20260717230000_add_stripe_event_recovery_audit.sql",
+  "20260719120000_remediate_customer_360_final_audit.sql",
+].map((filename) => join(repositoryRoot, "db/migrations", filename));
 const entitlementMigrationPaths = [
   "20260704130000_allow_stripe_first_accounts.sql",
   "20260704150000_allow_one_time_checkout_licenses.sql",
@@ -56,6 +64,7 @@ test("Stripe events use a durable claimed queue with bounded retry and protected
     "POSTGRES_POOL_MAX",
     "SIDESTREAM_LEGACY_SUBSCRIPTION_PRICE_IDS",
     "SIDESTREAM_LEGACY_SUBSCRIPTION_PRODUCT_IDS",
+    "SIDESTREAM_PRO_PRICE_ID",
   ]);
   const runtime = await loadRuntimeModules();
   const postgres = await startEphemeralPostgres();
@@ -72,11 +81,15 @@ test("Stripe events use a durable claimed queue with bounded retry and protected
 
   try {
     await pool.query(await readFile(baseMigrationPath, "utf8"));
+    await pool.query(await readFile(operationalControlsMigrationPath, "utf8"));
     await pool.query(await readFile(queueMigrationPath, "utf8"));
     for (const migrationPath of entitlementMigrationPaths) {
       await pool.query(await readFile(migrationPath, "utf8"));
     }
     for (const migrationPath of customerMigrationPaths) {
+      await pool.query(await readFile(migrationPath, "utf8"));
+    }
+    for (const migrationPath of recoveryMigrationPaths) {
       await pool.query(await readFile(migrationPath, "utf8"));
     }
 
@@ -717,6 +730,9 @@ test("Stripe events use a durable claimed queue with bounded retry and protected
         await runtime.stripeEvents.recordStripeEvent(event, JSON.stringify(event), query),
         true,
       );
+      runtime.stub.setStripeClient({
+        charges: { retrieve: async () => structuredClone(event.data.object) },
+      });
       const summary = await runtime.stripeEvents.drainStripeEventQueue({
         batchSize: 1,
         createClaimToken: () => "00000000-0000-4000-8000-000000000007",
@@ -795,6 +811,7 @@ test("Stripe events use a durable claimed queue with bounded retry and protected
         1_700_004_560,
         {
           id: "re_charge_refund_updated",
+          created: 1_700_004_555,
           object: "refund",
           charge: "ch_charge_refund_updated",
           payment_intent: "pi_charge_refund_updated",
@@ -806,6 +823,10 @@ test("Stripe events use a durable claimed queue with bounded retry and protected
       for (const event of [charge, refund]) {
         await runtime.stripeEvents.recordStripeEvent(event, JSON.stringify(event), query);
       }
+      runtime.stub.setStripeClient({
+        charges: { retrieve: async () => structuredClone(charge.data.object) },
+        refunds: { retrieve: async () => structuredClone(refund.data.object) },
+      });
       assert.deepEqual(await runtime.stripeEvents.drainStripeEventQueue({
         batchSize: 2,
         createClaimToken: () => "00000000-0000-4000-8000-000000000017",
@@ -871,6 +892,11 @@ test("Stripe events use a durable claimed queue with bounded retry and protected
         },
       );
       await runtime.stripeEvents.recordStripeEvent(event, JSON.stringify(event), query);
+      runtime.stub.setStripeClient({
+        checkout: {
+          sessions: { retrieve: async () => structuredClone(event.data.object) },
+        },
+      });
       const commerceFailureQuery = async (text, params = []) => {
         if (text.includes("sidestream_customer_commerce_apply")) {
           const error = new Error("commerce projection unavailable");
@@ -985,6 +1011,9 @@ test("Stripe events use a durable claimed queue with bounded retry and protected
           currency: "usd",
         },
       );
+      runtime.stub.setStripeClient({
+        refunds: { retrieve: async () => structuredClone(event.data.object) },
+      });
       assert.deepEqual(await runtime.stripeEvents.reconcileStripeEvent(
         event,
         async () => ({ rows: [{ result: { applied: 1, stale: 0 } }] }),
@@ -1034,6 +1063,7 @@ test("Stripe events use a durable claimed queue with bounded retry and protected
       );
 
       const stripeState = createLifecycleStripeState({ accountId, priceId, productId });
+      process.env.SIDESTREAM_PRO_PRICE_ID = priceId;
       runtime.account.__setStripeLifecycleTestClient(
         createLifecycleStripeClient(stripeState),
       );
@@ -1165,6 +1195,22 @@ test("Stripe events use a durable claimed queue with bounded retry and protected
           status: "revoked",
           reason: "full_refund",
           amountRefunded: 999,
+          created: 1_700_020_520,
+          eventId: "evt_full_before_wrong_price",
+        });
+        stripeState.checkout.line_items.data[0].price.id = "price_wrong";
+        assert.equal((await reconcileRefund(
+          "re_failed",
+          "refund.failed",
+          1_700_020_550,
+        )).entitlementStatus, "revoked");
+        assert.equal((await readLicense()).status_reason, "full_refund");
+        stripeState.checkout.line_items.data[0].price.id = priceId;
+
+        await resetLicense({
+          status: "revoked",
+          reason: "full_refund",
+          amountRefunded: 999,
           created: 1_700_020_600,
           eventId: "evt_full_before_incomplete",
           storedPriceId: null,
@@ -1198,6 +1244,23 @@ test("Stripe events use a durable claimed queue with bounded retry and protected
            where id = $1`,
           [accountId],
         );
+
+        await resetLicense({
+          status: "revoked",
+          reason: "full_refund",
+          amountRefunded: 999,
+          created: 1_700_020_760,
+          eventId: "evt_full_before_metadata_owner_mismatch",
+        });
+        stripeState.checkout.metadata.sidestream_account_id =
+          "99999999-9999-4999-8999-999999999999";
+        assert.equal((await reconcileRefund(
+          "re_failed",
+          "refund.failed",
+          1_700_020_780,
+        )).entitlementStatus, "revoked");
+        assert.equal((await readLicense()).status_reason, "full_refund");
+        stripeState.checkout.metadata.sidestream_account_id = accountId;
 
         await resetLicense({
           status: "revoked",
@@ -1246,6 +1309,7 @@ test("Stripe events use a durable claimed queue with bounded retry and protected
         productId,
         prefix: "dispute",
       });
+      process.env.SIDESTREAM_PRO_PRICE_ID = priceId;
       runtime.account.__setStripeLifecycleTestClient(
         createLifecycleStripeClient(stripeState),
       );
@@ -1404,6 +1468,11 @@ test("Stripe events use a durable claimed queue with bounded retry and protected
         items: { data: [] },
       };
       runtime.stub.setStripeClient({
+        invoices: {
+          async retrieve(invoiceId) {
+            return { id: invoiceId };
+          },
+        },
         subscriptions: {
           async retrieve(subscriptionId) {
             runtime.stub.calls.push(["retrieve", subscriptionId]);
@@ -1431,6 +1500,7 @@ test("Stripe events use a durable claimed queue with bounded retry and protected
           eventId: event.id,
           created: event.created,
         }],
+        ["retrieve", "sub_canonical"],
       ]);
 
       assert.deepEqual(
@@ -1727,6 +1797,7 @@ function createLifecycleStripeState({
   prefix = "lifecycle",
 }) {
   return {
+    configuredPrice: { id: priceId, product: productId },
     paymentIntent: {
       id: `pi_${prefix}`,
       customer: `cus_${prefix}`,
@@ -1778,6 +1849,21 @@ function createLifecycleStripeClient(state) {
       async retrieve(id) {
         assert.equal(id, state.paymentIntent.id);
         return structuredClone(state.paymentIntent);
+      },
+    },
+    prices: {
+      async retrieve(id) {
+        const price = state.configuredPrice;
+        assert.equal(id, price.id);
+        return {
+          id,
+          active: true,
+          currency: "usd",
+          unit_amount: 999,
+          type: "one_time",
+          recurring: null,
+          product: price.product,
+        };
       },
     },
     refunds: {
@@ -1857,7 +1943,7 @@ function stripeEvent(id, type, created, object = { id: `object_${id}` }) {
   return {
     id,
     object: "event",
-    api_version: "2026-06-30.basil",
+    api_version: "2026-06-24.dahlia",
     created,
     data: { object },
     livemode: false,
@@ -2005,7 +2091,25 @@ export function waitUntil() {}
 }
 
 async function loadAccountRuntime(directory) {
-  const postgresUrl = pathToFileURL(join(repositoryRoot, "api/_lib/postgres.ts")).href;
+  const postgresVercelStub = join(directory, "postgres-vercel-functions-stub.mjs");
+  await writeFile(
+    postgresVercelStub,
+    "export function attachDatabasePool() {}\n",
+    { mode: 0o600 },
+  );
+  const postgresTargetUrl = pathToFileURL(
+    join(repositoryRoot, "api/_lib/postgres-target.ts"),
+  ).href;
+  const postgresUrl = await writeAdaptedModule(
+    directory,
+    "account-postgres",
+    join(repositoryRoot, "api/_lib/postgres.ts"),
+    {
+      "@vercel/functions": pathToFileURL(postgresVercelStub).href,
+      "pg": import.meta.resolve("pg"),
+      "./postgres-target.js": postgresTargetUrl,
+    },
+  );
   const maintenanceUrl = await writeAdaptedModule(
     directory,
     "account-maintenance",

@@ -10,12 +10,27 @@ import {
   USAGE_SYNC_MODE,
   validatePreviewTarget,
   verifyCustomer360PreviewDeployment,
+  verifyVercelDeploymentProvenance,
 } from "../../scripts/verify-customer-360-preview-deployment.mjs";
 
 const ORIGIN = "https://sidestream-git-c360-preview-team.vercel.app";
 const HOST = "sidestream-git-c360-preview-team.vercel.app";
 const ADMIN_SECRET = "fixture-preview-admin-secret";
 const CRON_SECRET = "fixture-preview-cron-secret";
+const BYPASS_SECRET = "fixture-preview-bypass-secret";
+const VERCEL_TOKEN = "fixture-vercel-access-token";
+const DEPLOYMENT_ID = "dpl_fixture123";
+const PROJECT_ID = "prj_fixture123";
+const TEAM_ID = "team_fixture123";
+const CANDIDATE_SHA = "a".repeat(40);
+const DEPLOYMENT_OPTIONS = Object.freeze({
+  origin: ORIGIN,
+  expectedDeploymentHost: HOST,
+  expectedDeploymentId: DEPLOYMENT_ID,
+  expectedProjectId: PROJECT_ID,
+  expectedTeamId: TEAM_ID,
+  expectedCandidateSha: CANDIDATE_SHA,
+});
 
 test("Preview target validation refuses every Production, local, and ambiguous origin", () => {
   const refused = [
@@ -50,7 +65,14 @@ test("Preview target validation refuses every Production, local, and ambiguous o
 });
 
 test("CLI parsing rejects duplicate, positional, secret, and mode-ambiguous selectors", () => {
-  const base = ["--origin", ORIGIN, "--expected-deployment-host", HOST];
+  const base = [
+    "--origin", ORIGIN,
+    "--expected-deployment-host", HOST,
+    "--expected-deployment-id", DEPLOYMENT_ID,
+    "--expected-project-id", PROJECT_ID,
+    "--expected-team-id", TEAM_ID,
+    "--expected-candidate-sha", CANDIDATE_SHA,
+  ];
   const refused = [
     [...base, "--origin", ORIGIN],
     [...base, "--expected-deployment-host", HOST],
@@ -73,24 +95,14 @@ test("CLI parsing rejects duplicate, positional, secret, and mode-ambiguous sele
   }
 
   assert.deepEqual(parsePreviewDeploymentArguments(base), {
-    origin: ORIGIN,
-    expectedDeploymentHost: HOST,
+    ...DEPLOYMENT_OPTIONS,
     mode: READ_ONLY_MODE,
     confirmation: undefined,
   });
-  const confirmation = usageSyncConfirmationForHost(HOST);
-  assert.deepEqual(parsePreviewDeploymentArguments([
-    ...base,
-    "--mode",
-    USAGE_SYNC_MODE,
-    "--confirm",
-    confirmation,
-  ]), {
-    origin: ORIGIN,
-    expectedDeploymentHost: HOST,
-    mode: USAGE_SYNC_MODE,
-    confirmation,
-  });
+  assert.throws(() => parsePreviewDeploymentArguments([
+    ...base, "--mode", USAGE_SYNC_MODE,
+    "--confirm", usageSyncConfirmationForHost(HOST),
+  ]), { name: "PreviewDeploymentInputError" });
 });
 
 test("invalid configuration and missing environment secrets make no requests", async () => {
@@ -113,8 +125,7 @@ test("invalid configuration and missing environment secrets make no requests", a
   assert.equal(requestCount, 0);
 
   result = await verifyCustomer360PreviewDeployment({
-    origin: ORIGIN,
-    expectedDeploymentHost: HOST,
+    ...DEPLOYMENT_OPTIONS,
   }, dependencies);
   assert.equal(result.pass, false);
   assert.deepEqual(result.checks, [
@@ -124,8 +135,7 @@ test("invalid configuration and missing environment secrets make no requests", a
   assert.equal(requestCount, 0);
 
   result = await verifyCustomer360PreviewDeployment({
-    origin: ORIGIN,
-    expectedDeploymentHost: HOST,
+    ...DEPLOYMENT_OPTIONS,
     mode: USAGE_SYNC_MODE,
     confirmation: usageSyncConfirmationForHost(HOST),
   }, {
@@ -133,29 +143,79 @@ test("invalid configuration and missing environment secrets make no requests", a
     environment: { SIDESTREAM_CRM_ADMIN_SECRET: ADMIN_SECRET },
   });
   assert.deepEqual(result.checks, [
-    { id: "configuration.cron_secret", pass: false },
+    { id: "configuration.mode", pass: false },
   ]);
   assert.equal(result.requestCount, 0);
   assert.equal(requestCount, 0);
 });
 
-test("default mode executes the complete read-only request contract without an authorized mutation", async () => {
-  const fixture = createFetchFixture();
+test("failed provider provenance sends no application secret to the candidate host", async () => {
+  let applicationRequests = 0;
   const result = await verifyCustomer360PreviewDeployment({
-    origin: ORIGIN,
-    expectedDeploymentHost: HOST,
+    ...DEPLOYMENT_OPTIONS,
   }, {
     environment: {
       SIDESTREAM_CRM_ADMIN_SECRET: ADMIN_SECRET,
-      CRON_SECRET,
+      VERCEL_ACCESS_TOKEN: VERCEL_TOKEN,
+      VERCEL_AUTOMATION_BYPASS_SECRET: BYPASS_SECRET,
     },
-    fetch: fixture.fetch,
+    verifyProvenance: async () => false,
+    fetch: async () => {
+      applicationRequests += 1;
+      throw new Error("candidate host must not be contacted");
+    },
     createSignal: () => undefined,
   });
 
+  assert.equal(result.pass, false);
+  assert.deepEqual(result.checks, [
+    { id: "deployment.owner_provenance", pass: false },
+  ]);
+  assert.equal(result.requestCount, 1);
+  assert.equal(applicationRequests, 0);
+});
+
+test("provider provenance is resolved only through the fixed Vercel API host", async () => {
+  const requests = [];
+  const pass = await verifyVercelDeploymentProvenance({
+    ...DEPLOYMENT_OPTIONS,
+    hostname: HOST,
+  }, {
+    environment: { VERCEL_ACCESS_TOKEN: VERCEL_TOKEN },
+    fetch: async (rawUrl, init) => {
+      requests.push({ rawUrl, init });
+      return jsonResponse({
+        id: DEPLOYMENT_ID,
+        projectId: PROJECT_ID,
+        target: null,
+        readyState: "READY",
+        url: HOST,
+        alias: [],
+        gitSource: { sha: CANDIDATE_SHA },
+      }, 200);
+    },
+    createSignal: () => undefined,
+  });
+
+  assert.equal(pass, true);
+  assert.equal(requests.length, 1);
+  const providerUrl = new URL(requests[0].rawUrl);
+  assert.equal(providerUrl.origin, "https://api.vercel.com");
+  assert.equal(providerUrl.pathname, `/v13/deployments/${DEPLOYMENT_ID}`);
+  assert.equal(providerUrl.searchParams.get("teamId"), TEAM_ID);
+  assert.equal(requests[0].init.headers.Authorization, `Bearer ${VERCEL_TOKEN}`);
+  assert.equal(requests[0].init.redirect, "error");
+});
+
+test("default mode executes the complete read-only request contract without an authorized mutation", async () => {
+  const fixture = createFetchFixture();
+  const result = await verifyCustomer360PreviewDeployment({
+    ...DEPLOYMENT_OPTIONS,
+  }, verificationDependencies(fixture));
+
   assert.equal(result.pass, true, formatPreviewDeploymentVerification(result));
   assert.equal(result.mode, READ_ONLY_MODE);
-  assert.equal(result.requestCount, 8 + ROUTE_PRESENCE_PROBES.length);
+  assert.equal(result.requestCount, 9 + ROUTE_PRESENCE_PROBES.length);
   assert.equal(fixture.authorizedUsageSyncRequests, 0);
   assert.deepEqual(
     fixture.requests.map(({ pathname, method }) => [pathname, method]),
@@ -177,76 +237,33 @@ test("default mode executes the complete read-only request contract without an a
   assertRequestShapes(fixture.requests);
 });
 
-test("usage-sync is an explicit host-bound final GET using only the environment secret", async () => {
+test("usage-sync is disabled until database-audited one-time approval exists", async () => {
   const fixture = createFetchFixture();
-  const confirmation = usageSyncConfirmationForHost(HOST);
   const result = await verifyCustomer360PreviewDeployment({
-    origin: ORIGIN,
-    expectedDeploymentHost: HOST,
-    mode: USAGE_SYNC_MODE,
-    confirmation,
-  }, {
-    environment: {
-      SIDESTREAM_CRM_ADMIN_SECRET: ADMIN_SECRET,
-      CRON_SECRET,
-    },
-    fetch: fixture.fetch,
-    createSignal: () => undefined,
-  });
-
-  assert.equal(result.pass, true, formatPreviewDeploymentVerification(result));
-  assert.equal(result.mode, USAGE_SYNC_MODE);
-  assert.equal(result.requestCount, 9 + ROUTE_PRESENCE_PROBES.length);
-  assert.equal(fixture.authorizedUsageSyncRequests, 1);
-  const finalRequest = fixture.requests.at(-1);
-  assert.equal(finalRequest.pathname, "/api/internal/customer-usage/sync");
-  assert.equal(finalRequest.search, "");
-  assert.equal(finalRequest.method, "GET");
-  assert.equal(finalRequest.body, undefined);
-  assert.equal(finalRequest.authorization, `Bearer ${CRON_SECRET}`);
-  assert.equal(finalRequest.originHeader, null);
-  assert.equal(finalRequest.redirect, "manual");
-  assert.equal(finalRequest.credentials, "omit");
-});
-
-test("a failed read-only gate prevents the authorized usage-sync request", async () => {
-  const fixture = createFetchFixture({ malformedList: true });
-  const result = await verifyCustomer360PreviewDeployment({
-    origin: ORIGIN,
-    expectedDeploymentHost: HOST,
+    ...DEPLOYMENT_OPTIONS,
     mode: USAGE_SYNC_MODE,
     confirmation: usageSyncConfirmationForHost(HOST),
-  }, {
-    environment: {
-      SIDESTREAM_CRM_ADMIN_SECRET: ADMIN_SECRET,
-      CRON_SECRET,
-    },
-    fetch: fixture.fetch,
-    createSignal: () => undefined,
-  });
+  }, verificationDependencies(fixture));
 
   assert.equal(result.pass, false);
-  assert.equal(
-    result.checks.find((entry) => entry.id === "admin.list_shape")?.pass,
-    false,
-  );
-  assert.equal(
-    result.checks.some((entry) => entry.id === "usage_sync.once"),
-    false,
-  );
+  assert.equal(result.mode, USAGE_SYNC_MODE);
+  assert.deepEqual(result.checks, [{ id: "configuration.mode", pass: false }]);
+  assert.equal(result.requestCount, 0);
   assert.equal(fixture.authorizedUsageSyncRequests, 0);
 });
 
 test("formatted results and failures never expose secrets, headers, bodies, or thrown messages", async () => {
   const sentinel = "NEVER_PRINT_OPERATOR_SECRET";
   const result = await verifyCustomer360PreviewDeployment({
-    origin: ORIGIN,
-    expectedDeploymentHost: HOST,
+    ...DEPLOYMENT_OPTIONS,
   }, {
     environment: {
       SIDESTREAM_CRM_ADMIN_SECRET: `${sentinel}_ADMIN`,
       CRON_SECRET: `${sentinel}_CRON`,
+      VERCEL_ACCESS_TOKEN: VERCEL_TOKEN,
+      VERCEL_AUTOMATION_BYPASS_SECRET: BYPASS_SECRET,
     },
+    verifyProvenance: async () => true,
     fetch: async () => {
       throw new Error(`${sentinel}_FETCH_ERROR`);
     },
@@ -262,6 +279,26 @@ test("formatted results and failures never expose secrets, headers, bodies, or t
     true,
   );
 });
+
+function verificationDependencies(fixture) {
+  return {
+    environment: {
+      SIDESTREAM_CRM_ADMIN_SECRET: ADMIN_SECRET,
+      CRON_SECRET,
+      VERCEL_ACCESS_TOKEN: VERCEL_TOKEN,
+      VERCEL_AUTOMATION_BYPASS_SECRET: BYPASS_SECRET,
+    },
+    fetch: fixture.fetch,
+    verifyProvenance: async (options) => {
+      assert.equal(options.expectedDeploymentId, DEPLOYMENT_ID);
+      assert.equal(options.expectedProjectId, PROJECT_ID);
+      assert.equal(options.expectedTeamId, TEAM_ID);
+      assert.equal(options.expectedCandidateSha, CANDIDATE_SHA);
+      return true;
+    },
+    createSignal: () => undefined,
+  };
+}
 
 function createFetchFixture(options = {}) {
   const requests = [];
@@ -281,8 +318,10 @@ function createFetchFixture(options = {}) {
       redirect: init.redirect,
       credentials: init.credentials,
       cache: init.cache,
+      bypass: headers.get("x-vercel-protection-bypass"),
     };
     requests.push(request);
+    assert.equal(request.bypass, BYPASS_SECRET);
 
     if (url.pathname === "/" && init.method === "HEAD") {
       return response(null, 200, {

@@ -1,9 +1,11 @@
-import { createHash } from "node:crypto";
-import fs from "node:fs";
-import { readdir, readFile } from "node:fs/promises";
+import { createHash, createHmac, timingSafeEqual } from "node:crypto";
+import { execFileSync } from "node:child_process";
+import { readdir } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { Pool } from "pg";
+import { parsePostgresTarget, readConnectedPostgresFingerprint } from "../api/_lib/postgres-target.ts";
+import { readRegularFile } from "./lib/safe-file.mjs";
 import {
   ACTIVATION_ROTATION_MIGRATION,
   KNOWN_PRE_20260713_MIGRATION_CHECKSUMS,
@@ -49,7 +51,9 @@ export async function loadMigrationFiles(directory = MIGRATIONS_DIRECTORY) {
     .filter((filename) => filename.endsWith(".sql"))
     .sort();
   return Promise.all(filenames.map(async (filename) => {
-    const sql = await readFile(path.join(directory, filename), "utf8");
+    const sql = await readRegularFile(path.join(directory, filename), {
+      maximumBytes: 4 * 1024 * 1024,
+    });
     return Object.freeze({
       filename,
       sql,
@@ -125,38 +129,107 @@ export function migrationSqlForTransaction(sql) {
   return wrapped ? `${wrapped[1].trim()}\n` : sql;
 }
 
+export function migrationSetFingerprint(migrations) {
+  return createHash("sha256").update(
+    migrations.map((migration) => `${migration.filename}\0${migration.checksum}`).join("\0"),
+  ).digest("hex");
+}
+
+export function buildMigrationApprovalMessage(options) {
+  return [
+    "sidestream-postgres-migration-approval:v1",
+    options.mode,
+    "test",
+    options.targetFingerprint,
+    options.migrationSetFingerprint,
+    options.candidateSha,
+    new Date(options.expiresAt).toISOString(),
+  ].join("\0");
+}
+
+export function verifyMigrationApproval(options, environment = process.env, now = Date.now()) {
+  if (options.mode !== "apply" && options.mode !== "baseline") {
+    throw new Error("Migration approval is mutation-only");
+  }
+  const expectedTarget = configuredValue(environment.SIDESTREAM_MIGRATION_TARGET_FINGERPRINT);
+  const expectedSet = configuredValue(environment.SIDESTREAM_MIGRATION_SET_FINGERPRINT);
+  const expectedCandidate = configuredValue(environment.SIDESTREAM_MIGRATION_CANDIDATE_SHA);
+  const namespace = configuredValue(environment.SIDESTREAM_MIGRATION_NAMESPACE).toLowerCase();
+  const expiresAt = Date.parse(configuredValue(environment.SIDESTREAM_MIGRATION_APPROVAL_EXPIRES_AT));
+  if (
+    namespace !== "test" ||
+    !/^[0-9a-f]{64}$/.test(expectedTarget) ||
+    expectedTarget !== options.targetFingerprint ||
+    !/^[0-9a-f]{64}$/.test(expectedSet) ||
+    expectedSet !== options.migrationSetFingerprint ||
+    !/^[0-9a-f]{40}$/.test(expectedCandidate) ||
+    expectedCandidate !== options.candidateSha
+  ) {
+    throw new Error("Migration approval evidence does not match the Test candidate");
+  }
+  if (!Number.isFinite(expiresAt) || expiresAt <= now || expiresAt > now + 24 * 60 * 60 * 1_000) {
+    throw new Error("Migration approval is expired or exceeds 24 hours");
+  }
+  const approval = {
+    ...options,
+    expiresAt: new Date(expiresAt).toISOString(),
+  };
+  const confirmation = `MIGRATE_TEST:${options.mode}:${
+    options.targetFingerprint.slice(0, 12)
+  }:${options.migrationSetFingerprint.slice(0, 12)}:${options.candidateSha}`;
+  if (environment.SIDESTREAM_MIGRATION_CONFIRM !== confirmation) {
+    throw new Error("Migration approval confirmation does not match");
+  }
+  const secret = environment.SIDESTREAM_MIGRATION_APPROVAL_SECRET || "";
+  const token = environment.SIDESTREAM_MIGRATION_APPROVAL_TOKEN || "";
+  if (secret.length < 32 || !/^[0-9a-f]{64}$/.test(token)) {
+    throw new Error("Migration approval credentials are unavailable");
+  }
+  const expectedToken = createHmac("sha256", secret)
+    .update(buildMigrationApprovalMessage(approval))
+    .digest();
+  const actualToken = Buffer.from(token, "hex");
+  if (actualToken.length !== expectedToken.length || !timingSafeEqual(actualToken, expectedToken)) {
+    throw new Error("Migration approval token is invalid");
+  }
+}
+
 export function selectMigrationDatabase(environment = process.env) {
-  for (const environmentVariable of [
+  const configured = [
     ...DIRECT_DATABASE_ENV_NAMES,
     ...POOLED_DATABASE_ENV_NAMES,
-  ]) {
+  ].flatMap((environmentVariable) => {
     const connectionString = configuredValue(environment[environmentVariable]);
-    if (connectionString) {
-      return Object.freeze({
+    return connectionString
+      ? [Object.freeze({
         environmentVariable,
         connectionString,
         direct: DIRECT_DATABASE_ENV_NAMES.includes(environmentVariable),
-      });
-    }
+      })]
+      : [];
+  });
+  if (configured.length > 1) {
+    throw new Error("Migration database selection is ambiguous; configure exactly one selector");
   }
-  return null;
+  return configured[0] || null;
 }
 
 export function parseMigrationArguments(argv) {
   const supported = new Set([
-    "--baseline", "--dry-run", "--help", "--status", "--validate",
+    "--apply", "--baseline", "--dry-run", "--help", "--status", "--validate",
   ]);
   const unknown = argv.filter((argument) => !supported.has(argument));
   if (unknown.length) throw new Error(`Unknown migration option: ${unknown.join(", ")}`);
-  const modes = ["--baseline", "--dry-run", "--status", "--validate"]
+  const modes = ["--apply", "--baseline", "--dry-run", "--status", "--validate"]
     .filter((option) => argv.includes(option));
   if (modes.length > 1) throw new Error(`Choose only one migration operation: ${modes.join(", ")}`);
   if (argv.includes("--help")) return "help";
   if (argv.includes("--baseline")) return "baseline";
+  if (argv.includes("--apply")) return "apply";
   if (argv.includes("--dry-run")) return "dry-run";
   if (argv.includes("--status")) return "status";
   if (argv.includes("--validate")) return "validate";
-  return "apply";
+  return "validate";
 }
 
 async function main() {
@@ -167,8 +240,10 @@ async function main() {
   }
 
   const migrations = validateMigrationFiles(await loadMigrationFiles());
+  const localMigrationSetFingerprint = migrationSetFingerprint(migrations);
   if (mode === "validate") {
     console.log(`Validated ${migrations.length} ordered migration files and SHA-256 checksums.`);
+    console.log(`Migration set fingerprint: ${localMigrationSetFingerprint}`);
     console.log(`pending-contract: ${ACTIVATION_ROTATION_MIGRATION}`);
     return;
   }
@@ -177,8 +252,8 @@ async function main() {
     return;
   }
 
-  loadEnvFile(process.env.SIDESTREAM_ENV_FILE);
-  loadEnvFile(process.env.SIDESTREAM_DB_ENV_FILE);
+  await loadEnvFile(process.env.SIDESTREAM_ENV_FILE);
+  await loadEnvFile(process.env.SIDESTREAM_DB_ENV_FILE);
   const target = selectMigrationDatabase();
   if (!target) {
     throw new Error(
@@ -196,6 +271,19 @@ async function main() {
   const client = await pool.connect();
   let lockHeld = false;
   try {
+    const connectedFingerprint = await readConnectedPostgresFingerprint(client);
+    if (mode === "apply" || mode === "baseline") {
+      const candidateSha = currentCleanCandidateSha();
+      verifyMigrationApproval({
+        mode,
+        targetFingerprint: connectedFingerprint,
+        migrationSetFingerprint: localMigrationSetFingerprint,
+        candidateSha,
+        expiresAt: process.env.SIDESTREAM_MIGRATION_APPROVAL_EXPIRES_AT,
+      });
+    } else {
+      console.log(`Connected target fingerprint: ${connectedFingerprint}`);
+    }
     await client.query("select pg_advisory_lock(hashtext($1))", [MIGRATION_LOCK_KEY]);
     lockHeld = true;
     if (mode === "status") {
@@ -203,7 +291,7 @@ async function main() {
     } else if (mode === "baseline") {
       await baselineKnownSchema(client, migrations);
     } else {
-      await applyPendingMigrations(client, migrations);
+      await applyPendingMigrations(client, migrations, connectedFingerprint);
     }
   } finally {
     if (lockHeld) {
@@ -241,7 +329,7 @@ async function reportStatus(client, migrations) {
   printStatuses(statuses);
 }
 
-async function applyPendingMigrations(client, migrations) {
+async function applyPendingMigrations(client, migrations, connectedFingerprint) {
   const ledgerExists = await migrationLedgerExists(client);
   const productSchemaExists = await hasSidestreamProductSchema(client);
   if (!ledgerExists) {
@@ -266,6 +354,7 @@ async function applyPendingMigrations(client, migrations) {
     const startedAt = process.hrtime.bigint();
     await client.query("begin");
     try {
+      await assertPendingCreateTargetsAbsent(client, migration);
       await client.query(migrationSqlForTransaction(migration.sql));
       const durationMs = Number((process.hrtime.bigint() - startedAt) / 1_000_000n);
       await client.query(
@@ -289,6 +378,55 @@ async function applyPendingMigrations(client, migrations) {
   }
   if (statuses.every((status) => status.status === "applied")) {
     console.log("No pending migrations.");
+  }
+  await attestMigrationSet(client, migrations, connectedFingerprint);
+}
+
+async function assertPendingCreateTargetsAbsent(client, migration) {
+  const tables = [...migration.sql.matchAll(
+    /create\s+table\s+(?:if\s+not\s+exists\s+)?public\.([a-z0-9_]+)/gi,
+  )].map((match) => match[1])
+    .filter((name) => name !== "sidestream_schema_migrations");
+  for (const table of new Set(tables)) {
+    const result = await client.query("select to_regclass($1) is not null as exists", [
+      `public.${table}`,
+    ]);
+    if (result.rows[0]?.exists === true) {
+      throw new Error(`Pending migration target already exists without ledger proof: ${table}`);
+    }
+  }
+}
+
+async function attestMigrationSet(client, migrations, connectedFingerprint) {
+  const table = await client.query(
+    "select to_regclass('public.sidestream_migration_attestations') is not null as exists",
+  );
+  if (table.rows[0]?.exists !== true) return;
+  const migrationSetFingerprintValue = migrationSetFingerprint(migrations);
+  await client.query("begin");
+  try {
+    await client.query(`
+      insert into public.sidestream_migration_attestations (
+        filename, target_fingerprint, migration_set_fingerprint
+      )
+      select filename, $1, $2 from ${MIGRATION_LEDGER}
+      on conflict (filename) do nothing
+    `, [connectedFingerprint, migrationSetFingerprintValue]);
+    const invalid = await client.query(`
+      select count(*)::int as count
+      from ${MIGRATION_LEDGER} ledger
+      left join public.sidestream_migration_attestations attestation using (filename)
+      where attestation.filename is null
+        or attestation.target_fingerprint <> $1
+        or attestation.migration_set_fingerprint <> $2
+    `, [connectedFingerprint, migrationSetFingerprintValue]);
+    if (invalid.rows[0]?.count !== 0) {
+      throw new Error("Migration attestation target or migration-set fingerprint mismatch");
+    }
+    await client.query("commit");
+  } catch (error) {
+    await client.query("rollback").catch(() => {});
+    throw error;
   }
 }
 
@@ -414,24 +552,9 @@ function printStatuses(statuses) {
 }
 
 function createMigrationPoolOptions(connectionString) {
-  let url;
-  try {
-    url = new URL(connectionString);
-  } catch {
-    throw new Error("Migration Postgres connection string is invalid");
-  }
-  if (url.protocol !== "postgres:" && url.protocol !== "postgresql:") {
-    throw new Error("Migration connection must use postgres: or postgresql:");
-  }
-  if (!url.hostname || !url.pathname.replace(/^\/+/, "")) {
-    throw new Error("Migration connection must identify a host and database");
-  }
-  if (/^(prefer|require)$/i.test(url.searchParams.get("sslmode") || "")) {
-    url.searchParams.delete("sslmode");
-  }
-  const local = ["localhost", "127.0.0.1", "::1"].includes(url.hostname.toLowerCase());
+  const target = parsePostgresTarget(connectionString, "Migration connection");
   return {
-    connectionString: url.toString(),
+    connectionString: target.connectionString,
     max: 1,
     connectionTimeoutMillis: boundedInteger(
       "POSTGRES_CONNECTION_TIMEOUT_MS", 10_000, 250, 30_000,
@@ -440,9 +563,7 @@ function createMigrationPoolOptions(connectionString) {
     statement_timeout: boundedInteger(
       "POSTGRES_MIGRATION_STATEMENT_TIMEOUT_MS", 300_000, 1_000, 1_800_000,
     ),
-    ssl: process.env.POSTGRES_SSL === "0" || local
-      ? false
-      : { rejectUnauthorized: false },
+    ssl: target.ssl,
   };
 }
 
@@ -457,21 +578,53 @@ function boundedInteger(name, defaultValue, minimum, maximum) {
   return value;
 }
 
-function loadEnvFile(filePath) {
+function currentCleanCandidateSha() {
+  let candidateSha;
+  let status;
+  try {
+    candidateSha = execFileSync("git", ["rev-parse", "HEAD"], {
+      cwd: process.cwd(),
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      maxBuffer: 64 * 1024,
+    }).trim();
+    status = execFileSync("git", ["status", "--porcelain", "--untracked-files=normal"], {
+      cwd: process.cwd(),
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      maxBuffer: 1024 * 1024,
+    }).trim();
+  } catch {
+    throw new Error("Migration mutation requires a readable clean Git candidate");
+  }
+  if (!/^[0-9a-f]{40}$/.test(candidateSha) || status) {
+    throw new Error("Migration mutation requires the exact clean Git candidate");
+  }
+  return candidateSha;
+}
+
+async function loadEnvFile(filePath) {
   if (!filePath) return;
   const absolutePath = path.resolve(filePath);
-  let text = "";
+  let text;
   try {
-    text = fs.readFileSync(absolutePath, "utf8");
+    text = await readRegularFile(absolutePath, {
+      maximumBytes: 256 * 1024,
+      requirePrivate: true,
+    });
   } catch {
     throw new Error(`Could not read configured migration env file: ${absolutePath}`);
   }
   for (const line of text.split(/\r?\n/)) {
+    if (!line.trim() || line.trimStart().startsWith("#")) continue;
     const match = line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)=(.*)\s*$/);
-    if (!match) continue;
+    if (!match) throw new Error(`Malformed migration env file: ${absolutePath}`);
     const [, key, rawValue] = match;
-    if (process.env[key]) continue;
-    process.env[key] = rawValue.trim().replace(/^['"]|['"]$/g, "");
+    const value = rawValue.trim().replace(/^['"]|['"]$/g, "");
+    if (process.env[key] && process.env[key] !== value) {
+      throw new Error(`Migration env file conflicts with inherited ${key}`);
+    }
+    process.env[key] = value;
   }
 }
 
@@ -485,13 +638,18 @@ function printHelp() {
   console.log(`Usage: node scripts/apply-postgres-migrations.mjs [operation]
 
 Operations:
-  (none)       Apply pending migrations using the checksum ledger
+  (none)       Validate local ordering/checksums without connecting
+  --apply      Apply pending migrations using the checksum ledger
   --status     Read migration/ledger state without changing it
   --validate   Validate local ordering and checksums without a database
   --baseline   Verify the known pre-20260713 schema, then record only proven files
   --dry-run    List local files without connecting or mutating a database
 
-Direct *_URL_NON_POOLING variables are preferred for migration operations.`);
+Mutation also requires SIDESTREAM_MIGRATION_TARGET_FINGERPRINT from a reviewed
+read-only --status run, SIDESTREAM_MIGRATION_SET_FINGERPRINT from --validate,
+the exact clean SIDESTREAM_MIGRATION_CANDIDATE_SHA, SIDESTREAM_MIGRATION_NAMESPACE=test,
+and an expiring HMAC approval plus exact printed confirmation. Configure exactly
+one database selector.`);
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] || "").href) {

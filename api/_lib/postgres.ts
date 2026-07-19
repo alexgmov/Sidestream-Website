@@ -1,5 +1,6 @@
 import { attachDatabasePool } from "@vercel/functions";
 import { Pool, type PoolClient, type PoolConfig, type QueryResult, type QueryResultRow } from "pg";
+import { parsePostgresTarget } from "./postgres-target.js";
 
 export const POOLED_POSTGRES_URL_ENV_NAMES = [
   "SIDESTREAM_POSTGRES_URL",
@@ -108,7 +109,11 @@ export function buildPostgresPoolOptions(
   target: RuntimePostgresTarget,
   environment: RuntimeEnvironment = process.env,
 ): PoolConfig {
-  const connectionString = normalizePostgresConnectionString(target.connectionString);
+  const parsedTarget = parsePostgresTarget(
+    target.connectionString,
+    "Runtime Postgres connection",
+  );
+  const connectionString = parsedTarget.connectionString;
   return {
     connectionString,
     max: readBoundedInteger(environment, "POSTGRES_POOL_MAX", DEFAULT_POOL_MAX, 2, 20),
@@ -140,9 +145,7 @@ export function buildPostgresPoolOptions(
       250,
       60_000,
     ),
-    ssl: shouldUsePostgresSsl(connectionString, environment)
-      ? { rejectUnauthorized: false }
-      : false,
+    ssl: parsedTarget.ssl,
   };
 }
 
@@ -239,34 +242,20 @@ export async function withPostgresAdvisoryTransaction<T>(
 }
 
 export function normalizePostgresConnectionString(connectionString: string) {
-  try {
-    const url = new URL(connectionString);
-    if (url.protocol !== "postgres:" && url.protocol !== "postgresql:") {
-      throw new Error("Runtime Postgres connection must use postgres: or postgresql:");
-    }
-    if (!url.hostname || !url.pathname.replace(/^\/+/, "")) {
-      throw new Error("Runtime Postgres connection must identify a host and database");
-    }
-    if (/^(prefer|require)$/i.test(url.searchParams.get("sslmode") || "")) {
-      url.searchParams.delete("sslmode");
-    }
-    return url.toString();
-  } catch (error) {
-    if (error instanceof Error && error.message.startsWith("Runtime Postgres")) {
-      throw error;
-    }
-    throw new Error("Runtime Postgres connection string is invalid");
-  }
+  return parsePostgresTarget(
+    connectionString,
+    "Runtime Postgres connection",
+  ).connectionString;
 }
 
 export function shouldUsePostgresSsl(
   connectionString: string,
-  environment: RuntimeEnvironment = process.env,
+  _environment: RuntimeEnvironment = process.env,
 ) {
-  if (environment.POSTGRES_SSL === "0") return false;
-  if (/sslmode=(disable|false)/i.test(connectionString)) return false;
-  const url = new URL(connectionString);
-  return !["localhost", "127.0.0.1", "::1"].includes(url.hostname.toLowerCase());
+  return parsePostgresTarget(
+    connectionString,
+    "Runtime Postgres connection",
+  ).ssl !== false;
 }
 
 export function safePostgresErrorCode(error: unknown) {

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -15,6 +15,8 @@ test("claim SQL atomically terminalizes exhausted work and claims only below the
   const claimToken = "00000000-0000-4000-8000-000000000101";
   let statement = "";
   let parameters = [];
+  const event = stripeEvent("evt_claimed", "test.claimed");
+  const rawPayload = JSON.stringify(event);
   const claimed = await runtime.stripeEvents.claimStripeEvents({
     batchSize: 3,
     leaseMs: 1_234,
@@ -29,7 +31,15 @@ test("claim SQL atomically terminalizes exhausted work and claims only below the
           event_id: "evt_claimed",
           event_type: "test.claimed",
           stripe_created_at: "2026-07-17T00:00:00.000Z",
-          payload: stripeEvent("evt_claimed", "test.claimed"),
+          payload: event,
+          raw_payload: rawPayload,
+          ingress_event_id: event.id,
+          ingress_event_type: event.type,
+          ingress_payload_sha256: canonicalJsonDigest(event),
+          ingress_raw_sha256: sha256(rawPayload),
+          ingress_api_version: event.api_version,
+          ingress_livemode: event.livemode,
+          ingress_created: event.created,
           attempt_count: 8,
           claim_token: claimToken,
         }],
@@ -46,12 +56,21 @@ test("claim SQL atomically terminalizes exhausted work and claims only below the
   assert.match(statement, /claim_attempt_limit_exhausted/);
   assert.match(statement, /claimable_candidates as materialized/);
   assert.match(statement, /attempt_count < \$4/);
+  assert.match(statement, /limit greatest\(\$1 - \(select count\(\*\) from dead_lettered\), 0\)/);
   assert.match(statement, /attempt_count = event\.attempt_count \+ 1/);
   assert.deepEqual(claimed, [{
     eventId: "evt_claimed",
     eventType: "test.claimed",
     stripeCreatedAt: "2026-07-17T00:00:00.000Z",
-    payload: stripeEvent("evt_claimed", "test.claimed"),
+    payload: event,
+    rawPayload,
+    ingressEventId: event.id,
+    ingressEventType: event.type,
+    ingressPayloadSha256: canonicalJsonDigest(event),
+    ingressRawSha256: sha256(rawPayload),
+    ingressApiVersion: event.api_version,
+    ingressLivemode: false,
+    ingressCreated: event.created,
     attemptCount: 8,
     claimToken,
   }]);
@@ -111,6 +130,51 @@ test("claim-side exhaustion is reported without a ninth processing call", async 
   }]);
 });
 
+test("queue processing retries ingress identity tampering without invoking handlers", async (t) => {
+  const runtime = await loadStripeEventsModule();
+  t.after(() => rm(runtime.directory, { recursive: true, force: true }));
+  const event = stripeEvent("evt_tampered", "refund.failed");
+  const rawPayload = JSON.stringify(event);
+  let processingCalls = 0;
+  let failureParameters = [];
+  const result = await runtime.stripeEvents.processClaimedStripeEvent({
+    eventId: event.id,
+    eventType: event.type,
+    stripeCreatedAt: "2025-07-17T00:00:00.000Z",
+    payload: event,
+    rawPayload,
+    ingressEventId: "evt_different",
+    ingressEventType: event.type,
+    ingressPayloadSha256: canonicalJsonDigest(event),
+    ingressRawSha256: sha256(rawPayload),
+    ingressApiVersion: event.api_version,
+    ingressLivemode: event.livemode,
+    ingressCreated: event.created,
+    attemptCount: 1,
+    claimToken: "00000000-0000-4000-8000-000000000104",
+  }, {
+    query: async (_text, params) => {
+      failureParameters = params;
+      return { rows: [{ event_id: event.id }] };
+    },
+    processEvent: async () => {
+      processingCalls += 1;
+      return { status: "processed", outcome: "must_not_run" };
+    },
+    now: () => 10_000,
+    random: () => 0,
+    log: () => {},
+  });
+
+  assert.deepEqual(result, {
+    status: "retryable",
+    outcome: "retryable",
+    durationMs: 0,
+  });
+  assert.equal(processingCalls, 0);
+  assert.ok(failureParameters.includes("payload_identity_mismatch"));
+});
+
 async function loadStripeEventsModule() {
   const directory = await mkdtemp(join(tmpdir(), "sidestream-claim-cap-"));
   try {
@@ -161,7 +225,7 @@ function stripeEvent(id, type) {
   return {
     id,
     object: "event",
-    api_version: "2026-06-30.basil",
+    api_version: "2026-06-24.dahlia",
     created: 1_752_710_400,
     data: { object: { id: `object_${id}` } },
     livemode: false,
@@ -169,4 +233,20 @@ function stripeEvent(id, type) {
     request: null,
     type,
   };
+}
+
+function sha256(value) {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function canonicalJsonDigest(value) {
+  return sha256(JSON.stringify(sortJsonValue(JSON.parse(JSON.stringify(value)))));
+}
+
+function sortJsonValue(value) {
+  if (Array.isArray(value)) return value.map(sortJsonValue);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(Object.entries(value)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, entry]) => [key, sortJsonValue(entry)]));
 }

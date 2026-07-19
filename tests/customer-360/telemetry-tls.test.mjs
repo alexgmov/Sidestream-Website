@@ -47,7 +47,7 @@ test("remote telemetry uses authenticated TLS defaults for common sslmode aliase
   for (const fixture of fixtures) {
     const options = buildTelemetryPoolOptions(fixture);
     const normalized = new URL(options.connectionString);
-    assert.equal(options.ssl, true, fixture);
+    assert.deepEqual(options.ssl, { rejectUnauthorized: true }, fixture);
     assert.equal(normalized.searchParams.has("sslmode"), false, fixture);
     assert.equal(normalized.searchParams.has("ssl"), false, fixture);
     assert.equal(options.max, 1);
@@ -89,7 +89,7 @@ test("remote telemetry rejects TLS downgrades and pool-security overrides", () =
       () => buildTelemetryPoolOptions(fixture),
       (error) => {
         assert.doesNotMatch(error.message, /do-not-print|private-ca|client-cert|client-key/i);
-        return /authenticated TLS|unsafe TLS configuration/.test(error.message);
+        return /authenticated TLS|unsafe TLS configuration|unsupported connection parameter/.test(error.message);
       },
       query,
     );
@@ -107,17 +107,17 @@ test("only loopback targets may explicitly disable TLS", () => {
     assert.equal(buildTelemetryPoolOptions(fixture).ssl, false, fixture);
   }
 
-  assert.equal(
+  assert.deepEqual(
     buildTelemetryPoolOptions(
       "postgres://reader:secret@localhost/telemetry?sslmode=require",
     ).ssl,
-    true,
+    { rejectUnauthorized: true },
   );
   assert.throws(
     () => buildTelemetryPoolOptions(
       "postgres://reader:secret@localhost/telemetry?sslmode=no-verify",
     ),
-    /unsafe TLS configuration/,
+    /unsafe TLS configuration|unsupported connection parameter/,
   );
 });
 
@@ -133,7 +133,7 @@ test("malformed telemetry URLs fail without reflecting connection secrets", () =
     assert.throws(
       () => buildTelemetryPoolOptions(fixture),
       (error) => {
-        assert.match(error.message, /valid Postgres URL|identify a Postgres database/);
+        assert.match(error.message, /valid Postgres URL|identify one Postgres host and database|must use postgres/);
         assert.doesNotMatch(error.message, /secret-marker|reader@example/i);
         return true;
       },
@@ -151,7 +151,7 @@ test("the telemetry pool is fixture-only and logs only bounded error codes", () 
   try {
     const pool = getCustomerUsageTelemetryPool(fixture);
     assert.equal(pool, fixturePools.at(-1));
-    assert.equal(pool.options.ssl, true);
+    assert.deepEqual(pool.options.ssl, { rejectUnauthorized: true });
     assert.equal(typeof pool.listeners.get("error"), "function");
     pool.listeners.get("error")({
       code: "pool-password",

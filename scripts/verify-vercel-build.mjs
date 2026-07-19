@@ -5,6 +5,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 
 const OUTPUT_ROOT = path.resolve(".vercel/output");
+const BUILD_LOG_NAME = "sidestream-vercel-build.log";
 const REQUIRED_FUNCTIONS = Object.freeze([
   "api/download.func",
   "api/releases/latest.func",
@@ -17,13 +18,21 @@ const REQUIRED_FUNCTIONS = Object.freeze([
 ]);
 
 export async function verifyVercelBuild(outputRoot = OUTPUT_ROOT) {
+  const buildLog = await readFile(path.join(outputRoot, BUILD_LOG_NAME), "utf8")
+    .catch(() => null);
+  if (buildLog === null) {
+    throw new Error("Verified Vercel build log is missing; use `npm run build:vercel`.");
+  }
+  if (hasFatalProviderDiagnostic(buildLog)) {
+    throw new Error("Vercel build emitted a fatal TypeScript or compilation diagnostic.");
+  }
   const configPath = path.join(outputRoot, "config.json");
   let config;
   try {
     config = JSON.parse(await readFile(configPath, "utf8"));
   } catch (error) {
     throw new Error(
-      "Missing valid .vercel/output/config.json. A human must run `npx vercel build` first; acceptance does not require credentials or .vercel state.",
+      "Missing valid .vercel/output/config.json. Run `npm run build:vercel`; acceptance does not require credentials or .vercel state.",
       { cause: error },
     );
   }
@@ -45,7 +54,12 @@ export async function verifyVercelBuild(outputRoot = OUTPUT_ROOT) {
       throw new Error(`Vercel build omitted ${manifest} from the function bundles`);
     }
   }
-  return { functions: REQUIRED_FUNCTIONS.length, manifests: 2 };
+  return { functions: REQUIRED_FUNCTIONS.length, manifests: 2, diagnostics: 0 };
+}
+
+export function hasFatalProviderDiagnostic(output) {
+  return /(?:^|\n)[^\n]*(?:error TS\d{4}|TypeScript error|Failed to compile)[^\n]*/i
+    .test(String(output));
 }
 
 async function listFiles(directory) {
@@ -61,7 +75,7 @@ async function listFiles(directory) {
 
 async function main() {
   if (process.argv.includes("--help")) {
-    console.log("Run `npx vercel build`, then `npm run verify:vercel-build`.");
+    console.log("Run `npm run build:vercel`; it captures and rejects provider diagnostics.");
     return;
   }
   const result = await verifyVercelBuild();

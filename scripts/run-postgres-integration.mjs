@@ -3,6 +3,7 @@
 import { spawn } from "node:child_process";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { parsePostgresTarget } from "../api/_lib/postgres-target.ts";
 
 export const TEST_DATABASE_ENV = "SIDESTREAM_TEST_POSTGRES_URL";
 export const RUNTIME_DATABASE_ENV_NAMES = Object.freeze([
@@ -70,45 +71,22 @@ export function createIsolatedTestDatabaseEnvironment(environment = process.env)
 }
 
 export function createTestPoolOptions(connectionString) {
-  const url = parsePostgresUrl(connectionString, TEST_DATABASE_ENV);
-  if (/^(prefer|require)$/i.test(url.searchParams.get("sslmode") || "")) {
-    url.searchParams.delete("sslmode");
-  }
-  const local = ["localhost", "127.0.0.1", "::1"].includes(url.hostname.toLowerCase());
-  const sslDisabled = /sslmode=(disable|false)/i.test(connectionString);
+  const target = parsePostgresTarget(connectionString, TEST_DATABASE_ENV);
   return {
-    connectionString: url.toString(),
+    connectionString: target.connectionString,
     max: 12,
     connectionTimeoutMillis: 10_000,
     idleTimeoutMillis: 10_000,
-    ssl: local || sslDisabled ? false : { rejectUnauthorized: false },
+    ssl: target.ssl,
   };
 }
 
 function databaseTarget(connectionString, environmentName) {
-  const url = parsePostgresUrl(connectionString, environmentName);
-  const database = decodeURIComponent(url.pathname.replace(/^\/+/, ""));
-  const endpoint = `${url.hostname.toLowerCase()}:${url.port || "5432"}`;
-  return {
-    endpoint,
-    identity: `${endpoint}/${database}`,
-  };
-}
-
-function parsePostgresUrl(connectionString, environmentName) {
-  let url;
   try {
-    url = new URL(connectionString);
+    return parsePostgresTarget(connectionString, environmentName);
   } catch {
     throw new Error(`${environmentName} must be a valid Postgres URL`);
   }
-  if (url.protocol !== "postgres:" && url.protocol !== "postgresql:") {
-    throw new Error(`${environmentName} must use postgres: or postgresql:`);
-  }
-  if (!url.hostname || !url.pathname.replace(/^\/+/, "")) {
-    throw new Error(`${environmentName} must identify a Postgres host and database`);
-  }
-  return url;
 }
 
 function configuredValue(value) {

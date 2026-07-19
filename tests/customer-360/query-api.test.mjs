@@ -103,6 +103,24 @@ test("browser CORS, unsupported methods, and malformed JSON are rejected with no
   }
 });
 
+test("pre-parsed admin bodies cannot bypass the 16 KiB request limit", async () => {
+  for (const route of createAdminRoutes()) {
+    const result = await invokeHandler(route.handler, {
+      method: "POST",
+      url: route.path,
+      headers: { authorization: `Bearer ${ADMIN_SECRET}` },
+      body: {
+        licenseNamespace: "test",
+        padding: "x".repeat(17 * 1024),
+      },
+    });
+    assert.equal(result.response.statusCode, 413, route.path);
+    assert.equal(result.response.json.code, "request_too_large", route.path);
+    assert.equal(route.work(), 0, route.path);
+    assertCustomerHeaders(result.response);
+  }
+});
+
 test("authorized list and detail responses stay compact and no-store", async () => {
   const customer = { customerId: "00000000-0000-4000-8000-000000000001" };
   const [listRoute, detailRoute] = createAdminRoutes({ customer });

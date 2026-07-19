@@ -489,6 +489,26 @@ test("minor units require a real ISO currency and never accept fractional values
     1_750_000_000,
     { id: "ch_bad", paid: true, amount_captured: 9.99, currency: "usd", status: "succeeded" },
   )), /invalid_minor_unit_amount/);
+  assert.throws(() => normalizeCustomerCommerceEvent(stripeEvent(
+    "evt_aggregate_overflow",
+    "invoice.paid",
+    1_750_000_000,
+    {
+      id: "in_aggregate_overflow",
+      status: "paid",
+      paid: true,
+      amount_paid: 1,
+      currency: "usd",
+      total_discount_amounts: [
+        { amount: Number.MAX_SAFE_INTEGER },
+        { amount: 1 },
+      ],
+    },
+  )), (error) => {
+    assert.ok(error instanceof CustomerCommerceNormalizationError);
+    assert.equal(error.code, "minor_unit_amount_overflow");
+    return true;
+  });
 });
 
 test("the projector sends one bounded batch and leaves unsupported events untouched", async () => {

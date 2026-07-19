@@ -3627,43 +3627,24 @@ export async function reconcileOneTimePaymentLifecycle(
   const expectedPaymentIntentId = normalizeStripeId(
     canonicalRefund?.payment_intent || payload.payment_intent,
   );
-  const canonical = await retrieveCanonicalPaymentFacts({
-    chargeId,
-    expectedPaymentIntentId: expectedPaymentIntentId || undefined,
-    canonicalDispute,
-    forceDisputeLookup: true,
-  });
-  if (!canonical.ok) {
-    return { fulfilled: false as const, reason: canonical.reason };
-  }
-
-  const candidates = await selectOneTimeLifecycleLicenses(
-    getPool(),
-    canonical.facts.paymentIntentId,
-    canonical.facts.chargeId,
-  );
-  if (candidates.length !== 1) {
-    return {
-      fulfilled: false as const,
-      reason: candidates.length ? "ambiguous_payment_identity" : "missing_license",
-    };
-  }
-  const candidate = candidates[0];
-  if (!oneTimeLifecycleIdentityMatches(candidate, canonical.facts)) {
-    return { fulfilled: false as const, reason: "payment_identity_mismatch" };
-  }
-  const fullRefundRecoveryProven = candidate.status_reason === "full_refund" &&
-      canonical.facts.amountPaid > 0 &&
-      canonical.facts.amountRefunded < canonical.facts.amountPaid
-    ? await proveCanonicalFullRefundRecovery(candidate, canonical.facts)
-    : false;
-
   return withPgClient(async (client) => {
     await client.query("begin");
     try {
       await client.query("select pg_advisory_xact_lock(hashtext($1))", [
-        `one_time_payment:${canonical.facts.paymentIntentId}`,
+        `one_time_charge:${chargeId}`,
       ]);
+      // The provider snapshot that justifies the write is deliberately read
+      // after the per-charge fence. A pre-lock snapshot is never applied.
+      const canonical = await retrieveCanonicalPaymentFacts({
+        chargeId,
+        expectedPaymentIntentId: expectedPaymentIntentId || undefined,
+        canonicalDispute,
+        forceDisputeLookup: true,
+      });
+      if (!canonical.ok) {
+        await client.query("rollback");
+        return { fulfilled: false as const, reason: canonical.reason };
+      }
       const selected = await selectOneTimeLifecycleLicenses(
         client,
         canonical.facts.paymentIntentId,
@@ -3682,16 +3663,13 @@ export async function reconcileOneTimePaymentLifecycle(
         await client.query("rollback");
         return { fulfilled: false as const, reason: "payment_identity_mismatch" };
       }
-
-      const recoveryProofStillMatches = fullRefundRecoveryProven &&
-        license.id === candidate.id &&
-        license.account_id === candidate.account_id &&
-        license.account_stripe_customer_id === candidate.account_stripe_customer_id &&
-        license.stripe_checkout_session_id === candidate.stripe_checkout_session_id &&
-        license.stripe_price_id === candidate.stripe_price_id &&
-        license.stripe_product_id === candidate.stripe_product_id &&
-        license.plan_key === candidate.plan_key &&
-        license.status_reason === candidate.status_reason;
+      const reactivationProven = license.entitlement_status === "active"
+        ? true
+        : await proveCanonicalOneTimeReactivation(license, canonical.facts);
+      const fullRefundRecoveryProven = license.status_reason === "full_refund" &&
+        canonical.facts.amountPaid > 0 &&
+        canonical.facts.amountRefunded < canonical.facts.amountPaid &&
+        reactivationProven;
 
       const result = await upsertLicenseFromOneTimeCheckoutSession({
         accountId: license.account_id,
@@ -3701,7 +3679,8 @@ export async function reconcileOneTimePaymentLifecycle(
         productId: license.stripe_product_id || "",
         paymentFacts: {
           ...canonical.facts,
-          fullRefundRecoveryProven: recoveryProofStillMatches,
+          fullRefundRecoveryProven,
+          reactivationProven,
         },
         noPaymentRequired: false,
         currency: canonical.facts.currency,
@@ -3735,6 +3714,7 @@ type OneTimeLifecycleLicense = Readonly<{
   stripe_price_id: string | null;
   stripe_product_id: string | null;
   plan_key: string;
+  entitlement_status: "unknown" | "active" | "suspended" | "revoked";
   status_reason: string;
 }>;
 
@@ -3752,7 +3732,9 @@ async function selectOneTimeLifecycleLicenses(
          where a.id = l.account_id) as account_stripe_customer_id,
         l.stripe_customer_id, l.stripe_checkout_session_id,
         l.stripe_payment_intent_id, l.stripe_charge_id,
-        l.stripe_price_id, l.stripe_product_id, l.plan_key, l.status_reason
+        l.stripe_price_id, l.stripe_product_id, l.plan_key,
+        to_jsonb(l) ->> 'entitlement_status' as entitlement_status,
+        l.status_reason
       from public.sidestream_licenses l
       where l.stripe_payment_intent_id = $1
          or l.stripe_charge_id = $2
@@ -3774,7 +3756,7 @@ function oneTimeLifecycleIdentityMatches(
     (!license.stripe_charge_id || license.stripe_charge_id === facts.chargeId);
 }
 
-async function proveCanonicalFullRefundRecovery(
+async function proveCanonicalOneTimeReactivation(
   license: OneTimeLifecycleLicense,
   facts: CanonicalOneTimePaymentFacts,
 ) {
@@ -3784,6 +3766,7 @@ async function proveCanonicalFullRefundRecovery(
     !license.stripe_product_id ||
     license.plan_key !== SIDESTREAM_PRO_PLAN_KEY ||
     license.stripe_product_id !== getSidestreamProProductId() ||
+    license.stripe_price_id !== await getSidestreamProPriceId() ||
     license.account_stripe_customer_id !== facts.customerId
   ) {
     return false;
@@ -3984,7 +3967,7 @@ async function upsertLicenseFromOneTimeCheckoutSession(options: {
             amount_paid = case when $10 then $6 else amount_paid end,
             amount_refunded = case when $10 then $7 else amount_refunded end,
             currency = coalesce(currency, $8),
-            plan_key = $9,
+            plan_key = plan_key,
             status = case when $10 then $11 else status end,
             entitlement_status = case when $10 then $11 else entitlement_status end,
             status_reason = case when $10 then $12 else status_reason end,
@@ -4017,6 +4000,7 @@ async function upsertLicenseFromOneTimeCheckoutSession(options: {
             grace_until = null,
             updated_at = now()
         where id = $1
+          and plan_key = $9
         returning id, entitlement_status
       `,
       [

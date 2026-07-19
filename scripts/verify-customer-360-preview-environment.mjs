@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 
 import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseEnv } from "node:util";
+import { parsePostgresTarget } from "../api/_lib/postgres-target.ts";
+import { readRegularFile } from "./lib/safe-file.mjs";
 
 const MAX_SNAPSHOT_BYTES = 1024 * 1024;
 const PREVIEW_DATABASE_VARIABLES = Object.freeze([
@@ -192,6 +193,33 @@ export function verifyCustomer360PreviewEnvironmentSnapshots(options) {
     "CRON_SECRET",
     validSecret,
   ));
+  checks.push(check(
+    ["PREVIEW.SIDESTREAM_TEST_API_HOSTS"],
+    validTestApiHosts(preview.SIDESTREAM_TEST_API_HOSTS, previewOrigin),
+  ));
+  for (const variable of [
+    "SIDESTREAM_LICENSE_HASH_SECRET",
+    "SIDESTREAM_RATE_LIMIT_HASH_SECRET",
+    "SIDESTREAM_LEAD_HASH_SECRET",
+  ]) {
+    checks.push(distinctSecretCheck(preview, production, variable, validHashSecret));
+  }
+  for (const [variable, prefix] of [
+    ["SIDESTREAM_STRIPE_ACCOUNT_ID", "acct_"],
+    ["SIDESTREAM_PRO_PRODUCT_ID", "prod_"],
+    ["SIDESTREAM_PRO_PRICE_ID", "price_"],
+  ]) {
+    checks.push(distinctValueCheck(
+      preview,
+      production,
+      variable,
+      (value) => validStripeResourceId(value, prefix),
+    ));
+  }
+  checks.push(check(
+    ["PREVIEW.VERCEL_AUTOMATION_BYPASS_SECRET"],
+    validSecret(preview.VERCEL_AUTOMATION_BYPASS_SECRET),
+  ));
 
   return result(checks);
 }
@@ -209,11 +237,13 @@ async function readEnvironmentSnapshot(filename) {
     return { environment: null };
   }
   try {
-    const source = await readFile(filename);
-    if (source.byteLength === 0 || source.byteLength > MAX_SNAPSHOT_BYTES) {
+    const text = await readRegularFile(filename, {
+      maximumBytes: MAX_SNAPSHOT_BYTES,
+      requirePrivate: true,
+    });
+    if (text.length === 0) {
       return { environment: null };
     }
-    const text = source.toString("utf8");
     if (text.includes("\0")) return { environment: null };
     return { environment: parseEnv(text) };
   } catch {
@@ -235,26 +265,10 @@ function databaseTarget(rawValue) {
   const value = configuredValue(rawValue);
   if (!value || value.length > 4096) return null;
   try {
-    const url = new URL(value);
-    if (
-      (url.protocol !== "postgres:" && url.protocol !== "postgresql:") ||
-      !url.hostname ||
-      !url.pathname.startsWith("/") ||
-      url.pathname === "/" ||
-      url.hash
-    ) {
-      return null;
-    }
-    const database = decodeURIComponent(url.pathname.slice(1));
-    if (!database || database.includes("/") || /[\u0000-\u001f\u007f]/.test(database)) {
-      return null;
-    }
-    const hostname = url.hostname.toLowerCase().replace(/\.$/, "");
-    if (!hostname) return null;
-    const identity = `${hostname}:${url.port || "5432"}/${database}`;
+    const target = parsePostgresTarget(value, "Environment Postgres target");
     return Object.freeze({
-      identity,
-      fingerprint: `sha256:${createHash("sha256").update(identity).digest("hex")}`,
+      identity: target.identity,
+      fingerprint: `sha256:${target.fingerprint}`,
     });
   } catch {
     return null;
@@ -325,6 +339,28 @@ function validSecret(value) {
     value.length <= 512 &&
     /^[\x21-\x7e]+$/.test(value) &&
     !placeholderValue(value);
+}
+
+function validHashSecret(value) {
+  return validSecret(value) && value.length >= 32;
+}
+
+function validStripeResourceId(value, prefix) {
+  const configured = configuredValue(value);
+  return configured !== null &&
+    configured.startsWith(prefix) &&
+    /^[A-Za-z0-9_]{8,255}$/.test(configured);
+}
+
+function validTestApiHosts(value, previewOrigin) {
+  const configured = configuredValue(value);
+  if (!configured || !previewOrigin) return false;
+  const expectedHost = new URL(previewOrigin).hostname.toLowerCase();
+  const hosts = configured.split(",").map((host) => host.trim().toLowerCase());
+  return hosts.length > 0 &&
+    new Set(hosts).size === hosts.length &&
+    hosts.includes(expectedHost) &&
+    hosts.every((host) => /^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$/.test(host));
 }
 
 function configuredValue(value) {

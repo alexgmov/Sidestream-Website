@@ -554,6 +554,54 @@ test("Customer 360 attachment is atomic, convergent, conflict-audited, and names
       ]);
     });
 
+    await t.test("replayed receipt and support associations cannot pollute another install", async () => {
+      const receiptHash = "6".repeat(64);
+      const supportCode = "SIDE-R3PL-4Y00-0001";
+      const originalInstall = "7".repeat(64);
+      const replayedInstall = "8".repeat(64);
+      const original = await attachCommitted(pool, identity, {
+        environment: testEnvironment,
+        activationId: randomUUID(),
+        identity: {
+          installIdHash: originalInstall,
+          installerReceiptIdHash: receiptHash,
+          supportCode,
+        },
+        source: "activation_start",
+      });
+      const replay = await attachCommitted(pool, identity, {
+        environment: testEnvironment,
+        activationId: randomUUID(),
+        identity: {
+          installIdHash: replayedInstall,
+          installerReceiptIdHash: receiptHash,
+          supportCode,
+        },
+        source: "activation_start",
+      });
+
+      assert.notEqual(replay.profileId, original.profileId);
+      assert.equal(replay.reviewRequired, true);
+      const installs = await pool.query(
+        `select install_id_hash, profile_id
+         from ${quotedSchema}.sidestream_customer_installs
+         where install_id_hash in ($1, $2)
+         order by install_id_hash`,
+        [originalInstall, replayedInstall],
+      );
+      assert.deepEqual(installs.rows, [
+        { install_id_hash: originalInstall, profile_id: original.profileId },
+        { install_id_hash: replayedInstall, profile_id: replay.profileId },
+      ]);
+      const reviews = await pool.query(
+        `select count(*)::int as count
+         from ${quotedSchema}.sidestream_customer_identity_reviews
+         where candidate_profile_id = $1`,
+        [replay.profileId],
+      );
+      assert.equal(reviews.rows[0].count, 2);
+    });
+
     await t.test("database guards reject malformed support codes, second accounts, and review mutation", async () => {
       await assert.rejects(
         pool.query(
