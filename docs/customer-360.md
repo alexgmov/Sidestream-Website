@@ -29,6 +29,14 @@ immutable while permitting only the maintenance job's exact first irreversible
 transition to its bounded redacted payload with `raw_payload = null`; arbitrary
 payload rewrites, restoration, and later mutation remain rejected.
 
+A later isolated Preview diagnosis found that the private list/detail default
+transaction bypassed the trusted Test database selector. The repaired default
+transaction resolves the same trusted license environment before pool access and
+passes its selected URL explicitly into the existing repeatable-read, read-only
+transaction. Focused local regressions cover Test and Production selection,
+opposite request namespaces, and fail-before-connection conflicts. No deployed
+Preview or Production runtime was contacted or accepted by that repair.
+
 The reproducible isolated gate creates its own authenticated loopback Postgres
 and runs `test:customer-360-postgres`, `test:postgres-integration`, and
 `test:single-device`. It contacted no provider and proves no connected target,
@@ -67,7 +75,8 @@ website migration, configuration, deployment, and verification gates below.
   server caller supplies `licenseNamespace` in the list or detail POST body to
   choose which authorized namespace to query. The API validates that value,
   scopes every read to it, and binds it into signed list cursors. This read
-  selector neither changes trusted deployment state nor authorizes writes.
+  selector neither changes trusted deployment state, selects a physical
+  database, nor authorizes writes.
 - An anonymous install can create a sparse profile. Its membership key is a
   lowercase 64-character `installIdHash`; the raw install identifier is not
   stored. Contact, commerce, and usage fields may remain null indefinitely.
@@ -331,6 +340,41 @@ There is intentionally no search text, email substring, name substring, raw
 identity, Stripe-ID, or behavioral search filter. The detail body accepts only
 `licenseNamespace`; `{customerId}` must be a UUID. Namespace is required on both
 routes so a caller cannot retrieve a same-ID record from another namespace.
+
+### Runtime database boundary
+
+List and detail share one default transaction dependency. Before pool access it
+resolves the physical database only from trusted server deployment state and
+passes the resolved pooled URL explicitly to the existing `repeatable read read
+only` transaction. An isolated Test runtime requires:
+
+- at least one trusted server selector resolving to Test:
+  `VERCEL_ENV=preview|development|test` or
+  `SIDESTREAM_LICENSE_NAMESPACE=test`;
+- agreement when both selectors are configured;
+- a valid nonempty `SIDESTREAM_TEST_API_HOSTS`; and
+- a valid dedicated `SIDESTREAM_TEST_POSTGRES_URL` whose host, port, and database
+  differ from any configured `SIDESTREAM_POSTGRES_URL` target.
+
+Generic runtime Postgres aliases are not substitutes for this Customer 360 Test
+target. The broader Preview environment may still require an alias for unrelated
+website routes, but it must resolve to the same isolated Preview database under
+the environment preflight. The authenticated body `licenseNamespace` remains a
+row filter and cannot change the selected connection. Invalid, incomplete, or
+conflicting trusted state fails before the transaction boundary; the route keeps
+the underlying error private behind `500 customer_query_failed`.
+
+Run the focused default-dependency regression locally after changing this
+boundary:
+
+```bash
+node --experimental-strip-types --test --test-concurrency=1 tests/customer-360/query-api.test.mjs
+```
+
+That command proves source behavior only. It does not contact a deployed
+database, authorize a Preview deployment, or permit any Production operation.
+The exact read-only isolated Preview command and its human prerequisites remain
+in `customer-360-preview-test-plan.md`.
 
 ### Cursors and consistency
 
@@ -600,9 +644,8 @@ conditions in `customer-360-preview-test-plan.md`:
    scheduling disabled unless all four jobs, their targets, secrets, side effects,
    failure handling, and alert paths receive separate non-Production approval.
    This acceptance plan keeps project-wide scheduling disabled. The bounded
-   deployment verifier supplies one host-bound, separately confirmed Test
-   usage-sync mode, but it may run only after its read-only suite and every prior
-   matrix gate passes. It is not a scheduler or permission for another run.
+   deployment verifier is read-only; it cannot invoke usage sync and is not a
+   scheduler or permission for a write.
 6. Run the offline backfill dry-run, verify its digest and privacy-safe report,
    and resolve every orphan/conflict decision. Any Test apply requires a new,
    separate human approval; dry-run approval is not apply approval. Verify a
@@ -610,9 +653,10 @@ conditions in `customer-360-preview-test-plan.md`:
 7. Verify both protected Customer APIs, no-store headers, namespace isolation,
    null-heavy and multi-currency responses, cursor tamper/filter binding, merged
    tombstone hiding, quality flags, daily sync summaries, source lag, rolling
-   decay, and unchanged entitlement/single-device rows. Use the matrix's one-time
-   verifier mode for the approved Test sync while project-wide scheduling stays
-   disabled; never claim that only the usage cron was enabled.
+   decay, and unchanged entitlement/single-device rows. The current repository
+   exposes no supported live usage-sync verification command; keep this step
+   Blocked until a separate non-Production invocation mechanism is reviewed and
+   approved while project-wide scheduling stays disabled.
 8. Only then run live upstream integration and QA from a clean, reviewed
    FlowState SHA paired with the exact website artifact. Local or fixture-backed
    FlowState work may already exist; live verification must confirm existing

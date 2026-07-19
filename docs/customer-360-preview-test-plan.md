@@ -93,7 +93,7 @@ steps when any of the following is true:
   DDL, overly broad grants, or an unreviewed baseline;
 - the dedicated Preview project's project-wide cron is enabled. This plan keeps
   all four Preview jobs disabled, leaves Production scheduling untouched, and
-  uses only the separately confirmed one-time usage-sync verifier;
+  has no supported live usage-sync command;
 - the hostname is mutable/ambiguous, redirects to another host, resolves to a
   Production alias, does not return Vercel deployment evidence, or does not map
   to the reviewed commit/artifact;
@@ -199,11 +199,24 @@ Only after environment, provider, migration, snapshot, host, and artifact rows
 are Pass, run read-only verification against the exact immutable Preview host.
 Keep the secret in the process environment, never after `--`.
 
+The deployed transaction must resolve trusted Test state before the command is
+allowed: at least one of `VERCEL_ENV=preview|development|test` or
+`SIDESTREAM_LICENSE_NAMESPACE=test`, agreement when both are set, a nonempty
+exact `SIDESTREAM_TEST_API_HOSTS`, and a dedicated
+`SIDESTREAM_TEST_POSTGRES_URL` distinct from a configured
+`SIDESTREAM_POSTGRES_URL`. E01 separately checks every broader database alias,
+and D01 must prove provider ownership and the authenticated connected target;
+local configuration is not enough.
+
 ```bash
 SIDESTREAM_CRM_ADMIN_SECRET='<approved Preview secret in process environment>' \
   npm run verify:customer-360-preview-deployment -- \
   --origin https://<immutable-preview-host> \
-  --expected-deployment-host <immutable-preview-host>
+  --expected-deployment-host <immutable-preview-host> \
+  --expected-deployment-id dpl_<deployment-id> \
+  --expected-project-id prj_<project-id> \
+  --expected-team-id team_<team-id> \
+  --expected-candidate-sha <40-hex-candidate-sha>
 ```
 
 The verifier refuses Production/local/IP/credential-bearing/ambiguous targets,
@@ -212,23 +225,10 @@ read-only auth, Origin, no-store, namespace, list-shape, and route-presence suit
 It does not prove commit metadata, database state, detail behavior, provider
 configuration, scheduling, commerce, backfill, or FlowState integration.
 
-After every prior usage row is Pass, one reviewer may invoke exactly one Test
-usage sync. Project-wide cron remains disabled. The confirmation is bound to the
-immutable host and both secrets remain process environment values.
-
-```bash
-SIDESTREAM_CRM_ADMIN_SECRET='<approved Preview secret in process environment>' \
-CRON_SECRET='<approved Preview cron secret in process environment>' \
-  npm run verify:customer-360-preview-deployment -- \
-  --origin https://<immutable-preview-host> \
-  --expected-deployment-host <immutable-preview-host> \
-  --mode usage-sync \
-  --confirm RUN_CUSTOMER_360_USAGE_SYNC_ONCE:<immutable-preview-host>
-```
-
-An earlier verifier failure prevents the write. Do not repeat the command to
-make a failure disappear; record the failure, investigate, and obtain a new
-review decision. Do not enable project-wide cron for this acceptance plan.
+The verifier accepts read-only mode only and exposes no confirmation or
+usage-sync mode. U01 therefore remains Blocked until a separate bounded
+non-Production invocation mechanism is designed, reviewed, and approved. Do not
+improvise a route call or enable project-wide cron for this acceptance plan.
 
 ### FlowState repository: local/fixture gates
 
@@ -434,7 +434,7 @@ not the last-known-safe artifact, and no isolated snapshot, restore owner, or
 approved Preview database is recorded.
 
 1. Keep the dedicated Preview project's cron disabled and leave Production
-   scheduling untouched. If a one-time usage sync is active,
+   scheduling untouched. If a separately approved usage sync is active,
    let the bounded request finish or terminate it through the approved provider
    control; do not create a new scheduler.
 2. Revoke/rotate Preview CRM and cron access, remove the FlowState Preview
