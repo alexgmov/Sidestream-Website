@@ -1355,9 +1355,10 @@ export async function createOrReuseCheckoutSession(options: {
 
       const stripePriceId = await getSidestreamProPriceId();
       const stripeProductId = getSidestreamProProductId();
-      const stripeCustomerId = row.intent_kind === "account" && options.session
+      const stripeCustomerId = options.session
         ? await findOrCreateStripeCustomer(options.session, client)
         : "";
+      const signedInEmail = cleanString(options.session?.email, 320);
       const cancelUrl = new URL("/api/checkout/start", options.baseUrl);
       cancelUrl.searchParams.set("checkout", "cancelled");
       cancelUrl.searchParams.set("intent", options.browserToken);
@@ -1366,7 +1367,7 @@ export async function createOrReuseCheckoutSession(options: {
         sidestream_price_id: stripePriceId,
         sidestream_checkout_intent_id: row.id,
       };
-      if (row.intent_kind === "account" && options.session) {
+      if (options.session) {
         metadata.sidestream_account_id = options.session.accountId;
       }
       if (activationKey) metadata.sidestream_activation_key = activationKey;
@@ -1403,7 +1404,11 @@ export async function createOrReuseCheckoutSession(options: {
         ...(checkoutWindow ? { expires_at: checkoutWindow.checkoutExpiresAt } : {}),
         client_reference_id: activationKey || options.session?.accountId || row.id,
         custom_text: {
-          submit: { message: "One-time payment. No subscription." },
+          submit: {
+            message: signedInEmail
+              ? `Signed in to Sidestream as ${signedInEmail}. One-time payment. No subscription.`
+              : "One-time payment. No subscription.",
+          },
         },
         invoice_creation: {
           enabled: true,

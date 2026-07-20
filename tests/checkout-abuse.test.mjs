@@ -393,6 +393,13 @@ test("database-backed intents serialize retries, rotate deliberately, and fulfil
       baseUrl: BASE_URL,
     });
     assert.equal(anonymousFirst.ok, true);
+    const anonymousWrite = stripe.sessionCreateWrites.at(-1);
+    assert.equal(anonymousWrite.params.customer, undefined);
+    assert.equal(anonymousWrite.params.customer_creation, "always");
+    assert.equal(
+      anonymousWrite.params.custom_text.submit.message,
+      "One-time payment. No subscription.",
+    );
     await databasePool.query(
       `
         update public.sidestream_checkout_intents
@@ -414,13 +421,13 @@ test("database-backed intents serialize retries, rotate deliberately, and fulfil
     await seedActivation(databasePool, activationKey);
     const activationConfirmation = await account.createCheckoutIntentConfirmation({
       activationKey,
-      session: null,
+      session: buyerSession,
     });
     assert.ok(activationConfirmation);
     const activationCheckout = await account.createOrReuseCheckoutSession({
       intentId: activationConfirmation.intentId,
       browserToken: activationConfirmation.browserToken,
-      session: null,
+      session: buyerSession,
       baseUrl: BASE_URL,
     });
     assert.equal(activationCheckout.ok, true);
@@ -432,6 +439,16 @@ test("database-backed intents serialize retries, rotate deliberately, and fulfil
     assert.equal(
       activationWrite.params.metadata.sidestream_activation_key,
       activationKey,
+    );
+    assert.equal(activationWrite.params.customer, buyerSession.stripeCustomerId);
+    assert.equal(activationWrite.params.customer_creation, undefined);
+    assert.equal(
+      activationWrite.params.metadata.sidestream_account_id,
+      buyerSession.accountId,
+    );
+    assert.equal(
+      activationWrite.params.custom_text.submit.message,
+      `Signed in to Sidestream as ${buyerSession.email}. One-time payment. No subscription.`,
     );
     const attached = await databasePool.query(
       `
