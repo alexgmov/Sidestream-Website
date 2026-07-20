@@ -399,6 +399,18 @@ export function createApiContractHarness(options = {}) {
     async getSession(request) {
       return request.session || null;
     },
+    async getAccountSessionById() {
+      return null;
+    },
+    getClientIp() {
+      return "127.0.0.1";
+    },
+    async createCheckoutIntentConfirmation() {
+      throw new Error("Generic OAuth must not create a Checkout intent");
+    },
+    async createOrReuseCheckoutSession() {
+      throw new Error("Generic OAuth must not create a Checkout Session");
+    },
     createActivationClaimCsrf(activationKey, accountId) {
       return createClaimCsrfToken({
         activationKey,
@@ -481,6 +493,9 @@ export function createApiContractHarness(options = {}) {
     sanitizeNextPath(value) {
       return sanitizeAccountNextPath(value);
     },
+    readPluginUpgradeIntentToken(value) {
+      return { token: cleanString(value, 500), activationKey: "" };
+    },
     setOAuthCookies(_request, response, values) {
       oauth.state = values.state;
       oauth.nextPath = sanitizeAccountNextPath(values.nextPath);
@@ -495,6 +510,9 @@ export function createApiContractHarness(options = {}) {
     },
     getOAuthNextPath(request) {
       return sanitizeAccountNextPath(request.contractOAuthNextPath ?? oauth.nextPath);
+    },
+    getOAuthPluginUpgradeIntent() {
+      return { requested: false, activationKey: "" };
     },
     getGoogleAuthUrl(_request, values) {
       if (oauth.authUrlError) throw oauth.authUrlError;

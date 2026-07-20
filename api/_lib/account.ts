@@ -12,6 +12,7 @@ import {
   type CheckoutIntentKind,
   type CredentialDeviceScope,
   createCheckoutIntentToken,
+  createPluginUpgradeIntentToken,
   createClaimCsrfToken,
   deriveActivationTokenPair,
   deriveRefreshRotationTokens,
@@ -30,7 +31,9 @@ import {
   matchesDeviceHash,
   safeEqual,
   sanitizeAccountNextPath,
+  shouldUseDirectPluginUpgradeHandoff,
   validateCheckoutIntentToken,
+  validatePluginUpgradeIntentToken,
   validateActivationClaimPost,
   validateClaimCsrfToken,
   verifyPaidCheckoutSession,
@@ -73,6 +76,7 @@ import {
 const SESSION_COOKIE = "sidestream_session";
 const OAUTH_STATE_COOKIE = "sidestream_oauth_state";
 const OAUTH_NEXT_COOKIE = "sidestream_oauth_next";
+const OAUTH_PLUGIN_UPGRADE_COOKIE = "sidestream_oauth_plugin_upgrade";
 const SESSION_MAX_AGE_SECONDS = 60 * 60 * 24 * 30;
 const OAUTH_MAX_AGE_SECONDS = 60 * 10;
 const ACTIVATION_TTL_HOURS = 24;
@@ -396,7 +400,7 @@ export function getGoogleAuthUrl(
 export function setOAuthCookies(
   request: IncomingMessage,
   response: ServerResponse,
-  options: { state: string; nextPath: string },
+  options: { state: string; nextPath: string; pluginUpgradeToken?: string },
 ) {
   appendSetCookies(response, [
     serializeCookie(OAUTH_STATE_COOKIE, options.state, {
@@ -413,6 +417,17 @@ export function setOAuthCookies(
       sameSite: "Lax",
       secure: shouldUseSecureCookies(request),
     }),
+    serializeCookie(
+      OAUTH_PLUGIN_UPGRADE_COOKIE,
+      options.pluginUpgradeToken || "",
+      {
+        httpOnly: true,
+        maxAge: options.pluginUpgradeToken ? OAUTH_MAX_AGE_SECONDS : 0,
+        path: "/",
+        sameSite: "Lax",
+        secure: shouldUseSecureCookies(request),
+      },
+    ),
   ]);
 }
 
@@ -435,6 +450,13 @@ export function clearOAuthCookies(
       sameSite: "Lax",
       secure: shouldUseSecureCookies(request),
     }),
+    serializeCookie(OAUTH_PLUGIN_UPGRADE_COOKIE, "", {
+      httpOnly: true,
+      maxAge: 0,
+      path: "/",
+      sameSite: "Lax",
+      secure: shouldUseSecureCookies(request),
+    }),
   ]);
 }
 
@@ -451,6 +473,30 @@ export function getOAuthNextPath(request: IncomingMessage) {
   } catch {
     return "/account.html";
   }
+}
+
+export function readPluginUpgradeIntentToken(value: unknown) {
+  const token = cleanString(value, 500);
+  return {
+    token,
+    activationKey: token
+      ? validatePluginUpgradeIntentToken({
+          token,
+          nowSeconds: Math.floor(Date.now() / 1_000),
+          secret: getPrivateServerSecret(),
+        })
+      : "",
+  };
+}
+
+export function getOAuthPluginUpgradeIntent(request: IncomingMessage) {
+  const parsed = readPluginUpgradeIntentToken(
+    getCookie(request, OAUTH_PLUGIN_UPGRADE_COOKIE),
+  );
+  return {
+    requested: Boolean(parsed.token),
+    activationKey: parsed.activationKey,
+  };
 }
 
 export async function exchangeGoogleCode(
@@ -731,6 +777,74 @@ export async function requireSession(
     return null;
   }
   return session;
+}
+
+export async function getAccountSessionById(
+  accountId: string,
+): Promise<AccountSession | null> {
+  const result = await query<{
+    account_id: string;
+    email: string;
+    display_name: string | null;
+    avatar_url: string | null;
+    stripe_customer_id: string | null;
+    license_status: string | null;
+    plan_key: string | null;
+    entitlement_status: string | null;
+    current_period_end: Date | string | null;
+    cancel_at_period_end: boolean | null;
+    grace_until: Date | string | null;
+    features: Record<string, unknown> | null;
+  }>(
+    `
+      select
+        a.id as account_id,
+        a.email,
+        a.display_name,
+        a.avatar_url,
+        a.stripe_customer_id,
+        l.status as license_status,
+        l.plan_key,
+        license_state.entitlement_status,
+        l.current_period_end,
+        l.cancel_at_period_end,
+        l.grace_until,
+        l.features
+      from public.sidestream_accounts a
+      left join public.sidestream_licenses l on l.account_id = a.id
+      left join lateral (
+        select ${LICENSE_ENTITLEMENT_STATUS_SQL} as entitlement_status
+      ) license_state on true
+      where a.id = $1::uuid
+      order by (case
+          when license_state.entitlement_status = 'active'
+            and l.plan_key in ('sidestream_pro', 'sidestream_unlimited') then 0
+          else 1
+        end),
+        l.updated_at desc nulls last
+      limit 1
+    `,
+    [accountId],
+  );
+  const row = result.rows[0];
+  if (!row) return null;
+
+  return {
+    accountId: row.account_id,
+    email: row.email,
+    name: row.display_name || "",
+    avatarUrl: row.avatar_url || "",
+    stripeCustomerId: row.stripe_customer_id || "",
+    license: buildLicenseSummary({
+      status: row.license_status,
+      planKey: row.plan_key,
+      entitlementStatus: row.entitlement_status,
+      currentPeriodEnd: row.current_period_end,
+      cancelAtPeriodEnd: row.cancel_at_period_end,
+      graceUntil: row.grace_until,
+      features: row.features,
+    }),
+  };
 }
 
 export function publicSessionPayload(session: AccountSession | null) {
@@ -1864,8 +1978,12 @@ export async function createActivationSession(
   const environment = requireMatchingLicenseEnvironment(environmentInput);
   const identity = normalizeCustomerIdentityInput(payload);
   const activationKey = randomToken(24);
-  const expiresAt = addHours(new Date(), ACTIVATION_TTL_HOURS);
+  const now = new Date();
+  const expiresAt = addHours(now, ACTIVATION_TTL_HOURS);
   const deviceId = cleanString(payload.deviceId, 240);
+  const appVersion = cleanString(payload.appVersion, 80);
+  const requestedSource = cleanString(payload.source, 120);
+  const source = requestedSource || "plugin";
   if (!deviceId) throw new Error("Missing device ID");
 
   await withPgClient(async (client) => {
@@ -1892,9 +2010,9 @@ export async function createActivationSession(
         [
           activationKey,
           hashPrivateIdentifier(deviceId),
-          cleanString(payload.appVersion, 80) || null,
+          appVersion || null,
           cleanString(payload.buildChannel, 80) || null,
-          cleanString(payload.source, 120) || "plugin",
+          source,
           getClientIp(request) || null,
           cleanString(request.headers["user-agent"], 500) || null,
           expiresAt.toISOString(),
@@ -1917,11 +2035,33 @@ export async function createActivationSession(
     }
   });
 
+  const baseUrl = getBaseUrl(request);
+  const checkoutUrl = new URL("/api/checkout/start", baseUrl);
+  checkoutUrl.searchParams.set("activation", activationKey);
+  let upgradeUrl = checkoutUrl.toString();
+  if (shouldUseDirectPluginUpgradeHandoff({
+    source: requestedSource,
+    appVersion,
+  })) {
+    const pluginUpgradeUrl = new URL("/api/auth/google/start", baseUrl);
+    pluginUpgradeUrl.searchParams.set(
+      "plugin_upgrade",
+      createPluginUpgradeIntentToken({
+        activationKey,
+        expiresAtSeconds: Math.floor(
+          addSeconds(now, OAUTH_MAX_AGE_SECONDS).getTime() / 1_000,
+        ),
+        secret: getPrivateServerSecret(),
+      }),
+    );
+    upgradeUrl = pluginUpgradeUrl.toString();
+  }
+
   return {
     activationKey,
     expiresAt: expiresAt.toISOString(),
-    upgradeUrl: `${getBaseUrl(request)}/api/checkout/start?activation=${encodeURIComponent(activationKey)}`,
-    restoreUrl: `${getBaseUrl(request)}/api/activation/claim?activation=${encodeURIComponent(activationKey)}`,
+    upgradeUrl,
+    restoreUrl: `${baseUrl}/api/activation/claim?activation=${encodeURIComponent(activationKey)}`,
   };
 }
 

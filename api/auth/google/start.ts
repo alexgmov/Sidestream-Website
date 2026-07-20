@@ -4,6 +4,7 @@ import {
   getSession,
   methodNotAllowed,
   randomToken,
+  readPluginUpgradeIntentToken,
   redirect,
   sanitizeNextPath,
   sendGoogleSignInError,
@@ -20,8 +21,17 @@ export default async function handler(
 
   const url = new URL(request.url || "/", "http://sidestream.local");
   const nextPath = sanitizeNextPath(url.searchParams.get("next"));
+  const pluginUpgradeRequested = url.searchParams.has("plugin_upgrade");
+  const pluginUpgrade = readPluginUpgradeIntentToken(
+    url.searchParams.get("plugin_upgrade"),
+  );
+  if (pluginUpgradeRequested && !pluginUpgrade.activationKey) {
+    return sendGoogleSignInError(response, 400, "invalid_state");
+  }
   const session = await getSession(request);
-  if (session) return redirect(response, nextPath, 303);
+  if (session && !pluginUpgrade.activationKey) {
+    return redirect(response, nextPath, 303);
+  }
 
   const state = randomToken(24);
   let authUrl = "";
@@ -33,6 +43,10 @@ export default async function handler(
     return sendGoogleSignInError(response, 503, "unavailable");
   }
 
-  setOAuthCookies(request, response, { state, nextPath });
+  setOAuthCookies(request, response, {
+    state,
+    nextPath,
+    pluginUpgradeToken: pluginUpgrade.token,
+  });
   return redirect(response, authUrl, 302);
 }

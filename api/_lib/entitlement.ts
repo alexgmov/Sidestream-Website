@@ -6,6 +6,7 @@ export const REFRESH_RETRY_GRACE_SECONDS = 120;
 // Keep all 1.0.13 clients on the rolling compatibility token until 1.0.14.
 export const LEGACY_LICENSE_CLIENT_MAX_VERSION = "1.0.13";
 export const LEGACY_VERCEL_HOST = "sidestream-xi.vercel.app";
+export const PLUGIN_UPGRADE_INTENT_KIND = "plugin_upgrade";
 
 export type CredentialDeviceScope = Readonly<{
   licenseNamespace: "production" | "test";
@@ -209,6 +210,75 @@ export function validateCheckoutIntentToken(options: {
     expiresAtSeconds,
     secret: options.secret,
   }));
+}
+
+export function shouldUseDirectPluginUpgradeHandoff(options: {
+  source: unknown;
+  appVersion: unknown;
+}) {
+  return options.source === "plugin" &&
+    Boolean(parseNumericVersion(options.appVersion)) &&
+    !needsLegacyLicenseCompatibility(options.appVersion);
+}
+
+export function createPluginUpgradeIntentToken(options: {
+  activationKey: string;
+  expiresAtSeconds: number;
+  secret: string;
+}) {
+  if (!/^[A-Za-z0-9_-]{16,160}$/.test(options.activationKey)) {
+    throw new TypeError("Plugin Upgrade intent requires a valid activation key");
+  }
+  if (!Number.isSafeInteger(options.expiresAtSeconds)) {
+    throw new TypeError("Plugin Upgrade intent requires a valid expiry");
+  }
+
+  const payload = [
+    "v1",
+    PLUGIN_UPGRADE_INTENT_KIND,
+    options.expiresAtSeconds,
+    options.activationKey,
+  ].join(".");
+  const signature = createHmac("sha256", options.secret)
+    .update(`plugin-upgrade:${payload}`)
+    .digest("base64url");
+  return `${payload}.${signature}`;
+}
+
+export function validatePluginUpgradeIntentToken(options: {
+  token: string;
+  nowSeconds: number;
+  secret: string;
+}) {
+  const [
+    version,
+    intentKind,
+    rawExpiresAt,
+    activationKey,
+    signature,
+    ...rest
+  ] = options.token.split(".");
+  const expiresAtSeconds = Number(rawExpiresAt);
+  if (
+    version !== "v1" ||
+    intentKind !== PLUGIN_UPGRADE_INTENT_KIND ||
+    rest.length ||
+    !signature ||
+    !/^[A-Za-z0-9_-]{16,160}$/.test(activationKey || "") ||
+    !Number.isSafeInteger(expiresAtSeconds) ||
+    expiresAtSeconds < options.nowSeconds ||
+    expiresAtSeconds > options.nowSeconds + 15 * 60
+  ) {
+    return "";
+  }
+
+  return safeEqual(options.token, createPluginUpgradeIntentToken({
+      activationKey,
+      expiresAtSeconds,
+      secret: options.secret,
+    }))
+    ? activationKey
+    : "";
 }
 
 export function validateCheckoutIntentPost(options: {

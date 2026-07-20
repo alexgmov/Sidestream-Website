@@ -525,6 +525,16 @@ async function loadAccountHandler(relativePath, harness) {
   return loadInjectedHandler(new URL(relativePath, import.meta.url), {
     "../_lib/account.js": harness.dependencies,
     "../../_lib/account.js": harness.dependencies,
+    "../../_lib/rate-limit.js": {
+      applyRateLimitHeaders() {},
+      async consumeRateLimit() {
+        throw new Error("Generic OAuth must not consume the Checkout limiter");
+      },
+      sendRateLimitExceeded(response) {
+        response.statusCode = 429;
+        response.end();
+      },
+    },
   });
 }
 

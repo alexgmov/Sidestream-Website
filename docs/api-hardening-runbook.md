@@ -25,9 +25,11 @@ history or tickets.
 - All runtime database users share the pool in `api/_lib/postgres.ts` and use a
   pooled URL in production. Migration and backfill tools use a reviewed direct
   URL.
-- `GET /api/checkout/start` is a read/confirmation boundary. Only a confirmed
-  same-origin `POST /api/checkout/create` may create or reuse a Stripe Checkout
-  Session.
+- `GET /api/checkout/start` is a read/confirmation boundary. A Stripe Checkout
+  Session may be created or reused only by confirmed same-origin
+  `POST /api/checkout/create`, or by the state-verified Google callback after it
+  consumes a short-lived server-signed current-plugin Upgrade capability. Both
+  paths enter the same locked, idempotent, rate-limited worker.
 - Stripe webhook requests durably record an event and acknowledge it. A claimed,
   leased queue reconciles entitlements; account and activation reads never drain
   webhook backlog.
@@ -69,8 +71,8 @@ and JSON responses are `no-store`.
 | `/api/releases/latest` | `HEAD` | `200` with the GET metadata headers and no body | Same selection failures as GET |
 | `/api/releases/latest` | `OPTIONS` | `204` CORS preflight | — |
 | `/api/download-lead` | `POST` | `200 {"ok":true}` after Postgres commit or `200 {"ok":true,"queued":true}` after Blob fallback | `400` validation, `409` idempotency conflict, `413` body over 8 KiB, `415` non-JSON, `429` rate limit, `503` no durable destination |
-| `/api/auth/google/start` | `GET` | Sets bounded OAuth cookies and `302` redirects to Google | Invalid server configuration fails as a server error; unsafe `next` values collapse to `/account.html` |
-| `/api/auth/google/callback` | `GET` | Creates the server session and `303` redirects to the allowlisted next path | `400` invalid state/code, `500` exchange/account/session failure |
+| `/api/auth/google/start` | `GET` | Sets bounded OAuth cookies and `302` redirects to Google; a valid current-plugin `plugin_upgrade` capability is copied only into an HTTP-only return-intent cookie | Invalid server configuration fails as a server error; unsafe `next` values collapse to `/account.html`; missing, malformed, tampered, stale, legacy-client, or non-plugin Upgrade intent cannot enter the direct flow |
+| `/api/auth/google/callback` | `GET` | Creates the server session and `303` redirects to the allowlisted next path, or consumes the exact state-bound plugin Upgrade capability and redirects directly to the locked/reused Stripe Checkout Session | `400` invalid state/code/return intent, `409` unavailable activation intent, `429` Checkout rate limit, `502` exchange/account/session/Checkout dependency failure |
 | `/api/auth/session` | `GET` | Always `200`: `{"authenticated":false}` or authenticated `user`, `license`, and `billing.hasCustomer` | Dependency failure is a server `500`; this read never processes Stripe events |
 | `/api/auth/logout` | `POST` | `200 {"ok":true}` after clearing the session | Dependency failure is a server `500` |
 | `/api/checkout/start` | `GET` | `200` no-store confirmation HTML; an active owner redirects to account/claim | `409` unavailable intent; legacy-host activation failures redirect to `activation_required`; no Stripe write occurs |
@@ -79,7 +81,7 @@ and JSON responses are `no-store`.
 | `/api/billing/portal` | `POST` | Authenticated `200 {"url":"..."}` for a Stripe Customer Portal Session | `401` unauthenticated, `400` no linked Stripe customer, Stripe failure is a server `500` |
 | `/api/billing/receipt` | `POST` | Authenticated `200 {"url":"..."}` for the latest owned charge receipt | `401` unauthenticated, `403` customer mismatch, `404` no purchase/receipt URL, Stripe failure is a server `500` |
 | `/api/stripe/webhook` | `POST` | `200 {"received":true}` after durable insert; duplicate acknowledgment also includes `"duplicate":true` | `400` missing/invalid signature; an unhandled durable-storage failure is a server `500` and must be retried by Stripe |
-| `/api/activation/start` | `POST` | `200` with `activationKey`, 24-hour `expiresAt`, `upgradeUrl`, and `restoreUrl` | `400 invalid_request` for missing device; an unexpected dependency failure is a server `500` |
+| `/api/activation/start` | `POST` | `200` with `activationKey`, 24-hour `expiresAt`, `upgradeUrl`, and `restoreUrl`; exact current-plugin activations receive the signed OAuth handoff URL while legacy/non-plugin activations retain Checkout confirmation | `400 invalid_request` for missing device; an unexpected dependency failure is a server `500` |
 | `/api/activation/status` | `POST` | `200` state payload: `pending`, `pending_payment`, `active`, `completed`, `not_found`, `device_mismatch`, `expired`, `transfer_required`, `transfer_limit_reached`, `device_replaced`, or `device_deactivated` | A parsed non-null JSON value missing valid `activationKey` or `deviceId` returns `400 invalid_request`; valid JSON `null`, malformed JSON, and body-read failures currently escape as an unshaped platform `5xx`, not `400`; `503` environment unavailable |
 | `/api/activation/claim` | `GET` / `POST` | GET is read-only sign-in/confirmation HTML; same-origin CSRF-valid POST restores/reconnects/transfers | `400` invalid/transfer intent; `401` sign-in required; `403` inactive or CSRF; `409` unavailable, binding changed, transfer limit, or claim conflict; `503` environment unavailable |
 | `/api/license/verify` | `POST` | `200` current credential result | `400 invalid_request`; `401 invalid_token`, `revoked`, `device_mismatch`, `device_replaced`, or `device_deactivated`; `403 license_inactive`; `503` retryable environment failure |
@@ -152,6 +154,41 @@ is current implementation truth, not a recommended new parser contract.
 6. The signed webhook remains the primary durable path. Completion and the
    device-validated activation fallback converge on the same locked,
    watermark-protected reconciliation helper.
+
+The direct plugin handoff is a second entry to step 3, not a second Checkout
+implementation:
+
+1. `POST /api/activation/start` stores the activation first. Only an explicit
+   request source `plugin` with a parseable client version newer than `1.0.13`
+   receives an `upgradeUrl` containing a 10-minute HMAC capability for intent
+   `plugin_upgrade`. Legacy clients, non-plugin sources, and missing/unknown
+   versions keep the confirmation URL.
+2. `GET /api/auth/google/start` verifies that capability before copying it to a
+   short-lived HTTP-only, `SameSite=Lax` cookie beside OAuth state. A valid
+   plugin capability deliberately performs the Google round trip even when a
+   Sidestream session cookie already exists. It does not create a Checkout
+   intent, Stripe Customer, Price, or Checkout Session.
+3. Only `/api/auth/google/callback` with the matching state cookie, returned
+   state, Google code, and still-valid signed capability may consume the direct
+   handoff. Link previews cannot synthesize that tuple. The callback loads the
+   exact signed-in account and redirects active Pro owners to the existing
+   activation claim branch.
+4. For a Free account, the callback creates an account-bound activation Checkout
+   intent, consumes the same 8-per-intent and 20-per-IP 15-minute limits, and
+   invokes `createOrReuseCheckoutSession`. That worker retains the activation
+   advisory lock, intent row lock, stable activation idempotency key, attached
+   Session reuse, exact Product/Price persistence, and cancelled/expired Session
+   handling. A callback retry or new OAuth round trip cannot attach a second
+   open Session to the activation.
+5. Missing, malformed, tampered, expired, wrong-kind, or wrong-secret
+   capabilities fail before the worker. Generic OAuth continues only to the
+   account/activation-claim allowlist from `sanitizeAccountNextPath`; an
+   arbitrary `next=/api/checkout/...` never becomes a Checkout capability.
+
+The callback is the only state-verified GET completion boundary. It is safe
+because it consumes the server capability minted by the explicit activation
+POST plus the one-browser OAuth state cookie. No generic GET, checkout preview,
+link preview, or caller-selected OAuth return path creates a Stripe Session.
 
 Persisted intent state is constrained to `pending`, `open`, `completed`,
 `cancelled`, `expired`, or `failed`. A cancelled browser return remains a GET
@@ -550,7 +587,7 @@ notification evidence without payloads or customer identifiers.
 | Crash/reclaim attempt overflow | Count `terminal_at is null and attempt_count >= 8`, including future retryable rows and unexpired processing leases | Critical on any row. Code now terminalizes exhausted work after any active final lease expires, so this indicates stale deployment, stuck scan/lease, database drift, or missing live proof. Stop promotion and investigate; do not call the local cap deployed. |
 | Oldest event age | Age of oldest due nonterminal event | Warning over 10 minutes, critical over 30 minutes; the processor runs every five minutes. |
 | Event failures | `retryable + deadLetter` divided by claimed, plus `processing_failed` route outcomes | Warning above 5% with at least 5 claims in 15 minutes; critical above 20% or any route-level failure for 5 minutes. |
-| Checkout volume | Confirmation GETs, confirmed POSTs, created/reused Sessions, `csrf_rejected`, dependency errors | Warning when create failures exceed 1% or 5 in 15 minutes. A GET without a matching confirmation POST is abandonment, not a Stripe failure. |
+| Checkout volume | Confirmation GETs, confirmed POSTs, state-verified plugin OAuth handoffs, created/reused Sessions, rejected return intents, `csrf_rejected`, dependency errors | Warning when create failures exceed 1% or 5 in 15 minutes. A confirmation GET without a matching POST is abandonment, not a Stripe failure; a direct plugin handoff is instead correlated by its activation intent and OAuth callback result. |
 | Rate limit | `429 code=rate_limited` by scope and total eligible requests | Warning when checkout or lead 429s exceed 5% with at least 10 requests in 15 minutes; investigate abuse before raising limits. |
 | Lead fallback backlog | Private Blob count and oldest age under the configured prefix | Warning if nonzero for 15 minutes after Postgres recovers or oldest exceeds 30 minutes; critical over 2 hours or growth across two replay intervals. |
 | Unmapped Blob records | Replay `summary.unmapped` and path sample without lead contents | Critical on any new unmapped record. Quarantine/preserve it; do not auto-delete. |
