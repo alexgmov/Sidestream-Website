@@ -26,11 +26,11 @@ history or tickets.
   pooled URL in production. Migration and backfill tools use a reviewed direct
   URL.
 - `GET /api/checkout/start` is a read-only transition boundary. It renders one
-  sentence with no visible action control and automatically submits a signed
-  same-origin form. A Stripe Checkout Session may be created or reused only
-  after an existing session or state-verified Google callback binds that opaque
-  intent to the account. Both paths enter the same locked, idempotent,
-  rate-limited worker.
+  sentence with no visible action control; a same-origin external script
+  automatically submits the signed form without an inline CSP nonce. A Stripe
+  Checkout Session may be created or reused only after an existing session or
+  state-verified Google callback binds that opaque intent to the account. Both
+  paths enter the same locked, idempotent, rate-limited worker.
 - Stripe webhook requests durably record an event and acknowledge it. A claimed,
   leased queue reconciles entitlements; account and activation reads never drain
   webhook backlog.

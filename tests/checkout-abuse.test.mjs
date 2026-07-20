@@ -74,7 +74,6 @@ test("GET and crawler-visible checkout surfaces cannot write Stripe resources", 
         getBaseUrl: () => BASE_URL,
         getSession: async () => null,
         methodNotAllowed,
-        randomToken: () => "transition-nonce",
         redirect,
         async resumeCheckoutIntentConfirmation() {
           confirmationSequence += 1;
@@ -108,7 +107,7 @@ test("GET and crawler-visible checkout surfaces cannot write Stripe resources", 
       response.body,
       /<form id="checkout-transition" method="post" action="\/api\/checkout\/create" hidden>/,
     );
-    assert.match(response.body, /document\.getElementById\("checkout-transition"\)\.submit\(\)/);
+    assert.match(response.body, /<script src="\/checkout-transition\.js"><\/script>/);
     assert.doesNotMatch(response.body, /<button\b/i);
   }
   const legacyBare = await invokeHandler(start, {
@@ -155,12 +154,13 @@ test("GET and crawler-visible checkout surfaces cannot write Stripe resources", 
   assert.equal(callbackPreview.response.statusCode, 303);
   assert.equal(stripeWrites, 0);
 
-  const [index, account, upgrade, llms, startSource] = await Promise.all([
+  const [index, account, upgrade, llms, startSource, transitionSource] = await Promise.all([
     readFile(join(repositoryRoot, "index.html"), "utf8"),
     readFile(join(repositoryRoot, "account.html"), "utf8"),
     readFile(join(repositoryRoot, "upgrade.html"), "utf8"),
     readFile(join(repositoryRoot, "public", "llms.txt"), "utf8"),
     readFile(join(repositoryRoot, "api", "checkout", "start.ts"), "utf8"),
+    readFile(join(repositoryRoot, "public", "checkout-transition.js"), "utf8"),
   ]);
   assert.doesNotMatch(index, /href="\/api\/checkout\/start"/);
   assert.doesNotMatch(index, /"url": "https:\/\/sidestream\.tv\/api\/checkout\/start"/);
@@ -168,6 +168,7 @@ test("GET and crawler-visible checkout surfaces cannot write Stripe resources", 
   assert.doesNotMatch(llms, /Checkout endpoint:.*api\/checkout\/start/);
   assert.match(upgrade, /href="\/api\/checkout\/start"/);
   assert.doesNotMatch(stripComments(startSource), /\bgetStripe\s*\(/);
+  assert.match(transitionSource, /HTMLFormElement[\s\S]+form\.submit\(\)/);
 });
 
 test("Checkout POST rejects CSRF, throttling, and active owners before Stripe work", async () => {

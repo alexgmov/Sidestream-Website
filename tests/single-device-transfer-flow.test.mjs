@@ -78,7 +78,7 @@ test("activation-bearing Checkout GET stays on a read-only auto-submit transitio
   assert.match(source, /GET is a read-only transition boundary for Stripe/);
   assert.match(source, /Continue with authentication with Google if you haven't already\./);
   assert.match(source, /id="checkout-transition"[\s\S]+hidden/);
-  assert.match(source, /getElementById\("checkout-transition"\)\.submit\(\)/);
+  assert.match(source, /<script src="\/checkout-transition\.js"><\/script>/);
   assert.doesNotMatch(source, /<button\b/i);
   assert.doesNotMatch(source, /stripe\.checkout\.sessions\.create/);
   assert.doesNotMatch(source, /attachCheckoutSessionToActivation\(/);

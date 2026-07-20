@@ -5,7 +5,6 @@ import {
   getBaseUrl,
   getSession,
   methodNotAllowed,
-  randomToken,
   redirect,
   resumeCheckoutIntentConfirmation,
   type AccountRequest,
@@ -78,13 +77,12 @@ function sendCheckoutTransitionPage(
   confirmation: CheckoutIntentConfirmation,
   cancelled: boolean,
 ) {
-  const nonce = randomToken(18);
   response.statusCode = 200;
   response.setHeader("Content-Type", "text/html; charset=utf-8");
   response.setHeader("Cache-Control", "no-store");
   response.setHeader(
     "Content-Security-Policy",
-    `default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'`,
+    "default-src 'none'; style-src 'unsafe-inline'; script-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
   );
   response.setHeader("X-Frame-Options", "DENY");
   response.end(`<!doctype html>
@@ -97,7 +95,7 @@ function sendCheckoutTransitionPage(
   <style>
     :root{color-scheme:dark;font-family:Inter,ui-sans-serif,system-ui,sans-serif;background:#090909;color:#f7f7f7}
     body{min-height:100vh;margin:0;display:grid;place-items:center;padding:24px;box-sizing:border-box}
-    main{width:min(520px,100%);padding:32px;border:1px solid #2b2b2b;border-radius:24px;background:#151515}
+    main{width:min(720px,100%);text-align:center}
     p{color:#f7f7f7;line-height:1.55;margin:0}
   </style>
 </head>
@@ -109,7 +107,7 @@ function sendCheckoutTransitionPage(
     <input type="hidden" name="intent" value="purchase">
     ${cancelled ? '<input type="hidden" name="rotate" value="cancelled">' : ""}
   </form>
-  <script nonce="${nonce}">document.getElementById("checkout-transition").submit();</script>
+  <script src="/checkout-transition.js"></script>
 </main></body>
 </html>`);
 }
