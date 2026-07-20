@@ -3603,7 +3603,7 @@ async function retrieveCanonicalCheckoutPayment(
   const currency = cleanString(checkoutSession.currency, 3).toLowerCase();
   if (!paymentIntentId) {
     if (
-      checkoutSession.payment_status !== "no_payment_required" ||
+      !["paid", "no_payment_required"].includes(checkoutSession.payment_status) ||
       checkoutSession.amount_total !== 0 ||
       !/^[a-z]{3}$/.test(currency)
     ) {

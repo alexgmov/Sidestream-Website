@@ -1031,6 +1031,116 @@ test("single-device entitlement transactions hold in disposable Postgres", {
         licenses: 1,
       });
 
+      const freedevFixture = await seedAccount(databasePool, schema);
+      const freedevSession = {
+        id: "cs_freedev_fulfillment",
+        mode: "payment",
+        status: "complete",
+        payment_status: "paid",
+        customer: "cus_freedev_fulfillment",
+        payment_intent: null,
+        amount_total: 0,
+        currency: "usd",
+        subscription: null,
+        customer_details: {
+          email: freedevFixture.email,
+          name: "FREEDEV Checkout Fixture",
+        },
+        metadata: {
+          sidestream_plan: "sidestream_pro",
+          sidestream_price_id: "price_freedev_fulfillment",
+          sidestream_activation_key: "activation_freedev_fulfillment",
+        },
+        line_items: {
+          data: [{
+            quantity: 1,
+            price: {
+              id: "price_freedev_fulfillment",
+              product: { id: "prod_UpwXh6oO1OmPyQ" },
+            },
+          }],
+          has_more: false,
+        },
+      };
+      await databasePool.query(
+        `
+          insert into ${quotedSchema}.sidestream_activation_sessions (
+            activation_key,
+            device_id_hash,
+            app_version,
+            build_channel,
+            source,
+            status,
+            expires_at,
+            stripe_checkout_session_id,
+            stripe_checkout_price_id,
+            stripe_checkout_product_id,
+            stripe_checkout_expires_at,
+            checkout_attached_at,
+            checkout_claim_grace_until
+          ) values (
+            'activation_freedev_fulfillment', $1, '1.0.15', 'test', 'integration',
+            'pending', now() + interval '1 day', 'cs_freedev_fulfillment',
+            'price_freedev_fulfillment', 'prod_UpwXh6oO1OmPyQ', now() + interval '1 hour',
+            now(), now() + interval '70 minutes'
+          )
+        `,
+        [privateIdentifierHash("freedev-checkout-device")],
+      );
+      accountModule.__setIntegrationStripeClient({
+        checkout: {
+          sessions: {
+            async retrieve(sessionId) {
+              assert.equal(sessionId, "cs_freedev_fulfillment");
+              return freedevSession;
+            },
+          },
+        },
+        paymentIntents: {
+          async retrieve() {
+            assert.fail("Zero-total FREEDEV Checkout must not retrieve a PaymentIntent");
+          },
+        },
+        charges: {
+          async retrieve() {
+            assert.fail("Zero-total FREEDEV Checkout must not retrieve a Charge");
+          },
+        },
+      });
+      const freedevFulfilled = await accountModule.fulfillCheckoutSession(
+        "cs_freedev_fulfillment",
+        "activation_freedev_fulfillment",
+      );
+      const freedevReplay = await accountModule.fulfillCheckoutSession(
+        "cs_freedev_fulfillment",
+        "activation_freedev_fulfillment",
+      );
+      accountModule.__setIntegrationStripeClient(null);
+      assert.deepEqual(freedevFulfilled, { fulfilled: true, activationBound: true });
+      assert.deepEqual(freedevReplay, { fulfilled: true, activationBound: true });
+      const freedevState = await databasePool.query(
+        `
+          select a.account_id, a.status,
+            l.stripe_payment_intent_id, l.stripe_charge_id,
+            l.amount_paid::int, l.amount_refunded::int, l.currency,
+            l.entitlement_status, l.status_reason
+          from ${quotedSchema}.sidestream_activation_sessions a
+          join ${quotedSchema}.sidestream_licenses l on l.id = a.license_id
+          where a.activation_key = 'activation_freedev_fulfillment'
+        `,
+      );
+      assert.deepEqual(freedevState.rows[0], {
+        account_id: freedevFixture.accountId,
+        status: "paid",
+        stripe_payment_intent_id: null,
+        stripe_charge_id: null,
+        amount_paid: 0,
+        amount_refunded: 0,
+        currency: "usd",
+        entitlement_status: "active",
+        status_reason: "checkout_no_payment_required",
+      });
+
       const supportPolicy = {
         transferLimitOverrides: {
           production: { limit: 5, expiresAt: new Date(Date.now() + DAY_MS).toISOString() },
@@ -1228,9 +1338,21 @@ async function loadAccountModuleForSchema(schema) {
   const temporaryModuleDirectory = await mkdtemp(
     join(repositoryRoot, "tests", ".single-device-postgres-"),
   );
-  const postgresUrl = pathToFileURL(
-    join(repositoryRoot, "api", "_lib", "postgres.ts"),
+  const postgresTargetUrl = pathToFileURL(
+    join(repositoryRoot, "api", "_lib", "postgres-target.ts"),
   ).href;
+  let postgresSource = await readFile(
+    join(repositoryRoot, "api", "_lib", "postgres.ts"),
+    "utf8",
+  );
+  assert.match(postgresSource, /\.\/postgres-target\.js/);
+  postgresSource = postgresSource.replaceAll(
+    JSON.stringify("./postgres-target.js"),
+    JSON.stringify(postgresTargetUrl),
+  );
+  const postgresPath = join(temporaryModuleDirectory, "postgres-under-test.ts");
+  await writeFile(postgresPath, postgresSource, { mode: 0o600 });
+  const postgresUrl = pathToFileURL(postgresPath).href;
   let maintenanceSource = rewritePublicSchema(
     await readFile(join(repositoryRoot, "api", "_lib", "maintenance.ts"), "utf8"),
     schema,
