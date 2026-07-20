@@ -518,8 +518,17 @@ test("shipped activation checkout remains complete on the pre-hardening Producti
       deviceId,
       appVersion: "1.0.14",
       buildChannel: "production",
-      source: "plugin_upgrade",
+      source: "download_history",
     });
+    assert.equal(activation.restoreUrl, activation.upgradeUrl);
+    assert.match(activation.upgradeUrl, /^https:\/\/sidestream\.test\/api\/checkout\/start\?activation=/);
+    const accountActivation = await account.createActivationSession(request, {
+      deviceId: `${deviceId}-account`,
+      appVersion: "1.0.14",
+      buildChannel: "production",
+      source: "settings_account",
+    });
+    assert.match(accountActivation.restoreUrl, /^https:\/\/sidestream\.test\/api\/activation\/claim\?activation=/);
     const checkout = await account.createOrResumeActivationCheckout({
       activationKey: activation.activationKey,
       baseUrl: BASE_URL,

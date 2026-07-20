@@ -1867,6 +1867,7 @@ export async function createActivationSession(
   const activationKey = randomToken(24);
   const expiresAt = addHours(new Date(), ACTIVATION_TTL_HOURS);
   const deviceId = cleanString(payload.deviceId, 240);
+  const source = cleanString(payload.source, 120) || "plugin";
   if (!deviceId) throw new Error("Missing device ID");
 
   await withPgClient(async (client) => {
@@ -1895,7 +1896,7 @@ export async function createActivationSession(
           hashPrivateIdentifier(deviceId),
           cleanString(payload.appVersion, 80) || null,
           cleanString(payload.buildChannel, 80) || null,
-          cleanString(payload.source, 120) || "plugin",
+          source,
           getClientIp(request) || null,
           cleanString(request.headers["user-agent"], 500) || null,
           expiresAt.toISOString(),
@@ -1918,11 +1919,17 @@ export async function createActivationSession(
     }
   });
 
+  const baseUrl = getBaseUrl(request);
+  const upgradeUrl = `${baseUrl}/api/checkout/start?activation=${encodeURIComponent(activationKey)}`;
+  const restoreUrl = source === "download_history" || source === "results_quota"
+    ? upgradeUrl
+    : `${baseUrl}/api/activation/claim?activation=${encodeURIComponent(activationKey)}`;
+
   return {
     activationKey,
     expiresAt: expiresAt.toISOString(),
-    upgradeUrl: `${getBaseUrl(request)}/api/checkout/start?activation=${encodeURIComponent(activationKey)}`,
-    restoreUrl: `${getBaseUrl(request)}/api/activation/claim?activation=${encodeURIComponent(activationKey)}`,
+    upgradeUrl,
+    restoreUrl,
   };
 }
 
