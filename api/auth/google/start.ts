@@ -105,7 +105,7 @@ export default async function handler(
       baseUrl,
       rotateCancelledSession: rotateCancelledCheckout,
     });
-    if (!checkout.ok) {
+    if (checkout.ok === false) {
       if (checkout.code === "active_license") {
         if (pluginUpgrade.activationKey) {
           const claimUrl = new URL("/api/activation/claim", baseUrl);
