@@ -114,7 +114,7 @@ export function buildPostgresPoolOptions(
     "Runtime Postgres connection",
   );
   const connectionString = parsedTarget.connectionString;
-  return {
+  const options: PoolConfig & { enableChannelBinding?: boolean } = {
     connectionString,
     max: readBoundedInteger(environment, "POSTGRES_POOL_MAX", DEFAULT_POOL_MAX, 2, 20),
     idleTimeoutMillis: readBoundedInteger(
@@ -146,7 +146,9 @@ export function buildPostgresPoolOptions(
       60_000,
     ),
     ssl: parsedTarget.ssl,
+    enableChannelBinding: parsedTarget.channelBindingRequired,
   };
+  return options;
 }
 
 export function getPostgresPool(

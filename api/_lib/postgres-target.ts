@@ -12,7 +12,7 @@ const TLS_ENABLE_VALUES = new Set([
   "verify-full",
 ]);
 const TLS_DISABLE_VALUES = new Set(["0", "false", "disable"]);
-const ALLOWED_QUERY_PARAMETERS = new Set(["ssl", "sslmode"]);
+const ALLOWED_QUERY_PARAMETERS = new Set(["ssl", "sslmode", "channel_binding"]);
 
 export type ParsedPostgresTarget = Readonly<{
   connectionString: string;
@@ -24,6 +24,7 @@ export type ParsedPostgresTarget = Readonly<{
   fingerprint: string;
   local: boolean;
   ssl: false | Readonly<{ rejectUnauthorized: true }>;
+  channelBindingRequired: boolean;
 }>;
 
 export function parsePostgresTarget(
@@ -56,6 +57,7 @@ export function parsePostgresTarget(
 
   const seen = new Set<string>();
   let requestedTls: boolean | null = null;
+  let channelBindingRequired = false;
   for (const [rawName, rawValue] of url.searchParams.entries()) {
     const name = rawName.toLowerCase();
     if (seen.has(name)) throw new Error(`${label} contains duplicate connection parameters`);
@@ -64,6 +66,13 @@ export function parsePostgresTarget(
       throw new Error(`${label} contains an unsupported connection parameter`);
     }
     const value = rawValue.trim().toLowerCase();
+    if (name === "channel_binding") {
+      if (value !== "require") {
+        throw new Error(`${label} contains an unsafe channel binding configuration`);
+      }
+      channelBindingRequired = true;
+      continue;
+    }
     const nextTls = TLS_ENABLE_VALUES.has(value)
       ? true
       : TLS_DISABLE_VALUES.has(value)
@@ -78,6 +87,9 @@ export function parsePostgresTarget(
   const local = LOOPBACK_HOSTS.has(hostname);
   if (!local && requestedTls === false) {
     throw new Error(`${label} requires authenticated TLS`);
+  }
+  if (channelBindingRequired && requestedTls === false) {
+    throw new Error(`${label} requires TLS for channel binding`);
   }
   for (const name of [...url.searchParams.keys()]) url.searchParams.delete(name);
 
@@ -94,6 +106,7 @@ export function parsePostgresTarget(
     fingerprint: createHash("sha256").update(identity).digest("hex"),
     local,
     ssl: local && requestedTls !== true ? false : Object.freeze({ rejectUnauthorized: true }),
+    channelBindingRequired,
   });
 }
 

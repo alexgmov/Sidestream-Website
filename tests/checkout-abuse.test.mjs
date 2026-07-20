@@ -19,6 +19,7 @@ import {
   getActivationCheckoutIdempotencyKey,
   validateCheckoutIntentPost,
 } from "../api/_lib/entitlement.ts";
+import { parsePostgresTarget } from "../api/_lib/postgres-target.ts";
 import { loadInjectedHandler } from "./helpers/handler-loader.mjs";
 import { invokeHandler } from "./helpers/http.mjs";
 
@@ -47,6 +48,34 @@ const CONTROLLED_ENVIRONMENT = [
   "POSTGRES_SSL",
   "POSTGRES_POOL_MAX",
 ];
+
+test("runtime Postgres accepts only Neon's required channel binding parameter", async () => {
+  const target = parsePostgresTarget(
+    "postgres://runtime:secret@pool.example.invalid:6543/sidestream?sslmode=require&channel_binding=require",
+  );
+  assert.equal(target.channelBindingRequired, true);
+  assert.doesNotMatch(target.connectionString, /sslmode|channel_binding/i);
+  assert.throws(
+    () => parsePostgresTarget(
+      "postgres://runtime:secret@pool.example.invalid:6543/sidestream?channel_binding=disable",
+    ),
+    /unsafe channel binding configuration/,
+  );
+  assert.throws(
+    () => parsePostgresTarget(
+      "postgres://runtime:secret@pool.example.invalid:6543/sidestream?application_name=unsafe",
+    ),
+    /unsupported connection parameter/,
+  );
+  const runtimeSource = await readFile(
+    new URL("../api/_lib/postgres.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    runtimeSource,
+    /enableChannelBinding:\s*parsedTarget\.channelBindingRequired/,
+  );
+});
 
 test("anonymous GET surfaces stay read-only while activation GET resumes attached Stripe Checkout", async () => {
   let stripeWrites = 0;
