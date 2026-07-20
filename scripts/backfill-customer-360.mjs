@@ -576,11 +576,19 @@ export async function runBackfillSelfTest() {
     behavior: "same-behavior",
     gmailCampaignHmac: "campaign-secret-value",
   };
+  for (const [field, value] of Object.entries(sharedIgnored)) {
+    assert.throws(
+      () => buildBackfillPlan([
+        { recordId: "9".padStart(64, "0"), [field]: value },
+      ], "test"),
+      new RegExp(`prohibited field \\\"${field}\\\"`),
+    );
+  }
   const legacyRecordA = "1".padStart(64, "0");
   const legacyRecordB = "2".padStart(64, "0");
   const isolated = [
-    { recordId: legacyRecordA, ...sharedIgnored },
-    { recordId: legacyRecordB, ...sharedIgnored },
+    { recordId: legacyRecordA },
+    { recordId: legacyRecordB },
   ];
   const isolatedPlan = buildBackfillPlan(isolated, "test");
   assert.equal(isolatedPlan.components.length, 2);

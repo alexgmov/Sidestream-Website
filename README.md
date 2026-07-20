@@ -210,6 +210,9 @@ immutability trigger also blocked the maintenance job's required payload
 redaction. Stripe event identity and ingress evidence remain immutable; only the
 exact first irreversible transition to the bounded redacted payload with
 `raw_payload = null` is permitted. This is local disposable-database proof only.
+Both standalone backfill self-tests now separately prove that every prohibited
+field is rejected before planning, then use privacy-safe fixtures for orphan,
+durable-join, conflict, and dry-run report assertions.
 
 The same audit observed two current Production incidents that this closure did
 not remediate or reverify: the canonical browser origin disagreed with the
@@ -788,6 +791,8 @@ Use the narrowest relevant check after edits:
 - `llms.txt` is useful as an AI-readable summary, but it is not a substitute for crawlable HTML, normal metadata, structured data, sitemap hygiene, or external citations/backlinks.
 
 ## Recent Change Log
+
+- 2026-07-20: Repaired the standalone Customer 360 backfill verifier and embedded self-test after the final acceptance gate caught prohibited PII/behavior fixture fields being passed into the fail-closed planner. The self-tests now prove each prohibited field is rejected before using privacy-safe planning fixtures; the validator was not weakened. No provider, database, deployment, payment, or Production action occurred.
 
 - 2026-07-20: Authenticated hosted Checkout now reuses or creates the signed-in Sidestream account's Stripe Customer for every intent kind, including plugin activation, and displays `Signed in to Sidestream as <email>. One-time payment. No subscription.` beside the payment action. Anonymous compatibility calls retain the generic one-time-payment text and do not create an account Customer. Added database-backed regression coverage for both branches. Only the isolated Preview/Test surface may be deployed; Production remains untouched.
 

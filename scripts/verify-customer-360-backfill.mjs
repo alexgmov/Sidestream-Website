@@ -112,9 +112,15 @@ export async function verifyCustomer360Backfill() {
     gmailCampaignHmac: "private-gmail-campaign-hash",
     installerRequestHmac: "private-installer-request-hash",
   });
+  for (const [field, value] of Object.entries(ignoredSecrets)) {
+    assert.throws(
+      () => buildBackfillPlan([{ recordId: opaqueRecordId(99), [field]: value }], "test"),
+      new RegExp(`prohibited field \\\"${field}\\\"`),
+    );
+  }
   const orphanInput = [
-    { recordId: opaqueRecordId(1), ...ignoredSecrets },
-    { recordId: opaqueRecordId(2), ...ignoredSecrets },
+    { recordId: opaqueRecordId(1) },
+    { recordId: opaqueRecordId(2) },
   ];
   const orphanPlan = buildBackfillPlan(orphanInput, "test");
   assert.equal(orphanPlan.components.length, 2);
@@ -122,8 +128,8 @@ export async function verifyCustomer360Backfill() {
 
   const durableHash = "d".repeat(64);
   const joinedPlan = buildBackfillPlan([
-    { recordId: opaqueRecordId(3), installIdHash: durableHash, ...ignoredSecrets },
-    { recordId: opaqueRecordId(4), installIdHash: durableHash, ...ignoredSecrets },
+    { recordId: opaqueRecordId(3), installIdHash: durableHash },
+    { recordId: opaqueRecordId(4), installIdHash: durableHash },
   ], "test");
   assert.equal(joinedPlan.components.length, 1);
 
@@ -134,13 +140,11 @@ export async function verifyCustomer360Backfill() {
       recordId: opaqueRecordId(5),
       accountId: accountA,
       supportCode: "SIDE-A1B2-C3D4-E5F6",
-      ...ignoredSecrets,
     },
     {
       recordId: opaqueRecordId(6),
       accountId: accountB,
       supportCode: "SIDE-A1B2-C3D4-E5F6",
-      ...ignoredSecrets,
     },
   ];
   const conflictReport = buildDryRunReport(conflictInput, { namespace: "test" });
