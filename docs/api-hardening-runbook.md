@@ -25,12 +25,12 @@ history or tickets.
 - All runtime database users share the pool in `api/_lib/postgres.ts` and use a
   pooled URL in production. Migration and backfill tools use a reviewed direct
   URL.
-- `GET /api/checkout/start` is a read-only transition boundary. It renders one
-  sentence with no visible action control; a same-origin external script
-  automatically submits the signed form without an inline CSP nonce. A Stripe
-  Checkout Session may be created or reused only after an existing session or
-  state-verified Google callback binds that opaque intent to the account. Both
-  paths enter the same locked, idempotent, rate-limited worker.
+- `POST /api/checkout/start` from the website, or a capability-bearing `GET`
+  from activation/cancellation, creates or resumes only the database intent and
+  redirects into Google auth. It renders no happy-path transition document and
+  creates no Stripe resource. A valid existing session or the state-verified
+  Google callback binds the opaque intent to the account before both paths enter
+  the same locked, idempotent, rate-limited Checkout worker.
 - Stripe webhook requests durably record an event and acknowledge it. A claimed,
   leased queue reconciles entitlements; account and activation reads never drain
   webhook backlog.
@@ -76,15 +76,15 @@ and JSON responses are `no-store`.
 | `/api/auth/google/callback` | `GET` | Creates the server session and `303` redirects to the allowlisted next path, or consumes the exact state-bound plugin/Checkout capability and redirects directly to the locked/reused Stripe Checkout Session | `400` invalid state/code/return intent, `409` unavailable or account-mismatched intent, `429` Checkout rate limit, `502` exchange/account/session/Checkout dependency failure |
 | `/api/auth/session` | `GET` | Always `200`: `{"authenticated":false}` or authenticated `user`, `license`, and `billing.hasCustomer` | Dependency failure is a server `500`; this read never processes Stripe events |
 | `/api/auth/logout` | `POST` | `200 {"ok":true}` after clearing the session | Dependency failure is a server `500` |
-| `/api/checkout/start` | `GET` | `200` no-store one-sentence transition plus hidden signed auto-submit form; no visible button; an active owner redirects to account/claim | `409` unavailable intent; legacy-host activation failures redirect to `activation_required`; no Stripe write occurs |
+| `/api/checkout/start` | `GET`, `POST` | Same-origin website POST or capability-bearing activation/cancellation GET creates or resumes only the database intent, then `303` redirects to Google auth; bare GET returns `302` to Upgrade; an active owner redirects to account/claim; no Stripe write or happy-path transition document occurs | `403` rejected POST origin/content contract; `409` unavailable intent; legacy-host activation failures redirect to `activation_required` |
 | `/api/checkout/create` | `POST` | Signed-out form clients receive `303` to Google, authenticated form clients receive `303` to Stripe, and authenticated JSON clients receive `200 {"url":"...","reused":boolean}` | `400` malformed; `403 csrf_rejected` or `intent_account_mismatch`; `409 active_license`, `intent_expired`, `activation_unavailable`, or `activation_window_too_short`; `429 rate_limited`; unhandled DB/Stripe failure is `500` |
 | `/api/checkout/complete` | `GET` | Verifies the exact attached Session/Price/Product, reconciles payment, then `303` to thank-you | `400` missing session, `409` payment not ready or exact contract mismatch |
 | `/api/billing/portal` | `POST` | Authenticated `200 {"url":"..."}` for a Stripe Customer Portal Session | `401` unauthenticated, `400` no linked Stripe customer, Stripe failure is a server `500` |
 | `/api/billing/receipt` | `POST` | Authenticated `200 {"url":"..."}` for the latest owned charge receipt | `401` unauthenticated, `403` customer mismatch, `404` no purchase/receipt URL, Stripe failure is a server `500` |
 | `/api/stripe/webhook` | `POST` | `200 {"received":true}` after durable insert; duplicate acknowledgment also includes `"duplicate":true` | `400` missing/invalid signature; an unhandled durable-storage failure is a server `500` and must be retried by Stripe |
-| `/api/activation/start` | `POST` | `200` with `activationKey`, 24-hour `expiresAt`, `upgradeUrl`, and `restoreUrl`; exact current-plugin activations receive the signed OAuth handoff URL while legacy/non-plugin activations retain the text-only Checkout transition | `400 invalid_request` for missing device; an unexpected dependency failure is a server `500` |
+| `/api/activation/start` | `POST` | `200` with `activationKey`, 24-hour `expiresAt`, `upgradeUrl`, and `restoreUrl`; exact current-plugin activations receive the signed OAuth handoff URL while legacy/non-plugin activations retain the capability-bearing Checkout-start URL | `400 invalid_request` for missing device; an unexpected dependency failure is a server `500` |
 | `/api/activation/status` | `POST` | `200` state payload: `pending`, `pending_payment`, `active`, `completed`, `not_found`, `device_mismatch`, `expired`, `transfer_required`, `transfer_limit_reached`, `device_replaced`, or `device_deactivated` | A parsed non-null JSON value missing valid `activationKey` or `deviceId` returns `400 invalid_request`; valid JSON `null`, malformed JSON, and body-read failures currently escape as an unshaped platform `5xx`, not `400`; `503` environment unavailable |
-| `/api/activation/claim` | `GET` / `POST` | GET is read-only: Free purchasers continue to the text-only Checkout transition, while active owners see restore/transfer decisions; same-origin CSRF-valid POST restores/reconnects/transfers | `400` invalid/transfer intent; `401` sign-in required; `403` inactive or CSRF; `409` unavailable, binding changed, transfer limit, or claim conflict; `503` environment unavailable |
+| `/api/activation/claim` | `GET` / `POST` | GET is read-only: Free purchasers redirect through Checkout start, while active owners see restore/transfer decisions; same-origin CSRF-valid POST restores/reconnects/transfers | `400` invalid/transfer intent; `401` sign-in required; `403` inactive or CSRF; `409` unavailable, binding changed, transfer limit, or claim conflict; `503` environment unavailable |
 | `/api/license/verify` | `POST` | `200` current credential result | `400 invalid_request`; `401 invalid_token`, `revoked`, `device_mismatch`, `device_replaced`, or `device_deactivated`; `403 license_inactive`; `503` retryable environment failure |
 | `/api/license/refresh` | `POST` | `200` atomically rotated access/refresh pair; predecessor replay is deterministic for two minutes | Same stable `400`/`401`/`403`/`503` classes as verify |
 | `/api/license/authorize-download` | `POST` | Exactly `200 {"active":true}` for the active device | `401` revoked/replaced/deactivated device; `403` inactive; `503 {"code":"authorization_unavailable"}` is retryable |
@@ -138,21 +138,21 @@ is current implementation truth, not a recommended new parser contract.
 
 ### Authenticated Checkout flow
 
-1. `GET /api/checkout/start` creates or resumes a database Checkout intent and
-   renders a no-store transition containing only `Continue with authentication
-   with Google if you haven't already.` It has no visible button and must not
-   initialize Stripe, create a Customer, resolve/create a Price, or create a
-   Checkout Session.
-2. A hidden form automatically submits signed intent fields to same-origin
-   `POST /api/checkout/create`. The signed capability is valid for 10 minutes;
-   the database intent expires after 24 hours. Without a valid account session,
-   the POST redirects through Google with only the opaque browser capability;
-   the state-verified callback enforces the intent's account binding. An
-   existing session skips Google.
-3. The authenticated POST or callback atomically consumes limits of 8 requests
-   per intent and 20 per IP in a 15-minute window. It locks the intent, creates
-   or reuses one Stripe Session with a stable idempotency key, and persists the
-   exact Session/Price/Product.
+1. Website purchase uses a same-origin `POST /api/checkout/start`; activation
+   and cancellation retries use a server-minted capability-bearing GET. Start
+   creates or resumes only the database intent and `303` redirects to
+   `/api/auth/google/start`; it renders no happy-path transition document and
+   creates no Stripe Customer, Price, or Checkout Session. A bare GET returns
+   to Upgrade.
+2. The opaque browser capability is valid for 10 minutes and the database intent
+   expires after 24 hours. Without a valid account session, auth start sets the
+   bounded return-intent and OAuth state cookies before redirecting to Google;
+   the state-verified callback enforces the intent's account binding. An existing
+   session skips Google and enters the same Checkout worker immediately.
+3. The authenticated auth-start path or callback atomically consumes limits of
+   8 requests per intent and 20 per IP in a 15-minute window. It locks the
+   intent, creates or reuses one Stripe Session with a stable idempotency key,
+   and persists the exact Session/Price/Product.
 4. Checkout uses `mode=payment`, one card line item with quantity one, invoice
    creation, promotion codes, and the copy `One-time payment. No subscription.`
 5. The success URL keeps Stripe's literal `{CHECKOUT_SESSION_ID}` placeholder and
@@ -169,12 +169,13 @@ implementation:
    request source `plugin` with a parseable client version newer than `1.0.13`
    receives an `upgradeUrl` containing a 10-minute HMAC capability for intent
    `plugin_upgrade`. Legacy clients, non-plugin sources, and missing/unknown
-   versions keep the text-only transition URL.
+   versions keep the capability-bearing Checkout-start URL.
 2. `GET /api/auth/google/start` verifies that capability first. With a valid
-   Sidestream session it redirects to the account-bound text-only auto-submit
-   transition. Without one, it copies the capability to a short-lived HTTP-only,
-   `SameSite=Lax` cookie beside OAuth state and redirects to Google. Neither
-   branch creates a Stripe Customer, Price, or Checkout Session on GET.
+   Sidestream session it enters the account-bound locked Checkout worker and
+   may create or reuse the account-bound Stripe Session before redirecting
+   directly to Stripe. Without a Sidestream session, it copies the capability
+   to a short-lived HTTP-only, `SameSite=Lax` cookie beside OAuth state and
+   redirects to Google without creating Stripe resources on that request.
 3. Only `/api/auth/google/callback` with the matching state cookie, returned
    state, Google code, and still-valid signed capability may consume the direct
    handoff. Link previews cannot synthesize that tuple. The callback loads the
@@ -194,14 +195,15 @@ implementation:
 
 The callback is the only state-verified Google completion boundary. It is safe
 because it consumes the server capability minted by the explicit activation or
-signed auto-submit path plus the one-browser OAuth state cookie. No generic GET,
+Checkout-start path plus the one-browser OAuth state cookie. No generic GET,
 checkout preview, link preview, or caller-selected OAuth return path creates a
 Stripe Session.
 
 Persisted intent state is constrained to `pending`, `open`, `completed`,
 `cancelled`, `expired`, or `failed`. A cancelled browser return remains a GET
-read; its next signed auto-submit POST may explicitly request bounded Session
-rotation. A caller cannot supply its own Stripe or activation tuple.
+read; its next capability-bearing Checkout-start GET may explicitly request
+bounded Session rotation. A caller cannot supply its own Stripe or activation
+tuple.
 
 New one-time purchases select `SIDESTREAM_PRO_PRODUCT_ID` (default
 `prod_UpwXh6oO1OmPyQ`), then use this runtime-compatible Price precedence: exact
@@ -595,7 +597,7 @@ notification evidence without payloads or customer identifiers.
 | Crash/reclaim attempt overflow | Count `terminal_at is null and attempt_count >= 8`, including future retryable rows and unexpired processing leases | Critical on any row. Code now terminalizes exhausted work after any active final lease expires, so this indicates stale deployment, stuck scan/lease, database drift, or missing live proof. Stop promotion and investigate; do not call the local cap deployed. |
 | Oldest event age | Age of oldest due nonterminal event | Warning over 10 minutes, critical over 30 minutes; the processor runs every five minutes. |
 | Event failures | `retryable + deadLetter` divided by claimed, plus `processing_failed` route outcomes | Warning above 5% with at least 5 claims in 15 minutes; critical above 20% or any route-level failure for 5 minutes. |
-| Checkout volume | Transition GETs, auto-submit POSTs, state-verified OAuth handoffs, created/reused Sessions, rejected return intents, `csrf_rejected`, dependency errors | Warning when create failures exceed 1% or 5 in 15 minutes. A transition GET without a matching POST is abandonment, not a Stripe failure; correlate authenticated handoffs by intent and OAuth callback result. |
+| Checkout volume | Website start POSTs, capability-bearing start GETs, state-verified OAuth handoffs, created/reused Sessions, rejected return intents, `csrf_rejected`, dependency errors | Warning when create failures exceed 1% or 5 in 15 minutes. A start request without a later authenticated handoff is abandonment, not a Stripe failure; correlate by intent and OAuth callback result. |
 | Rate limit | `429 code=rate_limited` by scope and total eligible requests | Warning when checkout or lead 429s exceed 5% with at least 10 requests in 15 minutes; investigate abuse before raising limits. |
 | Lead fallback backlog | Private Blob count and oldest age under the configured prefix | Warning if nonzero for 15 minutes after Postgres recovers or oldest exceeds 30 minutes; critical over 2 hours or growth across two replay intervals. |
 | Unmapped Blob records | Replay `summary.unmapped` and path sample without lead contents | Critical on any new unmapped record. Quarantine/preserve it; do not auto-delete. |

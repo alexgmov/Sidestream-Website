@@ -792,7 +792,7 @@ Use the narrowest relevant check after edits:
 
 ## Recent Change Log
 
-- 2026-07-20: Repaired the standalone Customer 360 backfill verifier and embedded self-test after the final acceptance gate caught prohibited PII/behavior fixture fields being passed into the fail-closed planner. The self-tests now prove each prohibited field is rejected before using privacy-safe planning fixtures; the validator was not weakened. No provider, database, deployment, payment, or Production action occurred.
+- 2026-07-20: Repaired the standalone Customer 360 backfill verifier and embedded self-test after the final acceptance gate caught prohibited PII/behavior fixture fields being passed into the fail-closed planner. The self-tests now prove each prohibited field is rejected before using privacy-safe planning fixtures; the validator was not weakened. The same independent freeze also aligned the API runbook with the already-implemented redirect-only Checkout path and removed its stale auto-submit transition contract. No provider, database, deployment, payment, or Production action occurred.
 
 - 2026-07-20: Authenticated hosted Checkout now reuses or creates the signed-in Sidestream account's Stripe Customer for every intent kind, including plugin activation, and displays `Signed in to Sidestream as <email>. One-time payment. No subscription.` beside the payment action. Anonymous compatibility calls retain the generic one-time-payment text and do not create an account Customer. Added database-backed regression coverage for both branches. Only the isolated Preview/Test surface may be deployed; Production remains untouched.
 
