@@ -1921,9 +1921,7 @@ export async function createActivationSession(
 
   const baseUrl = getBaseUrl(request);
   const upgradeUrl = `${baseUrl}/api/checkout/start?activation=${encodeURIComponent(activationKey)}`;
-  const restoreUrl = isShippedPanelUpgradeSource(source)
-    ? upgradeUrl
-    : `${baseUrl}/api/activation/claim?activation=${encodeURIComponent(activationKey)}`;
+  const restoreUrl = `${baseUrl}/api/activation/claim?activation=${encodeURIComponent(activationKey)}`;
 
   return {
     activationKey,

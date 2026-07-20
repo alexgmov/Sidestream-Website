@@ -549,7 +549,7 @@ test("shipped activation checkout remains complete on the pre-hardening Producti
       buildChannel: "production",
       source: "download_history",
     });
-    assert.equal(activation.restoreUrl, activation.upgradeUrl);
+    assert.match(activation.restoreUrl, /^https:\/\/sidestream\.test\/api\/activation\/claim\?activation=/);
     assert.match(activation.upgradeUrl, /^https:\/\/sidestream\.test\/api\/checkout\/start\?activation=/);
     assert.equal(
       await account.isPendingShippedPanelUpgrade(activation.activationKey),
