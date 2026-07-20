@@ -63,19 +63,23 @@ test("rolling device-transfer limit blocks before a fourth default move", () => 
   assert.equal(blocked.remainingTransfers, 0);
 });
 
-test("activation-bearing Checkout GET stays on a read-only confirmation boundary", async () => {
+test("activation-bearing Checkout GET resumes the shipped-panel path before anonymous confirmation", async () => {
   const source = await readFile(files.checkoutStart, "utf8");
   const legacyHostGuard = source.indexOf("activationKey && isLegacyVercelHost");
   const canonicalRedirect = source.indexOf("canonicalConfirmation", legacyHostGuard);
   const sessionRead = source.indexOf("const session = await getSession(request)");
   const activeOwnerRedirect = source.indexOf("/api/activation/claim", sessionRead);
+  const activationResume = source.indexOf(
+    "createOrResumeActivationCheckout",
+    activeOwnerRedirect,
+  );
   const confirmation = source.indexOf("createCheckoutIntentConfirmation", sessionRead);
 
   assert.ok(legacyHostGuard >= 0 && canonicalRedirect > legacyHostGuard);
   assert.ok(sessionRead > canonicalRedirect && activeOwnerRedirect > sessionRead);
-  assert.ok(confirmation > activeOwnerRedirect);
+  assert.ok(activationResume > activeOwnerRedirect && confirmation > activationResume);
   assert.match(source, /if \(method !== "GET"\)/);
-  assert.match(source, /GET is a read\/confirmation boundary for Stripe/);
+  assert.match(source, /Shipped CEP panels already hold a high-entropy activation capability/);
   assert.doesNotMatch(source, /stripe\.checkout\.sessions\.create/);
   assert.doesNotMatch(source, /attachCheckoutSessionToActivation\(/);
 });

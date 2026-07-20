@@ -2,11 +2,13 @@ import type { ServerResponse } from "node:http";
 import {
   cleanString,
   createCheckoutIntentConfirmation,
+  createOrResumeActivationCheckout,
   getBaseUrl,
   getSession,
   methodNotAllowed,
   redirect,
   resumeCheckoutIntentConfirmation,
+  sendJson,
   type AccountRequest,
   type CheckoutIntentConfirmation,
 } from "../_lib/account.js";
@@ -37,10 +39,8 @@ export default async function handler(
     }
   }
 
-  // GET is a read/confirmation boundary for Stripe. In particular, the old
-  // `const stripe = getStripe()` path is forbidden here. The confirmed POST
-  // owns attachCheckoutSessionToActivation and
-  // getActivationCheckoutIdempotencyKey behavior through the intent worker.
+  // Anonymous website GETs remain a read/confirmation boundary for Stripe.
+  // The activation-capability exception below is scoped to shipped panels.
   const session = await getSession(request);
   if (session?.license.active) {
     if (activationKey) {
@@ -51,6 +51,20 @@ export default async function handler(
     const accountUrl = new URL("/account.html", baseUrl);
     accountUrl.searchParams.set("checkout", "already_owned");
     return redirect(response, accountUrl.toString(), 302);
+  }
+
+  // Shipped CEP panels already hold a high-entropy activation capability and
+  // expect this GET to resume or create their one attached Stripe Session.
+  // Keep anonymous website purchases on the confirmation/POST flow below.
+  if (activationKey) {
+    const checkout = await createOrResumeActivationCheckout({
+      activationKey,
+      baseUrl,
+    });
+    if (!checkout.ok) {
+      return sendJson(response, checkout.statusCode, { error: checkout.error });
+    }
+    return redirect(response, checkout.url);
   }
 
   const confirmation = browserToken

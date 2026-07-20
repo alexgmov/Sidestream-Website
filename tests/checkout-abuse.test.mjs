@@ -48,9 +48,10 @@ const CONTROLLED_ENVIRONMENT = [
   "POSTGRES_POOL_MAX",
 ];
 
-test("GET and crawler-visible checkout surfaces cannot write Stripe resources", async () => {
+test("anonymous GET surfaces stay read-only while activation GET resumes attached Stripe Checkout", async () => {
   let stripeWrites = 0;
   let confirmationSequence = 0;
+  let activationResumes = 0;
   const confirmation = (activationKey = "", hasCheckoutSession = false) => ({
     intentId: VALID_INTENT_ID,
     browserToken: "browser-capability",
@@ -71,6 +72,12 @@ test("GET and crawler-visible checkout surfaces cannot write Stripe resources", 
           confirmationSequence += 1;
           return confirmation(options.activationKey || "");
         },
+        async createOrResumeActivationCheckout(options) {
+          activationResumes += 1;
+          assert.equal(options.activationKey, "activation-shipped-panel");
+          assert.equal(options.baseUrl, BASE_URL);
+          return { ok: true, url: "https://checkout.stripe.test/shipped-panel" };
+        },
         getBaseUrl: () => BASE_URL,
         getSession: async () => null,
         methodNotAllowed,
@@ -79,6 +86,7 @@ test("GET and crawler-visible checkout surfaces cannot write Stripe resources", 
           confirmationSequence += 1;
           return confirmation("activation-legacy-1.0.13", true);
         },
+        sendJson,
       },
       "../_lib/entitlement.js": {
         isLegacyVercelHost: (host) => String(host || "").split(":", 1)[0] ===
@@ -89,7 +97,6 @@ test("GET and crawler-visible checkout surfaces cannot write Stripe resources", 
 
   const previews = [
     "/api/checkout/start",
-    "/api/checkout/start?activation=activation-legacy-1.0.12",
     "/api/checkout/start?intent=browser-capability&checkout=cancelled",
   ];
   for (const url of previews) {
@@ -101,6 +108,16 @@ test("GET and crawler-visible checkout surfaces cannot write Stripe resources", 
     assert.equal(response.statusCode, 200);
     assert.match(response.body, /<form method="post" action="\/api\/checkout\/create">/);
   }
+  const activation = await invokeHandler(start, {
+    method: "GET",
+    url: "/api/checkout/start?activation=activation-shipped-panel",
+    headers: { host: "sidestream.test", "x-forwarded-proto": "https" },
+  });
+  assert.equal(activation.response.statusCode, 303);
+  assert.equal(
+    activation.response.getHeader("location"),
+    "https://checkout.stripe.test/shipped-panel",
+  );
   const legacyBare = await invokeHandler(start, {
     method: "GET",
     url: "/api/checkout/start",
@@ -118,7 +135,8 @@ test("GET and crawler-visible checkout surfaces cannot write Stripe resources", 
     legacyActivation.response.getHeader("location"),
     `${BASE_URL}/api/checkout/start?activation=activation-legacy-1.0.13`,
   );
-  assert.equal(confirmationSequence, 3);
+  assert.equal(confirmationSequence, 2);
+  assert.equal(activationResumes, 1);
   assert.equal(stripeWrites, 0);
 
   const complete = await loadInjectedHandler(
@@ -444,10 +462,122 @@ test("database-backed intents serialize retries, rotate deliberately, and fulfil
     assert.match(migration, /email Stripe has not collected and verified/);
   } finally {
     if (runtimeModules) {
-      const postgresModule = await import(
-        pathToFileURL(join(repositoryRoot, "api", "_lib", "postgres.ts")).href
-      );
-      await postgresModule.getPostgresPool().end();
+      await runtimeModules.postgres.getPostgresPool().end();
+      await rm(runtimeModules.temporaryModuleDirectory, { recursive: true, force: true });
+    }
+    await databasePool.end().catch(() => {});
+    restoreEnvironment(environmentSnapshot);
+    await postgres.stop();
+  }
+});
+
+test("shipped activation checkout remains complete on the pre-hardening Production schema", {
+  timeout: 120_000,
+}, async () => {
+  const environmentSnapshot = snapshotEnvironment(CONTROLLED_ENVIRONMENT);
+  const postgres = await startEphemeralPostgres();
+  const databasePool = new Pool({
+    connectionString: postgres.connectionString,
+    max: 12,
+    ssl: false,
+  });
+  let runtimeModules;
+
+  try {
+    await applyMigrations(
+      databasePool,
+      "20260713180000_add_activation_checkout_and_refresh_rotation.sql",
+    );
+    const schema = await databasePool.query(
+      `
+        select
+          to_regclass('public.sidestream_checkout_intents') as checkout_intents,
+          to_regclass('public.sidestream_account_devices') as account_devices
+      `,
+    );
+    assert.deepEqual(schema.rows[0], {
+      checkout_intents: null,
+      account_devices: null,
+    });
+
+    configureRuntime(postgres.connectionString);
+    runtimeModules = await loadRuntimeModules();
+    const { account } = runtimeModules;
+    const stripe = new RecordingStripe();
+    account.__setCheckoutAbuseStripeClient(stripe);
+    const request = {
+      headers: {
+        host: "sidestream.tv",
+        "x-forwarded-proto": "https",
+        "user-agent": "Sidestream/1.0.14",
+      },
+      socket: { remoteAddress: "127.0.0.1" },
+    };
+    const deviceId = "shipped-panel-device";
+    const activation = await account.createActivationSession(request, {
+      deviceId,
+      appVersion: "1.0.14",
+      buildChannel: "production",
+      source: "plugin_upgrade",
+    });
+    const checkout = await account.createOrResumeActivationCheckout({
+      activationKey: activation.activationKey,
+      baseUrl: BASE_URL,
+    });
+    assert.equal(checkout.ok, true);
+    assert.match(checkout.url, /^https:\/\/checkout\.stripe\.test\//);
+    assert.equal(stripe.countWrites("checkout.sessions.create"), 1);
+
+    const checkoutSession = stripe.sessionCreateWrites[0].session;
+    stripe.complete(checkoutSession.id, {
+      email: "shipped-panel-buyer@example.com",
+      name: "Shipped Panel Buyer",
+    });
+    const fulfillment = await account.fulfillCheckoutSession(
+      checkoutSession.id,
+      activation.activationKey,
+    );
+    assert.deepEqual(fulfillment, {
+      fulfilled: true,
+      activationBound: true,
+    });
+
+    const status = await account.getActivationStatus(
+      activation.activationKey,
+      deviceId,
+    );
+    assert.equal(status.status, "active");
+    assert.ok(status.licenseToken);
+    assert.ok(status.refreshToken);
+
+    const verified = await account.verifyLicenseToken(
+      status.licenseToken,
+      deviceId,
+    );
+    assert.equal(verified.active, true);
+    const environment = account.resolveRequestLicenseEnvironment(request);
+    assert.ok(environment);
+    const authorized = await account.authorizeLicenseDownload({
+      licenseToken: status.licenseToken,
+      deviceId,
+      environment,
+    });
+    assert.equal(authorized.active, true);
+
+    const refreshed = await account.refreshLicenseToken(
+      status.refreshToken,
+      deviceId,
+    );
+    assert.equal(refreshed.active, true);
+    assert.notEqual(refreshed.licenseToken, status.licenseToken);
+    const refreshedVerification = await account.verifyLicenseToken(
+      refreshed.licenseToken,
+      deviceId,
+    );
+    assert.equal(refreshedVerification.active, true);
+  } finally {
+    if (runtimeModules) {
+      await runtimeModules.postgres.getPostgresPool().end();
       await rm(runtimeModules.temporaryModuleDirectory, { recursive: true, force: true });
     }
     await databasePool.end().catch(() => {});
@@ -707,14 +837,17 @@ async function seedActivation(pool, activationKey) {
   );
 }
 
-async function applyMigrations(pool) {
+async function applyMigrations(pool, through = "") {
   const migrations = (await readdir(migrationsDirectory))
     .filter((name) => name.endsWith(".sql"))
-    .sort();
+    .sort()
+    .filter((name) => !through || name <= through);
   for (const migration of migrations) {
     await pool.query(await readFile(join(migrationsDirectory, migration), "utf8"));
   }
-  assert.ok(migrations.includes("20260713203000_add_checkout_intents.sql"));
+  if (!through || through >= "20260713203000_add_checkout_intents.sql") {
+    assert.ok(migrations.includes("20260713203000_add_checkout_intents.sql"));
+  }
 }
 
 async function loadRuntimeModules() {
@@ -735,10 +868,18 @@ async function loadRuntimeModules() {
       "./customer-identity.js": pathToFileURL(
         join(repositoryRoot, "api", "_lib", "customer-identity.ts"),
       ).href,
-      "./postgres.js": pathToFileURL(
-        join(repositoryRoot, "api", "_lib", "postgres.ts"),
-      ).href,
     };
+    const postgresPath = await writeAdaptedModule(
+      temporaryModuleDirectory,
+      "postgres",
+      join(repositoryRoot, "api", "_lib", "postgres.ts"),
+      {
+        "./postgres-target.js": pathToFileURL(
+          join(repositoryRoot, "api", "_lib", "postgres-target.ts"),
+        ).href,
+      },
+    );
+    imports["./postgres.js"] = pathToFileURL(postgresPath).href;
     imports["./maintenance.js"] = pathToFileURL(await writeAdaptedModule(
       temporaryModuleDirectory,
       "maintenance",
@@ -758,7 +899,8 @@ export function __setCheckoutAbuseStripeClient(value: Stripe | null) {
     const modulePath = join(temporaryModuleDirectory, "account-under-test.ts");
     await writeFile(modulePath, source, { mode: 0o600 });
     const account = await import(`${pathToFileURL(modulePath).href}?checkout-abuse=1`);
-    return { account, temporaryModuleDirectory };
+    const postgres = await import(pathToFileURL(postgresPath).href);
+    return { account, postgres, temporaryModuleDirectory };
   } catch (error) {
     await rm(temporaryModuleDirectory, { recursive: true, force: true });
     throw error;

@@ -517,9 +517,9 @@ test("every production license read tolerates the pre-lifecycle schema", async (
   for (const [name, nextName, expectedUses] of [
     ["getSession", "requireSession", 1],
     ["getActivationStatus", "verifyLicenseToken", 1],
-    ["verifyLicenseToken", "upsertLicenseFromSubscription", 1],
-    ["authorizeLicenseDownload", "getAccountDeviceStatus", 1],
-    ["refreshLicenseToken", "confirmAccountDeviceTransfer", 2],
+    ["verifyLicenseToken", "upsertLicenseFromSubscription", 2],
+    ["authorizeLicenseDownload", "getAccountDeviceStatus", 2],
+    ["refreshLicenseToken", "confirmAccountDeviceTransfer", 3],
   ]) {
     const start = accountSource.indexOf(`export async function ${name}`);
     const end = accountSource.indexOf(`export async function ${nextName}`, start);

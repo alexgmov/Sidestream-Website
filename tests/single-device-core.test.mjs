@@ -202,7 +202,7 @@ test("account core serializes every credential path on the account namespace", a
   const activeLicenseOrder = activationStatus.indexOf(
     "when license_state.entitlement_status = 'active'",
   );
-  const issuance = activationStatus.indexOf("const issued = await issueLicenseTokenPair");
+  const issuance = activationStatus.indexOf("const issued = schema.accountDevices");
   assert.ok(activeLicenseOrder >= 0 && activeLicenseOrder < issuance);
 
   const bindingCheck = source.indexOf("const activationBinding = await checkActivationDeviceBinding");

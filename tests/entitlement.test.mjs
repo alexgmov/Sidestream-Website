@@ -286,8 +286,10 @@ test("legacy-host bare Checkout fails safe before Stripe", async () => {
   const checkoutSource = await readFile(new URL("../api/checkout/start.ts", import.meta.url), "utf8");
   const upgradeSource = await readFile(new URL("../upgrade.html", import.meta.url), "utf8");
   const guardIndex = checkoutSource.indexOf("isLegacyVercelHost(request.headers.host)");
-  const stripeIndex = checkoutSource.indexOf("const stripe = getStripe()");
-  assert.ok(guardIndex >= 0 && guardIndex < stripeIndex);
+  const activationResumeIndex = checkoutSource.indexOf(
+    "createOrResumeActivationCheckout({",
+  );
+  assert.ok(guardIndex >= 0 && guardIndex < activationResumeIndex);
   assert.match(checkoutSource, /checkout.*activation_required/s);
   assert.match(upgradeSource, /checkoutState === "activation_required"/);
   assert.match(upgradeSource, /checkoutLink\.hidden = true/);
@@ -315,14 +317,19 @@ test("paid completion grace is database-bounded and unpaid Sessions fail verific
 });
 
 test("both Checkout routes attach instead of pre-binding attacker activation links", async () => {
-  for (const route of ["../api/checkout/start.ts", "../api/checkout/create.ts"]) {
-    const source = await readFile(new URL(route, import.meta.url), "utf8");
+  const start = await readFile(new URL("../api/checkout/start.ts", import.meta.url), "utf8");
+  const create = await readFile(new URL("../api/checkout/create.ts", import.meta.url), "utf8");
+  const account = await readFile(new URL("../api/_lib/account.ts", import.meta.url), "utf8");
+  for (const source of [start, create, account]) {
     assert.doesNotMatch(source, /bindActivationToAccount/);
-    assert.match(source, /attachCheckoutSessionToActivation/);
-    assert.match(source, /getActivationCheckoutIdempotencyKey/);
-    assert.match(source, /license\.active/);
-    assert.match(source, /\/api\/activation\/claim/);
   }
+  assert.match(start, /createOrResumeActivationCheckout/);
+  assert.match(start, /license\.active/);
+  assert.match(start, /\/api\/activation\/claim/);
+  assert.match(create, /attachCheckoutSessionToActivation/);
+  assert.match(create, /getActivationCheckoutIdempotencyKey/);
+  assert.match(account, /createOrResumeActivationCheckout[\s\S]+attachCheckoutSessionToActivation/);
+  assert.match(account, /createOrResumeActivationCheckout[\s\S]+getActivationCheckoutIdempotencyKey/);
 });
 
 test("account implementation bounds status replay and uses locked refresh/fulfillment CAS", async () => {
