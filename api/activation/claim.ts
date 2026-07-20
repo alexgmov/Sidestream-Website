@@ -6,6 +6,7 @@ import {
   createActivationClaimCsrf,
   getBaseUrl,
   getSession,
+  isPendingShippedPanelUpgrade,
   methodNotAllowed,
   query,
   readRequestBody,
@@ -75,6 +76,15 @@ export default async function handler(
         error: "Invalid customer identity",
         code: "invalid_customer_identity",
       });
+    }
+
+    // v1.0.14 saved this claim URL even for Upgrade. Preserve that existing
+    // capability while sending only known, still-pending Upgrade activations
+    // to their idempotent attached Checkout path.
+    if (await isPendingShippedPanelUpgrade(activationKey)) {
+      const checkoutUrl = new URL("/api/checkout/start", baseUrl);
+      checkoutUrl.searchParams.set("activation", activationKey);
+      return redirect(response, checkoutUrl.toString(), 302);
     }
 
     const session = await getSession(request);

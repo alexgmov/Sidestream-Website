@@ -84,6 +84,17 @@ test("activation-bearing Checkout GET resumes the shipped-panel path before anon
   assert.doesNotMatch(source, /attachCheckoutSessionToActivation\(/);
 });
 
+test("saved v1.0.14 Upgrade claim URLs recover before account authentication", async () => {
+  const source = await readFile(files.claim, "utf8");
+  const upgradeRecovery = source.indexOf("isPendingShippedPanelUpgrade(activationKey)");
+  const sessionRead = source.indexOf("const session = await getSession(request)");
+  assert.ok(upgradeRecovery >= 0 && upgradeRecovery < sessionRead);
+  assert.match(
+    source.slice(upgradeRecovery, sessionRead),
+    /\/api\/checkout\/start/,
+  );
+});
+
 test("claim GET authenticates first and stays a no-store read-only decision", async () => {
   const source = await readFile(files.claim, "utf8");
   const getStart = source.indexOf('if (method === "GET")');

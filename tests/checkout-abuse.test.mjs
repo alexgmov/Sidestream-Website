@@ -522,6 +522,10 @@ test("shipped activation checkout remains complete on the pre-hardening Producti
     });
     assert.equal(activation.restoreUrl, activation.upgradeUrl);
     assert.match(activation.upgradeUrl, /^https:\/\/sidestream\.test\/api\/checkout\/start\?activation=/);
+    assert.equal(
+      await account.isPendingShippedPanelUpgrade(activation.activationKey),
+      true,
+    );
     const accountActivation = await account.createActivationSession(request, {
       deviceId: `${deviceId}-account`,
       appVersion: "1.0.14",
@@ -529,6 +533,10 @@ test("shipped activation checkout remains complete on the pre-hardening Producti
       source: "settings_account",
     });
     assert.match(accountActivation.restoreUrl, /^https:\/\/sidestream\.test\/api\/activation\/claim\?activation=/);
+    assert.equal(
+      await account.isPendingShippedPanelUpgrade(accountActivation.activationKey),
+      false,
+    );
     const checkout = await account.createOrResumeActivationCheckout({
       activationKey: activation.activationKey,
       baseUrl: BASE_URL,

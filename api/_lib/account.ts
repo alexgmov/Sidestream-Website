@@ -1921,7 +1921,7 @@ export async function createActivationSession(
 
   const baseUrl = getBaseUrl(request);
   const upgradeUrl = `${baseUrl}/api/checkout/start?activation=${encodeURIComponent(activationKey)}`;
-  const restoreUrl = source === "download_history" || source === "results_quota"
+  const restoreUrl = isShippedPanelUpgradeSource(source)
     ? upgradeUrl
     : `${baseUrl}/api/activation/claim?activation=${encodeURIComponent(activationKey)}`;
 
@@ -1931,6 +1931,29 @@ export async function createActivationSession(
     upgradeUrl,
     restoreUrl,
   };
+}
+
+export function isShippedPanelUpgradeSource(source: unknown) {
+  return source === "download_history" || source === "results_quota";
+}
+
+export async function isPendingShippedPanelUpgrade(activationKey: string) {
+  const result = await query<{ source: string }>(
+    `
+      select source
+      from public.sidestream_activation_sessions
+      where activation_key = $1
+        and source in ('download_history', 'results_quota')
+        and expires_at > now()
+        and completed_at is null
+        and device_id_hash is not null
+        and account_id is null
+        and status = 'pending'
+      limit 1
+    `,
+    [activationKey],
+  );
+  return isShippedPanelUpgradeSource(result.rows[0]?.source);
 }
 
 export async function getActivationCheckoutContext(activationKey: string) {
