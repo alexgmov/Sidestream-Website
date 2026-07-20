@@ -633,12 +633,12 @@ async function reconcileInheritedEntitlement(
         event.data.object,
         { eventId: event.id, created: event.created },
       );
-      if (!result.fulfilled) {
+      if (result.fulfilled === false) {
         return { status: "ignored", outcome: safeOutcome(`checkout_${result.reason}`) };
       }
       return {
         status: "processed",
-        outcome: result.activationBound
+        outcome: "activationBound" in result && result.activationBound
           ? "checkout_fulfilled_activation_bound"
           : "checkout_fulfilled",
       };
@@ -660,7 +660,7 @@ async function reconcileInheritedEntitlement(
         undefined,
         { eventId: event.id, created: event.created },
       );
-      if (!result.fulfilled) {
+      if (result.fulfilled === false) {
         return { status: "ignored", outcome: safeOutcome(`subscription_${result.reason}`) };
       }
       return {
@@ -688,7 +688,7 @@ async function reconcileInheritedEntitlement(
         event.data.object,
         { eventId: event.id, created: event.created },
       );
-      if (!result.fulfilled) {
+      if (result.fulfilled === false) {
         if (result.reason === "stale_event") {
           return { status: "processed", outcome: "lifecycle_stale_noop" };
         }

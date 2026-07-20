@@ -61,7 +61,7 @@ export default async function handler(
       activationKey,
       baseUrl,
     });
-    if (!checkout.ok) {
+    if (checkout.ok === false) {
       return sendJson(response, checkout.statusCode, { error: checkout.error });
     }
     return redirect(response, checkout.url);

@@ -2539,7 +2539,7 @@ export async function getActivationStatus(
       previouslyIssuedAt: row.completed_at,
       licenseFeatures: row.features,
     });
-    if (!activationBinding.allowed) {
+    if ("code" in activationBinding) {
       return {
         status: activationBinding.code,
         code: activationBinding.code,
@@ -2763,7 +2763,7 @@ export async function verifyLicenseToken(
         appVersion: row.activation_app_version,
         buildChannel: row.activation_build_channel,
       });
-      if (!binding.allowed) {
+      if ("code" in binding) {
         await client.query("commit");
         return { active: false as const, status: "invalid", code: binding.code };
       }
@@ -3018,7 +3018,7 @@ export async function upsertLicenseFromSubscription(
     allowlist,
   );
   const status = cleanString(subscription.status, 80) || "unknown";
-  if (!verification.ok) {
+  if (verification.ok === false) {
     // This compatibility-only persistence path is used by old fixture callers
     // that provide an existing account explicitly. It records a denied row and
     // never makes that row eligible; runtime Stripe entry points pass no hint.
@@ -3597,7 +3597,7 @@ export async function fulfillCheckoutSession(
     checkoutSession,
     customerId,
   );
-  if (!canonicalPayment.ok) {
+  if (canonicalPayment.ok === false) {
     return { fulfilled: false as const, reason: canonicalPayment.reason };
   }
 
@@ -3927,7 +3927,7 @@ async function retrieveCanonicalCheckoutPayment(
     expectedCustomerId: customerId,
     paymentIntent,
   });
-  if (!canonical.ok) return canonical;
+  if (canonical.ok === false) return canonical;
   return {
     ok: true as const,
     facts: canonical.facts,
@@ -4379,7 +4379,7 @@ async function upsertLicenseFromOneTimeCheckoutSession(options: {
           }
         : null,
     });
-    if (!transition.apply) {
+    if (transition.apply === false) {
       if (transition.reason !== "stale_event") {
         return { fulfilled: false as const, reason: transition.reason };
       }
@@ -5081,7 +5081,7 @@ async function getEmptySlotTransferLimitState(
     `,
     [options.accountId, options.namespace],
   );
-  const latestDevice = devices.rows.at(-1);
+  const latestDevice = devices.rows[devices.rows.length - 1];
   if (
     !latestDevice ||
     safeEqual(latestDevice.device_id_hash, options.requestedDeviceIdHash)
@@ -5297,7 +5297,7 @@ export async function authorizeLicenseDownload(options: {
         touchLastSeen: false,
         credentialCreatedAt: credential.created_at,
       });
-      if (!binding.allowed) {
+      if ("code" in binding) {
         await client.query("commit");
         return deniedDownloadAuthorization(
           binding.code === DEVICE_POLICY_ERROR_CODES.DEVICE_DEACTIVATED
@@ -5815,7 +5815,7 @@ async function issueLicenseTokenPair(options: {
         appVersion: options.appVersion,
         buildChannel: options.buildChannel,
       });
-      if (!binding.allowed) {
+      if ("code" in binding) {
         await client.query("commit");
         return { issued: false as const, code: binding.code };
       }
@@ -6125,7 +6125,7 @@ export async function refreshLicenseToken(
           return {
             active: false as const,
             status: "invalid",
-            code: revokedBinding.allowed ? "revoked" as const : revokedBinding.code,
+            code: "code" in revokedBinding ? revokedBinding.code : "revoked" as const,
           };
         }
         await client.query("rollback");
@@ -6172,7 +6172,7 @@ export async function refreshLicenseToken(
         appVersion: credential.activation_app_version,
         buildChannel: credential.activation_build_channel,
       });
-      if (!binding.allowed) {
+      if ("code" in binding) {
         await client.query("commit");
         return { active: false as const, status: "invalid", code: binding.code };
       }

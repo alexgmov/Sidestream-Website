@@ -123,7 +123,7 @@ export default async function handler(
     baseUrl,
     rotateCancelledSession: cleanString(payload.rotate, 32) === "cancelled",
   });
-  if (!result.ok) {
+  if (result.ok === false) {
     return sendJson(response, result.statusCode, {
       error: result.error,
       code: result.code,

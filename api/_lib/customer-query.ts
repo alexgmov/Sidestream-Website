@@ -272,7 +272,7 @@ export async function queryCustomerList(
       row,
       moneyByCustomer.get(row.customer_id) || [],
     ));
-    const last = hasMore ? rows.at(-1) : null;
+    const last = hasMore ? rows[rows.length - 1] : null;
     return {
       customers,
       nextCursor: last ? encodeCustomerCursor({
@@ -405,11 +405,11 @@ function parseFilters(value: unknown): CustomerListFilters {
     throw new CustomerQueryValidationError("invalid_filter", "dataQualityFlag is invalid");
   }
   return {
-    billingModel,
-    entitlementStatus,
-    hasEmail,
+    billingModel: typeof billingModel === "string" ? billingModel : null,
+    entitlementStatus: typeof entitlementStatus === "string" ? entitlementStatus : null,
+    hasEmail: typeof hasEmail === "boolean" ? hasEmail : null,
     activeSince,
-    dataQualityFlag,
+    dataQualityFlag: typeof dataQualityFlag === "string" ? dataQualityFlag : null,
   };
 }
 

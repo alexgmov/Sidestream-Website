@@ -73,7 +73,8 @@ export function createCustomerDetailHandler(
 
 function customerIdFromRequest(request: IncomingMessage) {
   const pathname = new URL(request.url || "/", "http://internal.invalid").pathname;
-  const segment = pathname.split("/").filter(Boolean).at(-1) || "";
+  const segments = pathname.split("/").filter(Boolean);
+  const segment = segments[segments.length - 1] || "";
   try {
     return decodeURIComponent(segment);
   } catch {

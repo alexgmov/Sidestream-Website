@@ -40,7 +40,7 @@ export default async function handler(
       deviceId,
       environment,
     });
-    if (authorization.active) {
+    if (authorization.active === true) {
       return sendJson(response, 200, { active: true });
     }
     if (authorization.code === "license_inactive") {

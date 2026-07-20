@@ -115,6 +115,7 @@ export class MemoryPersistence {
       licenseId: options.licenseId ?? null,
       licenseActive: options.licenseActive ?? false,
       status: options.status || "pending",
+      source: options.source || "",
       appVersion: options.appVersion || "1.0.14",
       buildChannel: options.buildChannel || "stable",
       createdAt: options.createdAt ?? this.clock.now(),
@@ -280,6 +281,7 @@ export function createApiContractHarness(options = {}) {
         deviceId: cleanString(payload.deviceId, 240),
         appVersion: cleanString(payload.appVersion, 80),
         buildChannel: cleanString(payload.buildChannel, 80),
+        source: cleanString(payload.source, 80),
       });
       return {
         activationKey,
@@ -398,6 +400,15 @@ export function createApiContractHarness(options = {}) {
     },
     async getSession(request) {
       return request.session || null;
+    },
+    async isPendingShippedPanelUpgrade(activationKey) {
+      const activation = store.getActivation(activationKey);
+      return Boolean(
+        activation &&
+        activation.status === "pending" &&
+        !activation.accountId &&
+        (activation.source === "download_history" || activation.source === "results_quota"),
+      );
     },
     createActivationClaimCsrf(activationKey, accountId) {
       return createClaimCsrfToken({
