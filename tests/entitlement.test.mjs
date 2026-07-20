@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import checkoutHandoffMiddleware from "../middleware.ts";
 import {
   buildCheckoutCompletionUrl,
   canBindActivationAccount,
@@ -379,17 +380,24 @@ test("legacy 1.0.12 account API POSTs are not caught by the old-host redirect", 
   );
 });
 
-test("shipped v1.0.14 Upgrade claims rewrite directly to Checkout", async () => {
-  const config = JSON.parse(
-    await readFile(new URL("../vercel.json", import.meta.url), "utf8"),
-  );
-  const upgradeRewrite = config.rewrites?.find((rule) =>
-    rule.source === "/api/activation/claim" &&
-    rule.destination === "/api/checkout/start"
+test("shipped v1.0.14 Upgrade claims rewrite directly to Checkout", () => {
+  const activation = "activation-shipped-panel";
+  const upgrade = checkoutHandoffMiddleware(new Request(
+    `https://sidestream.tv/api/activation/claim?activation=${activation}&upgrade=1`,
+  ));
+  assert.equal(
+    upgrade.headers.get("x-middleware-rewrite"),
+    `https://sidestream.tv/api/checkout/start?activation=${activation}`,
   );
 
-  assert.ok(upgradeRewrite, "missing shipped Upgrade compatibility rewrite");
-  assert.deepEqual(upgradeRewrite.has, [
-    { type: "query", key: "upgrade", value: "1" },
-  ]);
+  const restore = checkoutHandoffMiddleware(new Request(
+    `https://sidestream.tv/api/activation/claim?activation=${activation}`,
+  ));
+  assert.equal(restore.headers.get("x-middleware-next"), "1");
+
+  const post = checkoutHandoffMiddleware(new Request(
+    `https://sidestream.tv/api/activation/claim?activation=${activation}&upgrade=1`,
+    { method: "POST" },
+  ));
+  assert.equal(post.headers.get("x-middleware-next"), "1");
 });

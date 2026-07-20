@@ -23,13 +23,6 @@
       "schedule": "27 5 * * *"
     }
   ],
-  "rewrites": [
-    {
-      "source": "/api/activation/claim",
-      "has": [{ "type": "query", "key": "upgrade", "value": "1" }],
-      "destination": "/api/checkout/start"
-    }
-  ],
   "redirects": [
     {
       "source": "/index.html",
