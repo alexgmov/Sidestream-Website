@@ -320,6 +320,7 @@ test("OAuth redirect origins must match the browser-facing start origin", () => 
 test("OAuth start accepts only signed Upgrade and Checkout capabilities", async () => {
   let storedCookies = null;
   let session = null;
+  let checkoutCalls = 0;
   const handler = await loadInjectedHandler(
     new URL("../api/auth/google/start.ts", import.meta.url),
     {
@@ -327,7 +328,25 @@ test("OAuth start accepts only signed Upgrade and Checkout capabilities", async 
         cleanString(value, maxLength = 240) {
           return typeof value === "string" ? value.trim().slice(0, maxLength) : "";
         },
+        async createCheckoutIntentConfirmation(options) {
+          assert.equal(options.activationKey, "activation_plugin_123");
+          assert.equal(options.session, session);
+          return {
+            intentId: "22222222-2222-4222-8222-222222222222",
+            browserToken: "plugin-browser-token",
+          };
+        },
+        async createOrReuseCheckoutSession(options) {
+          checkoutCalls += 1;
+          assert.equal(options.session, session);
+          return {
+            ok: true,
+            url: "https://checkout.stripe.test/session",
+            reused: false,
+          };
+        },
         getBaseUrl: () => "https://sidestream.test",
+        getClientIp: () => "127.0.0.1",
         getGoogleAuthUrl: () => "https://accounts.google.test/oauth",
         getSession: async () => session,
         methodNotAllowed(response) {
@@ -341,9 +360,17 @@ test("OAuth start accepts only signed Upgrade and Checkout capabilities", async 
             : { token: String(value || ""), activationKey: "" };
         },
         async resumeCheckoutIntentConfirmation(options) {
-          assert.equal(options.deferAccountBindingCheck, true);
+          if (options.deferAccountBindingCheck) {
+            return options.browserToken === "checkout-browser-token"
+              ? { browserToken: options.browserToken }
+              : null;
+          }
+          assert.equal(options.session, session);
           return options.browserToken === "checkout-browser-token"
-            ? { browserToken: options.browserToken }
+            ? {
+                intentId: "33333333-3333-4333-8333-333333333333",
+                browserToken: options.browserToken,
+              }
             : null;
         },
         redirect(response, location, statusCode = 303) {
@@ -358,6 +385,22 @@ test("OAuth start accepts only signed Upgrade and Checkout capabilities", async 
         },
         setOAuthCookies(_request, _response, options) {
           storedCookies = options;
+        },
+      },
+      "../../_lib/rate-limit.js": {
+        applyRateLimitHeaders() {},
+        async consumeRateLimit() {
+          return {
+            allowed: true,
+            limit: 8,
+            remaining: 7,
+            retryAfterSeconds: 0,
+            resetAt: new Date(Date.now() + 60_000),
+          };
+        },
+        sendRateLimitExceeded(response) {
+          response.statusCode = 429;
+          response.end();
         },
       },
     },
@@ -407,8 +450,9 @@ test("OAuth start accepts only signed Upgrade and Checkout capabilities", async 
   assert.equal(resumed.response.statusCode, 303);
   assert.equal(
     resumed.response.getHeader("location"),
-    "https://sidestream.test/api/checkout/start?activation=activation_plugin_123",
+    "https://checkout.stripe.test/session",
   );
+  assert.equal(checkoutCalls, 1);
 
   const rejected = await invokeHandler(handler, {
     method: "GET",
@@ -643,11 +687,12 @@ test("legacy-host bare Checkout fails safe before Stripe", async () => {
   const checkoutSource = await readFile(new URL("../api/checkout/start.ts", import.meta.url), "utf8");
   const upgradeSource = await readFile(new URL("../upgrade.html", import.meta.url), "utf8");
   const guardIndex = checkoutSource.indexOf("isLegacyVercelHost(request.headers.host)");
-  const stripeIndex = checkoutSource.indexOf("const stripe = getStripe()");
-  assert.ok(guardIndex >= 0 && guardIndex < stripeIndex);
+  assert.ok(guardIndex >= 0);
+  assert.doesNotMatch(checkoutSource, /getStripe\(\)/);
+  assert.doesNotMatch(checkoutSource, /createOrReuseCheckoutSession\(/);
   assert.match(checkoutSource, /checkout.*activation_required/s);
   assert.match(upgradeSource, /checkoutState === "activation_required"/);
-  assert.match(upgradeSource, /checkoutLink\.hidden = true/);
+  assert.match(upgradeSource, /checkoutForm\.hidden = true/);
   assert.match(upgradeSource, /You have not been charged/);
 });
 
@@ -671,15 +716,23 @@ test("paid completion grace is database-bounded and unpaid Sessions fail verific
   ).ok, false);
 });
 
-test("both Checkout routes attach instead of pre-binding attacker activation links", async () => {
-  for (const route of ["../api/checkout/start.ts", "../api/checkout/create.ts"]) {
-    const source = await readFile(new URL(route, import.meta.url), "utf8");
-    assert.doesNotMatch(source, /bindActivationToAccount/);
-    assert.match(source, /attachCheckoutSessionToActivation/);
-    assert.match(source, /getActivationCheckoutIdempotencyKey/);
-    assert.match(source, /license\.active/);
-    assert.match(source, /\/api\/activation\/claim/);
-  }
+test("Checkout start only mints capabilities and the worker attaches without pre-binding", async () => {
+  const start = await readFile(new URL("../api/checkout/start.ts", import.meta.url), "utf8");
+  const create = await readFile(new URL("../api/checkout/create.ts", import.meta.url), "utf8");
+
+  assert.doesNotMatch(start, /bindActivationToAccount/);
+  assert.doesNotMatch(start, /attachCheckoutSessionToActivation/);
+  assert.doesNotMatch(start, /createOrReuseCheckoutSession\(/);
+  assert.match(start, /createCheckoutIntentConfirmation/);
+  assert.match(start, /\/api\/auth\/google\/start/);
+  assert.match(start, /license\.active/);
+  assert.match(start, /\/api\/activation\/claim/);
+
+  assert.doesNotMatch(create, /bindActivationToAccount/);
+  assert.match(create, /attachCheckoutSessionToActivation/);
+  assert.match(create, /getActivationCheckoutIdempotencyKey/);
+  assert.match(create, /license\.active/);
+  assert.match(create, /\/api\/activation\/claim/);
 });
 
 test("account implementation bounds status replay and uses locked refresh/fulfillment CAS", async () => {

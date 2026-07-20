@@ -8,22 +8,39 @@ import {
   redirect,
   resumeCheckoutIntentConfirmation,
   type AccountRequest,
-  type CheckoutIntentConfirmation,
 } from "../_lib/account.js";
-import { isLegacyVercelHost } from "../_lib/entitlement.js";
+import {
+  isLegacyVercelHost,
+  validateCheckoutIntentPost,
+} from "../_lib/entitlement.js";
 
 export default async function handler(
   request: AccountRequest,
   response: ServerResponse,
 ) {
   const method = (request.method || "GET").toUpperCase();
-  if (method !== "GET") return methodNotAllowed(response, "GET");
+  if (method !== "GET" && method !== "POST") {
+    return methodNotAllowed(response, "GET, POST");
+  }
 
   const baseUrl = getBaseUrl(request);
   const requestUrl = new URL(request.url || "/api/checkout/start", baseUrl);
   const activationKey = cleanString(requestUrl.searchParams.get("activation"), 160);
   const browserToken = cleanString(requestUrl.searchParams.get("intent"), 160);
   const checkoutState = cleanString(requestUrl.searchParams.get("checkout"), 32);
+  if (method === "POST" && !validateCheckoutIntentPost({
+    requestOrigin: firstHeaderValue(request.headers.origin),
+    expectedOrigin: baseUrl,
+    fetchSite: firstHeaderValue(request.headers["sec-fetch-site"]),
+    contentType: firstHeaderValue(request.headers["content-type"]),
+  })) {
+    return sendConfirmationPage(
+      response,
+      403,
+      "Checkout request rejected",
+      "Return to Sidestream and start Upgrade again. No Stripe Customer, Price, or Checkout Session was created.",
+    );
+  }
   if (!activationKey && !browserToken && isLegacyVercelHost(request.headers.host)) {
     const retryUrl = new URL("/upgrade.html", baseUrl);
     retryUrl.searchParams.set("checkout", "activation_required");
@@ -36,11 +53,13 @@ export default async function handler(
       return redirect(response, canonicalConfirmation.toString(), 302);
     }
   }
+  if (method === "GET" && !activationKey && !browserToken) {
+    return redirect(response, new URL("/upgrade.html", baseUrl).toString(), 302);
+  }
 
-  // GET is a read-only transition boundary for Stripe. In particular, the old
-  // `const stripe = getStripe()` path is forbidden here. The signed auto-submit POST
-  // owns attachCheckoutSessionToActivation and
-  // getActivationCheckoutIdempotencyKey behavior through the intent worker.
+  // Start only mints or resumes an opaque capability. Authentication and the
+  // locked Checkout worker own the remaining redirects; no HTML transition is
+  // rendered and this route never creates Stripe resources.
   const session = await getSession(request);
   if (session?.license.active) {
     if (activationKey) {
@@ -65,51 +84,12 @@ export default async function handler(
     );
   }
 
-  return sendCheckoutTransitionPage(
-    response,
-    confirmation,
-    checkoutState === "cancelled",
-  );
-}
-
-function sendCheckoutTransitionPage(
-  response: ServerResponse,
-  confirmation: CheckoutIntentConfirmation,
-  cancelled: boolean,
-) {
-  response.statusCode = 200;
-  response.setHeader("Content-Type", "text/html; charset=utf-8");
-  response.setHeader("Cache-Control", "no-store");
-  response.setHeader(
-    "Content-Security-Policy",
-    "default-src 'none'; style-src 'unsafe-inline'; script-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
-  );
-  response.setHeader("X-Frame-Options", "DENY");
-  response.end(`<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <meta name="robots" content="noindex,nofollow">
-  <title>Continue to Stripe Checkout - Sidestream</title>
-  <style>
-    :root{color-scheme:dark;font-family:Inter,ui-sans-serif,system-ui,sans-serif;background:#090909;color:#f7f7f7}
-    body{min-height:100vh;margin:0;display:grid;place-items:center;padding:24px;box-sizing:border-box}
-    main{width:min(720px,100%);text-align:center}
-    p{color:#f7f7f7;line-height:1.55;margin:0}
-  </style>
-</head>
-<body><main><p>Continue with authentication with Google if you haven't already.</p>
-  <form id="checkout-transition" method="post" action="/api/checkout/create" hidden>
-    <input type="hidden" name="checkoutIntentId" value="${escapeHtml(confirmation.intentId)}">
-    <input type="hidden" name="checkoutIntent" value="${escapeHtml(confirmation.browserToken)}">
-    <input type="hidden" name="intentToken" value="${escapeHtml(confirmation.signedToken)}">
-    <input type="hidden" name="intent" value="purchase">
-    ${cancelled ? '<input type="hidden" name="rotate" value="cancelled">' : ""}
-  </form>
-  <script src="/checkout-transition.js"></script>
-</main></body>
-</html>`);
+  const signInUrl = new URL("/api/auth/google/start", baseUrl);
+  signInUrl.searchParams.set("checkout_intent", confirmation.browserToken);
+  if (checkoutState === "cancelled") {
+    signInUrl.searchParams.set("checkout", "cancelled");
+  }
+  return redirect(response, signInUrl.toString(), 303);
 }
 
 function sendConfirmationPage(
@@ -155,4 +135,8 @@ function escapeHtml(value: string) {
     "'": "&#39;",
     '\"': "&quot;",
   })[character] || character);
+}
+
+function firstHeaderValue(value: string | string[] | undefined) {
+  return Array.isArray(value) ? value[0] || "" : value || "";
 }

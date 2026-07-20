@@ -118,6 +118,7 @@
   .primary:hover { background: var(--accent); color: #fff; }
   .secondary { background: rgba(255, 255, 255, 0.08); color: var(--ink); }
   .secondary:hover { background: rgba(255, 255, 255, 0.14); }
+  form { margin: 0; }
   .note { color: var(--faint); font-size: 0.88rem; line-height: 1.4; margin: 0; }
   .status { color: var(--soft); font-size: 0.96rem; line-height: 1.45; margin: 0; }
   .status.good { color: var(--good); }
@@ -153,7 +154,9 @@
           <li>Secure checkout handled by Stripe</li>
         </ul>
         <p class="status" id="upgrade-status">Continue with Google authentication if needed, then go straight to Stripe.</p>
-        <a class="button primary" id="checkout-link" href="/api/checkout/start">Continue to Stripe</a>
+        <form id="checkout-form" method="post" action="/api/checkout/start">
+          <button class="button primary" id="checkout-button" type="submit">Continue to Stripe</button>
+        </form>
         <a class="button secondary" id="account-link" href="/account.html" hidden>Open account</a>
         <p class="note">Payment history and receipts are handled by Stripe.</p>
       </section>
@@ -165,7 +168,8 @@
     const activationKey = params.get("activation") || "";
     const checkoutState = params.get("checkout") || "";
     const statusEl = document.getElementById("upgrade-status");
-    const checkoutLink = document.getElementById("checkout-link");
+    const checkoutForm = document.getElementById("checkout-form");
+    const checkoutButton = document.getElementById("checkout-button");
     const accountLink = document.getElementById("account-link");
 
     function entryUrl() {
@@ -187,14 +191,14 @@
         return;
       }
 
-      checkoutLink.href = entryUrl();
+      checkoutForm.action = entryUrl();
       if (activationKey) {
         statusEl.textContent = "Continue with Google authentication if needed, then go straight to Stripe for this exact activation. If you already own Pro, Sidestream will send you to Restore Purchase instead of Checkout.";
-        checkoutLink.textContent = "Continue to Stripe";
+        checkoutButton.textContent = "Continue to Stripe";
       }
       if (checkoutState === "activation_required") {
         statusEl.textContent = "Checkout was stopped before payment because this Sidestream panel was not attached. You have not been charged. Return to the panel and click Upgrade again.";
-        checkoutLink.hidden = true;
+        checkoutForm.hidden = true;
       } else if (checkoutState === "cancelled") {
         statusEl.textContent = activationKey
           ? "Checkout was cancelled. Your activation is still attached; return to your account decision whenever you're ready."

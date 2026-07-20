@@ -48,7 +48,7 @@ const CONTROLLED_ENVIRONMENT = [
   "POSTGRES_POOL_MAX",
 ];
 
-test("GET and crawler-visible checkout surfaces cannot write Stripe resources", async () => {
+test("Checkout entry redirects without rendering a transition or writing Stripe resources", async () => {
   let stripeWrites = 0;
   let confirmationSequence = 0;
   const confirmation = (activationKey = "", hasCheckoutSession = false) => ({
@@ -83,33 +83,70 @@ test("GET and crawler-visible checkout surfaces cannot write Stripe resources", 
       "../_lib/entitlement.js": {
         isLegacyVercelHost: (host) => String(host || "").split(":", 1)[0] ===
           "sidestream-xi.vercel.app",
+        validateCheckoutIntentPost,
       },
     },
   );
 
-  const previews = [
-    "/api/checkout/start",
-    "/api/checkout/start?activation=activation-legacy-1.0.12",
-    "/api/checkout/start?intent=browser-capability&checkout=cancelled",
-  ];
-  for (const url of previews) {
-    const { response } = await invokeHandler(start, {
-      method: "GET",
-      url,
-      headers: { host: "sidestream.test", "x-forwarded-proto": "https" },
-    });
-    assert.equal(response.statusCode, 200);
-    assert.match(
-      response.body,
-      /Continue with authentication with Google if you haven't already\./,
-    );
-    assert.match(
-      response.body,
-      /<form id="checkout-transition" method="post" action="\/api\/checkout\/create" hidden>/,
-    );
-    assert.match(response.body, /<script src="\/checkout-transition\.js"><\/script>/);
-    assert.doesNotMatch(response.body, /<button\b/i);
-  }
+  const bare = await invokeHandler(start, {
+    method: "GET",
+    url: "/api/checkout/start",
+    headers: { host: "sidestream.test", "x-forwarded-proto": "https" },
+  });
+  assert.equal(bare.response.statusCode, 302);
+  assert.equal(bare.response.getHeader("location"), `${BASE_URL}/upgrade.html`);
+
+  const activation = await invokeHandler(start, {
+    method: "GET",
+    url: "/api/checkout/start?activation=activation-legacy-1.0.12",
+    headers: { host: "sidestream.test", "x-forwarded-proto": "https" },
+  });
+  assert.equal(activation.response.statusCode, 303);
+  assert.equal(
+    activation.response.getHeader("location"),
+    `${BASE_URL}/api/auth/google/start?checkout_intent=browser-capability`,
+  );
+
+  const cancelled = await invokeHandler(start, {
+    method: "GET",
+    url: "/api/checkout/start?intent=browser-capability&checkout=cancelled",
+    headers: { host: "sidestream.test", "x-forwarded-proto": "https" },
+  });
+  assert.equal(cancelled.response.statusCode, 303);
+  assert.equal(
+    cancelled.response.getHeader("location"),
+    `${BASE_URL}/api/auth/google/start?checkout_intent=browser-capability&checkout=cancelled`,
+  );
+
+  const publicPurchase = await invokeHandler(start, {
+    method: "POST",
+    url: "/api/checkout/start",
+    headers: {
+      host: "sidestream.test",
+      origin: BASE_URL,
+      "sec-fetch-site": "same-origin",
+      "content-type": "application/x-www-form-urlencoded",
+      "x-forwarded-proto": "https",
+    },
+  });
+  assert.equal(publicPurchase.response.statusCode, 303);
+  assert.equal(
+    publicPurchase.response.getHeader("location"),
+    `${BASE_URL}/api/auth/google/start?checkout_intent=browser-capability`,
+  );
+
+  const rejectedPost = await invokeHandler(start, {
+    method: "POST",
+    url: "/api/checkout/start",
+    headers: {
+      host: "sidestream.test",
+      origin: "https://attacker.example",
+      "sec-fetch-site": "cross-site",
+      "content-type": "application/x-www-form-urlencoded",
+      "x-forwarded-proto": "https",
+    },
+  });
+  assert.equal(rejectedPost.response.statusCode, 403);
   const legacyBare = await invokeHandler(start, {
     method: "GET",
     url: "/api/checkout/start",
@@ -154,21 +191,24 @@ test("GET and crawler-visible checkout surfaces cannot write Stripe resources", 
   assert.equal(callbackPreview.response.statusCode, 303);
   assert.equal(stripeWrites, 0);
 
-  const [index, account, upgrade, llms, startSource, transitionSource] = await Promise.all([
+  const [index, account, upgrade, llms, startSource] = await Promise.all([
     readFile(join(repositoryRoot, "index.html"), "utf8"),
     readFile(join(repositoryRoot, "account.html"), "utf8"),
     readFile(join(repositoryRoot, "upgrade.html"), "utf8"),
     readFile(join(repositoryRoot, "public", "llms.txt"), "utf8"),
     readFile(join(repositoryRoot, "api", "checkout", "start.ts"), "utf8"),
-    readFile(join(repositoryRoot, "public", "checkout-transition.js"), "utf8"),
   ]);
   assert.doesNotMatch(index, /href="\/api\/checkout\/start"/);
   assert.doesNotMatch(index, /"url": "https:\/\/sidestream\.tv\/api\/checkout\/start"/);
   assert.doesNotMatch(account, /href="\/api\/checkout\/start"/);
   assert.doesNotMatch(llms, /Checkout endpoint:.*api\/checkout\/start/);
-  assert.match(upgrade, /href="\/api\/checkout\/start"/);
+  assert.match(upgrade, /<form id="checkout-form" method="post" action="\/api\/checkout\/start">/);
   assert.doesNotMatch(stripComments(startSource), /\bgetStripe\s*\(/);
-  assert.match(transitionSource, /HTMLFormElement[\s\S]+form\.submit\(\)/);
+  assert.doesNotMatch(startSource, /checkout-transition/);
+  await assert.rejects(
+    access(join(repositoryRoot, "public", "checkout-transition.js"), fsConstants.F_OK),
+    { code: "ENOENT" },
+  );
 });
 
 test("Checkout POST rejects CSRF, throttling, and active owners before Stripe work", async () => {

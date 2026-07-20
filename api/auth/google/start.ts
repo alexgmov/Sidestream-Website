@@ -1,7 +1,10 @@
 import type { ServerResponse } from "node:http";
 import {
   cleanString,
+  createCheckoutIntentConfirmation,
+  createOrReuseCheckoutSession,
   getBaseUrl,
+  getClientIp,
   getGoogleAuthUrl,
   getSession,
   methodNotAllowed,
@@ -14,6 +17,11 @@ import {
   setOAuthCookies,
   type AccountRequest,
 } from "../../_lib/account.js";
+import {
+  applyRateLimitHeaders,
+  consumeRateLimit,
+  sendRateLimitExceeded,
+} from "../../_lib/rate-limit.js";
 
 export default async function handler(
   request: AccountRequest,
@@ -51,19 +59,66 @@ export default async function handler(
   ) {
     return sendGoogleSignInError(response, 400, "invalid_state");
   }
+  const baseUrl = getBaseUrl(request);
   const session = await getSession(request);
-  if (session && pluginUpgrade.activationKey) {
-    const checkoutUrl = new URL("/api/checkout/start", getBaseUrl(request));
-    checkoutUrl.searchParams.set("activation", pluginUpgrade.activationKey);
-    return redirect(response, checkoutUrl.toString(), 303);
-  }
-  if (session && checkoutIntent) {
-    const checkoutUrl = new URL("/api/checkout/start", getBaseUrl(request));
-    checkoutUrl.searchParams.set("intent", checkoutIntent.browserToken);
-    if (rotateCancelledCheckout) {
-      checkoutUrl.searchParams.set("checkout", "cancelled");
+  if (session && (pluginUpgrade.activationKey || checkoutIntent)) {
+    if (session.license.active) {
+      if (pluginUpgrade.activationKey) {
+        const claimUrl = new URL("/api/activation/claim", baseUrl);
+        claimUrl.searchParams.set("activation", pluginUpgrade.activationKey);
+        return redirect(response, claimUrl.toString(), 303);
+      }
+      const accountUrl = new URL("/account.html", baseUrl);
+      accountUrl.searchParams.set("checkout", "already_owned");
+      return redirect(response, accountUrl.toString(), 303);
     }
-    return redirect(response, checkoutUrl.toString(), 303);
+
+    const confirmation = pluginUpgrade.activationKey
+      ? await createCheckoutIntentConfirmation({
+          activationKey: pluginUpgrade.activationKey,
+          session,
+        })
+      : await resumeCheckoutIntentConfirmation({
+          browserToken: checkoutIntent?.browserToken || "",
+          session,
+        });
+    if (!confirmation) {
+      return sendGoogleSignInError(response, 409, "failed");
+    }
+    const rateLimit = await consumeRateLimit({
+      scope: "checkout:create",
+      dimensions: [
+        { name: "intent", value: confirmation.intentId, limit: 8 },
+        { name: "ip", value: getClientIp(request) || "unknown-client", limit: 20 },
+      ],
+      windowSeconds: 15 * 60,
+    });
+    if (!rateLimit.allowed) {
+      return sendRateLimitExceeded(response, rateLimit);
+    }
+    applyRateLimitHeaders(response, rateLimit);
+
+    const checkout = await createOrReuseCheckoutSession({
+      intentId: confirmation.intentId,
+      browserToken: confirmation.browserToken,
+      session,
+      baseUrl,
+      rotateCancelledSession: rotateCancelledCheckout,
+    });
+    if (!checkout.ok) {
+      if (checkout.code === "active_license") {
+        if (pluginUpgrade.activationKey) {
+          const claimUrl = new URL("/api/activation/claim", baseUrl);
+          claimUrl.searchParams.set("activation", pluginUpgrade.activationKey);
+          return redirect(response, claimUrl.toString(), 303);
+        }
+        const accountUrl = new URL("/account.html", baseUrl);
+        accountUrl.searchParams.set("checkout", "already_owned");
+        return redirect(response, accountUrl.toString(), 303);
+      }
+      return sendGoogleSignInError(response, checkout.statusCode, "failed");
+    }
+    return redirect(response, checkout.url, 303);
   }
   if (session) {
     return redirect(response, nextPath, 303);

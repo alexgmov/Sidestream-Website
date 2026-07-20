@@ -63,23 +63,22 @@ test("rolling device-transfer limit blocks before a fourth default move", () => 
   assert.equal(blocked.remainingTransfers, 0);
 });
 
-test("activation-bearing Checkout GET stays on a read-only auto-submit transition", async () => {
+test("activation-bearing Checkout GET redirects into authentication without rendering HTML", async () => {
   const source = await readFile(files.checkoutStart, "utf8");
   const legacyHostGuard = source.indexOf("activationKey && isLegacyVercelHost");
   const canonicalRedirect = source.indexOf("canonicalConfirmation", legacyHostGuard);
   const sessionRead = source.indexOf("const session = await getSession(request)");
   const activeOwnerRedirect = source.indexOf("/api/activation/claim", sessionRead);
   const confirmation = source.indexOf("createCheckoutIntentConfirmation", sessionRead);
+  const authRedirect = source.indexOf("/api/auth/google/start", confirmation);
 
   assert.ok(legacyHostGuard >= 0 && canonicalRedirect > legacyHostGuard);
   assert.ok(sessionRead > canonicalRedirect && activeOwnerRedirect > sessionRead);
-  assert.ok(confirmation > activeOwnerRedirect);
-  assert.match(source, /if \(method !== "GET"\)/);
-  assert.match(source, /GET is a read-only transition boundary for Stripe/);
-  assert.match(source, /Continue with authentication with Google if you haven't already\./);
-  assert.match(source, /id="checkout-transition"[\s\S]+hidden/);
-  assert.match(source, /<script src="\/checkout-transition\.js"><\/script>/);
-  assert.doesNotMatch(source, /<button\b/i);
+  assert.ok(confirmation > activeOwnerRedirect && authRedirect > confirmation);
+  assert.match(source, /method !== "GET" && method !== "POST"/);
+  assert.match(source, /no HTML transition is[\s\S]+rendered/);
+  assert.doesNotMatch(source, /checkout-transition/);
+  assert.doesNotMatch(source, /sendCheckoutTransitionPage/);
   assert.doesNotMatch(source, /stripe\.checkout\.sessions\.create/);
   assert.doesNotMatch(source, /attachCheckoutSessionToActivation\(/);
 });
@@ -105,7 +104,7 @@ test("claim GET authenticates first and stays a no-store read-only decision", as
   assert.match(source, /noindex,nofollow/);
 });
 
-test("activation purchase authenticates and auto-posts a signed intent before the locked worker", async () => {
+test("activation purchase redirects through authentication before the locked worker", async () => {
   const [claim, start, create] = await Promise.all([
     readFile(files.claim, "utf8"),
     readFile(files.checkoutStart, "utf8"),
@@ -124,8 +123,8 @@ test("activation purchase authenticates and auto-posts a signed intent before th
 
   assert.match(claim, /new URL\("\/api\/checkout\/start", baseUrl\)/);
   assert.doesNotMatch(claim, /Continue to secure checkout/i);
-  assert.match(start, /form id="checkout-transition"[\s\S]+hidden/);
-  assert.doesNotMatch(start, /<button\b/i);
+  assert.match(start, /new URL\("\/api\/auth\/google\/start", baseUrl\)/);
+  assert.doesNotMatch(start, /checkout-transition/);
   assert.match(create, /application\/x-www-form-urlencoded/);
   assert.ok(legacyRedirect >= 0 && intentValidation > legacyRedirect);
   assert.ok(sessionRead > intentValidation && signInRedirect > sessionRead);
