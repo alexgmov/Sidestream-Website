@@ -1921,13 +1921,17 @@ export async function createActivationSession(
 
   const baseUrl = getBaseUrl(request);
   const upgradeUrl = `${baseUrl}/api/checkout/start?activation=${encodeURIComponent(activationKey)}`;
-  const restoreUrl = `${baseUrl}/api/activation/claim?activation=${encodeURIComponent(activationKey)}`;
+  const restoreUrl = new URL("/api/activation/claim", baseUrl);
+  restoreUrl.searchParams.set("activation", activationKey);
+  if (isShippedPanelUpgradeSource(source)) {
+    restoreUrl.searchParams.set("upgrade", "1");
+  }
 
   return {
     activationKey,
     expiresAt: expiresAt.toISOString(),
     upgradeUrl,
-    restoreUrl,
+    restoreUrl: restoreUrl.toString(),
   };
 }
 

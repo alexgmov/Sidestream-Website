@@ -550,6 +550,7 @@ test("shipped activation checkout remains complete on the pre-hardening Producti
       source: "download_history",
     });
     assert.match(activation.restoreUrl, /^https:\/\/sidestream\.test\/api\/activation\/claim\?activation=/);
+    assert.equal(new URL(activation.restoreUrl).searchParams.get("upgrade"), "1");
     assert.match(activation.upgradeUrl, /^https:\/\/sidestream\.test\/api\/checkout\/start\?activation=/);
     assert.equal(
       await account.isPendingShippedPanelUpgrade(activation.activationKey),
@@ -562,6 +563,7 @@ test("shipped activation checkout remains complete on the pre-hardening Producti
       source: "settings_account",
     });
     assert.match(accountActivation.restoreUrl, /^https:\/\/sidestream\.test\/api\/activation\/claim\?activation=/);
+    assert.equal(new URL(accountActivation.restoreUrl).searchParams.has("upgrade"), false);
     assert.equal(
       await account.isPendingShippedPanelUpgrade(accountActivation.activationKey),
       false,

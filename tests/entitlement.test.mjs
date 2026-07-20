@@ -378,3 +378,18 @@ test("legacy 1.0.12 account API POSTs are not caught by the old-host redirect", 
     "non-API old-host pages should still canonicalize without intercepting /api/*",
   );
 });
+
+test("shipped v1.0.14 Upgrade claims rewrite directly to Checkout", async () => {
+  const config = JSON.parse(
+    await readFile(new URL("../vercel.json", import.meta.url), "utf8"),
+  );
+  const upgradeRewrite = config.rewrites?.find((rule) =>
+    rule.source === "/api/activation/claim" &&
+    rule.destination === "/api/checkout/start"
+  );
+
+  assert.ok(upgradeRewrite, "missing shipped Upgrade compatibility rewrite");
+  assert.deepEqual(upgradeRewrite.has, [
+    { type: "query", key: "upgrade", value: "1" },
+  ]);
+});

@@ -78,9 +78,9 @@ export default async function handler(
       });
     }
 
-    // v1.0.14 saved this claim URL even for Upgrade. Preserve that existing
-    // capability while sending only known, still-pending Upgrade activations
-    // to their idempotent attached Checkout path.
+    // Older v1.0.14 activations lack the edge-rewrite marker now returned by
+    // activation/start. Preserve those saved capabilities by classifying only
+    // known, still-pending Upgrade sources before account authentication.
     if (await isPendingShippedPanelUpgrade(activationKey)) {
       const checkoutUrl = new URL("/api/checkout/start", baseUrl);
       checkoutUrl.searchParams.set("activation", activationKey);
