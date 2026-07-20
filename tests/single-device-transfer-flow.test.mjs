@@ -63,7 +63,7 @@ test("rolling device-transfer limit blocks before a fourth default move", () => 
   assert.equal(blocked.remainingTransfers, 0);
 });
 
-test("activation-bearing Checkout GET stays on a read-only confirmation boundary", async () => {
+test("activation-bearing Checkout GET stays on a read-only auto-submit transition", async () => {
   const source = await readFile(files.checkoutStart, "utf8");
   const legacyHostGuard = source.indexOf("activationKey && isLegacyVercelHost");
   const canonicalRedirect = source.indexOf("canonicalConfirmation", legacyHostGuard);
@@ -75,7 +75,11 @@ test("activation-bearing Checkout GET stays on a read-only confirmation boundary
   assert.ok(sessionRead > canonicalRedirect && activeOwnerRedirect > sessionRead);
   assert.ok(confirmation > activeOwnerRedirect);
   assert.match(source, /if \(method !== "GET"\)/);
-  assert.match(source, /GET is a read\/confirmation boundary for Stripe/);
+  assert.match(source, /GET is a read-only transition boundary for Stripe/);
+  assert.match(source, /Continue with authentication with Google if you haven't already\./);
+  assert.match(source, /id="checkout-transition"[\s\S]+hidden/);
+  assert.match(source, /getElementById\("checkout-transition"\)\.submit\(\)/);
+  assert.doesNotMatch(source, /<button\b/i);
   assert.doesNotMatch(source, /stripe\.checkout\.sessions\.create/);
   assert.doesNotMatch(source, /attachCheckoutSessionToActivation\(/);
 });
@@ -101,9 +105,10 @@ test("claim GET authenticates first and stays a no-store read-only decision", as
   assert.match(source, /noindex,nofollow/);
 });
 
-test("activation purchase requires a signed intent POST before the locked worker", async () => {
-  const [claim, create] = await Promise.all([
+test("activation purchase authenticates and auto-posts a signed intent before the locked worker", async () => {
+  const [claim, start, create] = await Promise.all([
     readFile(files.claim, "utf8"),
+    readFile(files.checkoutStart, "utf8"),
     readFile(files.checkoutCreate, "utf8"),
   ]);
   const legacyRedirect = create.indexOf("legacyActivationKey &&");
@@ -112,16 +117,19 @@ test("activation purchase requires a signed intent POST before the locked worker
     legacyRedirect,
   );
   const sessionRead = create.indexOf("const session = await getSession(request)");
-  const activeOwner = create.indexOf("session?.license.active", sessionRead);
+  const signInRedirect = create.indexOf("/api/auth/google/start", sessionRead);
+  const activeOwner = create.indexOf("session.license.active", signInRedirect);
   const rateLimit = create.indexOf("await consumeRateLimit", activeOwner);
   const lockedWorker = create.indexOf("await createOrReuseCheckoutSession", rateLimit);
 
-  assert.match(claim, /form method="post" action="\/api\/checkout\/create"/);
-  assert.match(claim, /name="activationKey"/);
-  assert.match(claim, /name="intent" value="purchase"/);
+  assert.match(claim, /new URL\("\/api\/checkout\/start", baseUrl\)/);
+  assert.doesNotMatch(claim, /Continue to secure checkout/i);
+  assert.match(start, /form id="checkout-transition"[\s\S]+hidden/);
+  assert.doesNotMatch(start, /<button\b/i);
   assert.match(create, /application\/x-www-form-urlencoded/);
   assert.ok(legacyRedirect >= 0 && intentValidation > legacyRedirect);
-  assert.ok(sessionRead > intentValidation && activeOwner > sessionRead);
+  assert.ok(sessionRead > intentValidation && signInRedirect > sessionRead);
+  assert.ok(activeOwner > signInRedirect);
   assert.ok(rateLimit > activeOwner && lockedWorker > rateLimit);
   assert.match(create, /cleanString\(payload\.intent, 32\) !== "purchase"/);
   assert.match(create, /No caller-controlled[\s\S]+activation tuple reaches Stripe/);

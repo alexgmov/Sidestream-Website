@@ -16,7 +16,7 @@
 - Sidestream Pro device policy: one active production device at a time; a confirmed move deactivates the previous device.
 - Download endpoint: https://sidestream.tv/api/download.
 - Update endpoint: https://sidestream.tv/api/releases/latest.
-- Checkout confirmation page: https://sidestream.tv/upgrade.html. Opening a page never creates Stripe billing resources; Checkout begins only after an intentional same-origin confirmation.
+- Checkout entry page: https://sidestream.tv/upgrade.html. The server transition has no purchase-confirmation control, authenticates with Google only when needed, and then redirects to Stripe. Opening a GET page alone never creates Stripe billing resources.
 - Lead capture endpoint: https://sidestream.tv/api/download-lead.
 
 ## Crawl guidance

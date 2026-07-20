@@ -5,6 +5,7 @@ import {
   getBaseUrl,
   getSession,
   methodNotAllowed,
+  randomToken,
   redirect,
   resumeCheckoutIntentConfirmation,
   type AccountRequest,
@@ -37,8 +38,8 @@ export default async function handler(
     }
   }
 
-  // GET is a read/confirmation boundary for Stripe. In particular, the old
-  // `const stripe = getStripe()` path is forbidden here. The confirmed POST
+  // GET is a read-only transition boundary for Stripe. In particular, the old
+  // `const stripe = getStripe()` path is forbidden here. The signed auto-submit POST
   // owns attachCheckoutSessionToActivation and
   // getActivationCheckoutIdempotencyKey behavior through the intent worker.
   const session = await getSession(request);
@@ -65,36 +66,52 @@ export default async function handler(
     );
   }
 
-  return sendConfirmationPage(
+  return sendCheckoutTransitionPage(
     response,
-    200,
-    confirmation.activationKey
-      ? "Confirm this Sidestream activation purchase"
-      : "Confirm Sidestream Pro purchase",
-    confirmation.activationKey
-      ? "This $9.99 one-time purchase will stay attached to the exact Sidestream activation that opened this page."
-      : "Continue only if you intend to buy Sidestream Pro for $9.99 as a one-time payment.",
-    checkoutForm(confirmation, checkoutState === "cancelled"),
+    confirmation,
+    checkoutState === "cancelled",
   );
 }
 
-function checkoutForm(
+function sendCheckoutTransitionPage(
+  response: ServerResponse,
   confirmation: CheckoutIntentConfirmation,
   cancelled: boolean,
 ) {
-  const label = cancelled && confirmation.hasCheckoutSession
-    ? "Expire cancelled checkout and start a new one"
-    : confirmation.hasCheckoutSession
-      ? "Return to secure checkout"
-      : "Continue to secure checkout";
-  return `<form method="post" action="/api/checkout/create">
+  const nonce = randomToken(18);
+  response.statusCode = 200;
+  response.setHeader("Content-Type", "text/html; charset=utf-8");
+  response.setHeader("Cache-Control", "no-store");
+  response.setHeader(
+    "Content-Security-Policy",
+    `default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'`,
+  );
+  response.setHeader("X-Frame-Options", "DENY");
+  response.end(`<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="robots" content="noindex,nofollow">
+  <title>Continue to Stripe Checkout - Sidestream</title>
+  <style>
+    :root{color-scheme:dark;font-family:Inter,ui-sans-serif,system-ui,sans-serif;background:#090909;color:#f7f7f7}
+    body{min-height:100vh;margin:0;display:grid;place-items:center;padding:24px;box-sizing:border-box}
+    main{width:min(520px,100%);padding:32px;border:1px solid #2b2b2b;border-radius:24px;background:#151515}
+    p{color:#f7f7f7;line-height:1.55;margin:0}
+  </style>
+</head>
+<body><main><p>Continue with authentication with Google if you haven't already.</p>
+  <form id="checkout-transition" method="post" action="/api/checkout/create" hidden>
     <input type="hidden" name="checkoutIntentId" value="${escapeHtml(confirmation.intentId)}">
     <input type="hidden" name="checkoutIntent" value="${escapeHtml(confirmation.browserToken)}">
     <input type="hidden" name="intentToken" value="${escapeHtml(confirmation.signedToken)}">
     <input type="hidden" name="intent" value="purchase">
     ${cancelled ? '<input type="hidden" name="rotate" value="cancelled">' : ""}
-    <button type="submit">${escapeHtml(label)}</button>
-  </form>`;
+  </form>
+  <script nonce="${nonce}">document.getElementById("checkout-transition").submit();</script>
+</main></body>
+</html>`);
 }
 
 function sendConfirmationPage(

@@ -514,6 +514,16 @@ export function createApiContractHarness(options = {}) {
     getOAuthPluginUpgradeIntent() {
       return { requested: false, activationKey: "" };
     },
+    getOAuthCheckoutIntent() {
+      return {
+        requested: false,
+        browserToken: "",
+        rotateCancelledSession: false,
+      };
+    },
+    async resumeCheckoutIntentConfirmation() {
+      return null;
+    },
     getGoogleAuthUrl(_request, values) {
       if (oauth.authUrlError) throw oauth.authUrlError;
       const url = new URL("https://accounts.google.test/o/oauth2/auth");

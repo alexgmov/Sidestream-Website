@@ -93,7 +93,15 @@ export default async function handler(
   }
 
   const session = await getSession(request);
-  if (session?.license.active) {
+  if (!session) {
+    const signInUrl = new URL("/api/auth/google/start", baseUrl);
+    signInUrl.searchParams.set("checkout_intent", browserToken);
+    if (cleanString(payload.rotate, 32) === "cancelled") {
+      signInUrl.searchParams.set("checkout", "cancelled");
+    }
+    return redirect(response, signInUrl.toString(), 303);
+  }
+  if (session.license.active) {
     return sendJson(response, 409, {
       error: "Sidestream Pro is already active. Open your account or use Restore Purchase.",
       code: "active_license",

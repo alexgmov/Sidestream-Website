@@ -139,7 +139,7 @@
       <section>
         <p class="eyebrow">Sidestream Pro</p>
         <h1>Unlock downloads when you need them.</h1>
-        <p class="lede">Public website checkout is handled by Stripe as a one-time payment after you confirm the purchase. If Sidestream sent you here to activate or recover Pro, the confirmation keeps that exact activation attached without letting a link preview start billing.</p>
+        <p class="lede">Public website checkout uses Google authentication before Stripe's one-time payment page. If Sidestream sent you here to activate or recover Pro, the server keeps that exact activation attached without letting a link preview start billing.</p>
       </section>
 
       <section class="card">
@@ -152,8 +152,8 @@
           <li>No recurring subscription</li>
           <li>Secure checkout handled by Stripe</li>
         </ul>
-        <p class="status" id="upgrade-status">Review the offer, then continue to the purchase confirmation.</p>
-        <a class="button primary" id="checkout-link" href="/api/checkout/start">Review and confirm purchase</a>
+        <p class="status" id="upgrade-status">Continue with Google authentication if needed, then go straight to Stripe.</p>
+        <a class="button primary" id="checkout-link" href="/api/checkout/start">Continue to Stripe</a>
         <a class="button secondary" id="account-link" href="/account.html" hidden>Open account</a>
         <p class="note">Payment history and receipts are handled by Stripe.</p>
       </section>
@@ -189,8 +189,8 @@
 
       checkoutLink.href = entryUrl();
       if (activationKey) {
-        statusEl.textContent = "Continue to a server-owned confirmation for this exact activation. If you already own Pro, Sidestream will send you to Restore Purchase instead of Checkout.";
-        checkoutLink.textContent = "Review this activation purchase";
+        statusEl.textContent = "Continue with Google authentication if needed, then go straight to Stripe for this exact activation. If you already own Pro, Sidestream will send you to Restore Purchase instead of Checkout.";
+        checkoutLink.textContent = "Continue to Stripe";
       }
       if (checkoutState === "activation_required") {
         statusEl.textContent = "Checkout was stopped before payment because this Sidestream panel was not attached. You have not been charged. Return to the panel and click Upgrade again.";

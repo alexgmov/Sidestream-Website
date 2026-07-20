@@ -77,6 +77,8 @@ const SESSION_COOKIE = "sidestream_session";
 const OAUTH_STATE_COOKIE = "sidestream_oauth_state";
 const OAUTH_NEXT_COOKIE = "sidestream_oauth_next";
 const OAUTH_PLUGIN_UPGRADE_COOKIE = "sidestream_oauth_plugin_upgrade";
+const OAUTH_CHECKOUT_INTENT_COOKIE = "sidestream_oauth_checkout_intent";
+const OAUTH_CHECKOUT_ROTATE_COOKIE = "sidestream_oauth_checkout_rotate";
 const SESSION_MAX_AGE_SECONDS = 60 * 60 * 24 * 30;
 const OAUTH_MAX_AGE_SECONDS = 60 * 10;
 const ACTIVATION_TTL_HOURS = 24;
@@ -400,7 +402,13 @@ export function getGoogleAuthUrl(
 export function setOAuthCookies(
   request: IncomingMessage,
   response: ServerResponse,
-  options: { state: string; nextPath: string; pluginUpgradeToken?: string },
+  options: {
+    state: string;
+    nextPath: string;
+    pluginUpgradeToken?: string;
+    checkoutIntentToken?: string;
+    rotateCancelledCheckout?: boolean;
+  },
 ) {
   appendSetCookies(response, [
     serializeCookie(OAUTH_STATE_COOKIE, options.state, {
@@ -423,6 +431,32 @@ export function setOAuthCookies(
       {
         httpOnly: true,
         maxAge: options.pluginUpgradeToken ? OAUTH_MAX_AGE_SECONDS : 0,
+        path: "/",
+        sameSite: "Lax",
+        secure: shouldUseSecureCookies(request),
+      },
+    ),
+    serializeCookie(
+      OAUTH_CHECKOUT_INTENT_COOKIE,
+      options.checkoutIntentToken || "",
+      {
+        httpOnly: true,
+        maxAge: options.checkoutIntentToken ? OAUTH_MAX_AGE_SECONDS : 0,
+        path: "/",
+        sameSite: "Lax",
+        secure: shouldUseSecureCookies(request),
+      },
+    ),
+    serializeCookie(
+      OAUTH_CHECKOUT_ROTATE_COOKIE,
+      options.checkoutIntentToken && options.rotateCancelledCheckout
+        ? "cancelled"
+        : "",
+      {
+        httpOnly: true,
+        maxAge: options.checkoutIntentToken && options.rotateCancelledCheckout
+          ? OAUTH_MAX_AGE_SECONDS
+          : 0,
         path: "/",
         sameSite: "Lax",
         secure: shouldUseSecureCookies(request),
@@ -451,6 +485,20 @@ export function clearOAuthCookies(
       secure: shouldUseSecureCookies(request),
     }),
     serializeCookie(OAUTH_PLUGIN_UPGRADE_COOKIE, "", {
+      httpOnly: true,
+      maxAge: 0,
+      path: "/",
+      sameSite: "Lax",
+      secure: shouldUseSecureCookies(request),
+    }),
+    serializeCookie(OAUTH_CHECKOUT_INTENT_COOKIE, "", {
+      httpOnly: true,
+      maxAge: 0,
+      path: "/",
+      sameSite: "Lax",
+      secure: shouldUseSecureCookies(request),
+    }),
+    serializeCookie(OAUTH_CHECKOUT_ROTATE_COOKIE, "", {
       httpOnly: true,
       maxAge: 0,
       path: "/",
@@ -496,6 +544,20 @@ export function getOAuthPluginUpgradeIntent(request: IncomingMessage) {
   return {
     requested: Boolean(parsed.token),
     activationKey: parsed.activationKey,
+  };
+}
+
+export function getOAuthCheckoutIntent(request: IncomingMessage) {
+  const browserToken = cleanString(
+    getCookie(request, OAUTH_CHECKOUT_INTENT_COOKIE),
+    160,
+  );
+  return {
+    requested: Boolean(browserToken),
+    browserToken,
+    rotateCancelledSession:
+      Boolean(browserToken) &&
+      getCookie(request, OAUTH_CHECKOUT_ROTATE_COOKIE) === "cancelled",
   };
 }
 
@@ -967,6 +1029,7 @@ export async function createCheckoutIntentConfirmation(options: {
 export async function resumeCheckoutIntentConfirmation(options: {
   browserToken: string;
   session?: AccountSession | null;
+  deferAccountBindingCheck?: boolean;
   now?: Date;
 }): Promise<CheckoutIntentConfirmation | null> {
   const browserToken = cleanString(options.browserToken, 160);
@@ -992,7 +1055,11 @@ export async function resumeCheckoutIntentConfirmation(options: {
   );
   const row = result.rows[0];
   if (!row) return null;
-  if (row.account_id && row.account_id !== options.session?.accountId) return null;
+  if (
+    row.account_id &&
+    row.account_id !== options.session?.accountId &&
+    !options.deferAccountBindingCheck
+  ) return null;
   if (
     row.intent_kind === "activation" &&
     (!row.activation_key ||

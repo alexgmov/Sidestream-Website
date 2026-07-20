@@ -74,6 +74,7 @@ test("GET and crawler-visible checkout surfaces cannot write Stripe resources", 
         getBaseUrl: () => BASE_URL,
         getSession: async () => null,
         methodNotAllowed,
+        randomToken: () => "transition-nonce",
         redirect,
         async resumeCheckoutIntentConfirmation() {
           confirmationSequence += 1;
@@ -99,7 +100,16 @@ test("GET and crawler-visible checkout surfaces cannot write Stripe resources", 
       headers: { host: "sidestream.test", "x-forwarded-proto": "https" },
     });
     assert.equal(response.statusCode, 200);
-    assert.match(response.body, /<form method="post" action="\/api\/checkout\/create">/);
+    assert.match(
+      response.body,
+      /Continue with authentication with Google if you haven't already\./,
+    );
+    assert.match(
+      response.body,
+      /<form id="checkout-transition" method="post" action="\/api\/checkout\/create" hidden>/,
+    );
+    assert.match(response.body, /document\.getElementById\("checkout-transition"\)\.submit\(\)/);
+    assert.doesNotMatch(response.body, /<button\b/i);
   }
   const legacyBare = await invokeHandler(start, {
     method: "GET",
@@ -231,6 +241,16 @@ test("Checkout POST rejects CSRF, throttling, and active owners before Stripe wo
   assert.equal(limiterCalls, 0);
   assert.equal(coreCalls, 0);
 
+  const signIn = await invokeHandler(create, validPost());
+  assert.equal(signIn.response.statusCode, 303);
+  assert.equal(
+    signIn.response.getHeader("location"),
+    `${BASE_URL}/api/auth/google/start?checkout_intent=browser-capability`,
+  );
+  assert.equal(limiterCalls, 0);
+  assert.equal(coreCalls, 0);
+
+  session = accountSession({ active: false });
   allowed = false;
   const throttled = await invokeHandler(create, validPost());
   assert.equal(throttled.response.statusCode, 429);

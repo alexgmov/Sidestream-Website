@@ -317,14 +317,19 @@ test("OAuth redirect origins must match the browser-facing start origin", () => 
   assert.equal(hasSameOrigin("not a URL", "https://sidestream.tv"), false);
 });
 
-test("OAuth start accepts only the dedicated signed plugin Upgrade capability", async () => {
+test("OAuth start accepts only signed Upgrade and Checkout capabilities", async () => {
   let storedCookies = null;
+  let session = null;
   const handler = await loadInjectedHandler(
     new URL("../api/auth/google/start.ts", import.meta.url),
     {
       "../../_lib/account.js": {
+        cleanString(value, maxLength = 240) {
+          return typeof value === "string" ? value.trim().slice(0, maxLength) : "";
+        },
+        getBaseUrl: () => "https://sidestream.test",
         getGoogleAuthUrl: () => "https://accounts.google.test/oauth",
-        getSession: async () => ({ license: { active: false } }),
+        getSession: async () => session,
         methodNotAllowed(response) {
           response.statusCode = 405;
           response.end();
@@ -334,6 +339,12 @@ test("OAuth start accepts only the dedicated signed plugin Upgrade capability", 
           return value === "valid-plugin-intent"
             ? { token: value, activationKey: "activation_plugin_123" }
             : { token: String(value || ""), activationKey: "" };
+        },
+        async resumeCheckoutIntentConfirmation(options) {
+          assert.equal(options.deferAccountBindingCheck, true);
+          return options.browserToken === "checkout-browser-token"
+            ? { browserToken: options.browserToken }
+            : null;
         },
         redirect(response, location, statusCode = 303) {
           response.statusCode = statusCode;
@@ -365,7 +376,39 @@ test("OAuth start accepts only the dedicated signed plugin Upgrade capability", 
     state: "oauth-state",
     nextPath: "/account.html",
     pluginUpgradeToken: "valid-plugin-intent",
+    checkoutIntentToken: undefined,
+    rotateCancelledCheckout: false,
   });
+
+  const checkout = await invokeHandler(handler, {
+    method: "GET",
+    url: "/api/auth/google/start?checkout_intent=checkout-browser-token&checkout=cancelled",
+  });
+  assert.equal(checkout.response.statusCode, 302);
+  assert.deepEqual(storedCookies, {
+    state: "oauth-state",
+    nextPath: "/account.html",
+    pluginUpgradeToken: "",
+    checkoutIntentToken: "checkout-browser-token",
+    rotateCancelledCheckout: true,
+  });
+
+  const conflict = await invokeHandler(handler, {
+    method: "GET",
+    url: "/api/auth/google/start?plugin_upgrade=valid-plugin-intent&checkout_intent=checkout-browser-token",
+  });
+  assert.equal(conflict.response.statusCode, 400);
+
+  session = { license: { active: false } };
+  const resumed = await invokeHandler(handler, {
+    method: "GET",
+    url: "/api/auth/google/start?plugin_upgrade=valid-plugin-intent",
+  });
+  assert.equal(resumed.response.statusCode, 303);
+  assert.equal(
+    resumed.response.getHeader("location"),
+    "https://sidestream.test/api/checkout/start?activation=activation_plugin_123",
+  );
 
   const rejected = await invokeHandler(handler, {
     method: "GET",
@@ -386,11 +429,18 @@ test("state-verified OAuth callback hands a plugin activation to the locked Chec
     requested: true,
     activationKey: "activation_plugin_123",
   };
+  let oauthCheckout = {
+    requested: false,
+    browserToken: "",
+    rotateCancelledSession: false,
+  };
   let activeLicense = false;
   let rateAllowed = true;
   let exchangeCalls = 0;
   let confirmationCalls = 0;
+  let resumeCalls = 0;
   let checkoutCalls = 0;
+  const observedRotations = [];
   let observedRateLimit = null;
   const session = () => ({
     accountId: "11111111-1111-4111-8111-111111111111",
@@ -416,6 +466,7 @@ test("state-verified OAuth callback hands a plugin activation to the locked Chec
         },
         async createOrReuseCheckoutSession(options) {
           checkoutCalls += 1;
+          observedRotations.push(options.rotateCancelledSession);
           assert.equal(options.intentId, "22222222-2222-4222-8222-222222222222");
           assert.equal(options.browserToken, "browser-token");
           assert.equal(options.session.accountId, session().accountId);
@@ -436,6 +487,7 @@ test("state-verified OAuth callback hands a plugin activation to the locked Chec
         getBaseUrl: () => "https://sidestream.test",
         getClientIp: () => "127.0.0.1",
         getOAuthNextPath: () => "/account.html",
+        getOAuthCheckoutIntent: () => oauthCheckout,
         getOAuthPluginUpgradeIntent: () => pluginUpgrade,
         getOAuthState: () => "oauth-state",
         methodNotAllowed(response) {
@@ -450,6 +502,15 @@ test("state-verified OAuth callback hands a plugin activation to the locked Chec
         sendGoogleSignInError(response, statusCode) {
           response.statusCode = statusCode;
           response.end("failed");
+        },
+        async resumeCheckoutIntentConfirmation(options) {
+          resumeCalls += 1;
+          assert.equal(options.browserToken, "checkout-browser-token");
+          assert.equal(options.session.accountId, session().accountId);
+          return {
+            intentId: "22222222-2222-4222-8222-222222222222",
+            browserToken: "browser-token",
+          };
         },
         async upsertGoogleAccount() {
           return session().accountId;
@@ -483,6 +544,7 @@ test("state-verified OAuth callback hands a plugin activation to the locked Chec
   );
   assert.equal(confirmationCalls, 1);
   assert.equal(checkoutCalls, 1);
+  assert.deepEqual(observedRotations, [false]);
   assert.deepEqual(observedRateLimit.dimensions, [
     { name: "intent", value: "22222222-2222-4222-8222-222222222222", limit: 8 },
     { name: "ip", value: "127.0.0.1", limit: 20 },
@@ -494,12 +556,33 @@ test("state-verified OAuth callback hands a plugin activation to the locked Chec
   assert.equal(generic.response.getHeader("location"), "/account.html");
   assert.equal(checkoutCalls, 1);
 
+  oauthCheckout = {
+    requested: true,
+    browserToken: "checkout-browser-token",
+    rotateCancelledSession: true,
+  };
+  const checkout = await invokeHandler(handler, callbackRequest);
+  assert.equal(checkout.response.statusCode, 303);
+  assert.equal(
+    checkout.response.getHeader("location"),
+    "https://checkout.stripe.test/session",
+  );
+  assert.equal(resumeCalls, 1);
+  assert.equal(checkoutCalls, 2);
+  assert.deepEqual(observedRotations, [false, true]);
+
+  oauthCheckout = {
+    requested: false,
+    browserToken: "",
+    rotateCancelledSession: false,
+  };
+
   pluginUpgrade = { requested: true, activationKey: "" };
   const exchangeCallsBeforeInvalid = exchangeCalls;
   const invalid = await invokeHandler(handler, callbackRequest);
   assert.equal(invalid.response.statusCode, 400);
   assert.equal(exchangeCalls, exchangeCallsBeforeInvalid);
-  assert.equal(checkoutCalls, 1);
+  assert.equal(checkoutCalls, 2);
 
   pluginUpgrade = {
     requested: true,
@@ -508,7 +591,7 @@ test("state-verified OAuth callback hands a plugin activation to the locked Chec
   rateAllowed = false;
   const limited = await invokeHandler(handler, callbackRequest);
   assert.equal(limited.response.statusCode, 429);
-  assert.equal(checkoutCalls, 1);
+  assert.equal(checkoutCalls, 2);
 
   rateAllowed = true;
   activeLicense = true;
@@ -518,7 +601,7 @@ test("state-verified OAuth callback hands a plugin activation to the locked Chec
     owner.response.getHeader("location"),
     "https://sidestream.test/api/activation/claim?activation=activation_plugin_123",
   );
-  assert.equal(checkoutCalls, 1);
+  assert.equal(checkoutCalls, 2);
 });
 
 test("activation issuance and refresh lost-response replay derive one stable token family", () => {
