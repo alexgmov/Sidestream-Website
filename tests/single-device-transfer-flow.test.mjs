@@ -184,7 +184,7 @@ test("decision reads and transfer counts remain account and namespace bound", as
   assert.match(source, /same_device/);
 });
 
-test("public and account copy states one production device with confirmed deactivation", async () => {
+test("public copy keeps the one-device policy while Account omits unfinished device controls", async () => {
   const [account, thankYou, upgrade, index, llms] = await Promise.all([
     readFile(files.account, "utf8"),
     readFile(files.thankYou, "utf8"),
@@ -196,12 +196,11 @@ test("public and account copy states one production device with confirmed deacti
   for (const page of [account, thankYou, upgrade]) {
     assert.match(page, /noindex, nofollow/);
   }
-  assert.match(account, /Active production device/);
-  assert.match(account, /No active production device/);
-  assert.match(account, /deactivate-device-button[^>]+disabled/);
-  assert.match(account, /fetch\("\/api\/account\/device"/);
-  assert.match(account, /window\.confirm\("Deactivate the active Sidestream device\?/);
-  assert.match(account, /apiPost\("\/api\/license\/deactivate", \{\s*intent: "deactivate_active_device"/);
+  assert.doesNotMatch(account, /Active production device/);
+  assert.doesNotMatch(account, /No active production device/);
+  assert.doesNotMatch(account, /deactivate-device-button/);
+  assert.doesNotMatch(account, /fetch\("\/api\/account\/device"/);
+  assert.doesNotMatch(account, /apiPost\("\/api\/license\/deactivate"/);
   assert.match(account, /receipt-button/);
   assert.match(account, /refund-button/);
   assert.match(index, /href="\/api\/auth\/google\/start\?next=\/account\.html">Account<\/a>/);
