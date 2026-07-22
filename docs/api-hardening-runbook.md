@@ -77,6 +77,31 @@ and JSON responses are `no-store`.
 | `/api/internal/download-leads/replay` | `GET` / `POST` | `200 {"ok":true,"summary":{...},"nextCursor":string|null,"hasMore":boolean}` | `400` invalid controls/JSON, `401 unauthorized`, `415` non-JSON POST, `503 replay_unavailable`, `blob_unavailable`, or `invalid_blob_page`; per-record failures stay in the summary |
 | `/api/internal/maintenance` | `GET` | `200 {"ok":true,"outcome":"completed"|"locked","durationMs":n,"batchSize":n,"hasMore":boolean,"counts":{...}}` | `401 unauthorized`, `503 maintenance_unavailable`, `500 maintenance_failed` |
 
+### Telemetry identity boundary
+
+FlowState telemetry remains the behavioral source. The website retains only a
+private association bridge: `public.sidestream_telemetry_identity_links` maps a
+trusted namespace plus lowercase 64-character telemetry `installIdHash` to the
+server-HMAC device digest and, when the authenticated account runtime has
+verified one, an optional `sidestream_accounts.id`.
+
+Only `/api/activation/start`, `/api/activation/status`, `/api/license/verify`,
+and `/api/license/refresh` accept optional `installIdHash` in JSON. Omission,
+`null`, and an empty string skip association; any other value that is not a
+lowercase 64-character hexadecimal hash returns `400 invalid_request`. Support
+code and installer receipt remain telemetry/support concepts and are ignored by
+this website path. No association value belongs in a URL, query string, browser
+form, browser storage, account/claim/Checkout page, or log.
+
+After input validation, bridge absence, write failure, and first-binding
+conflicts cannot fail or weaken the surrounding product transaction. The bridge
+uses a savepoint, never overwrites the first device or account binding, and has
+no browser or admin read surface. `sidestream_accounts` owns authenticated
+contact identity; `sidestream_licenses` and the Stripe lifecycle own payment and
+access; account-device tables own the active-device decision. A bridge value is
+never authorization, payment evidence, account ownership proof, device ownership
+proof, or permission to merge identities.
+
 Browser/account behavior and device support facts are expanded in
 `docs/single-device-entitlements.md`. Its former Production cutover prose is
 removed, and the API runbook records blockers rather than an executable
@@ -305,9 +330,12 @@ An existing non-empty schema without the ledger is not automatically assumed to
 be current. `--status` reports that a baseline is required; `--baseline` checks
 the known pre-hardening schema and records only migrations it can prove. Applying
 refuses an unbaselined non-empty schema. The chain currently ends with
-`20260714200000_remove_redundant_download_lead_key_unique.sql`: canonical lead
-uniqueness is `(email, cta_source)` and `lead_key` remains a non-unique lookup
-index. Runtime DDL is prohibited and checked by
+`20260722120000_retire_customer_360.sql`. That checksummed migration preserves
+the historical ledger, removes the retired read model, and creates
+`sidestream_telemetry_identity_links` with namespace/hash checks, an optional
+account foreign key, RLS, and direct-access revocation. The earlier lead
+migration keeps canonical `(email, cta_source)` uniqueness and a non-unique
+`lead_key` lookup index. Runtime DDL is prohibited and checked by
 `node scripts/assert-no-runtime-ddl.mjs`.
 
 `npm run db:migrate -- --status` is the authoritative read-only applied/pending
@@ -577,6 +605,22 @@ databases. Production reporting/export remains blocked until separately owned
 tools implement clean selection, strict endpoint/TLS-option rejection, pinned
 provider-CA and hostname validation, and connected-target evidence without
 printing a URL or customer data to uncontrolled output.
+
+### Retirement source-change boundary
+
+This source change performs no provider migration, deployment, secret deletion,
+Test database disposal, schema apply, or Production action. It does not prove the
+state of any Vercel, Stripe, Neon/Postgres, Test, or Production environment.
+
+Later live work remains human-gated. A separately reviewed plan must identify
+and attest the exact target, capture an authenticated schema and migration-ledger
+inventory, obtain explicit approval before applying the complete checksummed
+chain, bind an exact reviewed artifact to the deployment, and verify real
+start/status/verify/refresh association, conflict/fail-open behavior, browser
+field absence, and retired route/schedule absence. Provider-secret deletion,
+Test database disposal, and every Production mutation require separate explicit
+approval and retained evidence. None of the open blockers below is closed by the
+retirement source diff or local verification.
 
 ## Production cutover status: blocked
 <!-- BLOCKER: PRODUCTION-CUTOVER-NOT-EXECUTABLE -->

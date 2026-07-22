@@ -17,7 +17,6 @@ Sidestream is an HTML-first landing page for a Premiere Pro panel that lets edit
 - `account.html` - Minimal noindex account bridge on a plain near-black background. Signed-out visits immediately enter Google OAuth, while the server auth session shows returning users their plan status, coarse active-production-device status, explicit device deactivation, latest installer, sign out, and a Manage Billing button that creates a Stripe Customer Portal session.
 - `docs/single-device-entitlements.md` - Device-domain and support reference for the single-active-device contract, privacy boundary, API/page states, and conceptual support decisions. Its obsolete Production command surface has been removed; it authorizes no Production action and points to the API runbook only for blocker/capability status.
 - `docs/api-hardening-runbook.md` - Exact hardened API/release contract, shared Postgres and migration model, Stripe/lead/maintenance facts, bounded configuration, metrics, alerts, and the current fail-closed Production blocker/capability inventory. Production cutover is blocked; this file contains no executable Production cutover or fallback recipe and does not claim Production was changed.
-- `docs/customer-360.md` - Durable cross-repo Customer 360 contract: exact private list/detail fields and nullability, trusted write namespace versus authorized admin read selection, identity/merge and observe-by-default single-device separation, currency-partitioned money and purchase-history semantics in minor units, exhaustive stored/derivable usage versus compact API exposure, privacy/retention, observability, disposable tests, dry-run backfill, rollback, and the only human-gated Preview/Test-first rollout. Customer 360 is not deployed and Production is not migrated.
 - `thank-you.html` - Minimal noindex Checkout success page with a plain near-black background and no activation-delay lede. Stripe success URLs land here after purchase, while legacy `/upgrade.html?checkout=success` links redirect here and preserve optional activation/session query values. It tells unlinked website/legacy buyers to sign in with the same verified Checkout email, then use Upgrade or Restore Purchase so the active account can claim the panel without a second charge.
 - `upgrade.html` - Minimal noindex checkout/cancel fallback page. Main upgrade entry points open the server-owned `/api/checkout/start` confirmation boundary; activation-bearing recovery enters the authenticated claim page so the account can safely choose same-device reconnect, confirmed transfer, or a confirmed purchase without a duplicate charge.
 - `data/release-manifest.json` and `data/release-manifest.windows.json` - Sidestream-owned stable release manifests. The default file keeps the public Mac artifact; the Windows file is selected by the explicit `win32-x64` platform query used by the public Windows download CTA. Private Blob pathnames are never returned by the public manifest API.
@@ -27,10 +26,7 @@ Sidestream is an HTML-first landing page for a Premiere Pro panel that lets edit
 - `api/download-lead.ts`, `api/_lib/download-leads.ts`, and `api/_lib/download-lead-blob.ts` - Bounded JSON lead ingestion, canonical `(email, cta_source)` convergence, idempotency receipts, atomic Postgres email/IP rate limits, deterministic private-Blob fallback, and the private compare-and-swap Blob limiter used by the mobile email handoff. `api/internal/download-leads/replay.ts` replays mapped fallback records and deletes only after a committed database write plus ETag match.
 - `api/send-download-links.ts` and `api/_lib/download-link-email.ts` - Mobile-only computer handoff. The public POST route requires an idempotency key, stores the `mobile-download-handoff` lead plus bounded UTM context in the existing private replay queue, enforces a durable hashed 3/email and 10/IP per-hour Blob limit, and sends one transactional Resend message from `downloads@alexg.mov` with direct Mac and Windows installer links. The email presents both installers as matching white platform-marked capsules on a dark panel while retaining explicit platform labels; its Windows mark is a tiny PNG derived from the landing page silhouette and embedded as a Resend CID inline attachment so email clients do not strip it. Provider errors and logs never return or print the recipient address.
 - `api/_lib/postgres.ts` and `api/_lib/rate-limit.ts` - Shared attached runtime Postgres pool/transaction ownership and atomic HMAC-dimension rate limiting. Production runtime requires a pooled URL; direct URLs are reserved for reviewed migrations/backfills and development/test fallback.
-- `api/_lib/customer-profiles.ts` and `tests/customer-360/core*.test.mjs` - Server-only Customer 360 identity/profile primitives, transactional merge planning, privacy-contract proof, and disposable-Postgres coverage. Merge survivors follow the database's immutable `(created_at, id)` total order within one license namespace.
-- `api/_lib/customer-commerce.ts`, `db/migrations/20260715122000_add_customer_commerce_ledger.sql`, and `tests/customer-360/commerce*.test.mjs` - Stripe-verified Customer 360 money projection. A settled PaymentIntent, or a captured standalone Charge without one, is canonical when present. Until then, paid Checkout and Invoice facts remain fallbacks; a paid InvoicePayment edge suppresses only the Checkout fallback for the same absent instrument, namespace, profile, and currency, preferring the related Invoice without collapsing their payment keys. Both fallbacks are atomically suppressed when the related instrument arrives. Gross includes all settled customer money, while `off_stripe_paid_minor` is an explicit subset in each profile/namespace/currency total. Current InvoicePayment objects persist as many-to-many allocation edges without unioning invoices and instruments into one payment key. Namespace-locked reconciliation attaches or quarantines a whole canonical payment group before currency totals refresh and never reads or mutates entitlement/device state.
-- `api/_lib/customer-usage.ts`, `api/_lib/customer-query.ts`, `api/_lib/customer-admin.ts`, `api/internal/customer-usage/sync.ts`, and `api/internal/customers/*` - Once-daily privacy-limited telemetry aggregation plus private Customer 360 list/detail reads. The aggregate layer retains complete first/last use and attempt timestamps, outcome counts, activity/frequency, coarse client summaries, and freshness/materialization state; the compact API intentionally omits total accepted attempts and current subscription status. `SIDESTREAM_TELEMETRY_POSTGRES_URL` is a separate read-only source, while `SIDESTREAM_CRM_ADMIN_SECRET` protects POST-only non-browser reads and signs namespace/filter-bound cursors. Raw telemetry, identity values, `installIdHash`, Stripe IDs, search text, and merged tombstones stay excluded.
-- `scripts/backfill-customer-360.mjs`, `scripts/verify-customer-360-backfill.mjs`, and `tests/customer-360/backfill*.test.mjs` - Offline identity-only Customer 360 backfill planning. Dry-run never opens Postgres or writes a checkpoint; Production apply is disabled; Test apply is separately human-gated, append-only, batch-atomic, resumable, idempotent, conflict-preserving, and restricted to `SIDESTREAM_TEST_POSTGRES_URL`.
+- `api/_lib/telemetry-identity.ts` - Server-only, fail-open telemetry identity bridge. It accepts only an optional lowercase 64-character `installIdHash`, first-binds that telemetry install to the namespace-scoped server-HMAC device digest, and may later attach one account verified by the account runtime. Conflicts never overwrite the first device or account binding and never weaken the surrounding activation, verification, refresh, entitlement, or device transaction.
 - `api/_lib/account.ts`, `api/_lib/entitlement.ts`, `api/_lib/device-policy.ts`, and `api/_lib/license-environment.ts` - Shared server-only account/Stripe/Postgres implementation plus dependency-free entitlement primitives. They own exact Checkout verification, account-device transactions, one-active-device decisions, transfer limits, production/Test isolation from trusted deployment state, short-lived access tokens, rotating refresh credentials, legacy compatibility through 1.0.13, safe OAuth return paths, and restore CSRF validation. Account-session, activation-status, verification, refresh, and download-authorization reads tolerate the pre-entitlement-lifecycle Production schema through one fail-closed JSON-based lifecycle expression, granting legacy compatibility only to the same exact one-time paid rows that the pending migration would backfill. Serverless route imports intentionally use `.js` extensions so Vercel's Node ESM runtime resolves compiled helpers.
 - `api/auth/google/start.ts` and `api/auth/google/callback.ts` - Google OAuth redirect/callback handlers. They require the configured callback to share the browser-facing start origin before setting a short-lived HTTP-only state cookie, upsert `sidestream_accounts`, issue a server-side session cookie, and render a retryable noindex HTML error instead of raw JSON when sign-in state is stale.
 - `api/auth/session.ts` and `api/auth/logout.ts` - Account-session JSON and logout endpoints used by `account.html` and `upgrade.html`.
@@ -51,6 +47,7 @@ Sidestream is an HTML-first landing page for a Premiere Pro panel that lets edit
 - `db/migrations/20260714120000_add_installer_request_tracking.sql` - Adds the server-owned `public.sidestream_installer_requests` attribution table, reporting indexes, RLS, and explicit direct-access revocations for Supabase API roles.
 - `db/migrations/20260714190000_add_single_active_account_devices.sql` - Additive private schema for retained account-device lifecycle rows and confirmed device transfers. Partial unique indexes enforce at most one active row per account in each of the separate production and Test namespaces; raw device identifiers are never persisted.
 - `db/migrations/20260713200000_add_api_operational_controls.sql` through `db/migrations/20260714200000_remove_redundant_download_lead_key_unique.sql` - Append-only hardening chain for the checksummed migration ledger, rate limits, credential uniqueness, Stripe claims/retries/watermarks, Checkout intents, refund/dispute lifecycle, canonical leads/replay receipts, retention indexes, and the final removal of the redundant unique `lead_key` constraint.
+- `db/migrations/20260722120000_retire_customer_360.sql` - Final checksummed retirement migration. It removes the retired Customer 360 read-model tables/functions and creates the private `sidestream_telemetry_identity_links` bridge with namespace/hash checks, account foreign key, RLS, and direct-access revocation. Historical migrations remain in the ledger and must not be edited or skipped.
 - `tests/entitlement.test.mjs` - Focused Node test harness for exact paid-Session verification, attacker-link/pre-bind regressions, device/account binding, restore CSRF/origin checks, safe OAuth return paths, and deterministic lost-response credential replay.
 - `tests/download-referral.test.mjs` - Focused Node integration and helper tests for tagged redirects, non-blocking database failures, `HEAD`/`304` exclusions, UTM validation, anonymous HMACs, and likely-scanner detection.
 - `tests/license-environment.test.mjs` and `tests/single-device-*.test.mjs` - Static and disposable-Postgres proof for the complete migration chain, including installer-referral RLS, namespace isolation, policy states, database races, transfers/revocation, support tooling, account pages, download authorization, legacy compatibility, and Checkout preservation. `npm run test:single-device` is the aggregate command and requires a safe `SIDESTREAM_TEST_POSTGRES_URL`.
@@ -94,11 +91,9 @@ Sidestream is an HTML-first landing page for a Premiere Pro panel that lets edit
 - Installer and update fulfillment - `data/release-manifest.json` is the default Mac release pointer and `data/release-manifest.windows.json` is the Windows beta pointer. `api/download.ts` and `api/releases/latest.ts` resolve the same platform-specific manifest so artifact and update truth cannot drift. Bare requests remain Mac, `win32-x64` selects Windows, and unknown platforms return `404` instead of silently serving the wrong OS.
 - Installer referral attribution - Gmail launch URLs use `utm_source=gmail`, `utm_medium=email`, a bounded campaign ID, and optional `utm_content=pilot` or `utm_content=main` batch ID. Only a successful tagged installer `GET` creates `public.sidestream_installer_requests`; `HEAD`, `304`, invalid tags, and failed fulfillment create nothing. The event stores no email, raw IP, or raw user agent. Scanner-like `GET`s remain visible with `likely_scanner = true` so reports can separate them instead of pretending they never happened.
 - Download lead capture and replay - `api/download-lead.ts`, `api/_lib/download-leads.ts`, and `api/internal/download-leads/replay.ts` validate at most 8 KiB of JSON, converge repeated `(email, cta_source)` submissions, enforce 5/email and 20/IP per ten minutes, and fall back to deterministic private Blob records when Postgres fails. Scheduled replay processes 25 mapped records and deletes only after commit plus ETag match; manual replay is bounded to 100 and defaults to preserving records. Historical `windows-waitlist` rows remain queryable.
-- Account/auth/billing/device entitlement - `account.html`, `thank-you.html`, `upgrade.html`, `api/_lib/account.ts`, `api/_lib/entitlement.ts`, `api/_lib/device-policy.ts`, `api/_lib/license-environment.ts`, `api/auth/*`, `api/checkout/*`, `api/billing/*`, `api/stripe/webhook.ts`, `api/activation/*`, `api/account/device.ts`, and `api/license/*` own optional Google account management, the server-owned $9.99 one-time Sidestream Pro Product/Price, confirmed Checkout intents, namespace-separated active-device rows, restricted Test isolation, refund/dispute lifecycle, confirmed transfers, download authorization, deactivation, and device-bound access/refresh credentials. Device mismatch policy defaults to `observe`; only explicit `enforce` blocks, and Customer 360 does not change that mode. The API/operator contract is `docs/api-hardening-runbook.md`; device/support details are in `docs/single-device-entitlements.md`.
-- Customer 360 commerce ledger - `api/_lib/customer-commerce.ts`, `20260715122000_add_customer_commerce_ledger.sql`, and `tests/customer-360/commerce*.test.mjs`; settled money comes from one canonical PaymentIntent or standalone Charge per payment group. Before that instrument exists, a paid InvoicePayment edge makes the related Invoice the preferred fallback and suppresses only the Checkout view resolving to the same namespace/profile/currency payment key. Gross and its `off_stripe_paid_minor` subset stay currency-separated, unrelated Checkout fallbacks remain independent, paid InvoicePayment edges never collapse many-to-many allocations into alias equivalence, and contradictory live identity evidence triggers sticky whole-group quarantine.
-- Customer 360 usage and private reads - `api/_lib/customer-usage.ts`, `api/_lib/customer-query.ts`, `api/internal/customer-usage/sync.ts`, `api/internal/customers/index.ts`, and `api/internal/customers/[customerId].ts`; schema-versioned telemetry becomes replaceable UTC daily aggregates with exhaustive stored/derivable first/last use and attempt timestamps, outcome counts, lifetime and rolling activity, attempts-per-active-day frequency, coarse client summaries, and source/materialization freshness. The compact list/detail projection exposes only its documented subset, requires an authenticated admin body to select an authorized namespace, binds that namespace into signed keyset cursors, and exposes neither total accepted attempts nor current subscription status. The full cross-repo field/privacy/rollout contract is `docs/customer-360.md`.
-- Customer 360 backfill - `scripts/backfill-customer-360.mjs` and `scripts/verify-customer-360-backfill.mjs`; reviewed offline identity exports become privacy-safe candidate/orphan/conflict plans. Dry-run is the default and Production apply is unavailable. Any Test apply requires separate approval after dry-run review.
-- API operations - `api/_lib/postgres.ts` owns the shared bounded runtime pool; checksummed migrations own schema changes; `api/_lib/stripe-events.ts` owns durable claimed Stripe work; `api/_lib/maintenance.ts` owns bounded cleanup/redaction; `vercel.json` schedules all four `CRON_SECRET`-protected internal routes. Customer reads never run migrations or drain event backlog.
+- Account/auth/billing/device entitlement - `account.html`, `thank-you.html`, `upgrade.html`, `api/_lib/account.ts`, `api/_lib/entitlement.ts`, `api/_lib/device-policy.ts`, `api/_lib/license-environment.ts`, `api/auth/*`, `api/checkout/*`, `api/billing/*`, `api/stripe/webhook.ts`, `api/activation/*`, `api/account/device.ts`, and `api/license/*` own optional Google account management, the server-owned $9.99 one-time Sidestream Pro Product/Price, confirmed Checkout intents, namespace-separated active-device rows, restricted Test isolation, refund/dispute lifecycle, confirmed transfers, download authorization, deactivation, and device-bound access/refresh credentials. Device mismatch policy defaults to `observe`; only explicit `enforce` blocks. The API/operator contract is `docs/api-hardening-runbook.md`; device/support details are in `docs/single-device-entitlements.md`.
+- Telemetry identity association - FlowState telemetry remains the behavioral source. `api/_lib/telemetry-identity.ts` and `public.sidestream_telemetry_identity_links` provide only the narrow install-to-device/account bridge described below; they do not materialize usage, commerce, or customer profiles and expose no admin API.
+- API operations - `api/_lib/postgres.ts` owns the shared bounded runtime pool; checksummed migrations own schema changes; `api/_lib/stripe-events.ts` owns durable claimed Stripe work; `api/_lib/maintenance.ts` owns bounded cleanup/redaction; `vercel.json` schedules three `CRON_SECRET`-protected internal routes. Account reads never run migrations or drain event backlog.
 
 ## Routes and Assets
 
@@ -158,9 +153,6 @@ operator response.
 | `/api/internal/stripe-events/process` | `GET` | Protected summary `{ok,claimed,processed,ignored,retryable,deadLetter}` |
 | `/api/internal/download-leads/replay` | `GET`, `POST` | Protected `{ok,summary,nextCursor,hasMore}`; scheduled GET is fixed at 25/delete, manual POST accepts bounded controls |
 | `/api/internal/maintenance` | `GET` | Protected `{ok,outcome,durationMs,batchSize,hasMore,counts}` |
-| `/api/internal/customer-usage/sync` | `GET` | `CRON_SECRET`-protected once daily aggregate summary `{ok,outcome,licenseNamespace,batches,sourceRowsScanned,dailyBucketsWritten,profilesRefreshed,sourceFreshnessAt}` |
-| `/api/internal/customers` | `POST` | `SIDESTREAM_CRM_ADMIN_SECRET`-protected `{customers,nextCursor}`; browser origins are forbidden |
-| `/api/internal/customers/[customerId]` | `POST` | Same protected compact shape as list, wrapped as `{customer}`; merged tombstones and cross-namespace IDs return `404` |
 
 For `/api/activation/status`, a parsed non-null JSON value with missing or invalid
 required fields returns `400 invalid_request`. Valid JSON `null` is currently
@@ -171,64 +163,51 @@ regression test.
 
 All internal routes require `Authorization: Bearer <CRON_SECRET>`. The one shared
 token must be 16-512 printable, non-space ASCII characters (`U+0021`-`U+007E`)
-so all four route validators accept the same header; generate 32 random bytes
+so all three route validators accept the same header; generate 32 random bytes
 as 64 hexadecimal characters in the approved secret manager. A missing or weak
 length configuration returns `503`; missing/wrong auth returns `401`.
 `vercel.json` schedules Stripe processing every five minutes, lead replay every
-ten minutes, maintenance daily at `04:13` UTC, and Customer 360 usage sync once
-daily at `05:27` UTC.
+ten minutes, and maintenance daily at `04:13` UTC.
 
-### Customer 360 contract and rollout status
+### Telemetry-first account bridge
 
-Customer 360 is not deployed and Production is not migrated. Money is
-Stripe-verified, currency-separated minor units but is not entitlement truth;
-the separately documented lifecycle blockers still prevent describing
-Production entitlement enforcement as complete. `installIdHash` is a Customer
-360 association key, not the single-device binding, and the Gmail
-installer-referral HMAC is attribution only, never identity.
+FlowState telemetry remains the source of behavioral facts. The website does
+not copy or aggregate that behavior. Its only retained association is the
+private `public.sidestream_telemetry_identity_links` table, keyed by trusted
+license namespace plus the lowercase 64-character telemetry `installIdHash`.
+Each row first-binds that install hash to the website's server-HMAC device hash
+and may later attach one account verified by the authenticated account runtime.
+The first device and account bindings are never overwritten on conflict.
 
-Trusted deployment state selects namespace for Customer 360 writes, identity,
-telemetry, device, and entitlement behavior. The protected admin list/detail
-POST body may select which authorized namespace to read, and signed cursors bind
-that selection. `billingModel` describes purchase history, not current
-subscription state. Device policy still defaults to observe, and Customer 360
-does not enable enforcement.
+The CEP JSON routes `/api/activation/start`, `/api/activation/status`,
+`/api/license/verify`, and `/api/license/refresh` may send the optional
+`installIdHash`. Omission, `null`, and an empty string skip association; any
+other value must be a lowercase 64-character hexadecimal hash or the route
+returns `400 invalid_request`. The value must stay out of URLs, query strings,
+browser forms, browser storage, account pages, claim pages, Checkout, and logs.
+`supportCode` and `installerReceiptIdHash` remain FlowState telemetry/support
+concepts and are ignored by the website association path.
 
-For FlowState, the association transport is limited to optional
-`installIdHash`, `supportCode`, and `installerReceiptIdHash` fields in the JSON
-`POST` bodies for `/api/activation/start`, `/api/activation/status`,
-`/api/license/verify`, and `/api/license/refresh`. FlowState must reuse its stable
-telemetry `installIdHash` verbatim, never rehash or channel-salt it, and never
-put any association value in activation, claim, checkout, restore, or account
-URLs, query strings, or browser forms. The exact route matrix, canonical
-formats, omission behavior, `400 invalid_customer_identity` contract, and
-activation-record continuity rules are in `docs/customer-360.md`; trusted
-website routing owns production/Test isolation.
+The bridge is deliberately fail-open after request validation: a missing bridge
+schema or failed bridge write rolls back to an internal savepoint while the
+surrounding activation, verification, refresh, entitlement, and device operation
+continues. A binding conflict is recorded without replacing either side.
+`sidestream_accounts` remains the authenticated contact-identity authority;
+`sidestream_licenses` plus the Stripe webhook/queue lifecycle remain the
+payment-and-access authority; and the account-device tables remain the active
+device authority. No bridge value is authorization, payment evidence, account
+ownership proof, device ownership proof, or permission to merge identities.
 
-Customer 360 identity attachment is schema-gated inside the existing account
-transaction. The complete core table set must be present before any profile or
-identity write runs; an older or intentionally unmigrated database skips the
-optional attachment and continues the activation/license operation. This keeps
-Customer 360 from adding another schema dependency to sign-in, restore, or
-transfer. It does not make the current hardened account runtime compatible with
-the known pre-20260713 Production baseline: refresh rotation, entitlement
-lifecycle, and single-device transfer still require their separately reviewed
-migrations or an explicit compatibility implementation.
-
-The only rollout path is the human-gated Preview/Test-first sequence in
-`docs/customer-360.md`: review and merge, approve a non-Production target, apply
-checksummed migrations there, configure secrets and reviewed invocation/scheduling,
-deploy Preview/Test,
-dry-run and verify backfill, separately approve any Test apply, verify protected
-APIs and source freshness, then run live FlowState integration/QA. Local or
-fixture-backed FlowState implementation may proceed against the contract before
-that live gate. Vercel cron scheduling remains project-wide across all four jobs,
-so rollout must use an approved protected manual/separate non-Production scheduler
-or separately approve all four before enabling scheduling. That document also owns
-every list/detail field and nullability, cursor/auth behavior, conflict and
-retention rules, rolling-window decay, disposable harness, observability, and
-non-Production rollback. It authorizes no Production deployment, migration, or
-backfill apply.
+This repository change is source-only. It performs no provider migration,
+deployment, secret deletion, Test database disposal, schema apply, or Production
+action. Later work is human-gated: select and attest the exact non-Production or
+Production target; take an authenticated schema and migration-ledger inventory;
+review and apply the complete checksummed chain where explicitly approved;
+deploy an exact reviewed artifact; then prove real start/status/verify/refresh
+flows, fail-open/conflict behavior, browser-field absence, and the lack of retired
+routes and schedules. Any provider deletion, Test database disposal, or
+Production mutation needs its own explicit approval and retained evidence. The
+existing Production blockers in `docs/api-hardening-runbook.md` remain open.
 
 Release platform aliases are fail-closed and shared by both release routes:
 
@@ -284,13 +263,13 @@ Plugin activation rows are device-bound. `/api/activation/status` issues one det
 
 `api/_lib/postgres.ts` owns one attached pool for every runtime API feature. Production chooses a pooled URL in this order: `SIDESTREAM_POSTGRES_URL`, `SIDESTREAM_POSTGRES_PRISMA_URL`, `POSTGRES_URL`, then `POSTGRES_PRISMA_URL`; direct/non-pooling fallback is forbidden in production runtime. `POSTGRES_POOL_MAX` defaults to 4 and is bounded 2-20, with bounded idle, connection, query, and statement timeouts. Reviewed migrations and backfills use `SIDESTREAM_POSTGRES_URL_NON_POOLING` or `POSTGRES_URL_NON_POOLING` outside the runtime.
 
-`scripts/apply-postgres-migrations.mjs` owns an advisory-locked SHA-256 ledger in `public.sidestream_schema_migrations`. Database-backed `--status` is authoritative for every applied/pending filename in the complete chain and fails on a tracked ledger/local checksum mismatch, but its output does not print checksum values. `--validate` and `--dry-run` are strictly local file checks: both return before env-file loading or database selection and are not Production-state evidence. A future reviewed plan needs an authenticated status implementation plus a separate authenticated read-only export of local and ledger checksums. A non-empty legacy schema requires a verified explicit `--baseline`; `scripts/verify-migration-baseline.mjs` is only the narrower known-catalog/conditional-RLS guard and does not enumerate every later hardening migration. Applying commits each pending SQL file and ledger row together. Current database-backed runner/verifier modes are blocked against Production until they authenticate the server and selected endpoint. Runtime handlers never create or alter schema. The final migration removes the redundant unique `lead_key` constraint while preserving canonical `(email, cta_source)` uniqueness and a non-unique lookup index.
+`scripts/apply-postgres-migrations.mjs` owns an advisory-locked SHA-256 ledger in `public.sidestream_schema_migrations`. Database-backed `--status` is authoritative for every applied/pending filename in the complete chain and fails on a tracked ledger/local checksum mismatch, but its output does not print checksum values. `--validate` and `--dry-run` are strictly local file checks: both return before env-file loading or database selection and are not Production-state evidence. A future reviewed plan needs an authenticated status implementation plus a separate authenticated read-only export of local and ledger checksums. A non-empty legacy schema requires a verified explicit `--baseline`; `scripts/verify-migration-baseline.mjs` is only the narrower known-catalog/conditional-RLS guard and does not enumerate every later hardening migration. Applying commits each pending SQL file and ledger row together. Current database-backed runner/verifier modes are blocked against Production until they authenticate the server and selected endpoint. Runtime handlers never create or alter schema. The chain ends with `20260722120000_retire_customer_360.sql`; it preserves every historical ledger entry, removes the retired read model, and creates the private telemetry identity bridge. The earlier lead migration still preserves canonical `(email, cta_source)` uniqueness and a non-unique `lead_key` lookup index.
 
 Key hardened environment/configuration ownership:
 
 | Area | Contract |
 | --- | --- |
-| Cron | One stable `CRON_SECRET`, 16-512 printable non-space ASCII characters (`U+0021`-`U+007E`), protects Stripe process, lead replay, maintenance, and Customer 360 usage-sync routes; use a secret-manager-generated 64-character hexadecimal token |
+| Cron | One stable `CRON_SECRET`, 16-512 printable non-space ASCII characters (`U+0021`-`U+007E`), protects Stripe process, lead replay, and maintenance routes; use a secret-manager-generated 64-character hexadecimal token |
 | Pool | `POSTGRES_POOL_MAX` defaults to 4 (2-20); idle/connection/query/statement timeout variables are bounded and documented in the runbook |
 | Limiter/lead | `SIDESTREAM_RATE_LIMIT_HASH_SECRET` and `SIDESTREAM_LEAD_HASH_SECRET` are stable server-only HMAC values of at least 32 characters; `SIDESTREAM_DOWNLOAD_LEADS_BLOB_PREFIX` selects the private fallback prefix. Pro WAF is a per-region fixed-window counter. With exactly one shared rule/counter domain spanning every reachable host, the trailing boundary burst is approximately `2 * L * R` for regional limit `L` across reachable regions `R`, plus reconciliation risk. With `H` independent host/rule counter domains it grows to approximately `2 * L * R * H`. Require `H=1` with cross-host evidence, or measure/test/approve the larger bound; otherwise use a durable shared limiter. |
 | Checkout intent | Confirmation is fixed at 10 minutes, intent at 24 hours; Product/Price selection uses `SIDESTREAM_PRO_PRODUCT_ID`, `SIDESTREAM_PRO_PRICE_ID`, and compatible `SIDESTREAM_UNLIMITED_PRICE_ID` |
@@ -510,20 +489,6 @@ node scripts/assert-no-runtime-ddl.mjs
 node scripts/validate-vercel-contract.mjs
 ```
 
-Run the complete Customer 360 contract with only a disposable
-`SIDESTREAM_TEST_POSTGRES_URL` selected:
-
-```bash
-npm run test:customer-360
-SIDESTREAM_TEST_POSTGRES_URL='<disposable-postgres-url>' npm run test:customer-360-postgres
-```
-
-The Postgres aggregate covers identity/merge, currency-partitioned commerce,
-once-daily telemetry sync and rolling-window decay, protected list/detail reads,
-dry-run backfill recovery, cross-namespace isolation, single-device separation,
-and end-to-end replay. It scrubs ambient runtime database selectors and blocks
-all network destinations except the approved disposable Postgres endpoint.
-
 `test:api` discovers every `tests/*.test.mjs` suite and fails if a Postgres suite is not explicitly classified. `test:postgres-integration` never silently skips: it requires `SIDESTREAM_TEST_POSTGRES_URL`, rejects a normalized host/port/database match with any runtime URL even when credentials/query options differ, runs serially in a random schema, and drops that schema in `finally`. After a human runs `npx vercel@latest build`, run `npm run verify:vercel-build` to inspect `.vercel/output`; that verifier deliberately fails when no Vercel build artifact exists.
 
 The build copies the valid undated sitemap template, then `scripts/generate-sitemap.mjs` writes `dist/sitemap.xml` with an ISO `<lastmod>` derived from `index.html`. A clean Git checkout uses the latest commit that changed the page; a dirty local page uses its filesystem modification time. If Git history is unavailable, the build omits `<lastmod>` instead of inventing a build-time date. Do not put a manual `<lastmod>` back into `public/sitemap.xml`.
@@ -548,9 +513,7 @@ Use the narrowest relevant check after edits:
 - Run `npm run test:api` after any API, shared helper, migration, cron, or handler-contract change. Run `npm run test:postgres-integration` with a disposable `SIDESTREAM_TEST_POSTGRES_URL` after any database/concurrency change; it must never target production or a deployed Test database.
 - After changing the mobile handoff, run the focused `tests/download-leads.test.mjs` suite, then verify at a realistic phone width that the inline form replaces both platform buttons, invalid email stays local, success is announced, and lower download CTAs scroll back to the form. At desktop width, confirm the form is hidden and both direct platform downloads remain unchanged.
 - Run `node scripts/assert-no-runtime-ddl.mjs` and `node scripts/validate-vercel-contract.mjs` after API/migration/routing work. For a human Vercel build, follow `npx vercel@latest build` with `npm run verify:vercel-build`.
-- Run `TZ=America/Los_Angeles node --experimental-strip-types --test tests/customer-360/core.test.mjs` after Customer 360 identity or profile-merge changes, then run `node --experimental-strip-types --test tests/customer-360/core-postgres.test.mjs` for the database total-order contract.
-- Run `node --experimental-strip-types --test tests/customer-360/commerce.test.mjs` after commerce normalization changes, then run `SIDESTREAM_TEST_POSTGRES_URL='<disposable-postgres-url>' node --experimental-strip-types --test tests/customer-360/commerce-postgres.test.mjs` after payment-group, identity-link trigger, allocation-edge, or totals changes. The Postgres suite proves partial capture authority, Checkout-only and paid-Invoice fallback replacement, paid InvoicePayment overlap deduplication with an unrelated-Checkout negative control, fully and partially off-Stripe totals, verified fallback dates, modern paid/open InvoicePayment shapes, many-to-many allocations, refund-first late attachment, product scope, and whole-group quarantine.
-- Run `npm run test:customer-360`, then `SIDESTREAM_TEST_POSTGRES_URL='<disposable-postgres-url>' npm run test:customer-360-postgres`, after any Customer 360 contract, identity, commerce, usage, query, migration, or backfill change. Confirm the harness rejects runtime/telemetry endpoint collisions, protected list/detail fields match `docs/customer-360.md`, dry-run makes no connection or checkpoint write, and the complete pipeline leaves entitlement/single-device state unchanged.
+- Run `node --experimental-strip-types --test tests/telemetry-identity.test.mjs` after telemetry bridge, activation identity input, or retirement-surface changes. Run `npm run test:migrations` after changing the checksummed migration chain, and use `npm run test:single-device` with a disposable `SIDESTREAM_TEST_POSTGRES_URL` after any account/device association change.
 - Run `npm run build` after shader, TypeScript, Tailwind, HTML mount, Vite config, or package changes.
 - Run `npm run test:download-referral` after changing installer attribution or `/api/download`. It verifies that tagged `GET`s are recorded only after a successful redirect, while `HEAD`, `304`, bad platforms, fulfillment errors, database errors, and database timeouts cannot create a false successful event or block delivery.
 - After SEO/GEO metadata changes, run `npm run build`, confirm `dist/robots.txt`, `dist/sitemap.xml`, `dist/llms.txt`, and `dist/sidestream-social-card-v2.jpg` exist, validate both source and built sitemap XML, confirm the built sitemap contains a generated ISO `<lastmod>` while the source contains only the generator marker, and spot-check the built HTML for the absolute canonical URL, meta description, Open Graph/Twitter image tags, and valid JSON-LD. When replacing a social card, publish it under a new filename because X and other crawlers may retain the old image URL in cache.
@@ -600,12 +563,8 @@ Use the narrowest relevant check after edits:
 
 ## Known Gotchas
 
-- Customer 360 captured money authority is the PaymentIntent `amount_received`, or `amount_captured` on a standalone Charge when no PaymentIntent exists. A paid Checkout or Invoice is a fallback only while its related settled instrument is absent, and refresh must replace rather than add that fallback when stronger truth arrives. Before instrument arrival, suppress a Checkout fallback only when a paid Invoice fact in the same namespace, profile, and currency has a paid InvoicePayment edge resolving to that Checkout payment key; prefer the Invoice and leave unrelated Checkout fallbacks countable. Checkout authorization must never re-inflate a partial capture. Invoice `amount_paid` is full gross customer money; `amount_paid_off_stripe` is a nonnegative subset of gross, not a deduction or an amount to add twice. Paid InvoicePayment rows are allocation edges keyed by `invoice_payment.id`; open/canceled rows do not attribute money, and an invoice/instrument many-to-many graph must not become alias equivalence.
-- Customer 360 identity safety is a payment-group invariant. If any retained alias, trusted identity evidence, or already-safe owner resolves one canonical payment group to different live profiles, the namespace advisory lock must clear `profile_id` and set `identity_conflict=true` on every materialization in that group before totals refresh. This whole-group quarantine is sticky across replay, later one-owner rows, and identity-link triggers; only an explicit group-wide recomputation after a deterministic profile merge may clear it. A Stripe customer link alone never scopes unrelated product money.
-- Customer 360 database `created_at` values reach TypeScript as fixed-width six-microsecond UTC timestamps without a timezone suffix. Compare two canonical values lexically before `Date.parse`; parsing first treats them as local time, can reverse order across a DST gap, and violates the database trigger's `(created_at, id)` total-order contract. ISO inputs from pure callers still use parsed instant ordering, and equal timestamps still use the UUID tie-breaker.
-- Customer 360 currently has no deletion or aggregate-expiry job. Daily usage buckets, canonical profiles/identity, and commerce materializations persist; merge and identity-review audits are immutable. Do not claim a retention period until a separately reviewed implementation enforces one. Stripe payload redaction and the 90-day installer-referral policy are separate domains.
-- Customer 360 is not deployed and Production is not migrated. The repository contract allows only the human-gated Preview/Test-first sequence in `docs/customer-360.md`; no dry-run, local test, build, or documentation result is Production approval.
-- Customer 360 local or fixture-backed FlowState consumers may implement the audited contract before website deployment, but live upstream Preview/Test integration and QA remain gated on separately approved migration, configuration, deployment, protected API, freshness, and scheduling evidence. Vercel cannot enable only the usage job: use a separately approved protected manual/non-Production scheduler or review all four jobs before the project-wide switch.
+- `installIdHash` is a telemetry association value, not a credential. Never use it to authorize access, select an account, prove device ownership, or infer payment. A bridge conflict must preserve the first binding and leave the product transaction independent.
+- The telemetry bridge intentionally ignores support code and installer receipt values. Do not add them to website requests, account pages, URLs, browser state, or the bridge table; FlowState owns their telemetry/support meaning.
 - The project root was missing a README before this restoration.
 - The page uses the local Apple/SF Pro system font stack and does not request external web fonts.
 - Several screenshot files are duplicates or alternate experiments. Prefer the numbered scan series for the restored hero state.
@@ -646,7 +605,7 @@ Use the narrowest relevant check after edits:
 - Vercel Preview/Test remains the only Stripe test-mode lifecycle proof. No staged Production artifact, actual-runtime-selector attestation, signed qualification, or promotion proof exists. A future reviewed plan needs pinned provider tooling or an owner-authenticated API that proves exact immutable release/fallback identities, project/team, target, commit/build, aliases, protection, metadata, and actual selector overrides including explicit empty values.
 - The current repository has no Production maintenance rule or operator bypass. A future reviewed plan needs a complete effective firewall/hostname/order export and a tested exact rule matrix; custom-rule bypasses skip later custom and managed WAF rules, and tagged download GETs can schedule referral writes. Until those controls exist, no Production firewall mutation or operator route invocation is authorized.
 - Any future maintenance or fallback plan must keep the live Stripe event destination enabled, complete an exact pre-drain, and preserve its earliest boundary/timers. Every future main and fallback path must freeze a provisional historical scan after pre-drain but before boundary/deny activation, then consume its exact manifest/checksum/watermark in a post-deny full/delta reconciliation after old writes drain and before migration, promotion, fallback, or reopening. Queue terminality is not canonical-state proof. Live automatic retries last at most three days, Dashboard/Workbench resend at most 15 days, and Stripe CLI resend at most 30 days; events created while a destination is disabled do not auto-resend.
-- Vercel cron scheduling is a project-wide disable/enable control for the four routes in `vercel.json`; the repo has no one-job toggle, per-job kill switch, approved operator bypass, or secret-safe launcher. That gap blocks Production operation until a separately reviewed control and invocation design exists.
+- Vercel cron scheduling is a project-wide disable/enable control for the three routes in `vercel.json`; the repo has no one-job toggle, per-job kill switch, approved operator bypass, or secret-safe launcher. That gap blocks Production operation until a separately reviewed control and invocation design exists.
 - Switching a deployment from sandbox/test Stripe keys to live Stripe keys can leave existing account rows with customer IDs from the old mode. `findOrCreateStripeCustomer()` validates a saved customer against the currently configured Stripe mode before Checkout reuse and creates a fresh customer if Stripe returns `resource_missing`.
 - Checkout Sessions currently pin `payment_method_types: ["card"]` so live Checkout works even before Stripe Dynamic Payment Methods are configured in the dashboard. Revisit this once the live Stripe account has the desired payment methods enabled.
 - If a successful purchase still shows Free in the account page or plugin, check `/api/stripe/webhook`, `/api/checkout/complete`, activation logs, and Stripe queue evidence; current migration `--status` is loopback-disposable only, and Production requires the future reviewed authenticated status procedure. Runtime routes intentionally do not execute DDL, account/session reads do not drain the queue, and the status fallback cannot repair a missing migration, unattached Session, refund, dispute, or poisoned event.
@@ -668,7 +627,7 @@ Use the narrowest relevant check after edits:
 - The Windows waitlist is historical: its modal/capture code and `cta_source = "windows-waitlist"` rows remain, but there is no active trigger after the hero pill became a direct platform download. Reuse `/api/download-lead` if that lead flow is intentionally revived instead of creating a duplicate client-only endpoint or table.
 - Mobile download email delivery requires the server-only `RESEND_API_KEY`, `BLOB_READ_WRITE_TOKEN`, `SIDESTREAM_LEAD_HASH_SECRET`, and `SIDESTREAM_RATE_LIMIT_HASH_SECRET` in Preview and Production. It defaults to `Sidestream <downloads@alexg.mov>` with replies sent to `alex@alexg.mov`; optional `SIDESTREAM_DOWNLOAD_EMAIL_FROM` and `SIDESTREAM_DOWNLOAD_EMAIL_REPLY_TO` overrides must not contain line breaks. The public route stores the lead in the existing deterministic private replay queue and consumes durable HMAC-keyed email/IP counters with Blob ETag compare-and-swap writes. It refuses to send when either private write fails, and the browser reuses one idempotency key across an uncertain retry so Resend cannot duplicate the same accepted request.
 - Download-lead capture and SaaS entitlement storage share the bounded server-only pool in `api/_lib/postgres.ts`. Production precedence is `SIDESTREAM_POSTGRES_URL`, `SIDESTREAM_POSTGRES_PRISMA_URL`, `POSTGRES_URL`, then `POSTGRES_PRISMA_URL`; direct/non-pooling fallback is rejected in production runtime and belongs only to reviewed tools/development/test. Do not expose any private database URL to HTML, React browser code, or the CEP plugin.
-- `CRON_SECRET` is the one 16-512 character scheduler secret for all four internal routes, but the common denominator is stricter: every character must be printable non-space ASCII (`U+0021`-`U+007E`) because lead replay rejects spaces and non-ASCII even though the other routes compare the whole header. Generate a 64-character hexadecimal token from 32 random bytes in the approved secret manager. Missing configuration must produce `503`, wrong/missing bearer auth must produce `401`, and the value must never appear in commands captured by logs or in committed files.
+- `CRON_SECRET` is the one 16-512 character scheduler secret for all three internal routes, but the common denominator is stricter: every character must be printable non-space ASCII (`U+0021`-`U+007E`) because lead replay rejects spaces and non-ASCII even though the other routes compare the whole header. Generate a 64-character hexadecimal token from 32 random bytes in the approved secret manager. Missing configuration must produce `503`, wrong/missing bearer auth must produce `401`, and the value must never appear in commands captured by logs or in committed files.
 - Checkout and lead rate limits are atomic Postgres controls, not a substitute for edge protection. The Blob fallback cannot consume the database lead limiter. Vercel Pro WAF uses per-region fixed windows. Only one shared rule/counter domain spanning all reachable hosts keeps the trailing-boundary estimate at approximately `2 * L * R`, plus regional reconciliation risk. If host-specific or duplicated rules create `H` independent counter domains, the estimate is approximately `2 * L * R * H`; cross-host boundary tests must measure that larger exposure. Require an explicit rejecting action plus security approval, or a durable shared fallback limiter; if the counter domain or bound cannot be proved, cutover is blocked.
 - Stripe lifecycle cutover is blocked until `refund.failed` has a tested recovery transition (or an explicitly approved permanent-revocation policy plus tested manual customer recovery) and every current Dispute status, including terminal `warning_closed` and `prevented`, has a tested mapping or approved conservative policy. Current code has neither approval path and must not be described as complete canonical Stripe truth.
 - No executable live one-time Pro catalog proof exists. A future owner-authenticated provider/runtime proof must bind the exact configured/default Product and selected Price to the immutable deployed artifact, mirror runtime precedence, create nothing, and retain exact-ID, live/active, linkage, one-time USD 999, and checksum evidence. The recurring legacy proof is not a substitute.
@@ -684,231 +643,4 @@ Use the narrowest relevant check after edits:
 
 ## Recent Change Log
 
-- 2026-07-22: Removed the activation-delay lede and all background gradients from the Checkout thank-you page, leaving a plain near-black success surface.
-- 2026-07-19: Removed the Pricing link from the top-right desktop header while keeping the Features and Account glass-pill links and the in-page pricing section unchanged.
-- 2026-07-17: Embedded the email's Windows mark as a Resend CID inline PNG after real-client testing proved CSS data images were stripped. The visible shape still comes from the landing page's Windows silhouette and requires no remote image load.
-- 2026-07-17: Replaced the download email's four-square Windows font approximation with the landing page's exact Windows SVG mark, including the matching white hover treatment.
-- 2026-07-17: Restyled the computer-handoff email's Mac and Windows installer links as matching white platform-marked capsules on a dark panel, including the website's red hover treatment and a narrow-screen stacked fallback, while retaining explicit platform labels.
-- 2026-07-17: Tightened the mobile download handoff by removing the explanatory Mac/Windows sentence and the default "One email. No account required." note. The empty live region remains hidden until it needs to show validation or delivery feedback.
-- 2026-07-17: Restored Production activation polling, license verification, refresh, and download authorization against the pre-entitlement-lifecycle database. Every customer-facing license read now shares the fail-closed JSON-based lifecycle compatibility expression instead of directly referencing the absent column; targeted source regressions prevent any route from drifting back to the parse-time `42703` failure. No Production schema or entitlement row was mutated.
-- 2026-07-17: Added the mobile computer handoff: phone-width visitors see one inline email form instead of choosing Mac or Windows, lower mobile download CTAs return to that form, and the new fail-closed `/api/send-download-links` route stores bounded campaign context in the existing private replay queue before sending one idempotent Resend email with both installers from the existing `alexg.mov` domain. Its hashed email/IP limits use private Blob compare-and-swap writes so the MVP does not require the currently unapplied Postgres hardening tables. Desktop downloads remain direct.
-- 2026-07-17: Replaced the nearly blank Open Graph/Twitter screenshot with a cache-busted 1200×630 Sidestream product card and updated every social and JSON-LD image reference.
-- 2026-07-16: Fixed the live Google sign-in hostname split by standardizing Production on the canonical `sidestream.tv` callback, rejecting callback/start origin mismatches before setting OAuth cookies, and replacing raw OAuth error JSON with a flat retry page.
-- 2026-07-16: Restored signed-in Account routing against the intentionally pre-entitlement-lifecycle Production database. Session reads now detect the absent `entitlement_status` field without runtime DDL, preserve compatibility only for exact one-time paid rows the migration would mark active, and automatically prefer canonical lifecycle state after the migration exists.
-- 2026-07-16: Bound the decorative Premiere/Sidestream recording's clipping wrapper to the hero's real bounds and added hero-height coverage for tall desktop ratios, removing the empty strip below the plugin so the following feature section is its only bottom crop.
-- 2026-07-16: Routed the landing-page Account link through a session-aware Google OAuth entry, redirected direct signed-out account visits into the same flow, kept returning users on the existing 30-day HTTP-only server session, returned sign-out to the landing page, and replaced the account page's red gradient with a flat near-black background.
-- 2026-07-16: Shortened the visible hero Windows CTA from `Download for Windows` to `Download`, matching the Mac CTA while retaining the Windows icon, platform-specific installer URL, and explicit Windows accessible label.
-- 2026-07-16: Removed the optional Customer 360 identity bridge as the first hard dependency blocking Production activation start. Identity attachment now remains dormant unless the complete core Customer 360 table set exists, so activation creation works on the intentionally unmigrated Production database. Live verification then exposed the next existing blocker: activation status still assumes the unapplied entitlement-lifecycle schema, and full sign-in/transfer remains blocked pending a reviewed migration cutover or explicit pre-20260713 compatibility implementation.
-- 2026-07-16: Moved the decorative Premiere/Sidestream recording's compensated anchor farther up and left, from `50vw 35vh` to `45vw 25vh`, without changing its scale or mobile hide behavior.
-- 2026-07-16: Moved the decorative Premiere/Sidestream recording's compensated top-left anchor from `50vw 50vh` to `50vw 35vh`, preserving its horizontal alignment while revealing more of the recording's lower edge on desktop.
-- 2026-07-15: Set the canonical Mac manifest minimum supported version to `1.0.12`, making v1.0.11 and older update banners critical/non-dismissible while still routing directly to the current v1.0.14 installer; the release publisher now preserves that floor by default.
-- 2026-07-15: Published and verified the stable Mac `1.0.14` release through the signed `/api/download` route and `/api/releases/latest`, backed by the private versioned Blob pathname. The public DMG is 226,417,721 bytes with SHA-256 `09d31bd4373f030184593f2cae361f776b82bf1552b0b543bc15be1a30c1c79e`.
-- 2026-07-15: Completed the FlowState Customer 360 association contract with the exact four-route JSON-body matrix, strict identity formats and omission/error behavior, verbatim telemetry `installIdHash` reuse, website-owned production/Test isolation, browser/URL privacy boundary, and activation-record continuity. No deployment, migration, backfill, entitlement, or device change was performed.
-- 2026-07-15: Corrected the Customer 360 contract after semantic audit: distinguished trusted write namespace from authorized admin read selection, documented one-time/subscription/comped/mixed history without implying current subscription state, preserved observe-by-default single-device status, separated local FlowState work from live Preview/Test QA, exhaustively inventoried stored/derivable telemetry versus the compact API, defined null/zero success-rate behavior, corrected the cron response/log split, and accounted for Vercel's four-job project-wide scheduling control. Customer 360 is not deployed and Production is not migrated.
-- 2026-07-15: Published the durable cross-repo Customer 360 field/privacy/identity/commerce/usage contract and human-gated Preview/Test-first rollout guide. Documented the protected API, `SIDESTREAM_CRM_ADMIN_SECRET`, separate `SIDESTREAM_TELEMETRY_POSTGRES_URL`, disposable `SIDESTREAM_TEST_POSTGRES_URL` harness, `installIdHash` versus single-device separation, money minor units, first-attempt/success and rolling-window semantics, retention gap, observability, dry-run backfill, and non-Production rollback. Customer 360 is not deployed and Production is not migrated.
-- 2026-07-15: Deduplicated a paid Checkout fallback against only its related paid Invoice fallback before their shared instrument arrives. The paid InvoicePayment allocation edge now selects the Invoice as the one economic purchase without aliasing their payment keys; unrelated Checkout purchases remain countable before and after the related PaymentIntent materializes. Added disposable-Postgres overlap and negative-control coverage. No Production query, migration, backfill, deployment, Stripe/Vercel configuration change, entitlement mutation, or device mutation was performed.
-- 2026-07-15: Recovered Customer 360 paid-amount fallbacks without weakening payment-group guards. Paid Checkout-only and Invoice-without-instrument facts now remain queryable until a related settled PaymentIntent or captured Charge atomically replaces them; gross includes fully and partially off-Stripe Invoice money, with `off_stripe_paid_minor` exposed as a constrained totals subset. Added disposable-Postgres regressions for Checkout `999`, Invoice `500` replacement, full off-Stripe `700`, mixed `1000/200/800`, and verified fallback dates. No Production query, migration, backfill, deployment, Stripe/Vercel configuration change, entitlement mutation, or device mutation was performed.
-- 2026-07-15: Recovered Customer 360 commerce integrity around canonical captured money and identity conflicts. PaymentIntent/standalone-Charge instruments now own gross and paid timing, current InvoicePayment records persist as allocation edges without collapsing valid many-to-many graphs, `charge.refund.updated` and current cash-balance events route correctly, off-Stripe invoice money remains explicit, and contradictory identity evidence atomically applies sticky whole-group quarantine. Added disposable-Postgres regressions for partial capture, allocation graphs, refund-first late attach, product scope, and late/bridged conflicts. No Production query, migration, backfill, deployment, entitlement mutation, or device mutation was performed.
-- 2026-07-15: Made Customer 360 profile merge ordering timezone-safe by comparing canonical UTC microsecond timestamps before parsed ISO fallback, with both argument orders covered across the Los Angeles DST gap. No Production migration, deployment, backfill, or cutover was performed.
-- 2026-07-15: Removed the unsafe executable Production cutover and fallback recipe. Production cutover is blocked; the API runbook now records only current facts, blockers, and capabilities required by a future separately reviewed plan. No Production action was performed.
-- 2026-07-14: An earlier documentation attempt claimed live Pro catalog, historical-lifecycle, deployment-binding, and promotion evidence that independent review found non-executable or unsafe. Those claims are superseded by the 2026-07-15 blocked status; no Production action was performed.
-- 2026-07-14: Recorded the intended historical-lifecycle ordering, but later review found that the fallback path consumed provisional evidence it never produced. Both future main and fallback paths are now explicit capability blockers; no Production action was performed.
-- 2026-07-14: Earlier recipes attempted WAF, release/fallback identity, database transport, Stripe drain, and cron sequencing. Later review rejected their provider attestation, launcher, signature, and lifecycle assumptions; no Production action was performed.
-- 2026-07-14: Removed the obsolete single-device command surface and centralized API/runtime facts. The API runbook now records blockers/capabilities only and is not an executable Production procedure; no Production action was performed.
-- 2026-07-14: Earlier audit remediation documented empty-environment and account/target assertions, but later review reproduced pre-main env injection and other unsafe input/file handling. The executable recipe is removed; no Production action was performed.
-- 2026-07-14: Earlier follow-up attempt, superseded by the audit entry above: documented release-channel normalization, env-file injection, checksum evidence, deterministic Vercel linking, WAF bypass effects, and resend ceilings. Later review found the inherited-env and lifecycle gaps now recorded as blockers. No production action was performed.
-- 2026-07-14: Earlier three-verdict remediation attempt, superseded by the audit entry above: added enabled Stripe delivery, staged Production artifacts, the WAF matrix, global cron sequencing, migration status, and license continuity. Later review proved that endpoint-only event reconciliation was incomplete. No production action was performed.
-- 2026-07-14: Earlier consolidation, superseded by the audit entry above: assembled the hardened API contract, checksummed migrations, activation compatibility, lifecycle transitions, retries/dead letters, lead replay, protected crons, retention, alerts, and disposable-database proof. It did not make the stale alternate cutover safe or resolve the current lifecycle blockers. No production action was performed.
-- 2026-07-14: Locked the decorative Premiere/Sidestream recording's visible panel corner to the center of the desktop viewport at every supported window size while preserving the existing `900px` hide-and-pause breakpoint.
-- 2026-07-14: Removed the explanatory sentence beneath the hero's "in Premiere Pro" subline, cleaned up its unused responsive styles, and retained deliberate spacing above the platform download buttons.
-- 2026-07-14: Framed the desktop Features, Pricing, and Account nav links as compact rounded glass pills with clearer hover and keyboard-focus states, leaving the mobile-hidden behavior and header CTA count unchanged.
-- 2026-07-14: Added privacy-limited Gmail installer referral attribution with batch UTM tags, post-response Postgres writes, likely-scanner flags, an aggregate maintainer report, RLS hardening, and focused route/privacy tests without changing installer delivery behavior.
-- 2026-07-14: Consolidated the single-active-device schema, production/Test environment contract, API/page states, operator/support workflow, disposable-Postgres tests, and privacy boundary. Its original migration/cutover directions were removed; `docs/api-hardening-runbook.md` records blockers and future capabilities only, and no Production migration, deployment, backfill, or enforcement was claimed.
-- 2026-07-14: Made Restore Purchase confirmation idempotent for same-account retries after an activation reaches `restored`, `paid`, or `linked`, preventing a successful first submit plus duplicate browser submit from ending on a false `unavailable` error while preserving expiry and account-isolation checks.
-- 2026-07-14: Added explicit image/group roles to the named demo, pricing-card, and MacBook containers so Chromium produces a well-formed accessibility tree instead of rejecting `aria-label` on generic `div` elements.
-- 2026-07-14: Removed the top-right `Free Download` CTA from the fixed header while keeping the Features, Pricing, and Account navigation links plus all in-page download CTAs.
-- 2026-07-14: Shortened the hero Mac CTA from `Download for Mac` to `Download` while retaining the Apple mark, explicit Mac accessible label, platform-specific URL, and full-width mobile treatment.
-- Added secure instant Pro synchronization: persisted/idempotent activation Checkout Sessions, a server completion callback plus webhook-delayed reconciliation, exact Stripe Price/Product/quantity verification, device-bound access and rotating refresh credentials with lost-response replay, explicit signed-in CSRF-protected Restore Purchase, second-purchase avoidance for signed-in Pro activations, bounded activation token replay, additive schema constraints, and focused entitlement regression tests.
-- Kept `/api/*` executable on the legacy `sidestream-xi.vercel.app` project host while continuing to canonicalize its root and non-API pages, so installed 1.0.12 panels no longer fail their account POSTs on a `308`.
-- 2026-07-13: Renamed the hero Mac CTA from `Free Download` to `Download for Mac` so the paired Mac and Windows buttons use parallel platform labels, and made the pair equal full-width buttons below `520px`; no helper line was added and the other Mac CTAs remain unchanged.
-- 2026-07-13: Replaced the hero Windows waitlist trigger with a direct `Download for Windows` link to the platform-scoped `1.0.13` beta EXE route; the Mac download path remains unchanged and the old waitlist modal is dormant.
-- 2026-07-13: Protected the `https://sidestream.tv/` canonical and `$9.99` one-time Sidestream Pro offer across the landing page, legacy redirect, checkout resolver, JSON-LD, crawler files, fallback page, and README.
-- Right-aligned wrapped account-row actions so receipt and refund controls share the same desktop edge as sign out, Stripe Portal, and installer actions while preserving the full-width mobile layout.
-- Added server-side `308` canonical redirects for `www.sidestream.tv`, `sidestream-xi.vercel.app`, `/index.html`, and the legacy nested HTML path; added response-level `X-Robots-Tag` protection for functional HTML/API responses; blocked automatic crawlers from `/api/`; kept `OAI-SearchBot` enabled while opting out of `GPTBot`; and moved sitemap `<lastmod>` generation into the build with GitHub-backed provenance for Vercel's Git-history-free build environment.
-- Added platform-scoped Windows beta fulfillment: bare site downloads and Mac CTAs remain on Mac `1.0.12`, while `win32-x64` manifest/download requests serve Windows `1.0.13` and unknown platforms fail closed.
-- Promoted the public installer pointer to the private Blob `1.0.12` native/base DMG and redeployed production so `/api/download` serves `Sidestream-1.0.12-Mac-Installer.dmg`.
-- Added the Sidestream-owned `/api/releases/latest` update manifest and moved `/api/download` to the same `data/release-manifest.json` release pointer so the plugin update check and public installer cannot drift between AlexG and Sidestream surfaces.
-- Added a Supabase RLS hardening migration for server-owned Sidestream public tables, revoking direct `anon` and `authenticated` Data API table access while preserving the server-only Postgres route contract.
-- Retired the first-week-unlimited free-trial offer, which was never implemented in the entitlement backend: the Free pricing card and `llms.txt` now say "5 free downloads every day," matching the plugin's actual free-tier daily cap. Only backend-issued Sidestream Pro license tokens bypass the cap.
-- Replaced the inline hero Windows email box with a matching Windows platform pill that opens a centered waitlist modal.
-- Added a hero Windows waitlist capture that posts emails to `/api/download-lead` with `source: "windows-waitlist"` while leaving Mac download CTAs unblocked.
-- Promoted the public installer pointer to the private Blob `1.0.11` native/base DMG and redeployed production so `/api/download` serves `Sidestream-1.0.11-Mac-Installer.dmg`.
-- Removed the account/subscription bullet from the Pro pricing card.
-- Changed the Free pricing card copy from "Unlimited free downloads" to "Unlimited downloads for your first week."
-- Sent successful Stripe Checkout returns to `thank-you.html`, kept cancelled Checkout on `upgrade.html`, and redirected legacy `upgrade.html?checkout=success` links to the new thank-you page.
-- Added invoice creation for future one-time Stripe Checkout payments, a direct `/api/billing/receipt` route for existing one-time charge receipts, and account-page receipt/refund request controls so Customer Portal is not treated as the only purchase-history surface.
-- Historical: Sidestream Pro was temporarily corrected from `$9.99` to `$4.99` for Price `price_1TqGeBDFKjeGlioXlV8fBGK8`; the 2026-07-13 `$9.99` change above supersedes this state.
-- Historical: Checkout temporarily pinned `price_1TqGeBDFKjeGlioXlV8fBGK8`; the active `$9.99` lookup-key resolver now supersedes that default.
-- Fixed Checkout customer reuse after sandbox-to-live Stripe key switches by validating saved Stripe customer IDs before passing them to Checkout.
-- Renamed the paid one-time Checkout tier from Sidestream Unlimited to Sidestream Pro, switched new Checkout metadata to `sidestream_pro`, and resolved the `$9.99` Stripe Price from Product `prod_UpwXh6oO1OmPyQ` with legacy Unlimited webhook compatibility.
-- Pinned one-time Stripe Checkout Sessions to card payments while the live Stripe account payment-method dashboard setup is incomplete.
-- Removed the account page lede sentence so `account.html` goes straight from the account headline into the sign-in or account-management panel.
-- Added a sandbox-guarded Stripe maintainer utility for creating/verifying the `FREEDEV` 100% off promotion code used to test no-cost Sidestream Pro Checkout.
-- Promoted the public installer pointer to the private Blob `1.0.10` native/base DMG and redeployed production so `/api/download` serves `Sidestream-1.0.10-Mac-Installer.dmg`.
-- Changed the paid plan from a monthly subscription path to a `$9.99` one-time Stripe Checkout payment with webhook fulfillment for one-time Checkout Session IDs and no Google sign-in requirement before purchase.
-- Moved the canonical landing page to the clean root URL, `https://sidestream.tv/`, and changed the old exported `Sidestream%20front%20end%202/Sidestream.html` path into a noindex compatibility redirect.
-- Changed the $0 pricing card from Beta to Free and removed beta-tester wording from the free-plan copy, structured data, and `llms.txt`.
-- Fixed Vercel API route helper imports to use explicit `.js` extensions so auth, activation, checkout, billing, and webhook functions resolve `api/_lib/account.ts` after production compilation.
-- Added the MVP SaaS account flow: unblocked download CTAs, noindex `account.html` and `upgrade.html`, Google OAuth, Stripe Checkout, Customer Portal redirects, webhook-owned entitlement tables, plugin activation endpoints, short-lived license tokens, and a generic Postgres migration runner.
-- Added support for Sidestream Supabase/Vercel connector database env names across account/billing APIs, download-lead capture, and Postgres maintainer scripts, with `SIDESTREAM_POSTGRES_URL` preferred over older generic `POSTGRES_URL` fallbacks.
-- Promoted the public installer pointer to the private Blob `1.0.9` native/base DMG and redeployed production so `/api/download` serves `Sidestream-1.0.9-Mac-Installer.dmg`.
-- Commented out the blurred `$19` Unlimited paid-plan details while keeping the "Coming soon" placeholder card stable for later restoration.
-- Migrated hosted `POSTGRES_URL` to Neon Postgres, copied readable database tables into Neon, and redeployed production so `/api/download-lead` writes to the new database.
-- Added non-visual SEO/GEO metadata, JSON-LD structured data, public `robots.txt`, `sitemap.xml`, `llms.txt`, and a stable public Open Graph image while leaving the visible landing page unchanged.
-- Promoted the public installer pointer to the private Blob `1.0.8` native/base DMG and redeployed production so `/api/download` serves `Sidestream-1.0.8-Mac-Installer.dmg`.
-- Added request IP capture to Sidestream download leads and removed the internal `storage_targets` column/dump field, which was only temporary migration bookkeeping.
-- Moved Sidestream download email lead storage to Postgres table `public.sidestream_download_leads`, added a migration script for existing Vercel Blob lead JSON records, and kept private Blob writes as a temporary fallback when database capture is unavailable.
-- Changed `GET /api/download` from private Blob proxy streaming to a metadata check plus short-lived signed private Blob redirect, fixing deployed GET failures where `HEAD` still succeeded.
-- Added Vercel Analytics through the existing React entry and documented the verification path.
-- Added `.vercelignore` so production Vercel deploys exclude raw local demo/mockup source assets while keeping the small tracked WebM/MP4 media files required by the landing page.
-- Updated the documented Sidestream installer download pathname to the `1.0.6` native/base DMG after the production promotion.
-- Documented Vercel Blob/CDN storage and egress guardrails for the public Sidestream installer path, including current Hobby allowances, the ~198 MiB installer transfer math, and explicit stop-and-ask triggers for artifact, `/api/download`, and CTA changes.
-- Moved the right-side Sidestream/Premiere corner demo down another `12vh` for the live browser viewport after the previous adjustment still read too high.
-- Made the right-side Sidestream/Premiere corner demo's screen blend more visible by lowering opacity to `0.9` and moved it another `4vh` down.
-- Added a subtle `screen` blend mode plus `0.96` opacity to the right-side Sidestream/Premiere corner demo so darker recording areas breathe into the shader.
-- Moved the right-side Sidestream/Premiere corner demo another 10vw left and 10vh down, widening the clipping/video overfill so the recording still reaches the right viewport edge.
-- Pointed visible download CTA anchors at the canonical public Vercel download URL so local/static previews no longer 404 on `/api/download` after the email gate.
-- Moved the right-side Sidestream/Premiere corner demo down by `10vh` and documented that the shader background requires Vite rather than a plain static server.
-- Removed the fake dark matte from the right-side Sidestream/Premiere corner demo and regenerated the WebM from a square full-plugin/timeline crop so real video content covers the right/bottom gaps without zooming the old crop.
-- Changed the email-gate continuation from a recursive anchor replay to direct `window.location.assign(...)` navigation so Download no longer flickers or stalls after submission.
-- Scaled the right-side Sidestream/Premiere corner demo down from its visible top-left corner while preserving wide-screen horizontal overfill and leaving the frosted feature band in normal flow.
-- Simplified the email-gate modal copy to avoid implying Sidestream updates depend on email.
-- Changed the $0 pricing card label from "Free" to "Beta" while keeping the CTA copy as "Free Download".
-- Bottom-aligned the 20%-smaller right-side Sidestream/Premiere corner demo to the normal frosted feature band, removing the bottom gap without moving the dark section.
-- Added an email-gated download modal for all `/api/download` CTAs plus `POST /api/download-lead`, which stores each valid email submission as a private Vercel Blob JSON record before continuing the installer download.
-- Updated the pricing cards so the Beta plan promises unlimited downloads for beta testers, while the blurred Unlimited card keeps the `$19` paid details behind a "Coming soon" / "Sidestream Unlimited" overlay.
-- Changed the final CTA headline to "Stop using sketchy websites to download music".
-- Moved the frosted feature band back down to its normal post-hero position and kept the decorative corner demo adjustment isolated to the video layer.
-- Let `/api/download` CTA clicks navigate through their native anchors and kept the toast as feedback-only, removing the fragile `preventDefault()` plus manual `window.location.assign()` download handoff.
-- Scaled the right-side Sidestream/Premiere corner demo down by 20% while compensating for the WebM's transparent alpha padding so the visible top-left Premiere corner stays in the same place.
-- Changed the cropped VP9-alpha Sidestream/Premiere corner demo from a small floating card into a right-side decorative placement behind the hero-to-feature transition.
-- Uploaded the native/base `Sidestream-1.0.5-Mac-Installer.dmg` to private Vercel Blob and switched the documented Vercel download pathname away from the ZXP-helper DMG.
-- Changed the visible Unlimited one-time price from `$29` to `$19` across the pricing card, purchase CTA, and final CTA copy.
-- Increased the hero rotating noun slot's lower paint buffer so descenders like the `g` in `songs` no longer clip during the word cycle.
-- Lowered the pricing headline by equalizing the space above and below it, centering it between the `.feature-glass` band and pricing cards without moving the cards.
-- Moved the `.feature-glass` bottom separator to the end of the feature wrapper so the Preview demo video has more buffer above the lower line.
-- Moved the `.feature-glass` top separator to the start of the feature wrapper so the Search demo video has more buffer below the line.
-- Tuned the pricing-card reveal to trigger earlier with a shorter upward glide and tighter Unlimited-card stagger so the pricing section no longer feels empty while scrolling.
-- Wrapped the Search and Preview demo sections in a single full-bleed `.feature-glass` dark frosted backdrop so that proof area is visually separated from the continuous shader background.
-- Removed all background mouse interactivity and restored the active background to the plain Paper `MeshGradient`.
-- Added a black Apple platform mark inside the visible `Free Download` CTAs and accessible `Free Download for Mac` labels for `/api/download` links.
-- Reworded the hero description to explicitly call Sidestream a panel inside Premiere Pro for searching, previewing, and downloading YouTube videos without leaving the app.
-- Changed every visible `/api/download` CTA label from `Download` to `Free Download`.
-- Moved the final CTA panel above the rotating pricing MacBook mockup.
-- Italicized the hero "in Premiere Pro" subline while keeping it outside the animated H1.
-- Anchored the hero headline, description, and primary Free Download CTA to the lower-left first-fold gutter, then moved the Search demo group down to add breathing room below the hero Free Download button.
-- Removed the inline Download buttons from the Search and Preview demo sections and kept their heading/subtext blocks centered beside the videos.
-- Removed trailing periods from the visible hero rotating noun labels and matching aria label.
-- Moved the rotating MacBook mockup out of the hero and centered it below the two pricing panels inside `.pricing-mockup`, with a small playback helper to keep it spinning.
-- Removed the secondary "Get Unlimited" button from the final CTA so the closing panel only offers `Free Download`.
-- Smoothed the demo-video 3D hover by tracking against the card's stable layout box and returning to rest with an S-curve reset.
-- Anchored the Features/Pricing/Download header cluster to the viewport's top-right with a `15px` top offset and `24px` right gutter.
-- Pinned the fixed Sidestream wordmark and desktop hero copy to the shared viewport-left `24px` first-fold gutter instead of the older centered shell.
-- Shifted the desktop hero copy left by left-anchoring the wider `1280px` first-fold shell.
-- Changed the Unlimited pricing card from a red outline/drop shadow treatment to a white outline with no shadow.
-- Rounded the two pricing cards to `28px` corners and added a pricing-only scroll reveal that glides them upward with a slight stagger when they enter the viewport.
-- Added a subtle center-origin 3D hover tilt to the two feature demo video frames, capped at 15 degrees and disabled for reduced-motion/coarse-pointer users.
-- Removed the red radial corner glow from the final CTA panel.
-- Moved the enlarged hero MacBook mockup a little farther right by easing `.hero-mockup-video` from `translateX(-2%)` to `translateX(0)` on desktop and narrow mobile.
-- Moved the hero MacBook mockup a little farther right by easing `.hero-mockup-video` from `translateX(-4%)` to `translateX(-2%)` on desktop and matching the narrow-mobile offset.
-- Lightened the "Unlock when you need more." pricing headline line with `.pricing-line { font-weight: 300; }`.
-- Raised the pricing headline and increased its gap above the pricing cards so it sits halfway between the Preview demo video and pricing cards.
-- Increased the hero MacBook mockup scale by 20%, changing `.hero-mockup-video` from `185%` to `222%` on desktop and from `177%` to `212%` on narrow mobile.
-- Let `.hero-media` overflow visibly so the enlarged rotating MacBook no longer gets clipped by the hero grid boundary.
-- Changed every `/api/download` CTA label from `Download now` to `Download` and moved download buttons to a white capsule style with black text, red hover fill, and white hover text.
-- Reduced the hero bottom padding and added `.feature-start` so the Search demo group starts inside the first fold on desktop and mobile.
-- Nudged the desktop hero MacBook mockup slightly right by easing the desktop-only alpha video offset from `translateX(-6%)` to `translateX(-4%)`.
-- Rounded `[data-download]` CTAs into Apple-style capsules while preserving their existing size and red primary treatment.
-- Reverted the hero CTA experiment back to a single red `Download now` button that points to `/api/download`.
-- Tightened the desktop hero composition by capping `.hero-split` width, reducing its responsive grid gap, and nudging the alpha MacBook video left so the copy and mockup sit closer together.
-- Changed the solid and translucent white text tokens plus direct white text cases to the slightly softer off-white `#E2E8F0`.
-- Darkened the active Paper `MeshGradient` background by 20% by scaling the non-black shader stops from `#1a1a1a`, `#333333`, and `#cccccc` to `#151515`, `#292929`, and `#a3a3a3`.
-- Removed the red square brand mark from the fixed top-left nav so the header starts with the Sidestream wordmark only.
-- Added a lighter `.hero-description` line below "in Premiere Pro" to explain that Sidestream searches, previews, and downloads YouTube media inside the Premiere workflow.
-- Removed red drop shadows from primary CTA buttons while keeping their fill, hover color, and hover lift.
-- Widened `.hero-description` so the explanatory line extends a little past the right edge of "Download YouTube" on desktop.
-- Kept "Download YouTube" together on the hero's first headline line with `.hero-title-line`, widened the desktop hero copy track to fit it at `1280x748`, and left the rotating noun on the second line.
-- Added `@vercel/blob`, linked the repo to Vercel project `sidestream`, pulled local env, configured the private `products` Blob store id and installer pathname, and added `/api/download` to stream the current Sidestream installer from private Blob storage.
-- Added `vercel.json` to force npm-based Vercel install/build/dev commands and `dist` output for this Vite project.
-- Updated all `Download now` CTAs to target `/api/download` while preserving the toast feedback before navigation.
-- Aligned the mounted Paper `MeshGradient` brightest color stop to `#cccccc` so the light background phase is about 20% less bright.
-- Forced the pricing heading to break after "Start free." so the desktop pricing section matches the intended two-line copy.
-- Made the Tudor Place feature demo videos start only when scrolled into view and pause when they leave the viewport.
-- Shifted the desktop hero copy and MacBook mockup upward by redistributing hero top/bottom padding for better 14-inch MacBook viewport centering.
-- Removed the pasted Paper demo's centered `21st` install text and clipboard rectangle from the background layer while keeping the active mesh shader.
-- Copied the provided Paper demo exactly into `components/ui/demo.tsx`, mounted it directly as the background, copied `background-paper-shaders.tsx` exactly, and added type declarations so the pasted prop names can remain unchanged.
-- Removed the fake stoplight/browser-title chrome from the Tudor Place Search and Preview demo cards so each feature frame is just the video.
-- Replaced the Search and Preview placeholder cards with Tudor Place MP4 demos, removed the third Download feature block, and ignored raw Screen Studio project folders under `demos/`.
-- Restored the React/Paper/Tailwind shader mount and made the active background follow the pasted reference more closely with black/charcoal/gray/white `MeshGradient` plus `DotOrbit`, removing the red CSS fog approximation.
-- Added a dependency-free CSS shader/mesh background adapted from the pasted Paper/Three reference while keeping the page static HTML and Vite-only.
-- Replaced the mounted Paper/React shader background with a plain black `body` background, removed the background mount script, deleted the unused React/Tailwind/shadcn files, removed their dependencies, and simplified the Vite config.
-- Added a pointer-reactive gravity/water wake to the full-page Paper `MeshGradient` background using `requestAnimationFrame` and CSS variables, while keeping the background to a single shader canvas.
-- Removed the unused React Three Fiber/Three background reference component and uninstalled the now-unused `@react-three/fiber`, `three`, and `@types/three` packages.
-- Removed the hero MacBook video's CSS drop shadow so the alpha WebM no longer reveals a rectangular compositing edge during rotation.
-- Softened the full-page Paper shader contrast so animated background bands no longer read as hard edges around the rotating MacBook.
-- Changed the landing-page accent palette from orange to red across CTAs, brand mark, rotating noun gradient, pricing highlights, check icons, glow shadows, shadcn theme tokens, and optional shader primitive defaults.
-- Removed the mounted React Three Fiber shader-plane canvas so the top-left and lower-page lens-flare/schmutz artifacts no longer appear over the background.
-- Removed the mounted `DotOrbit` layer and disabled MeshGradient grain so the background no longer shows random grey dots that were not part of the original page.
-- Removed the visible `EnergyRing` from the mounted background so the top-right hero area no longer shows a distracting colored ring.
-- Replaced the earlier light background with a dark Paper shader direction and retuned page text/surfaces to white-on-dark.
-- Swapped the hero MacBook video to the cleaner `mockup1_2` alpha animation and generated a browser-sized WebM.
-- Added the Vite/React/Tailwind/shadcn project shell and the `@paper-design/shaders-react` shader background component.
-- Mounted `ShaderBackground` once at the top of the canonical page and removed the old CSS Aurora/body glow.
-- Changed formerly black text tokens to white/translucent white and darkened page cards, placeholders, pricing cards, and toast surfaces for shader contrast.
-- Ignored generated `node_modules/` and `dist/` output.
-- Restored the page to a mostly white background and softened the MacBook video shadow/mask to reduce alpha edge artifacts during rotation.
-- Added a subtle animated gradient to the hero rotating noun.
-- Increased the hero MacBook mockup scale by roughly 30% while preserving the taller media frame and bottom fade mask.
-- Enlarged the hero headline/subline and MacBook mockup slightly, removed the hero-only shader layer, and made the page glow one continuous non-repeating background field.
-- Fixed the mobile flipped-grid override so feature cards use the full mobile width.
-- Set the large footer SIDESTREAM wordmark to Helvetica Bold.
-- Smoothed the hero rotating noun by replacing the mixed transition/keyframe handoff with matched monotonic `translate3d` keyframes and per-group rotation setup.
-- Replaced the hero screenshot placeholder with an autoplaying muted loop of the rotating MacBook Pro mockup and added the generated WebM asset.
-- Removed the fixed header's scroll divider/shadow so the hero glow no longer reads as a hard horizontal cutoff while scrolling into the first feature section.
-- Made the Aurora-style glow continuous between the hero and first feature by removing the clipped hero edge and strengthening the page-wide glow mask.
-- Switched all page text to the SF Pro system font stack and removed the unused Google Fonts request and monospace mock-label overrides.
-- Restored the hero layout, media scale, and section spacing while keeping the hero headline, subline, and CTA smaller.
-- Added a shared sans width control so SF Pro-style text is subtly tighter.
-- Increased the Aurora-style page glow intensity and kept the pricing band translucent so the glow remains visible through the landing page.
-- Reduced the hero headline, subline, and CTA sizing for a smaller first-fold text treatment.
-- Extended the Aurora-style glow through the landing page and softened the pricing band so there is no hard stop after the hero.
-- Removed the Terms link from the footer and cleaned up unused footer-link styles.
-- Removed the support email link from the footer.
-- Added the "Maximum audio and video quality" bullet to both pricing plans.
-- Added the "Full video and audio downloads" bullet to the Unlimited pricing plan.
-- Initialized this folder for publishing to `git@github.com:alexgmov/Sidestream-Website.git` and ignored Finder `.DS_Store` files.
-- Removed the "Maximum available quality" bullet from the Unlimited pricing plan.
-- Removed the "03 Download" eyebrow from the third feature section and cleaned up the now-unused eyebrow styles.
-- Removed the "02 Preview" eyebrow from the second feature section.
-- Removed the "01 Search" eyebrow from the first feature section.
-- Removed the hero "Premiere Pro Plugin" eyebrow above the headline.
-- Changed the hero "in Premiere Pro" subline color to black.
-- Changed feature heading sublines from the old serif accent style to lighter SF Pro-style subtext.
-- Increased the hero "in Premiere Pro" subline to a medium SF Pro-style weight.
-- Made the header a transparent fixed overlay above the Aurora hero background, preserved hero spacing with extra top padding, and added anchor scroll padding for fixed-nav links.
-- Changed the hero rotating noun to always roll upward with a subtle Bezier overshoot.
-- Added a root `index.html` redirect so the local server root opens the canonical Sidestream page.
-- Replaced the hero rotating noun rebound with smoother directional Bezier-style roll-off motion.
-- Lightened the hero "in Premiere Pro" subline with a thinner SF Pro-style treatment.
-- Added a lighter hero subline reading "in Premiere Pro" below the main rotating headline.
-- Removed the secondary "Get Unlimited" button from the hero CTA row.
-- Added bottom buffer to the hero rotating-word slot so descenders in words like "songs" and "overlays" are not clipped.
-- Updated the free plan limit copy from "About 10 downloads per month" to "5 downloads per day."
-- Removed the pricing intro paragraph under the "Start free" heading.
-- Removed em dash punctuation from the page title, feature eyebrows, mock-window labels, and Unlimited CTA copy.
-- Removed the hero install/free-start note below the CTA row.
-- Removed the hero lead paragraph so the headline now jumps straight to the CTA row.
-- Changed the hero headline to a sans-serif "Download YouTube" message with a dependency-free rotating noun slot for editor download use cases.
-- Added a dependency-free Aurora/light-ray background behind the hero and documented that it is a static CSS translation of the pasted React/Tailwind component.
-- Restored the hero to the numbered screenshot state: serif headline, plugin eyebrow, two hero CTAs, title-case brand, and wider right-side mock window.
-- Added this README as the routing layer for future coding sessions.
+- 2026-07-22: Retired the Customer 360 runtime and consolidated documentation around the private telemetry-first install/device/account bridge. The source change performed no provider migration, deployment, secret deletion, Test database disposal, schema apply, or Production action; all live target inventory, migration, deployment, and real-flow proof remains separately human-gated.
