@@ -33,6 +33,7 @@ test("claim SQL atomically terminalizes exhausted work and claims only below the
           stripe_created_at: "2026-07-17T00:00:00.000Z",
           payload: event,
           raw_payload: rawPayload,
+          ingress_evidence_supported: true,
           ingress_event_id: event.id,
           ingress_event_type: event.type,
           ingress_payload_sha256: canonicalJsonDigest(event),
@@ -58,6 +59,8 @@ test("claim SQL atomically terminalizes exhausted work and claims only below the
   assert.match(statement, /attempt_count < \$4/);
   assert.match(statement, /limit greatest\(\$1 - \(select count\(\*\) from dead_lettered\), 0\)/);
   assert.match(statement, /attempt_count = event\.attempt_count \+ 1/);
+  assert.doesNotMatch(statement, /event\.ingress_event_id/);
+  assert.match(statement, /to_jsonb\(event\) \? 'ingress_event_id'/);
   assert.deepEqual(claimed, [{
     eventId: "evt_claimed",
     eventType: "test.claimed",
@@ -74,6 +77,109 @@ test("claim SQL atomically terminalizes exhausted work and claims only below the
     attemptCount: 8,
     claimToken,
   }]);
+});
+
+test("signed-event persistence falls back only when optional ingress columns are absent", async (t) => {
+  const runtime = await loadStripeEventsModule();
+  t.after(() => rm(runtime.directory, { recursive: true, force: true }));
+  const event = stripeEvent("evt_baseline_insert", "checkout.session.completed");
+  const rawPayload = JSON.stringify(event);
+  const statements = [];
+  const parameters = [];
+
+  assert.equal(await runtime.stripeEvents.recordStripeEvent(
+    event,
+    rawPayload,
+    async (statement, params) => {
+      statements.push(statement);
+      parameters.push(params);
+      if (statements.length === 1) {
+        throw Object.assign(new Error(
+          'column "ingress_event_id" of relation "sidestream_stripe_events" does not exist',
+        ), { code: "42703" });
+      }
+      return { rows: [{ event_id: event.id }] };
+    },
+  ), true);
+
+  assert.equal(statements.length, 2);
+  assert.match(statements[0], /ingress_event_id/);
+  assert.doesNotMatch(statements[1], /ingress_event_id/);
+  assert.deepEqual(parameters[1], [
+    event.id,
+    event.type,
+    event.created,
+    JSON.stringify(event),
+    rawPayload,
+  ]);
+
+  let attempts = 0;
+  await assert.rejects(
+    runtime.stripeEvents.recordStripeEvent(event, rawPayload, async () => {
+      attempts += 1;
+      throw Object.assign(new Error('column "required_column" does not exist'), {
+        code: "42703",
+      });
+    }),
+    /required_column/,
+  );
+  assert.equal(attempts, 1);
+});
+
+test("baseline-schema claims validate against the signed raw payload", async (t) => {
+  const runtime = await loadStripeEventsModule();
+  t.after(() => rm(runtime.directory, { recursive: true, force: true }));
+  const event = stripeEvent("evt_baseline_claim", "checkout.session.completed");
+  const rawPayload = JSON.stringify(event);
+  const claimToken = "00000000-0000-4000-8000-000000000105";
+  const claimed = await runtime.stripeEvents.claimStripeEvents({
+    claimToken,
+    query: async () => ({
+      rows: [{
+        claim_result: "claimed",
+        event_id: event.id,
+        event_type: event.type,
+        stripe_created_at: new Date(event.created * 1_000).toISOString(),
+        payload: event,
+        raw_payload: rawPayload,
+        ingress_evidence_supported: false,
+        attempt_count: 1,
+        claim_token: claimToken,
+      }],
+    }),
+  });
+
+  assert.equal(claimed.length, 1);
+  assert.equal(claimed[0].ingressEvidence, "derived");
+  let processingCalls = 0;
+  const processed = await runtime.stripeEvents.processClaimedStripeEvent(claimed[0], {
+    query: async () => ({ rows: [{ event_id: event.id }] }),
+    processEvent: async () => {
+      processingCalls += 1;
+      return { status: "processed", outcome: "checkout_fulfilled" };
+    },
+    now: () => 10_000,
+    log: () => {},
+  });
+  assert.equal(processed.status, "processed");
+  assert.equal(processingCalls, 1);
+
+  const tampered = await runtime.stripeEvents.processClaimedStripeEvent({
+    ...claimed[0],
+    rawPayload: JSON.stringify({ ...event, type: "checkout.session.expired" }),
+    claimToken: "00000000-0000-4000-8000-000000000106",
+  }, {
+    query: async () => ({ rows: [{ event_id: event.id }] }),
+    processEvent: async () => {
+      processingCalls += 1;
+      return { status: "processed", outcome: "must_not_run" };
+    },
+    now: () => 10_000,
+    random: () => 0,
+    log: () => {},
+  });
+  assert.equal(tampered.status, "retryable");
+  assert.equal(processingCalls, 1);
 });
 
 test("claim-side exhaustion is reported without a ninth processing call", async (t) => {

@@ -83,6 +83,45 @@ test("Stripe events use a durable claimed queue with bounded retry and protected
     await pool.query(await readFile(baseMigrationPath, "utf8"));
     await pool.query(await readFile(operationalControlsMigrationPath, "utf8"));
     await pool.query(await readFile(queueMigrationPath, "utf8"));
+
+    await t.test("baseline event schema persists and processes signed payloads", async () => {
+      const event = stripeEvent(
+        "evt_baseline_schema",
+        "checkout.session.completed",
+        1_700_000_001,
+      );
+      const rawPayload = JSON.stringify(event);
+      assert.equal(
+        await runtime.stripeEvents.recordStripeEvent(event, rawPayload, query),
+        true,
+      );
+
+      const claimed = await runtime.stripeEvents.claimStripeEvents({
+        claimToken: deterministicClaimToken(901),
+        query,
+      });
+      assert.equal(claimed.length, 1);
+      assert.equal(claimed[0].ingressEvidence, "derived");
+      const processed = await runtime.stripeEvents.processClaimedStripeEvent(
+        claimed[0],
+        {
+          query,
+          processEvent: async () => ({
+            status: "processed",
+            outcome: "baseline_schema_validated",
+          }),
+          log: () => {},
+        },
+      );
+      assert.equal(processed.status, "processed");
+      const stored = await pool.query(
+        `select processing_status from public.sidestream_stripe_events where event_id = $1`,
+        [event.id],
+      );
+      assert.equal(stored.rows[0]?.processing_status, "processed");
+      await resetEvents(pool);
+    });
+
     for (const migrationPath of entitlementMigrationPaths) {
       await pool.query(await readFile(migrationPath, "utf8"));
     }

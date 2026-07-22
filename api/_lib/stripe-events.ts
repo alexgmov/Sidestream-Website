@@ -42,6 +42,7 @@ export type ClaimedStripeEvent = Readonly<{
   ingressApiVersion: string;
   ingressLivemode: boolean;
   ingressCreated: number;
+  ingressEvidence?: "derived";
   attemptCount: number;
   claimToken: string;
 }>;
@@ -116,45 +117,68 @@ export async function recordStripeEvent(
   assertStripeEventIdentity(event);
   const payloadText = JSON.stringify(event);
   const apiVersion = typeof event.api_version === "string" ? event.api_version : "";
-  const result = await query(
-    `
-      insert into public.sidestream_stripe_events (
-        event_id,
-        event_type,
-        stripe_created_at,
-        payload,
-        raw_payload,
-        ingress_event_id,
-        ingress_event_type,
-        ingress_created,
-        ingress_livemode,
-        ingress_api_version,
-        ingress_payload_sha256,
-        ingress_raw_sha256,
-        received_at,
-        created_at,
-        updated_at
-      )
-      values (
-        $1, $2, to_timestamp($3), $4::jsonb, $5,
-        $1, $2, $3, $6, $7, $8, $9,
-        now(), now(), now()
-      )
-      on conflict (event_id) do nothing
-      returning event_id
-    `,
-    [
-      event.id,
-      event.type,
-      event.created,
-      payloadText,
-      rawPayload,
-      event.livemode,
-      apiVersion,
-      canonicalJsonDigest(event),
-      sha256(rawPayload),
-    ],
-  );
+  let result: StripeEventQueryResult;
+  try {
+    result = await query(
+      `
+        insert into public.sidestream_stripe_events (
+          event_id,
+          event_type,
+          stripe_created_at,
+          payload,
+          raw_payload,
+          ingress_event_id,
+          ingress_event_type,
+          ingress_created,
+          ingress_livemode,
+          ingress_api_version,
+          ingress_payload_sha256,
+          ingress_raw_sha256,
+          received_at,
+          created_at,
+          updated_at
+        )
+        values (
+          $1, $2, to_timestamp($3), $4::jsonb, $5,
+          $1, $2, $3, $6, $7, $8, $9,
+          now(), now(), now()
+        )
+        on conflict (event_id) do nothing
+        returning event_id
+      `,
+      [
+        event.id,
+        event.type,
+        event.created,
+        payloadText,
+        rawPayload,
+        event.livemode,
+        apiVersion,
+        canonicalJsonDigest(event),
+        sha256(rawPayload),
+      ],
+    );
+  } catch (error) {
+    if (!isMissingOptionalStripeIngressColumn(error)) throw error;
+    result = await query(
+      `
+        insert into public.sidestream_stripe_events (
+          event_id,
+          event_type,
+          stripe_created_at,
+          payload,
+          raw_payload,
+          received_at,
+          created_at,
+          updated_at
+        )
+        values ($1, $2, to_timestamp($3), $4::jsonb, $5, now(), now(), now())
+        on conflict (event_id) do nothing
+        returning event_id
+      `,
+      [event.id, event.type, event.created, payloadText, rawPayload],
+    );
+  }
   return Boolean(result.rows[0]);
 }
 
@@ -246,13 +270,14 @@ async function claimStripeEventBatch(options: {
           event.stripe_created_at,
           event.payload,
           event.raw_payload,
-          event.ingress_event_id,
-          event.ingress_event_type,
-          event.ingress_payload_sha256,
-          event.ingress_raw_sha256,
-          event.ingress_api_version,
-          event.ingress_livemode,
-          event.ingress_created,
+          to_jsonb(event) ? 'ingress_event_id' as ingress_evidence_supported,
+          to_jsonb(event) -> 'ingress_event_id' as ingress_event_id,
+          to_jsonb(event) -> 'ingress_event_type' as ingress_event_type,
+          to_jsonb(event) -> 'ingress_payload_sha256' as ingress_payload_sha256,
+          to_jsonb(event) -> 'ingress_raw_sha256' as ingress_raw_sha256,
+          to_jsonb(event) -> 'ingress_api_version' as ingress_api_version,
+          to_jsonb(event) -> 'ingress_livemode' as ingress_livemode,
+          to_jsonb(event) -> 'ingress_created' as ingress_created,
           event.attempt_count,
           event.claim_token
       ),
@@ -306,13 +331,14 @@ async function claimStripeEventBatch(options: {
           event.stripe_created_at,
           event.payload,
           event.raw_payload,
-          event.ingress_event_id,
-          event.ingress_event_type,
-          event.ingress_payload_sha256,
-          event.ingress_raw_sha256,
-          event.ingress_api_version,
-          event.ingress_livemode,
-          event.ingress_created,
+          to_jsonb(event) ? 'ingress_event_id' as ingress_evidence_supported,
+          to_jsonb(event) -> 'ingress_event_id' as ingress_event_id,
+          to_jsonb(event) -> 'ingress_event_type' as ingress_event_type,
+          to_jsonb(event) -> 'ingress_payload_sha256' as ingress_payload_sha256,
+          to_jsonb(event) -> 'ingress_raw_sha256' as ingress_raw_sha256,
+          to_jsonb(event) -> 'ingress_api_version' as ingress_api_version,
+          to_jsonb(event) -> 'ingress_livemode' as ingress_livemode,
+          to_jsonb(event) -> 'ingress_created' as ingress_created,
           event.attempt_count,
           event.claim_token
       ),
@@ -324,6 +350,7 @@ async function claimStripeEventBatch(options: {
           claimed.stripe_created_at,
           claimed.payload,
           claimed.raw_payload,
+          claimed.ingress_evidence_supported,
           claimed.ingress_event_id,
           claimed.ingress_event_type,
           claimed.ingress_payload_sha256,
@@ -344,6 +371,7 @@ async function claimStripeEventBatch(options: {
           dead_lettered.stripe_created_at,
           dead_lettered.payload,
           dead_lettered.raw_payload,
+          dead_lettered.ingress_evidence_supported,
           dead_lettered.ingress_event_id,
           dead_lettered.ingress_event_type,
           dead_lettered.ingress_payload_sha256,
@@ -375,19 +403,31 @@ async function claimStripeEventBatch(options: {
       });
       continue;
     }
+    const eventId = String(row.event_id);
+    const eventType = String(row.event_type);
+    const payload = row.payload as Stripe.Event;
+    const rawPayload = String(row.raw_payload || "");
+    const derivesIngressEvidence = row.ingress_evidence_supported !== true;
     claimed.push({
-      eventId: String(row.event_id),
-      eventType: String(row.event_type),
+      eventId,
+      eventType,
       stripeCreatedAt: row.stripe_created_at as Date | string,
-      payload: row.payload as Stripe.Event,
-      rawPayload: String(row.raw_payload || ""),
-      ingressEventId: String(row.ingress_event_id || ""),
-      ingressEventType: String(row.ingress_event_type || ""),
+      payload,
+      rawPayload,
+      ingressEventId: derivesIngressEvidence ? eventId : String(row.ingress_event_id || ""),
+      ingressEventType: derivesIngressEvidence ? eventType : String(row.ingress_event_type || ""),
       ingressPayloadSha256: String(row.ingress_payload_sha256 || ""),
       ingressRawSha256: String(row.ingress_raw_sha256 || ""),
-      ingressApiVersion: String(row.ingress_api_version || ""),
-      ingressLivemode: row.ingress_livemode === true,
-      ingressCreated: Number(row.ingress_created),
+      ingressApiVersion: derivesIngressEvidence
+        ? (typeof payload?.api_version === "string" ? payload.api_version : "")
+        : String(row.ingress_api_version || ""),
+      ingressLivemode: derivesIngressEvidence
+        ? payload?.livemode === true
+        : row.ingress_livemode === true,
+      ingressCreated: derivesIngressEvidence
+        ? Number(payload?.created)
+        : Number(row.ingress_created),
+      ...(derivesIngressEvidence ? { ingressEvidence: "derived" as const } : {}),
       attemptCount: Number(row.attempt_count),
       claimToken: String(row.claim_token),
     });
@@ -814,6 +854,34 @@ function assertStripeEventIdentity(event: Stripe.Event) {
 function assertClaimedPayload(row: ClaimedStripeEvent) {
   assertStripeEventIdentity(row.payload);
   const storedCreated = Math.floor(new Date(row.stripeCreatedAt).getTime() / 1_000);
+  if (row.ingressEvidence === "derived") {
+    let signedPayload: unknown;
+    try {
+      signedPayload = JSON.parse(row.rawPayload);
+    } catch {
+      throw new StripeEventProcessingError("payload_identity_mismatch");
+    }
+    if (
+      row.payload.id !== row.eventId ||
+      row.payload.type !== row.eventType ||
+      row.payload.created !== storedCreated ||
+      typeof row.payload.livemode !== "boolean" ||
+      canonicalJsonDigest(signedPayload) !== canonicalJsonDigest(row.payload)
+    ) {
+      throw new StripeEventProcessingError("payload_identity_mismatch");
+    }
+    const apiVersion = typeof row.payload.api_version === "string"
+      ? row.payload.api_version
+      : "";
+    if (
+      !SUPPORTED_STRIPE_EVENT_API_VERSIONS.includes(
+        apiVersion as typeof SUPPORTED_STRIPE_EVENT_API_VERSIONS[number],
+      )
+    ) {
+      throw new StripeEventProcessingError("unsupported_event_api_version");
+    }
+    return;
+  }
   if (
     row.payload.id !== row.eventId ||
     row.payload.type !== row.eventType ||
@@ -843,6 +911,24 @@ function assertClaimedPayload(row: ClaimedStripeEvent) {
 
 function sha256(value: string) {
   return createHash("sha256").update(value).digest("hex");
+}
+
+function isMissingOptionalStripeIngressColumn(error: unknown) {
+  if (!error || typeof error !== "object") return false;
+  const postgresError = error as { code?: unknown; message?: unknown };
+  const message = typeof postgresError.message === "string" ? postgresError.message : "";
+  if (postgresError.code !== "42703" || !message) {
+    return false;
+  }
+  return [
+    "ingress_event_id",
+    "ingress_event_type",
+    "ingress_created",
+    "ingress_livemode",
+    "ingress_api_version",
+    "ingress_payload_sha256",
+    "ingress_raw_sha256",
+  ].some((column) => message.includes(column));
 }
 
 function canonicalJsonDigest(value: unknown) {

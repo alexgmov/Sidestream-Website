@@ -8,6 +8,7 @@ import {
   CANONICAL_PAID_PLAN_KEYS,
   canBindActivationAccount,
   CHECKOUT_SESSION_PLACEHOLDER,
+  classifyCheckoutPaymentSource,
   type CanonicalOneTimePaymentFacts,
   type CheckoutIntentKind,
   type CredentialDeviceScope,
@@ -3896,23 +3897,17 @@ async function retrieveCanonicalCheckoutPayment(
   checkoutSession: Stripe.Checkout.Session,
   customerId: string,
 ) {
-  const paymentIntentId = normalizeStripeId(checkoutSession.payment_intent);
-  const currency = cleanString(checkoutSession.currency, 3).toLowerCase();
-  if (!paymentIntentId) {
-    if (
-      checkoutSession.payment_status !== "no_payment_required" ||
-      checkoutSession.amount_total !== 0 ||
-      !/^[a-z]{3}$/.test(currency)
-    ) {
-      return { ok: false as const, reason: "missing_payment_intent" };
-    }
+  const paymentSource = classifyCheckoutPaymentSource(checkoutSession);
+  if (paymentSource.ok === false) return paymentSource;
+  if (paymentSource.noPaymentRequired) {
     return {
       ok: true as const,
       facts: null,
       noPaymentRequired: true,
-      currency,
+      currency: paymentSource.currency,
     };
   }
+  const paymentIntentId = paymentSource.paymentIntentId;
 
   const paymentIntent = await getStripe().paymentIntents.retrieve(
     paymentIntentId,

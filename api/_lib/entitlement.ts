@@ -32,6 +32,30 @@ export type CheckoutSessionLike = {
   } | null;
 };
 
+export type CheckoutPaymentLike = {
+  payment_intent?: unknown;
+  payment_status?: unknown;
+  amount_total?: unknown;
+  currency?: unknown;
+};
+
+export type CheckoutPaymentSource =
+  | Readonly<{
+      ok: true;
+      paymentIntentId: string;
+      noPaymentRequired: false;
+    }>
+  | Readonly<{
+      ok: true;
+      paymentIntentId: "";
+      noPaymentRequired: true;
+      currency: string;
+    }>
+  | Readonly<{
+      ok: false;
+      reason: "missing_payment_intent";
+    }>;
+
 export type CheckoutVerification =
   | { ok: true }
   | { ok: false; reason: string };
@@ -301,6 +325,33 @@ export function verifyPaidCheckoutSession(
   }
 
   return { ok: true };
+}
+
+export function classifyCheckoutPaymentSource(
+  session: CheckoutPaymentLike,
+): CheckoutPaymentSource {
+  const paymentIntentId = stringId(session.payment_intent).trim();
+  if (paymentIntentId) {
+    return { ok: true, paymentIntentId, noPaymentRequired: false };
+  }
+
+  const currency = typeof session.currency === "string"
+    ? session.currency.trim().toLowerCase()
+    : "";
+  if (
+    (session.payment_status === "paid" || session.payment_status === "no_payment_required") &&
+    session.amount_total === 0 &&
+    /^[a-z]{3}$/.test(currency)
+  ) {
+    return {
+      ok: true,
+      paymentIntentId: "",
+      noPaymentRequired: true,
+      currency,
+    };
+  }
+
+  return { ok: false, reason: "missing_payment_intent" };
 }
 
 export function parseStripeIdAllowlist(value: unknown, prefix: "price" | "prod") {

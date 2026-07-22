@@ -5,6 +5,7 @@ import checkoutHandoffMiddleware from "../middleware.ts";
 import {
   buildCheckoutCompletionUrl,
   canBindActivationAccount,
+  classifyCheckoutPaymentSource,
   createClaimCsrfToken,
   deriveActivationTokenPair,
   deriveRefreshRotationTokens,
@@ -112,6 +113,44 @@ test("only the exact attached paid Session, Price, Product, and quantity verifie
   ];
   for (const [session, reason] of rejected) {
     assert.equal(verifyPaidCheckoutSession(session, checkoutExpectation).reason, reason);
+  }
+});
+
+test("Checkout payment source accepts charged and legitimate zero-total Sessions", () => {
+  assert.deepEqual(classifyCheckoutPaymentSource({
+    payment_intent: "pi_paid",
+    payment_status: "paid",
+    amount_total: 999,
+    currency: "usd",
+  }), {
+    ok: true,
+    paymentIntentId: "pi_paid",
+    noPaymentRequired: false,
+  });
+
+  for (const paymentStatus of ["paid", "no_payment_required"]) {
+    assert.deepEqual(classifyCheckoutPaymentSource({
+      payment_intent: null,
+      payment_status: paymentStatus,
+      amount_total: 0,
+      currency: "USD",
+    }), {
+      ok: true,
+      paymentIntentId: "",
+      noPaymentRequired: true,
+      currency: "usd",
+    });
+  }
+
+  for (const session of [
+    { payment_intent: null, payment_status: "unpaid", amount_total: 0, currency: "usd" },
+    { payment_intent: null, payment_status: "paid", amount_total: 999, currency: "usd" },
+    { payment_intent: null, payment_status: "paid", amount_total: 0, currency: "" },
+  ]) {
+    assert.deepEqual(classifyCheckoutPaymentSource(session), {
+      ok: false,
+      reason: "missing_payment_intent",
+    });
   }
 });
 
