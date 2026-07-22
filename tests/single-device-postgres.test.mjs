@@ -171,36 +171,40 @@ test("single-device entitlement transactions hold in disposable Postgres", {
       ]);
     });
 
-    await t.test("CRM identity on account paths cannot change device or entitlement decisions", async () => {
+    await t.test("telemetry install linking cannot change device or entitlement decisions", async () => {
       const anchor = await seedAccount(databasePool, schema);
       const anchorActivation = await seedActivation(databasePool, schema, anchor, {
         deviceId: "identity-anchor-device",
         appVersion: "1.0.14",
       });
-      const conflictingInstallHashes = ["a", "b", "c", "d"].map((value) =>
+      const anchoredInstallHashes = ["a", "b", "c", "d"].map((value) =>
         value.repeat(64)
       );
-      for (const installIdHash of conflictingInstallHashes) {
-        assert.deepEqual(
-          await accountModule.claimActivationToAccount(
-            anchorActivation.activationKey,
-            anchor.accountId,
-            { environment: production, identity: { installIdHash } },
-          ),
-          { claimed: true },
+      for (const installIdHash of anchoredInstallHashes) {
+        const status = await accountModule.getActivationStatus(
+          anchorActivation.activationKey,
+          "identity-anchor-device",
+          {
+            skipReconciliation: true,
+            environment: production,
+            platform: "macos",
+            identity: { installIdHash },
+          },
         );
+        assert.equal(status.status, "active");
       }
 
       const fixture = await seedAccount(databasePool, schema, {
-        features: { identityProofPolicy: "must-remain-unchanged" },
+        features: { telemetryProofPolicy: "must-remain-unchanged" },
       });
       const activation = await seedActivation(databasePool, schema, fixture, {
         deviceId: "identity-proof-device",
         appVersion: "1.0.14",
       });
-      const associatedInstallHashes = ["5", "6", "7", "8"].map((value) =>
+      const linkedInstallHashes = ["5", "6", "7", "8"].map((value) =>
         value.repeat(64)
       );
+      const expectedLinkedDeviceHash = privateIdentifierHash("identity-proof-device");
 
       const claimWithoutIdentity = await accountModule.claimActivationToAccount(
         activation.activationKey,
@@ -218,7 +222,7 @@ test("single-device entitlement transactions hold in disposable Postgres", {
         fixture.accountId,
         {
           environment: production,
-          identity: { installIdHash: associatedInstallHashes[0] },
+          identity: { installIdHash: linkedInstallHashes[0] },
         },
       );
       assert.deepEqual(claimWithIdentity, claimWithoutIdentity);
@@ -231,14 +235,21 @@ test("single-device entitlement transactions hold in disposable Postgres", {
         ),
         claimProtectedState,
       );
-      let reviewCount = await customerIdentityReviewCount(databasePool, schema);
-      let identityState = await snapshotCustomerIdentityState(databasePool, schema);
+      assert.deepEqual(
+        await telemetryIdentityBinding(databasePool, schema, linkedInstallHashes[0]),
+        null,
+      );
+      const claimConflictState = await telemetryIdentityBinding(
+        databasePool,
+        schema,
+        anchoredInstallHashes[0],
+      );
       const claimWithConflict = await accountModule.claimActivationToAccount(
         activation.activationKey,
         fixture.accountId,
         {
           environment: production,
-          identity: { installIdHash: conflictingInstallHashes[0] },
+          identity: { installIdHash: anchoredInstallHashes[0] },
         },
       );
       assert.deepEqual(claimWithConflict, claimWithoutIdentity);
@@ -252,10 +263,9 @@ test("single-device entitlement transactions hold in disposable Postgres", {
         claimProtectedState,
       );
       assert.deepEqual(
-        await snapshotCustomerIdentityState(databasePool, schema),
-        identityState,
+        await telemetryIdentityBinding(databasePool, schema, anchoredInstallHashes[0]),
+        claimConflictState,
       );
-      assert.equal(await customerIdentityReviewCount(databasePool, schema), ++reviewCount);
 
       const statusWithoutIdentity = await accountModule.getActivationStatus(
         activation.activationKey,
@@ -276,7 +286,7 @@ test("single-device entitlement transactions hold in disposable Postgres", {
           skipReconciliation: true,
           environment: production,
           platform: "macos",
-          identity: { installIdHash: associatedInstallHashes[1] },
+          identity: { installIdHash: linkedInstallHashes[1] },
         },
       );
       assert.deepEqual(statusWithIdentity, statusWithoutIdentity);
@@ -289,7 +299,15 @@ test("single-device entitlement transactions hold in disposable Postgres", {
         ),
         statusProtectedState,
       );
-      identityState = await snapshotCustomerIdentityState(databasePool, schema);
+      assert.deepEqual(
+        await telemetryIdentityBinding(databasePool, schema, linkedInstallHashes[1]),
+        telemetryBinding(linkedInstallHashes[1], expectedLinkedDeviceHash, fixture.accountId),
+      );
+      const statusConflictState = await telemetryIdentityBinding(
+        databasePool,
+        schema,
+        anchoredInstallHashes[1],
+      );
       const statusWithConflict = await accountModule.getActivationStatus(
         activation.activationKey,
         "identity-proof-device",
@@ -297,7 +315,7 @@ test("single-device entitlement transactions hold in disposable Postgres", {
           skipReconciliation: true,
           environment: production,
           platform: "macos",
-          identity: { installIdHash: conflictingInstallHashes[1] },
+          identity: { installIdHash: anchoredInstallHashes[1] },
         },
       );
       assert.deepEqual(statusWithConflict, statusWithoutIdentity);
@@ -311,10 +329,9 @@ test("single-device entitlement transactions hold in disposable Postgres", {
         statusProtectedState,
       );
       assert.deepEqual(
-        await snapshotCustomerIdentityState(databasePool, schema),
-        identityState,
+        await telemetryIdentityBinding(databasePool, schema, anchoredInstallHashes[1]),
+        statusConflictState,
       );
-      assert.equal(await customerIdentityReviewCount(databasePool, schema), ++reviewCount);
 
       const verifyWithoutIdentity = await accountModule.verifyLicenseToken(
         statusWithoutIdentity.licenseToken,
@@ -331,7 +348,7 @@ test("single-device entitlement transactions hold in disposable Postgres", {
         statusWithoutIdentity.licenseToken,
         "identity-proof-device",
         production,
-        { installIdHash: associatedInstallHashes[2] },
+        { installIdHash: linkedInstallHashes[2] },
       );
       assert.deepEqual(verifyWithIdentity, verifyWithoutIdentity);
       assert.deepEqual(
@@ -343,12 +360,20 @@ test("single-device entitlement transactions hold in disposable Postgres", {
         ),
         verifyProtectedState,
       );
-      identityState = await snapshotCustomerIdentityState(databasePool, schema);
+      assert.deepEqual(
+        await telemetryIdentityBinding(databasePool, schema, linkedInstallHashes[2]),
+        telemetryBinding(linkedInstallHashes[2], expectedLinkedDeviceHash, fixture.accountId),
+      );
+      const verifyConflictState = await telemetryIdentityBinding(
+        databasePool,
+        schema,
+        anchoredInstallHashes[2],
+      );
       const verifyWithConflict = await accountModule.verifyLicenseToken(
         statusWithoutIdentity.licenseToken,
         "identity-proof-device",
         production,
-        { installIdHash: conflictingInstallHashes[2] },
+        { installIdHash: anchoredInstallHashes[2] },
       );
       assert.deepEqual(verifyWithConflict, verifyWithoutIdentity);
       assert.deepEqual(
@@ -361,10 +386,9 @@ test("single-device entitlement transactions hold in disposable Postgres", {
         verifyProtectedState,
       );
       assert.deepEqual(
-        await snapshotCustomerIdentityState(databasePool, schema),
-        identityState,
+        await telemetryIdentityBinding(databasePool, schema, anchoredInstallHashes[2]),
+        verifyConflictState,
       );
-      assert.equal(await customerIdentityReviewCount(databasePool, schema), ++reviewCount);
 
       const refreshWithoutIdentity = await accountModule.refreshLicenseToken(
         statusWithoutIdentity.refreshToken,
@@ -381,7 +405,7 @@ test("single-device entitlement transactions hold in disposable Postgres", {
         statusWithoutIdentity.refreshToken,
         "identity-proof-device",
         production,
-        { installIdHash: associatedInstallHashes[3] },
+        { installIdHash: linkedInstallHashes[3] },
       );
       assert.deepEqual(refreshWithIdentity, refreshWithoutIdentity);
       assert.deepEqual(
@@ -393,12 +417,20 @@ test("single-device entitlement transactions hold in disposable Postgres", {
         ),
         refreshProtectedState,
       );
-      identityState = await snapshotCustomerIdentityState(databasePool, schema);
+      assert.deepEqual(
+        await telemetryIdentityBinding(databasePool, schema, linkedInstallHashes[3]),
+        telemetryBinding(linkedInstallHashes[3], expectedLinkedDeviceHash, fixture.accountId),
+      );
+      const refreshConflictState = await telemetryIdentityBinding(
+        databasePool,
+        schema,
+        anchoredInstallHashes[3],
+      );
       const refreshWithConflict = await accountModule.refreshLicenseToken(
         statusWithoutIdentity.refreshToken,
         "identity-proof-device",
         production,
-        { installIdHash: conflictingInstallHashes[3] },
+        { installIdHash: anchoredInstallHashes[3] },
       );
       assert.deepEqual(refreshWithConflict, refreshWithoutIdentity);
       assert.deepEqual(
@@ -411,44 +443,9 @@ test("single-device entitlement transactions hold in disposable Postgres", {
         refreshProtectedState,
       );
       assert.deepEqual(
-        await snapshotCustomerIdentityState(databasePool, schema),
-        identityState,
+        await telemetryIdentityBinding(databasePool, schema, anchoredInstallHashes[3]),
+        refreshConflictState,
       );
-      assert.equal(await customerIdentityReviewCount(databasePool, schema), ++reviewCount);
-
-      const reviews = await databasePool.query(
-        `
-          select attachment_source, evidence_type, evidence_trust, review_state
-          from ${quotedSchema}.sidestream_customer_identity_reviews
-          order by attachment_source
-        `,
-      );
-      assert.deepEqual(reviews.rows, [
-        {
-          attachment_source: "activation_claim",
-          evidence_type: "install_identity_hash",
-          evidence_trust: "client_association",
-          review_state: "pending_review",
-        },
-        {
-          attachment_source: "activation_status",
-          evidence_type: "install_identity_hash",
-          evidence_trust: "client_association",
-          review_state: "pending_review",
-        },
-        {
-          attachment_source: "license_refresh",
-          evidence_type: "install_identity_hash",
-          evidence_trust: "client_association",
-          review_state: "pending_review",
-        },
-        {
-          attachment_source: "license_verify",
-          evidence_type: "install_identity_hash",
-          evidence_trust: "client_association",
-          review_state: "pending_review",
-        },
-      ]);
     });
 
     let primaryFixture;
@@ -1241,15 +1238,15 @@ async function loadAccountModuleForSchema(schema) {
   );
   const maintenancePath = join(temporaryModuleDirectory, "maintenance-under-test.ts");
   await writeFile(maintenancePath, maintenanceSource, { mode: 0o600 });
-  const customerIdentityPath = join(
+  const telemetryIdentityPath = join(
     temporaryModuleDirectory,
-    "customer-identity-under-test.ts",
+    "telemetry-identity-under-test.ts",
   );
   await writeFile(
-    customerIdentityPath,
-    rewritePublicSchema(
+    telemetryIdentityPath,
+    rewriteTelemetryIdentitySchema(
       await readFile(
-        join(repositoryRoot, "api", "_lib", "customer-identity.ts"),
+        join(repositoryRoot, "api", "_lib", "telemetry-identity.ts"),
         "utf8",
       ),
       schema,
@@ -1260,7 +1257,7 @@ async function loadAccountModuleForSchema(schema) {
     "./entitlement.js": pathToFileURL(join(repositoryRoot, "api", "_lib", "entitlement.ts")).href,
     "./device-policy.js": pathToFileURL(join(repositoryRoot, "api", "_lib", "device-policy.ts")).href,
     "./license-environment.js": pathToFileURL(join(repositoryRoot, "api", "_lib", "license-environment.ts")).href,
-    "./customer-identity.js": pathToFileURL(customerIdentityPath).href,
+    "./telemetry-identity.js": pathToFileURL(telemetryIdentityPath).href,
     "./maintenance.js": pathToFileURL(maintenancePath).href,
     "./postgres.js": postgresUrl,
   };
@@ -1290,6 +1287,14 @@ export { upsertLicenseFromOneTimeCheckoutSession as __upsertLicenseFromOneTimeCh
 
 function rewritePublicSchema(source, schema) {
   return source.replace(/\bpublic\./g, `${quoteIdentifier(schema)}.`);
+}
+
+function rewriteTelemetryIdentitySchema(source, schema) {
+  const escapedIdentifier = quoteIdentifier(schema).replaceAll('"', '\\"');
+  return rewritePublicSchema(
+    source.replaceAll("'public.", `'${escapedIdentifier}.`),
+    schema,
+  );
 }
 
 function quoteIdentifier(identifier) {
@@ -1584,54 +1589,27 @@ async function snapshotIdentityProtectedState(
   };
 }
 
-async function snapshotCustomerIdentityState(pool, schema) {
-  const quotedSchema = quoteIdentifier(schema);
-  const [profiles, links, installs, merges] = await Promise.all([
-    pool.query(
-      `
-        select id, license_namespace, merged_into, contact_email, display_name,
-          platform_summary, app_version_summary, download_success_count,
-          download_failure_count, entitlement_status
-        from ${quotedSchema}.sidestream_customer_profiles
-        order by id
-      `,
-    ),
-    pool.query(
-      `
-        select profile_id, license_namespace, link_type, link_value
-        from ${quotedSchema}.sidestream_customer_identity_links
-        order by profile_id, link_type, link_value
-      `,
-    ),
-    pool.query(
-      `
-        select profile_id, license_namespace, install_id_hash, platform, app_version
-        from ${quotedSchema}.sidestream_customer_installs
-        order by profile_id, install_id_hash
-      `,
-    ),
-    pool.query(
-      `
-        select source_profile_id, target_profile_id, license_namespace,
-          merge_evidence_type, merge_evidence_value_hash, initiated_by
-        from ${quotedSchema}.sidestream_customer_profile_merges
-        order by source_profile_id
-      `,
-    ),
-  ]);
-  return {
-    profiles: profiles.rows,
-    links: links.rows,
-    installs: installs.rows,
-    merges: merges.rows,
-  };
+async function telemetryIdentityBinding(pool, schema, installIdHash) {
+  const result = await pool.query(
+    `
+      select license_namespace, install_id_hash, device_id_hash, account_id,
+        linked_at is not null as linked
+      from ${quoteIdentifier(schema)}.sidestream_telemetry_identity_links
+      where license_namespace = 'production' and install_id_hash = $1
+    `,
+    [installIdHash],
+  );
+  return result.rows[0] || null;
 }
 
-async function customerIdentityReviewCount(pool, schema) {
-  const result = await pool.query(
-    `select count(*)::int as count from ${quoteIdentifier(schema)}.sidestream_customer_identity_reviews`,
-  );
-  return result.rows[0].count;
+function telemetryBinding(installIdHash, deviceIdHash, accountId) {
+  return {
+    license_namespace: "production",
+    install_id_hash: installIdHash,
+    device_id_hash: deviceIdHash,
+    account_id: accountId,
+    linked: true,
+  };
 }
 
 function privateIdentifierHash(value) {
