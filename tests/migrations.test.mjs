@@ -17,6 +17,31 @@ import {
   verifyMigrationBaselineSnapshot,
 } from "../scripts/verify-migration-baseline.mjs";
 
+const CUSTOMER_360_MIGRATION_CHECKSUMS = new Map([
+  [
+    "20260715120000_add_customer_360_core.sql",
+    "69d332381feabb8ff6fe0da597e72ff3c2cc81b26240a602a102d8f98ac23700",
+  ],
+  [
+    "20260715121000_add_customer_identity_links.sql",
+    "733bfa2404fd0f6f373751d61d17eb119d326b030140b2e136c0b002fd49adce",
+  ],
+  [
+    "20260715122000_add_customer_commerce_ledger.sql",
+    "73787fdef5e96b5804186f417412248516f186e98cbf8bb10c9576e78a79afa6",
+  ],
+  [
+    "20260715123000_add_customer_usage_aggregates.sql",
+    "ade69b8aa97f2895068317777cbc246d162ada39dc5358161dfde4066ca45ea0",
+  ],
+  [
+    "20260715124000_add_customer_360_read_model.sql",
+    "0d325e2a6186259316b719662e91a746e1603be1480aa9b9eb6294081dcdfbd5",
+  ],
+]);
+
+const CUSTOMER_360_RETIREMENT_MIGRATION = "20260722120000_retire_customer_360.sql";
+
 function knownBaselineSnapshot(rowSecurityEnabled = false) {
   return {
     tables: Object.keys(KNOWN_PRE_20260713_COLUMNS).sort().map((name) => ({
@@ -36,7 +61,7 @@ function knownBaselineSnapshot(rowSecurityEnabled = false) {
 
 test("migration files are ordered, checksummed, and append-only baseline files are pinned", async () => {
   const migrations = validateMigrationFiles(await loadMigrationFiles());
-  assert.equal(migrations.length, 23);
+  assert.equal(migrations.length, 24);
   assert.deepEqual(
     migrations.map((migration) => migration.filename),
     [...migrations.map((migration) => migration.filename)].sort(),
@@ -59,8 +84,146 @@ test("migration files are ordered, checksummed, and append-only baseline files a
     "20260715122000_add_customer_commerce_ledger.sql",
     "20260715123000_add_customer_usage_aggregates.sql",
     "20260715124000_add_customer_360_read_model.sql",
+    CUSTOMER_360_RETIREMENT_MIGRATION,
   ]) {
     assert.ok(migrations.some((migration) => migration.filename === filename));
+  }
+  for (const [filename, checksum] of CUSTOMER_360_MIGRATION_CHECKSUMS) {
+    assert.equal(
+      migrations.find((migration) => migration.filename === filename)?.checksum,
+      checksum,
+    );
+  }
+  assert.equal(migrations.at(-1)?.filename, CUSTOMER_360_RETIREMENT_MIGRATION);
+});
+
+test("Customer 360 retirement leaves one private telemetry identity bridge", async () => {
+  const migration = await readFile(new URL(
+    `../db/migrations/${CUSTOMER_360_RETIREMENT_MIGRATION}`,
+    import.meta.url,
+  ), "utf8");
+
+  for (const functionSignature of [
+    "sidestream_customer_360_profile_read_model\\(\\)",
+    "sidestream_customer_360_money_read_model\\(\\)",
+    "sidestream_customer_commerce_identity_attach\\(\\)",
+    "sidestream_customer_commerce_profile_merge\\(\\)",
+    "sidestream_customer_commerce_apply\\(jsonb\\)",
+    "sidestream_customer_commerce_reconcile_namespace\\(text, boolean\\)",
+    "sidestream_customer_commerce_refresh_namespace\\(text\\)",
+    "sidestream_customer_commerce_key_priority\\(text\\)",
+    "sidestream_customer_identity_reviews_reject_mutation\\(\\)",
+    "sidestream_customer_profiles_require_merge_audit\\(\\)",
+    "sidestream_customer_profile_merges_reject_mutation\\(\\)",
+    "sidestream_customer_membership_require_live_profile\\(\\)",
+    "sidestream_customer_profiles_guard_merge_cycle\\(\\)",
+  ]) {
+    assert.match(migration, new RegExp(`drop function if exists public\\.${functionSignature}`));
+  }
+
+  for (const trigger of [
+    "sidestream_customer_identity_links_live_profile_guard",
+    "sidestream_customer_commerce_identity_attach_trigger",
+    "sidestream_customer_installs_live_profile_guard",
+    "sidestream_customer_identity_reviews_immutable_guard",
+    "sidestream_customer_profile_merges_immutable_guard",
+    "sidestream_customer_profiles_merge_cycle_insert_guard",
+    "sidestream_customer_profiles_merge_cycle_update_guard",
+    "sidestream_customer_profiles_merge_audit_insert_guard",
+    "sidestream_customer_profiles_merge_audit_update_guard",
+    "sidestream_customer_commerce_profile_merge_trigger",
+  ]) {
+    assert.match(migration, new RegExp(`drop trigger if exists ${trigger}`));
+  }
+
+  for (const table of [
+    "sidestream_customer_usage_daily",
+    "sidestream_customer_usage_sync_state",
+    "sidestream_customer_money_totals",
+    "sidestream_customer_commerce_invoice_payments",
+    "sidestream_customer_commerce_aliases",
+    "sidestream_customer_commerce_materializations",
+    "sidestream_customer_identity_reviews",
+    "sidestream_customer_profile_merges",
+    "sidestream_customer_installs",
+    "sidestream_customer_identity_links",
+    "sidestream_customer_profiles",
+  ]) {
+    assert.match(migration, new RegExp(`drop table if exists public\\.${table}\\b`));
+  }
+
+  assert.equal(
+    [...migration.matchAll(/create table(?: if not exists)? public\./gi)].length,
+    1,
+  );
+  assert.match(
+    migration,
+    /create table if not exists public\.sidestream_telemetry_identity_links/,
+  );
+  assert.match(migration, /primary key \(license_namespace, install_id_hash\)/);
+  assert.match(migration, /license_namespace in \('production', 'test'\)/);
+  assert.match(migration, /install_id_hash ~ '\^\[0-9a-f\]\{64\}\$'/);
+  assert.match(migration, /device_id_hash ~ '\^\[0-9a-f\]\{64\}\$'/);
+  assert.match(migration, /last_seen_at >= first_seen_at/);
+  assert.match(migration, /linked_at >= first_seen_at and linked_at <= last_seen_at/);
+  assert.match(migration, /foreign key \(account_id\)[\s\S]*references public\.sidestream_accounts \(id\)/);
+  assert.match(migration, /sidestream_telemetry_identity_links_device_idx/);
+  assert.match(migration, /sidestream_telemetry_identity_links_account_idx/);
+  assert.match(
+    migration,
+    /alter table public\.sidestream_telemetry_identity_links enable row level security/,
+  );
+  assert.match(
+    migration,
+    /revoke all on table public\.sidestream_telemetry_identity_links from public/,
+  );
+  assert.match(migration, /array\['anon', 'authenticated'\]/);
+  assert.doesNotMatch(migration, /\bcascade\b/i);
+
+  const bridgeDefinition = migration.slice(
+    migration.indexOf("create table if not exists public.sidestream_telemetry_identity_links"),
+    migration.indexOf("create index if not exists sidestream_telemetry_identity_links_device_idx"),
+  );
+  assert.deepEqual(
+    [...bridgeDefinition.matchAll(/^  ([a-z][a-z0-9_]*) (?:text|uuid|timestamptz)\b/gm)]
+      .map((match) => match[1]),
+    [
+      "license_namespace",
+      "install_id_hash",
+      "device_id_hash",
+      "account_id",
+      "first_seen_at",
+      "last_seen_at",
+      "linked_at",
+    ],
+  );
+  assert.doesNotMatch(
+    bridgeDefinition,
+    /support_code|installer_receipt|email|stripe|payment|payload|raw_device|credential/i,
+  );
+
+  for (const protectedTable of [
+    "sidestream_accounts",
+    "sidestream_account_sessions",
+    "sidestream_activation_sessions",
+    "sidestream_licenses",
+    "sidestream_license_tokens",
+    "sidestream_stripe_events",
+    "sidestream_checkout_intents",
+    "sidestream_account_devices",
+    "sidestream_device_transfers",
+    "sidestream_download_leads",
+    "sidestream_download_lead_idempotency",
+    "sidestream_download_lead_replay_receipts",
+    "sidestream_api_rate_limits",
+    "sidestream_billing_resources",
+    "sidestream_installer_requests",
+    "sidestream_schema_migrations",
+  ]) {
+    assert.doesNotMatch(
+      migration,
+      new RegExp(`drop table(?: if exists)? public\\.${protectedTable}\\b`, "i"),
+    );
   }
 });
 
