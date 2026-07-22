@@ -29,6 +29,7 @@ The database is the concurrency backstop. `public.sidestream_account_devices` ke
 | Pure decisions, move limits, policy modes, and public device codes | `api/_lib/device-policy.ts` |
 | Trusted deployment, host, database, and credential namespaces | `api/_lib/license-environment.ts` |
 | Transaction locking, activation, transfer, verify, refresh, download authorization, status, and deactivation | `api/_lib/account.ts` |
+| Non-authoritative telemetry install association | `api/_lib/telemetry-identity.ts` / `public.sidestream_telemetry_identity_links` |
 | Account decision and confirmed transfer page | `api/activation/claim.ts` |
 | Signed-in coarse device status and deactivation UI | `account.html` |
 | Activation-aware restore, move, or purchase entry | `upgrade.html` |
@@ -53,6 +54,23 @@ Both tables have RLS enabled and revoke direct `anon` and `authenticated` table 
 The server hashes a raw `deviceId` with HMAC-SHA-256 before database use. `SIDESTREAM_LICENSE_HASH_SECRET` must remain stable. Existing production hashes predate that dedicated variable and can depend on the current Postgres connection-string fallback, so changing the secret during a rollout would strand existing devices with `device_mismatch`. Preserve the current compatible value and schedule any dual-hash secret rotation separately.
 
 Account UI and API output are intentionally coarse: platform plus activation/last-seen dates, never a guessed computer name. Policy observations and operator reports use short one-way references instead of account UUIDs or device digests. Secrets, raw identifiers, activation keys, access/refresh tokens, database URLs, and payment data must not be logged.
+
+### Telemetry association is not device authority
+
+`public.sidestream_telemetry_identity_links` is a separate private bridge from a
+FlowState telemetry `installIdHash` to the same server-HMAC device digest and,
+optionally, an account already verified by the account runtime. It does not
+create, select, revoke, replace, or authorize a `sidestream_account_devices` row;
+it does not consume or reset a transfer; and it is never account ownership,
+device ownership, payment, entitlement, or download-authorization proof.
+
+Only the four CEP JSON routes for activation start/status and license
+verify/refresh accept the optional install hash. Claim, Checkout, account pages,
+URLs, query strings, and browser forms contain no association value. Support
+code and installer receipt remain telemetry/support concepts and are ignored by
+the website association path. A missing bridge schema, failed bridge write, or
+first-binding conflict leaves the device/entitlement operation independent and
+must never weaken the single-device checks documented here.
 
 ## Environment contract
 
