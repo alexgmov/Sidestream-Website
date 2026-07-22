@@ -139,6 +139,15 @@ test("activation, claim, Checkout, and credential invariants execute against Pos
         deviceId: "claim-get-device",
       });
       const privateInstallHash = "9".repeat(64);
+      const telemetryLinkId = await seedActivationTelemetryReference(databasePool, {
+        activationId: activation.activationId,
+        deviceId: "claim-get-device",
+        installIdHash: privateInstallHash,
+      });
+      const bridgeBeforeGets = await telemetryIdentityRowById(
+        databasePool,
+        telemetryLinkId,
+      );
       const claimUrl =
         `/api/activation/claim?activation=${activation.activationKey}` +
         `&installIdHash=${privateInstallHash}` +
@@ -180,6 +189,14 @@ test("activation, claim, Checkout, and credential invariants execute against Pos
 
       const afterGets = await activationState(databasePool, activation.activationKey);
       assert.deepEqual(afterGets, { account_id: null, status: "pending" });
+      assert.equal(
+        await activationTelemetryLinkId(databasePool, activation.activationKey),
+        telemetryLinkId,
+      );
+      assert.deepEqual(
+        await telemetryIdentityRowById(databasePool, telemetryLinkId),
+        bridgeBeforeGets,
+      );
 
       await databasePool.query(
         `update public.sidestream_activation_sessions set account_id = $2 where activation_key = $1`,
@@ -203,6 +220,12 @@ test("activation, claim, Checkout, and credential invariants execute against Pos
       const activation = await seedActivation(databasePool, {
         label: "claim-post",
         deviceId: "claim-post-device",
+      });
+      const claimInstallIdHash = tokenHash("claim-post-install");
+      const telemetryLinkId = await seedActivationTelemetryReference(databasePool, {
+        activationId: activation.activationId,
+        deviceId: "claim-post-device",
+        installIdHash: claimInstallIdHash,
       });
       const validToken = account.createActivationClaimCsrf(
         activation.activationKey,
@@ -283,6 +306,107 @@ test("activation, claim, Checkout, and credential invariants execute against Pos
         account_id: owner.accountId,
         status: "restored",
       });
+      const attachedAfterPost = await telemetryIdentityRowById(
+        databasePool,
+        telemetryLinkId,
+      );
+      assert.equal(attachedAfterPost.account_id, owner.accountId);
+      assert.equal(attachedAfterPost.linked, true);
+      assert.doesNotMatch(
+        accepted.headers.location,
+        new RegExp(`${telemetryLinkId}|${owner.accountId}|${claimInstallIdHash}`, "i"),
+      );
+
+      const replayed = await invokeHandler(claimHandler, {
+        method: "POST",
+        url: "/api/activation/claim",
+        headers: requestHeaders({
+          cookie: sessionCookie(owner),
+          origin: "https://sidestream.tv",
+          contentType: "application/x-www-form-urlencoded",
+        }),
+        body: claimForm(activation.activationKey, validToken),
+      });
+      assert.equal(replayed.statusCode, 303);
+      assert.deepEqual(
+        await telemetryIdentityRowById(databasePool, telemetryLinkId),
+        attachedAfterPost,
+      );
+
+      const failOpenActivation = await seedActivation(databasePool, {
+        label: "claim-post-telemetry-fail-open",
+        deviceId: "claim-post-telemetry-fail-open-device",
+      });
+      const failOpenInstallIdHash = tokenHash("claim-post-telemetry-fail-open-install");
+      const failOpenLinkId = await seedActivationTelemetryReference(databasePool, {
+        activationId: failOpenActivation.activationId,
+        deviceId: "claim-post-telemetry-fail-open-device",
+        installIdHash: failOpenInstallIdHash,
+      });
+      await databasePool.query(
+        `
+          create function public.sidestream_reject_claim_telemetry_attach_test()
+          returns trigger
+          language plpgsql
+          as $$
+          begin
+            if new.account_id is not null then
+              raise exception 'simulated claim telemetry attachment failure';
+            end if;
+            return new;
+          end
+          $$;
+
+          create trigger sidestream_reject_claim_telemetry_attach_test
+          before update on public.sidestream_telemetry_identity_links
+          for each row execute function public.sidestream_reject_claim_telemetry_attach_test()
+        `,
+      );
+      try {
+        const failOpenToken = account.createActivationClaimCsrf(
+          failOpenActivation.activationKey,
+          owner.accountId,
+        );
+        const failOpenClaim = await invokeHandler(claimHandler, {
+          method: "POST",
+          url: "/api/activation/claim",
+          headers: requestHeaders({
+            cookie: sessionCookie(owner),
+            origin: "https://sidestream.tv",
+            contentType: "application/x-www-form-urlencoded",
+          }),
+          body: claimForm(failOpenActivation.activationKey, failOpenToken),
+        });
+        assert.equal(failOpenClaim.statusCode, 303);
+      } finally {
+        await databasePool.query(
+          `
+            drop trigger sidestream_reject_claim_telemetry_attach_test
+              on public.sidestream_telemetry_identity_links;
+            drop function public.sidestream_reject_claim_telemetry_attach_test()
+          `,
+        );
+      }
+      assert.deepEqual(
+        await activationState(databasePool, failOpenActivation.activationKey),
+        { account_id: owner.accountId, status: "restored" },
+      );
+      assert.equal(
+        (await telemetryIdentityRowById(databasePool, failOpenLinkId)).account_id,
+        null,
+      );
+      assert.deepEqual(
+        await account.claimActivationToAccount(
+          failOpenActivation.activationKey,
+          owner.accountId,
+          { environment },
+        ),
+        { claimed: true },
+      );
+      assert.equal(
+        (await telemetryIdentityRowById(databasePool, failOpenLinkId)).account_id,
+        owner.accountId,
+      );
     });
 
     await t.test("concurrent cross-account claims elect one winner and never overwrite it", async () => {
@@ -291,6 +415,11 @@ test("activation, claim, Checkout, and credential invariants execute against Pos
       const activation = await seedActivation(databasePool, {
         label: "claim-race",
         deviceId: "claim-race-device",
+      });
+      const telemetryLinkId = await seedActivationTelemetryReference(databasePool, {
+        activationId: activation.activationId,
+        deviceId: "claim-race-device",
+        installIdHash: tokenHash("claim-race-install"),
       });
 
       const attempts = await Promise.all([
@@ -313,6 +442,10 @@ test("activation, claim, Checkout, and credential invariants execute against Pos
       assert.equal(overwrite.claimed, false);
       assert.equal(
         (await activationState(databasePool, activation.activationKey)).account_id,
+        winner.accountId,
+      );
+      assert.equal(
+        (await telemetryIdentityRowById(databasePool, telemetryLinkId)).account_id,
         winner.accountId,
       );
     });
@@ -430,6 +563,11 @@ test("activation, claim, Checkout, and credential invariants execute against Pos
         deviceId: "checkout-grace-live-device",
         expiresInSeconds: 7_200,
       });
+      const liveTelemetryLinkId = await seedActivationTelemetryReference(databasePool, {
+        activationId: liveActivation.activationId,
+        deviceId: "checkout-grace-live-device",
+        installIdHash: tokenHash("checkout-grace-live-install"),
+      });
       const liveAttachment = checkoutAttachment("grace-live", liveActivation.activationKey);
       assert.equal(await account.attachCheckoutSessionToActivation(liveAttachment), true);
       checkoutSessions.set(
@@ -447,12 +585,21 @@ test("activation, claim, Checkout, and credential invariants execute against Pos
         (await activationState(databasePool, liveActivation.activationKey)).account_id,
         buyer.accountId,
       );
+      assert.equal(
+        (await telemetryIdentityRowById(databasePool, liveTelemetryLinkId)).account_id,
+        buyer.accountId,
+      );
 
       const expiredActivation = await seedExpiredCheckoutActivation(databasePool, {
         label: "checkout-grace-expired",
         deviceId: "checkout-grace-expired-device",
       });
       const expiredBuyer = await seedAccount(databasePool, "checkout-grace-expired-buyer");
+      const expiredTelemetryLinkId = await seedActivationTelemetryReference(databasePool, {
+        activationId: expiredActivation.activationId,
+        deviceId: "checkout-grace-expired-device",
+        installIdHash: tokenHash("checkout-grace-expired-install"),
+      });
       checkoutSessions.set(
         expiredActivation.checkoutSessionId,
         checkoutSession("checkout-grace-expired", expiredActivation.activationKey, expiredBuyer),
@@ -467,6 +614,136 @@ test("activation, claim, Checkout, and credential invariants execute against Pos
       assert.equal(
         (await activationState(databasePool, expiredActivation.activationKey)).account_id,
         null,
+      );
+      assert.equal(
+        (await telemetryIdentityRowById(databasePool, expiredTelemetryLinkId)).account_id,
+        null,
+      );
+
+      const cancelledActivation = await seedActivation(databasePool, {
+        label: "checkout-cancelled",
+        deviceId: "checkout-cancelled-device",
+        expiresInSeconds: 7_200,
+      });
+      const cancelledTelemetryLinkId = await seedActivationTelemetryReference(databasePool, {
+        activationId: cancelledActivation.activationId,
+        deviceId: "checkout-cancelled-device",
+        installIdHash: tokenHash("checkout-cancelled-install"),
+      });
+      const cancelledAttachment = checkoutAttachment(
+        "checkout-cancelled",
+        cancelledActivation.activationKey,
+      );
+      assert.equal(
+        await account.attachCheckoutSessionToActivation(cancelledAttachment),
+        true,
+      );
+      const cancelledBuyer = await seedAccount(databasePool, "checkout-cancelled-buyer");
+      checkoutSessions.set(cancelledAttachment.checkoutSessionId, {
+        ...checkoutSession(
+          "checkout-cancelled",
+          cancelledActivation.activationKey,
+          cancelledBuyer,
+        ),
+        status: "expired",
+        payment_status: "unpaid",
+      });
+      assert.deepEqual(
+        await account.fulfillCheckoutSession(
+          cancelledAttachment.checkoutSessionId,
+          cancelledActivation.activationKey,
+        ),
+        { fulfilled: false, reason: "checkout_incomplete" },
+      );
+      assert.equal(
+        (await telemetryIdentityRowById(databasePool, cancelledTelemetryLinkId)).account_id,
+        null,
+      );
+
+      const failOpenActivation = await seedActivation(databasePool, {
+        label: "checkout-telemetry-fail-open",
+        deviceId: "checkout-telemetry-fail-open-device",
+        expiresInSeconds: 7_200,
+      });
+      const failOpenTelemetryLinkId = await seedActivationTelemetryReference(databasePool, {
+        activationId: failOpenActivation.activationId,
+        deviceId: "checkout-telemetry-fail-open-device",
+        installIdHash: tokenHash("checkout-telemetry-fail-open-install"),
+      });
+      const failOpenAttachment = checkoutAttachment(
+        "checkout-telemetry-fail-open",
+        failOpenActivation.activationKey,
+      );
+      assert.equal(
+        await account.attachCheckoutSessionToActivation(failOpenAttachment),
+        true,
+      );
+      const failOpenBuyer = await seedAccount(
+        databasePool,
+        "checkout-telemetry-fail-open-buyer",
+      );
+      checkoutSessions.set(
+        failOpenAttachment.checkoutSessionId,
+        checkoutSession(
+          "checkout-telemetry-fail-open",
+          failOpenActivation.activationKey,
+          failOpenBuyer,
+        ),
+      );
+      await databasePool.query(
+        `
+          create function public.sidestream_reject_checkout_telemetry_attach_test()
+          returns trigger
+          language plpgsql
+          as $$
+          begin
+            if new.account_id is not null then
+              raise exception 'simulated Checkout telemetry attachment failure';
+            end if;
+            return new;
+          end
+          $$;
+
+          create trigger sidestream_reject_checkout_telemetry_attach_test
+          before update on public.sidestream_telemetry_identity_links
+          for each row execute function public.sidestream_reject_checkout_telemetry_attach_test()
+        `,
+      );
+      try {
+        assert.deepEqual(
+          await account.fulfillCheckoutSession(
+            failOpenAttachment.checkoutSessionId,
+            failOpenActivation.activationKey,
+          ),
+          { fulfilled: true, activationBound: true },
+        );
+      } finally {
+        await databasePool.query(
+          `
+            drop trigger sidestream_reject_checkout_telemetry_attach_test
+              on public.sidestream_telemetry_identity_links;
+            drop function public.sidestream_reject_checkout_telemetry_attach_test()
+          `,
+        );
+      }
+      assert.equal(
+        (await activationState(databasePool, failOpenActivation.activationKey)).account_id,
+        failOpenBuyer.accountId,
+      );
+      assert.equal(
+        (await telemetryIdentityRowById(databasePool, failOpenTelemetryLinkId)).account_id,
+        null,
+      );
+      assert.deepEqual(
+        await account.fulfillCheckoutSession(
+          failOpenAttachment.checkoutSessionId,
+          failOpenActivation.activationKey,
+        ),
+        { fulfilled: true, activationBound: true },
+      );
+      assert.equal(
+        (await telemetryIdentityRowById(databasePool, failOpenTelemetryLinkId)).account_id,
+        failOpenBuyer.accountId,
       );
     });
 
@@ -524,14 +801,34 @@ test("activation, claim, Checkout, and credential invariants execute against Pos
       assert.equal(started.statusCode, 200);
       const activation = JSON.parse(started.body);
       assert.equal("installIdHash" in activation, false);
+      assert.doesNotMatch(
+        started.body,
+        new RegExp(`${installIdHash}|${deviceId}|supportCode|installerReceiptIdHash`, "i"),
+      );
+      const activationLinkId = await activationTelemetryLinkId(
+        databasePool,
+        activation.activationKey,
+      );
+      assert.match(activationLinkId, /^[0-9a-f-]{36}$/i);
       assert.deepEqual(await telemetryIdentityRow(databasePool, installIdHash), {
         device_id_hash: privateIdentifierHash(deviceId),
         account_id: null,
         linked_at: null,
       });
+      assert.equal(
+        (await telemetryIdentityRowById(databasePool, activationLinkId)).account_id,
+        null,
+      );
 
       const reset = await start(resetInstallIdHash);
       assert.equal(reset.statusCode, 200);
+      const resetActivation = JSON.parse(reset.body);
+      const resetLinkId = await activationTelemetryLinkId(
+        databasePool,
+        resetActivation.activationKey,
+      );
+      assert.match(resetLinkId, /^[0-9a-f-]{36}$/i);
+      assert.notEqual(resetLinkId, activationLinkId);
       assert.deepEqual(await telemetryIdentityRow(databasePool, resetInstallIdHash), {
         device_id_hash: privateIdentifierHash(deviceId),
         account_id: null,
@@ -539,13 +836,34 @@ test("activation, claim, Checkout, and credential invariants execute against Pos
       });
 
       const owner = await seedAccount(databasePool, "telemetry-owner");
-      await databasePool.query(
-        `
-          update public.sidestream_activation_sessions
-          set account_id = $2, license_id = $3, status = 'paid'
-          where activation_key = $1
-        `,
-        [activation.activationKey, owner.accountId, owner.licenseId],
+      const claimToken = account.createActivationClaimCsrf(
+        activation.activationKey,
+        owner.accountId,
+      );
+      const claimed = await invokeHandler(claimHandler, {
+        method: "POST",
+        url: "/api/activation/claim",
+        headers: requestHeaders({
+          cookie: sessionCookie(owner),
+          origin: "https://sidestream.tv",
+          contentType: "application/x-www-form-urlencoded",
+        }),
+        body: claimForm(activation.activationKey, claimToken),
+      });
+      assert.equal(claimed.statusCode, 303);
+      assert.equal(
+        (await telemetryIdentityRowById(databasePool, activationLinkId)).account_id,
+        owner.accountId,
+      );
+      assert.deepEqual(
+        await account.claimActivationToAccount(resetActivation.activationKey, owner.accountId, {
+          environment,
+        }),
+        { claimed: true },
+      );
+      assert.equal(
+        (await telemetryIdentityRowById(databasePool, resetLinkId)).account_id,
+        owner.accountId,
       );
       const linked = await invokeHandler(statusHandler, {
         method: "POST",
@@ -627,6 +945,13 @@ test("activation, claim, Checkout, and credential invariants execute against Pos
       const wrongDevice = await start(installIdHash, "telemetry-conflicting-device");
       assert.equal(wrongDevice.statusCode, 200);
       assert.equal(
+        await activationTelemetryLinkId(
+          databasePool,
+          JSON.parse(wrongDevice.body).activationKey,
+        ),
+        null,
+      );
+      assert.equal(
         (await telemetryIdentityRow(databasePool, installIdHash)).device_id_hash,
         privateIdentifierHash(deviceId),
       );
@@ -634,13 +959,11 @@ test("activation, claim, Checkout, and credential invariants execute against Pos
       const otherStart = await start(installIdHash);
       const otherActivation = JSON.parse(otherStart.body);
       const otherOwner = await seedAccount(databasePool, "telemetry-other-owner");
-      await databasePool.query(
-        `
-          update public.sidestream_activation_sessions
-          set account_id = $2, license_id = $3, status = 'paid'
-          where activation_key = $1
-        `,
-        [otherActivation.activationKey, otherOwner.accountId, otherOwner.licenseId],
+      assert.deepEqual(
+        await account.claimActivationToAccount(otherActivation.activationKey, otherOwner.accountId, {
+          environment,
+        }),
+        { claimed: true },
       );
       const accountConflict = await invokeHandler(statusHandler, {
         method: "POST",
@@ -665,12 +988,47 @@ test("activation, claim, Checkout, and credential invariants execute against Pos
       try {
         const absentSchema = await start(absentInstallIdHash);
         assert.equal(absentSchema.statusCode, 200);
+        assert.equal(
+          await activationTelemetryLinkId(
+            databasePool,
+            JSON.parse(absentSchema.body).activationKey,
+          ),
+          null,
+        );
       } finally {
         await databasePool.query(
           `alter table public.sidestream_telemetry_identity_links_absent_test rename to sidestream_telemetry_identity_links`,
         );
       }
       assert.equal(await telemetryIdentityRow(databasePool, absentInstallIdHash), null);
+
+      const partialSchemaInstallIdHash = tokenHash("activation-telemetry-partial-schema");
+      let partialSchemaActivation;
+      await databasePool.query(
+        `alter table public.sidestream_activation_sessions
+          rename column telemetry_identity_link_id to telemetry_identity_link_id_absent_test`,
+      );
+      try {
+        const partialSchema = await start(partialSchemaInstallIdHash);
+        assert.equal(partialSchema.statusCode, 200);
+        partialSchemaActivation = JSON.parse(partialSchema.body);
+      } finally {
+        await databasePool.query(
+          `alter table public.sidestream_activation_sessions
+            rename column telemetry_identity_link_id_absent_test to telemetry_identity_link_id`,
+        );
+      }
+      assert.equal(
+        await activationTelemetryLinkId(
+          databasePool,
+          partialSchemaActivation.activationKey,
+        ),
+        null,
+      );
+      assert.equal(
+        await telemetryIdentityRow(databasePool, partialSchemaInstallIdHash),
+        null,
+      );
     });
 
     await t.test("private telemetry UUID attachment is immutable and transaction-safe", async () => {
@@ -1779,6 +2137,41 @@ async function telemetryIdentityRowById(pool, telemetryIdentityLinkId) {
     [telemetryIdentityLinkId],
   );
   return result.rows[0] || null;
+}
+
+async function activationTelemetryLinkId(pool, activationKey) {
+  const result = await pool.query(
+    `
+      select telemetry_identity_link_id
+      from public.sidestream_activation_sessions
+      where activation_key = $1
+    `,
+    [activationKey],
+  );
+  return result.rows[0]?.telemetry_identity_link_id || null;
+}
+
+async function seedActivationTelemetryReference(pool, options) {
+  const bridge = await pool.query(
+    `
+      insert into public.sidestream_telemetry_identity_links (
+        license_namespace, install_id_hash, device_id_hash,
+        first_seen_at, last_seen_at
+      ) values ('production', $1, $2, now(), now())
+      returning id
+    `,
+    [options.installIdHash, privateIdentifierHash(options.deviceId)],
+  );
+  const telemetryIdentityLinkId = bridge.rows[0].id;
+  await pool.query(
+    `
+      update public.sidestream_activation_sessions
+      set telemetry_identity_link_id = $2
+      where id = $1
+    `,
+    [options.activationId, telemetryIdentityLinkId],
+  );
+  return telemetryIdentityLinkId;
 }
 
 async function withDatabaseTransaction(pool, callback) {

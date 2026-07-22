@@ -329,9 +329,27 @@ test("account implementation bounds status replay and uses locked refresh/fulfil
   const source = await readFile(new URL("../api/_lib/account.ts", import.meta.url), "utf8");
   const claimStart = source.indexOf("export async function claimActivationToAccount");
   const claimReplay = source.indexOf("isActivationClaimReplay({", claimStart);
+  const replayTelemetryAttach = source.indexOf(
+    "await attachActivationTelemetryIdentityAccount(client, {",
+    claimReplay,
+  );
   const terminalRejection = source.indexOf(
     "row.expired || row.completed_at || row.status !== \"pending\"",
     claimStart,
+  );
+  const claimUpdate = source.indexOf(
+    "update public.sidestream_activation_sessions",
+    terminalRejection,
+  );
+  const claimedTelemetryAttach = source.indexOf(
+    "await attachActivationTelemetryIdentityAccount(client, {",
+    replayTelemetryAttach + 1,
+  );
+  const fulfillmentStart = source.indexOf("export async function fulfillCheckoutSession");
+  const activationBound = source.indexOf("activationBound = Boolean(bound.rows[0])", fulfillmentStart);
+  const checkoutTelemetryAttach = source.indexOf(
+    "await attachActivationTelemetryIdentityAccount(client, {",
+    activationBound,
   );
   assert.match(source, /ACTIVATION_TOKEN_REPLAY_SECONDS/);
   assert.match(source, /LEGACY_LICENSE_TOKEN_TTL_DAYS/);
@@ -344,6 +362,14 @@ test("account implementation bounds status replay and uses locked refresh/fulfil
   assert.match(source, /\(account_id is null or account_id = \$3\)/);
   assert.match(source, /checkout_claim_grace_until >= now\(\)/);
   assert.ok(claimStart >= 0 && claimReplay > claimStart && terminalRejection > claimReplay);
+  assert.ok(replayTelemetryAttach > claimReplay && replayTelemetryAttach < terminalRejection);
+  assert.ok(claimedTelemetryAttach > claimUpdate);
+  assert.ok(checkoutTelemetryAttach > activationBound);
+  assert.match(source, /set telemetry_identity_link_id = \$2::uuid/);
+  assert.doesNotMatch(
+    source.match(/insert into public\.sidestream_activation_sessions[\s\S]*?returning id/)?.[0] || "",
+    /install_id_hash/i,
+  );
   assert.match(source, /code: "device_mismatch"/);
   assert.match(source, /code: "revoked"/);
   assert.match(source, /code: "invalid_token"/);
