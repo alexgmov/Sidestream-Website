@@ -8,13 +8,12 @@ import {
   sendJson,
   type AccountRequest,
 } from "../_lib/account.js";
+import { normalizeTelemetryIdentityInput } from "../_lib/telemetry-identity.js";
 
 type LicenseRefreshPayload = {
   refreshToken?: unknown;
   deviceId?: unknown;
   installIdHash?: unknown;
-  supportCode?: unknown;
-  installerReceiptIdHash?: unknown;
 };
 
 export default async function handler(
@@ -30,11 +29,13 @@ export default async function handler(
   if (!refreshToken || !deviceId) {
     return sendJson(response, 400, { error: "Missing refresh token or device ID", code: "invalid_request" });
   }
-  const identity = readCustomerIdentityFields(payload);
-  if (!identity) {
+  let identity: ReturnType<typeof normalizeTelemetryIdentityInput>;
+  try {
+    identity = normalizeTelemetryIdentityInput(payload);
+  } catch {
     return sendJson(response, 400, {
-      error: "Invalid customer identity",
-      code: "invalid_customer_identity",
+      error: "Invalid install ID hash",
+      code: "invalid_request",
     });
   }
 
@@ -58,27 +59,4 @@ export default async function handler(
     return sendJson(response, statusCode, refreshed);
   }
   return sendJson(response, 200, refreshed);
-}
-
-function readCustomerIdentityFields(payload: LicenseRefreshPayload) {
-  const installIdHash = readOptionalIdentity(payload.installIdHash, /^[0-9a-f]{64}$/);
-  const supportCode = readOptionalIdentity(
-    payload.supportCode,
-    /^SIDE-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}$/,
-  );
-  const installerReceiptIdHash = readOptionalIdentity(
-    payload.installerReceiptIdHash,
-    /^[0-9a-f]{64}$/,
-  );
-  if ([installIdHash, supportCode, installerReceiptIdHash].includes(null)) return null;
-  return {
-    ...(installIdHash ? { installIdHash } : {}),
-    ...(supportCode ? { supportCode } : {}),
-    ...(installerReceiptIdHash ? { installerReceiptIdHash } : {}),
-  };
-}
-
-function readOptionalIdentity(value: unknown, pattern: RegExp): string | null | undefined {
-  if (value === undefined || value === null || value === "") return undefined;
-  return typeof value === "string" && pattern.test(value) ? value : null;
 }
