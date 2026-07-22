@@ -33,6 +33,10 @@ history or tickets.
   fallback, not a second source of truth, and replay is explicit and observable.
 - Three `CRON_SECRET`-protected jobs process Stripe events, replay fallback leads,
   and run retention maintenance.
+- The only telemetry/account linkage is a private activation reference. One
+  persistent OS-profile `installIdHash` remains one anonymous telemetry identity
+  until an explicit verified restore/transfer or fulfilled Checkout attaches the
+  relational account; separate installations remain separate rows.
 - The repository does not currently contain a production maintenance rule,
   operator WAF bypass, per-job cron kill switch, Stripe dead-letter reset/replay
   tool, qualified runtime-distinct rollback artifact, failed-refund recovery
@@ -83,7 +87,22 @@ FlowState telemetry remains the behavioral source. The website retains only a
 private association bridge: `public.sidestream_telemetry_identity_links` maps a
 trusted namespace plus lowercase 64-character telemetry `installIdHash` to the
 server-HMAC device digest and, when the authenticated account runtime has
-verified one, an optional `sidestream_accounts.id`.
+verified one, an optional `sidestream_accounts.id`. The install hash is a
+persistent OS-profile telemetry association, not authentication, hardware
+identity, a device credential, or proof of account, device, payment, or
+entitlement ownership. A reset or separate installation has a distinct
+anonymous row even on the same device. Rows converge on one account only after
+each installation participates in an explicit verified account action.
+
+`20260722230000_add_activation_telemetry_link.sql` gives each bridge row a
+unique server-generated UUID and adds nullable, indexed
+`sidestream_activation_sessions.telemetry_identity_link_id` with `ON DELETE SET
+NULL`. The original `(license_namespace, install_id_hash)` primary key remains
+the anonymous telemetry identity; the UUID is only a private trusted-runtime
+reference. `sidestream_accounts` relationally owns verified email/contact
+identity, `sidestream_licenses` plus the Stripe lifecycle own payment and
+entitlement state, and account-device tables own active-device decisions. The
+bridge duplicates none of those facts.
 
 Only `/api/activation/start`, `/api/activation/status`, `/api/license/verify`,
 and `/api/license/refresh` accept optional `installIdHash` in JSON. Omission,
@@ -93,14 +112,38 @@ code and installer receipt remain telemetry/support concepts and are ignored by
 this website path. No association value belongs in a URL, query string, browser
 form, browser storage, account/claim/Checkout page, or log.
 
+Of the activation-to-telemetry linkage values, only the activation key crosses
+the browser boundary. The install hash, private bridge UUID, device digest,
+account UUID, verified email, payment state, and credentials remain server/CEP
+side and are never returned by the association helper.
+
+The account attachment points are exact:
+
+1. Activation start inserts the activation before bridge work, first-binds an
+   optional install hash, and stores only a successful result's private UUID on
+   the activation. Skipped, conflict, unavailable, or partial-schema outcomes
+   leave the activation valid and its reference null.
+2. Claim GET and Google OAuth are read-only. An authenticated, same-origin,
+   CSRF-valid restore or transfer POST immediately attaches the verified account
+   through the activation's private reference. Legitimate same-account POST
+   replays retry idempotently.
+3. Checkout attaches only after canonical Stripe payment verification, active
+   entitlement fulfillment, and successful activation binding. Cancelled,
+   expired, unpaid, inactive, and unattached Sessions do not attach.
+4. Activation status, license verify, and license refresh retain their existing
+   install-hash calls as fallback repair after a verified account relationship
+   exists.
+
 After input validation, bridge absence, write failure, and first-binding
-conflicts cannot fail or weaken the surrounding product transaction. The bridge
-uses a savepoint, never overwrites the first device or account binding, and has
-no browser or admin read surface. `sidestream_accounts` owns authenticated
-contact identity; `sidestream_licenses` and the Stripe lifecycle own payment and
-access; account-device tables own the active-device decision. A bridge value is
-never authorization, payment evidence, account ownership proof, device ownership
-proof, or permission to merge identities.
+conflicts cannot fail or weaken the surrounding product transaction. Bridge
+creation/reference and verified attachment use nested savepoints, never
+overwrite the first device or account binding, expose no private UUID on
+conflict, and have no browser or admin read surface.
+
+No Customer 360 directory, materializer, usage sync, cron, behavioral profile,
+commerce read model, or duplicated email/payment/entitlement state was restored.
+FlowState remains the behavioral source and the relational account/license
+tables remain the email, payment, and entitlement authorities.
 
 Browser/account behavior and device support facts are expanded in
 `docs/single-device-entitlements.md`. Its former Production cutover prose is
@@ -330,12 +373,15 @@ An existing non-empty schema without the ledger is not automatically assumed to
 be current. `--status` reports that a baseline is required; `--baseline` checks
 the known pre-hardening schema and records only migrations it can prove. Applying
 refuses an unbaselined non-empty schema. The chain currently ends with
-`20260722120000_retire_customer_360.sql`. That checksummed migration preserves
-the historical ledger, removes the retired read model, and creates
-`sidestream_telemetry_identity_links` with namespace/hash checks, an optional
-account foreign key, RLS, and direct-access revocation. The earlier lead
-migration keeps canonical `(email, cta_source)` uniqueness and a non-unique
-`lead_key` lookup index. Runtime DDL is prohibited and checked by
+`20260722230000_add_activation_telemetry_link.sql`. The preceding checksummed
+`20260722120000_retire_customer_360.sql` preserves the historical ledger,
+removes the retired read model, and creates `sidestream_telemetry_identity_links`
+with namespace/hash checks, an optional account foreign key, RLS, and
+direct-access revocation. The final additive migration adds the bridge's unique
+private UUID plus the nullable, indexed activation foreign key with `ON DELETE
+SET NULL`; old writers remain valid because they may omit both new columns. The
+earlier lead migration keeps canonical `(email, cta_source)` uniqueness and a
+non-unique `lead_key` lookup index. Runtime DDL is prohibited and checked by
 `node scripts/assert-no-runtime-ddl.mjs`.
 
 `npm run db:migrate -- --status` is the authoritative read-only applied/pending
@@ -606,21 +652,57 @@ tools implement clean selection, strict endpoint/TLS-option rejection, pinned
 provider-CA and hostname validation, and connected-target evidence without
 printing a URL or customer data to uncontrolled output.
 
-### Retirement source-change boundary
+### Telemetry-linkage source and rollout boundary
 
-This source change performs no provider migration, deployment, secret deletion,
-Test database disposal, schema apply, or Production action. It does not prove the
-state of any Vercel, Stripe, Neon/Postgres, Test, or Production environment.
+This source change performs no provider migration, deployment, Vercel alias
+change, Stripe account change, CEP package change, secret deletion, Test database
+disposal, schema apply, Preview/Test action, or Production action. It does not
+prove the state of any Vercel, Stripe, Neon/Postgres, CEP, Preview, Test, or
+Production environment.
 
-Later live work remains human-gated. A separately reviewed plan must identify
-and attest the exact target, capture an authenticated schema and migration-ledger
-inventory, obtain explicit approval before applying the complete checksummed
-chain, bind an exact reviewed artifact to the deployment, and verify real
-start/status/verify/refresh association, conflict/fail-open behavior, browser
-field absence, and retired route/schedule absence. Provider-secret deletion,
-Test database disposal, and every Production mutation require separate explicit
-approval and retained evidence. None of the open blockers below is closed by the
-retirement source diff or local verification.
+The safe order for a future isolated non-Production qualification is recorded
+below only as an invariant. It is not an executable procedure, target approval,
+or claim that any step occurred:
+
+1. Deploy an exact reviewed artifact of the already reduced runtime. That
+   artifact must have no dependency on retired Customer 360 routes, tables,
+   materializers, sync, or schedules and must remain compatible with both the
+   pre-retirement and additive schemas.
+2. Select one isolated Test provider. Prove its project, database, Stripe mode,
+   Google OAuth host/callback, runtime selectors, and network target are distinct
+   from every live provider. Capture an authenticated schema and complete
+   migration-ledger/checksum inventory, take and verify a restorable backup, and
+   retain exact main and runtime-distinct fallback artifacts before mutation.
+3. Apply the complete checksummed chain to that isolated Test provider. The
+   order must include `20260722120000_retire_customer_360.sql` and then
+   `20260722230000_add_activation_telemetry_link.sql`; no one-file shortcut or
+   manual DDL is equivalent. Retain authenticated post-apply schema, ledger,
+   checksum, RLS, grant, and backup evidence.
+4. Deploy the exact reviewed enhanced runtime that stores the private activation
+   foreign key and performs verified account attachment. Bind the immutable
+   artifact, deployment target, selectors, and aliases in retained evidence.
+5. On the real isolated Test surfaces, prove all of the following: an anonymous
+   Premiere start creates an unowned install association and private activation
+   reference; a Google-authenticated explicit restore/transfer POST attaches
+   immediately while GET/OAuth remain read-only; no-cost Test Checkout attaches
+   only after canonical fulfillment; activation status completes credentials;
+   a second installation remains a separate anonymous identity until its own
+   verified action links it to the same account; status/verify/refresh repair is
+   idempotent; and invalid, cancelled, expired, unpaid, inactive, cross-account,
+   conflict, forced-write, missing-schema, and partial-schema paths remain
+   private and fail-open without weakening customer outcomes. Retain real
+   browser and Premiere evidence that only the activation key from this linkage
+   crosses the browser and that retired Customer 360 surfaces remain absent.
+6. Stop after isolated Test qualification. Any Production inventory, migration,
+   deployment, alias change, traffic change, or rollback requires a new,
+   separate explicit approval after every Production blocker below is closed.
+
+Authenticated Production migration tooling, Stripe lifecycle closure, live
+provider isolation, restorable backups, runtime-distinct qualified fallback and
+rollback artifacts, and real browser/Premiere evidence remain blockers rather
+than delivered capabilities. Provider-secret deletion and Test database disposal
+also require separate explicit approval and retained evidence. None of these
+gates is closed by the linkage source diff or local verification.
 
 ## Production cutover status: blocked
 <!-- BLOCKER: PRODUCTION-CUTOVER-NOT-EXECUTABLE -->
@@ -636,7 +718,9 @@ The existing blockers remain open: unresolved refund/dispute policy and tested
 customer recovery, Stripe dead-letter recovery, a total crash/reclaim attempt
 cap, authenticated Production database tooling, safe device support/backfill,
 historical lifecycle repair, license-secret continuity, a runtime-distinct
-qualified fallback, reviewed WAF maintenance controls, and safe cron control.
+qualified fallback with restorable rollback artifacts, authenticated live-provider
+isolation evidence, reviewed WAF maintenance controls, safe cron control, and
+real browser/Premiere qualification evidence.
 
 The removed recipe also failed independent review because its provider output
 did not expose the claimed deployment metadata or actual selectors, its mutable

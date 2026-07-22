@@ -26,8 +26,8 @@ Sidestream is an HTML-first landing page for a Premiere Pro panel that lets edit
 - `api/download-lead.ts`, `api/_lib/download-leads.ts`, and `api/_lib/download-lead-blob.ts` - Bounded JSON lead ingestion, canonical `(email, cta_source)` convergence, idempotency receipts, atomic Postgres email/IP rate limits, deterministic private-Blob fallback, and the private compare-and-swap Blob limiter used by the mobile email handoff. `api/internal/download-leads/replay.ts` replays mapped fallback records and deletes only after a committed database write plus ETag match.
 - `api/send-download-links.ts` and `api/_lib/download-link-email.ts` - Mobile-only computer handoff. The public POST route requires an idempotency key, stores the `mobile-download-handoff` lead plus bounded UTM context in the existing private replay queue, enforces a durable hashed 3/email and 10/IP per-hour Blob limit, and sends one transactional Resend message from `downloads@alexg.mov` with direct Mac and Windows installer links. The email presents both installers as matching white platform-marked capsules on a dark panel while retaining explicit platform labels; its Windows mark is a tiny PNG derived from the landing page silhouette and embedded as a Resend CID inline attachment so email clients do not strip it. Provider errors and logs never return or print the recipient address.
 - `api/_lib/postgres.ts` and `api/_lib/rate-limit.ts` - Shared attached runtime Postgres pool/transaction ownership and atomic HMAC-dimension rate limiting. Production runtime requires a pooled URL; direct URLs are reserved for reviewed migrations/backfills and development/test fallback.
-- `api/_lib/telemetry-identity.ts` - Server-only, fail-open telemetry identity bridge. It accepts only an optional lowercase 64-character `installIdHash`, first-binds that telemetry install to the namespace-scoped server-HMAC device digest, and may later attach one account verified by the account runtime. Conflicts never overwrite the first device or account binding and never weaken the surrounding activation, verification, refresh, entitlement, or device transaction.
-- `api/_lib/account.ts`, `api/_lib/entitlement.ts`, `api/_lib/device-policy.ts`, and `api/_lib/license-environment.ts` - Shared server-only account/Stripe/Postgres implementation plus dependency-free entitlement primitives. They own exact Checkout verification, account-device transactions, one-active-device decisions, transfer limits, production/Test isolation from trusted deployment state, short-lived access tokens, rotating refresh credentials, legacy compatibility through 1.0.13, safe OAuth return paths, and restore CSRF validation. Account-session, activation-status, verification, refresh, and download-authorization reads tolerate the pre-entitlement-lifecycle Production schema through one fail-closed JSON-based lifecycle expression, granting legacy compatibility only to the same exact one-time paid rows that the pending migration would backfill. Serverless route imports intentionally use `.js` extensions so Vercel's Node ESM runtime resolves compiled helpers.
+- `api/_lib/telemetry-identity.ts` - Server-only, fail-open telemetry identity bridge. It treats the optional lowercase 64-character `installIdHash` as a persistent OS-profile telemetry association, first-binds it to the namespace-scoped server-HMAC device digest, returns a private bridge UUID only to trusted callers, and may attach one account verified by the account runtime. It is not authentication, hardware identity, or ownership proof. Conflicts never overwrite the first device or account binding and never weaken the surrounding activation, verification, refresh, entitlement, or device transaction.
+- `api/_lib/account.ts`, `api/_lib/entitlement.ts`, `api/_lib/device-policy.ts`, and `api/_lib/license-environment.ts` - Shared server-only account/Stripe/Postgres implementation plus dependency-free entitlement primitives. They own exact Checkout verification, account-device transactions, one-active-device decisions, transfer limits, production/Test isolation from trusted deployment state, short-lived access tokens, rotating refresh credentials, legacy compatibility through 1.0.13, safe OAuth return paths, restore CSRF validation, private activation-to-telemetry references, and verified account attachment after restore/transfer or fulfilled Checkout. Account-session, activation-status, verification, refresh, and download-authorization reads tolerate the pre-entitlement-lifecycle Production schema through one fail-closed JSON-based lifecycle expression, granting legacy compatibility only to the same exact one-time paid rows that the pending migration would backfill. Serverless route imports intentionally use `.js` extensions so Vercel's Node ESM runtime resolves compiled helpers.
 - `api/auth/google/start.ts` and `api/auth/google/callback.ts` - Google OAuth redirect/callback handlers. They require the configured callback to share the browser-facing start origin before setting a short-lived HTTP-only state cookie, upsert `sidestream_accounts`, issue a server-side session cookie, and render a retryable noindex HTML error instead of raw JSON when sign-in state is stale.
 - `api/auth/session.ts` and `api/auth/logout.ts` - Account-session JSON and logout endpoints used by `account.html` and `upgrade.html`.
 - `api/checkout/start.ts`, `api/checkout/create.ts`, and `api/checkout/complete.ts` - Intentional one-time Sidestream Pro Checkout flow. GET start creates/resumes only a signed database intent and renders confirmation; confirmed same-origin POST create is the sole Session-creation boundary, reuses one locked/idempotent Session, and persists the exact Price/Product. Completion re-fetches Stripe truth before fulfillment and returns through the literal `{CHECKOUT_SESSION_ID}` placeholder. The old Vercel host still fails closed when legacy activation context is missing.
@@ -35,7 +35,7 @@ Sidestream is an HTML-first landing page for a Premiere Pro panel that lets edit
 - `api/billing/receipt.ts` - Authenticated one-time purchase receipt helper. It finds the signed-in account's latest Sidestream license PaymentIntent and returns the Stripe charge receipt URL, covering older Checkout payments that did not create invoices.
 - `api/stripe/webhook.ts`, `api/_lib/stripe-events.ts`, and `api/internal/stripe-events/process.ts` - Signature verification, durable event recording, leased `SKIP LOCKED` claims, retry/backoff/dead-letter isolation, and watermark-protected entitlement reconciliation. Customer/account reads do not process this queue.
 - `api/_lib/maintenance.ts` and `api/internal/maintenance.ts` - Advisory-locked, bounded retention for expired sessions/credentials/limits/intents and Stripe payload redaction without deleting canonical leads or active entitlements.
-- `api/activation/start.ts`, `api/activation/status.ts`, and `api/activation/claim.ts` - CEP-facing activation plus the authenticated restore/transfer/purchase decision surface. Claim GET is read-only; restore or transfer requires an active-license session, same-origin CSRF-protected POST, and an explicit prior-device deactivation confirmation for a move.
+- `api/activation/start.ts`, `api/activation/status.ts`, and `api/activation/claim.ts` - CEP-facing activation plus the authenticated restore/transfer/purchase decision surface. Claim GET is read-only; restore or transfer requires an active-license session, same-origin CSRF-protected POST, and an explicit prior-device deactivation confirmation for a move. Of the activation-to-telemetry linkage values, only the activation key crosses the browser boundary; the telemetry install hash, private bridge UUID, and device digest remain server/CEP-side.
 - `api/license/verify.ts`, `api/license/refresh.ts`, `api/license/authorize-download.ts`, `api/license/deactivate.ts`, and `api/account/device.ts` - Trusted-environment credential verification/rotation, exact active-device pre-download authorization, authenticated same-origin deactivation, and coarse read-only account device status. Stable device outcomes include `device_replaced` and `device_deactivated`.
 - `db/migrations/20260626120000_add_sidestream_download_leads.sql` - Postgres schema for the private `public.sidestream_download_leads` table used by the download email gate.
 - `db/migrations/20260703120000_add_sidestream_accounts_billing.sql` - Postgres schema for accounts, sessions, Stripe licenses/events, plugin activation sessions, and short-lived license tokens.
@@ -47,7 +47,8 @@ Sidestream is an HTML-first landing page for a Premiere Pro panel that lets edit
 - `db/migrations/20260714120000_add_installer_request_tracking.sql` - Adds the server-owned `public.sidestream_installer_requests` attribution table, reporting indexes, RLS, and explicit direct-access revocations for Supabase API roles.
 - `db/migrations/20260714190000_add_single_active_account_devices.sql` - Additive private schema for retained account-device lifecycle rows and confirmed device transfers. Partial unique indexes enforce at most one active row per account in each of the separate production and Test namespaces; raw device identifiers are never persisted.
 - `db/migrations/20260713200000_add_api_operational_controls.sql` through `db/migrations/20260714200000_remove_redundant_download_lead_key_unique.sql` - Append-only hardening chain for the checksummed migration ledger, rate limits, credential uniqueness, Stripe claims/retries/watermarks, Checkout intents, refund/dispute lifecycle, canonical leads/replay receipts, retention indexes, and the final removal of the redundant unique `lead_key` constraint.
-- `db/migrations/20260722120000_retire_customer_360.sql` - Final checksummed retirement migration. It removes the retired Customer 360 read-model tables/functions and creates the private `sidestream_telemetry_identity_links` bridge with namespace/hash checks, account foreign key, RLS, and direct-access revocation. Historical migrations remain in the ledger and must not be edited or skipped.
+- `db/migrations/20260722120000_retire_customer_360.sql` - Checksummed retirement migration. It removes the retired Customer 360 read-model tables/functions and creates the private `sidestream_telemetry_identity_links` bridge with namespace/hash checks, account foreign key, RLS, and direct-access revocation. Historical migrations remain in the ledger and must not be edited or skipped.
+- `db/migrations/20260722230000_add_activation_telemetry_link.sql` - Additive activation-linkage migration. It gives each private bridge row a unique server-generated UUID and adds the nullable, indexed `sidestream_activation_sessions.telemetry_identity_link_id` foreign key with `ON DELETE SET NULL`, preserving preceding-runtime writes and fail-open rollback compatibility.
 - `tests/entitlement.test.mjs` - Focused Node test harness for exact paid-Session verification, attacker-link/pre-bind regressions, device/account binding, restore CSRF/origin checks, safe OAuth return paths, and deterministic lost-response credential replay.
 - `tests/download-referral.test.mjs` - Focused Node integration and helper tests for tagged redirects, non-blocking database failures, `HEAD`/`304` exclusions, UTM validation, anonymous HMACs, and likely-scanner detection.
 - `tests/license-environment.test.mjs` and `tests/single-device-*.test.mjs` - Static and disposable-Postgres proof for the complete migration chain, including installer-referral RLS, namespace isolation, policy states, database races, transfers/revocation, support tooling, account pages, download authorization, legacy compatibility, and Checkout preservation. `npm run test:single-device` is the aggregate command and requires a safe `SIDESTREAM_TEST_POSTGRES_URL`.
@@ -92,7 +93,7 @@ Sidestream is an HTML-first landing page for a Premiere Pro panel that lets edit
 - Installer referral attribution - Gmail launch URLs use `utm_source=gmail`, `utm_medium=email`, a bounded campaign ID, and optional `utm_content=pilot` or `utm_content=main` batch ID. Only a successful tagged installer `GET` creates `public.sidestream_installer_requests`; `HEAD`, `304`, invalid tags, and failed fulfillment create nothing. The event stores no email, raw IP, or raw user agent. Scanner-like `GET`s remain visible with `likely_scanner = true` so reports can separate them instead of pretending they never happened.
 - Download lead capture and replay - `api/download-lead.ts`, `api/_lib/download-leads.ts`, and `api/internal/download-leads/replay.ts` validate at most 8 KiB of JSON, converge repeated `(email, cta_source)` submissions, enforce 5/email and 20/IP per ten minutes, and fall back to deterministic private Blob records when Postgres fails. Scheduled replay processes 25 mapped records and deletes only after commit plus ETag match; manual replay is bounded to 100 and defaults to preserving records. Historical `windows-waitlist` rows remain queryable.
 - Account/auth/billing/device entitlement - `account.html`, `thank-you.html`, `upgrade.html`, `api/_lib/account.ts`, `api/_lib/entitlement.ts`, `api/_lib/device-policy.ts`, `api/_lib/license-environment.ts`, `api/auth/*`, `api/checkout/*`, `api/billing/*`, `api/stripe/webhook.ts`, `api/activation/*`, `api/account/device.ts`, and `api/license/*` own optional Google account management, the server-owned $9.99 one-time Sidestream Pro Product/Price, confirmed Checkout intents, namespace-separated active-device rows, restricted Test isolation, refund/dispute lifecycle, confirmed transfers, download authorization, deactivation, and device-bound access/refresh credentials. Device mismatch policy defaults to `observe`; only explicit `enforce` blocks. The API/operator contract is `docs/api-hardening-runbook.md`; device/support details are in `docs/single-device-entitlements.md`.
-- Telemetry identity association - FlowState telemetry remains the behavioral source. `api/_lib/telemetry-identity.ts` and `public.sidestream_telemetry_identity_links` provide only the narrow install-to-device/account bridge described below; they do not materialize usage, commerce, or customer profiles and expose no admin API.
+- Telemetry identity association - FlowState telemetry remains the behavioral source. `api/_lib/telemetry-identity.ts`, `public.sidestream_telemetry_identity_links`, and the activation row's private foreign key provide only the narrow install-to-device/account bridge described below. Separate installations remain separate anonymous identities and converge on one account only after an explicit verified restore/transfer or Checkout action. No Customer 360 directory, materializer, sync, cron, behavioral profile, duplicated email, or duplicated payment/entitlement state is restored, and the bridge exposes no browser or admin API.
 - API operations - `api/_lib/postgres.ts` owns the shared bounded runtime pool; checksummed migrations own schema changes; `api/_lib/stripe-events.ts` owns durable claimed Stripe work; `api/_lib/maintenance.ts` owns bounded cleanup/redaction; `vercel.json` schedules three `CRON_SECRET`-protected internal routes. Account reads never run migrations or drain event backlog.
 
 ## Routes and Assets
@@ -172,12 +173,25 @@ ten minutes, and maintenance daily at `04:13` UTC.
 ### Telemetry-first account bridge
 
 FlowState telemetry remains the source of behavioral facts. The website does
-not copy or aggregate that behavior. Its only retained association is the
-private `public.sidestream_telemetry_identity_links` table, keyed by trusted
-license namespace plus the lowercase 64-character telemetry `installIdHash`.
-Each row first-binds that install hash to the website's server-HMAC device hash
-and may later attach one account verified by the authenticated account runtime.
-The first device and account bindings are never overwritten on conflict.
+not copy or aggregate that behavior. `installIdHash` is the persistent anonymous
+telemetry association for one OS profile; it is not authentication, a hardware
+fingerprint, a device credential, or proof of account, device, or purchase
+ownership. A reset or separate installation has a different hash and remains a
+separate anonymous identity, even on the same device. Separate rows converge on
+one account only after each installation participates in an explicit verified
+account action.
+
+The private `public.sidestream_telemetry_identity_links` table is keyed by the
+trusted license namespace plus `installIdHash`. It first-binds that install to
+the website's server-HMAC device digest. The additive
+`20260722230000_add_activation_telemetry_link.sql` migration gives the bridge a
+unique server-generated UUID and adds nullable, indexed
+`sidestream_activation_sessions.telemetry_identity_link_id` as a foreign key
+with `ON DELETE SET NULL`. This is a private correlation reference, not a new
+public identity. `sidestream_accounts` relationally owns verified email/contact
+identity; `sidestream_licenses` plus the Stripe event lifecycle own entitlement
+and payment state; account-device tables own the active-device decision. The
+bridge duplicates none of those facts.
 
 The CEP JSON routes `/api/activation/start`, `/api/activation/status`,
 `/api/license/verify`, and `/api/license/refresh` may send the optional
@@ -186,28 +200,74 @@ other value must be a lowercase 64-character hexadecimal hash or the route
 returns `400 invalid_request`. The value must stay out of URLs, query strings,
 browser forms, browser storage, account pages, claim pages, Checkout, and logs.
 `supportCode` and `installerReceiptIdHash` remain FlowState telemetry/support
-concepts and are ignored by the website association path.
+concepts and are ignored by the website association path. Of the linkage values,
+only the activation key crosses the CEP-to-browser claim/Checkout boundary; the
+install hash, private UUID, device digest, account UUID, and credentials do not.
+
+The linkage flow is deliberately narrow:
+
+1. Activation start inserts the activation first. If the optional install hash
+   first-binds successfully, the same transaction stores only the returned
+   private UUID on that activation. A skipped, conflicting, missing-schema, or
+   failed bridge operation leaves the activation valid and the reference null.
+2. An authenticated, same-origin, CSRF-valid restore or transfer POST attaches
+   the verified account immediately through that private reference. Claim GET
+   and the Google OAuth redirects remain read-only, and legitimate same-account
+   POST replays retry the idempotent attachment.
+3. Checkout attaches only after canonical Stripe payment verification, active
+   entitlement fulfillment, and successful activation binding. Cancelled,
+   expired, unpaid, inactive, or unattached Sessions cannot attach telemetry.
+4. Activation status, license verify, and license refresh keep their existing
+   install-hash association calls as fallback repair after a verified account
+   relationship already exists.
 
 The bridge is deliberately fail-open after request validation: a missing bridge
-schema or failed bridge write rolls back to an internal savepoint while the
-surrounding activation, verification, refresh, entitlement, and device operation
-continues. A binding conflict is recorded without replacing either side.
-`sidestream_accounts` remains the authenticated contact-identity authority;
-`sidestream_licenses` plus the Stripe webhook/queue lifecycle remain the
-payment-and-access authority; and the account-device tables remain the active
-device authority. No bridge value is authorization, payment evidence, account
-ownership proof, device ownership proof, or permission to merge identities.
+schema, missing activation-reference column, or failed bridge write rolls back
+to an internal savepoint while the surrounding activation, claim, Checkout,
+verification, refresh, entitlement, and device operation continues. The first
+device and account bindings are immutable; conflicts expose no private UUID and
+never authorize a merge.
+
+No Customer 360 directory, materializer, usage sync, cron, behavioral profile,
+commerce read model, or duplicated payment/entitlement state was restored. The
+website retains only this private association; FlowState retains behavioral
+facts, and the relational account/license tables retain email and entitlement
+authority.
+
+#### Safe rollout order (not executed)
+
+This ordering is a future non-Production qualification sequence, not a command
+surface or evidence that any environment changed:
+
+1. Deploy an exact reviewed artifact of the already reduced runtime that has no
+   Customer 360 runtime dependency and remains compatible with the old and
+   additive schemas.
+2. Identify one isolated Test provider, prove it is distinct from every live
+   provider/selector, take an authenticated schema and migration-ledger
+   inventory, and retain a verified backup plus rollback artifacts.
+3. Apply the complete checksummed chain in order, including
+   `20260722120000_retire_customer_360.sql` and then
+   `20260722230000_add_activation_telemetry_link.sql`; retain authenticated
+   post-apply schema, ledger, checksum, RLS, and grant evidence.
+4. Deploy the exact reviewed enhanced runtime containing the private activation
+   reference and verified account-attachment behavior.
+5. In real isolated Test browser and Premiere surfaces, prove anonymous start,
+   Google-authenticated explicit restore/transfer, no-cost Test Checkout,
+   credential completion, a second installation linking to the same account
+   only after verified action, fallback repair, and cancelled/expired/unpaid,
+   cross-account, conflict, and partial/missing-schema failure paths.
+6. Stop. Any Production migration or deployment requires a separate explicit
+   approval after all Production gates close.
 
 This repository change is source-only. It performs no provider migration,
+Vercel alias change, Stripe account change, CEP package change, Preview/Test
 deployment, secret deletion, Test database disposal, schema apply, or Production
-action. Later work is human-gated: select and attest the exact non-Production or
-Production target; take an authenticated schema and migration-ledger inventory;
-review and apply the complete checksummed chain where explicitly approved;
-deploy an exact reviewed artifact; then prove real start/status/verify/refresh
-flows, fail-open/conflict behavior, browser-field absence, and the lack of retired
-routes and schedules. Any provider deletion, Test database disposal, or
-Production mutation needs its own explicit approval and retained evidence. The
-existing Production blockers in `docs/api-hardening-runbook.md` remain open.
+action. Authenticated Production migration tooling, Stripe lifecycle closure,
+live-provider isolation, a runtime-distinct qualified fallback with retained
+rollback artifacts, and real browser/Premiere evidence remain open blockers.
+Any provider deletion, Test database disposal, or Production mutation needs its
+own explicit approval and retained evidence. The complete blocker inventory
+lives in `docs/api-hardening-runbook.md`.
 
 Release platform aliases are fail-closed and shared by both release routes:
 
@@ -263,7 +323,7 @@ Plugin activation rows are device-bound. `/api/activation/status` issues one det
 
 `api/_lib/postgres.ts` owns one attached pool for every runtime API feature. Production chooses a pooled URL in this order: `SIDESTREAM_POSTGRES_URL`, `SIDESTREAM_POSTGRES_PRISMA_URL`, `POSTGRES_URL`, then `POSTGRES_PRISMA_URL`; direct/non-pooling fallback is forbidden in production runtime. `POSTGRES_POOL_MAX` defaults to 4 and is bounded 2-20, with bounded idle, connection, query, and statement timeouts. Reviewed migrations and backfills use `SIDESTREAM_POSTGRES_URL_NON_POOLING` or `POSTGRES_URL_NON_POOLING` outside the runtime.
 
-`scripts/apply-postgres-migrations.mjs` owns an advisory-locked SHA-256 ledger in `public.sidestream_schema_migrations`. Database-backed `--status` is authoritative for every applied/pending filename in the complete chain and fails on a tracked ledger/local checksum mismatch, but its output does not print checksum values. `--validate` and `--dry-run` are strictly local file checks: both return before env-file loading or database selection and are not Production-state evidence. A future reviewed plan needs an authenticated status implementation plus a separate authenticated read-only export of local and ledger checksums. A non-empty legacy schema requires a verified explicit `--baseline`; `scripts/verify-migration-baseline.mjs` is only the narrower known-catalog/conditional-RLS guard and does not enumerate every later hardening migration. Applying commits each pending SQL file and ledger row together. Current database-backed runner/verifier modes are blocked against Production until they authenticate the server and selected endpoint. Runtime handlers never create or alter schema. The chain ends with `20260722120000_retire_customer_360.sql`; it preserves every historical ledger entry, removes the retired read model, and creates the private telemetry identity bridge. The earlier lead migration still preserves canonical `(email, cta_source)` uniqueness and a non-unique `lead_key` lookup index.
+`scripts/apply-postgres-migrations.mjs` owns an advisory-locked SHA-256 ledger in `public.sidestream_schema_migrations`. Database-backed `--status` is authoritative for every applied/pending filename in the complete chain and fails on a tracked ledger/local checksum mismatch, but its output does not print checksum values. `--validate` and `--dry-run` are strictly local file checks: both return before env-file loading or database selection and are not Production-state evidence. A future reviewed plan needs an authenticated status implementation plus a separate authenticated read-only export of local and ledger checksums. A non-empty legacy schema requires a verified explicit `--baseline`; `scripts/verify-migration-baseline.mjs` is only the narrower known-catalog/conditional-RLS guard and does not enumerate every later hardening migration. Applying commits each pending SQL file and ledger row together. Current database-backed runner/verifier modes are blocked against Production until they authenticate the server and selected endpoint. Runtime handlers never create or alter schema. The chain ends with `20260722230000_add_activation_telemetry_link.sql`: the preceding `20260722120000_retire_customer_360.sql` preserves the historical ledger, removes the retired read model, and creates the private telemetry bridge; the final additive migration gives that bridge a private UUID and adds the nullable activation foreign key without invalidating preceding-runtime writes. The earlier lead migration still preserves canonical `(email, cta_source)` uniqueness and a non-unique `lead_key` lookup index.
 
 Key hardened environment/configuration ownership:
 
@@ -513,7 +573,8 @@ Use the narrowest relevant check after edits:
 - Run `npm run test:api` after any API, shared helper, migration, cron, or handler-contract change. Run `npm run test:postgres-integration` with a disposable `SIDESTREAM_TEST_POSTGRES_URL` after any database/concurrency change; it must never target production or a deployed Test database.
 - After changing the mobile handoff, run the focused `tests/download-leads.test.mjs` suite, then verify at a realistic phone width that the inline form replaces both platform buttons, invalid email stays local, success is announced, and lower download CTAs scroll back to the form. At desktop width, confirm the form is hidden and both direct platform downloads remain unchanged.
 - Run `node scripts/assert-no-runtime-ddl.mjs` and `node scripts/validate-vercel-contract.mjs` after API/migration/routing work. For a human Vercel build, follow `npx vercel@latest build` with `npm run verify:vercel-build`.
-- Run `node --experimental-strip-types --test tests/telemetry-identity.test.mjs` after telemetry bridge, activation identity input, or retirement-surface changes. Run `npm run test:migrations` after changing the checksummed migration chain, and use `npm run test:single-device` with a disposable `SIDESTREAM_TEST_POSTGRES_URL` after any account/device association change.
+- Run `node --experimental-strip-types --test tests/telemetry-identity.test.mjs tests/activation-security.test.mjs tests/entitlement.test.mjs` after telemetry bridge, activation reference, restore/transfer attachment, or verified Checkout attachment changes. The focused proof must cover distinct anonymous installations, private UUID references, read-only GET/OAuth boundaries, immediate verified attachment, fallback repair, cross-account immutability, and fail-open partial/missing-schema behavior. Run `npm run test:migrations` after changing the checksummed migration chain, and use `npm run test:single-device` with a disposable `SIDESTREAM_TEST_POSTGRES_URL` after any account/device association change.
+- Before any separately approved Production action, complete the safe rollout qualification in an isolated Test provider and retain real browser/Premiere evidence for anonymous start, Google-authenticated explicit claim, no-cost Test Checkout, credential completion, second-install convergence, and failure paths. Local tests, Vite, a source commit, a Vercel build, or a deployed alias alone are not that evidence.
 - Run `npm run build` after shader, TypeScript, Tailwind, HTML mount, Vite config, or package changes.
 - Run `npm run test:download-referral` after changing installer attribution or `/api/download`. It verifies that tagged `GET`s are recorded only after a successful redirect, while `HEAD`, `304`, bad platforms, fulfillment errors, database errors, and database timeouts cannot create a false successful event or block delivery.
 - After SEO/GEO metadata changes, run `npm run build`, confirm `dist/robots.txt`, `dist/sitemap.xml`, `dist/llms.txt`, and `dist/sidestream-social-card-v2.jpg` exist, validate both source and built sitemap XML, confirm the built sitemap contains a generated ISO `<lastmod>` while the source contains only the generator marker, and spot-check the built HTML for the absolute canonical URL, meta description, Open Graph/Twitter image tags, and valid JSON-LD. When replacing a social card, publish it under a new filename because X and other crawlers may retain the old image URL in cache.
@@ -563,7 +624,10 @@ Use the narrowest relevant check after edits:
 
 ## Known Gotchas
 
-- `installIdHash` is a telemetry association value, not a credential. Never use it to authorize access, select an account, prove device ownership, or infer payment. A bridge conflict must preserve the first binding and leave the product transaction independent.
+- `installIdHash` is a persistent OS-profile telemetry association, not authentication, hardware identity, a credential, or ownership proof. A reset or separate installation remains a separate anonymous row even when it uses the same device. Never use the value to authorize access, select an account, prove device/account ownership, infer payment, or silently merge installations; convergence requires an explicit verified account action for each installation.
+- The private bridge UUID and `sidestream_activation_sessions.telemetry_identity_link_id` are server-only correlation references. Of these linkage values, only the activation key crosses claim/OAuth/Checkout browser surfaces. Keep the install hash, bridge UUID, device digest, account UUID, email, payment state, and credentials out of URLs, forms, browser storage, responses, and logs.
+- Restore/transfer POST and verified Checkout perform the immediate account attachment; status, verify, and refresh are idempotent fallback repair. Telemetry conflict or unavailability must remain fail-open and cannot change the customer activation, claim, Checkout, entitlement, or device result.
+- The documented Test-first rollout order is intentionally non-executable. Do not skip directly to the additive migration or enhanced runtime, and do not treat local checks as closure for authenticated Production tooling, Stripe lifecycle, live-provider isolation, rollback artifacts, or real browser/Premiere proof.
 - The telemetry bridge intentionally ignores support code and installer receipt values. Do not add them to website requests, account pages, URLs, browser state, or the bridge table; FlowState owns their telemetry/support meaning.
 - The project root was missing a README before this restoration.
 - The page uses the local Apple/SF Pro system font stack and does not request external web fonts.
@@ -643,4 +707,5 @@ Use the narrowest relevant check after edits:
 
 ## Recent Change Log
 
+- 2026-07-22: Added the source-only activation-to-telemetry reference and verified account-linkage contract. Activation start stores a private bridge UUID when available; restore/transfer POST and fulfilled Checkout attach immediately, while status/verify/refresh remain repair paths. No provider, Vercel alias, Stripe account, CEP package, Preview, Test, or Production environment was changed.
 - 2026-07-22: Retired the Customer 360 runtime and consolidated documentation around the private telemetry-first install/device/account bridge. The source change performed no provider migration, deployment, secret deletion, Test database disposal, schema apply, or Production action; all live target inventory, migration, deployment, and real-flow proof remains separately human-gated.
