@@ -22,6 +22,10 @@ import {
   getStripeCheckoutWindow,
   verifyPaidCheckoutSession,
 } from "../api/_lib/entitlement.ts";
+import {
+  attachTelemetryIdentityAccount,
+  linkTelemetryIdentity,
+} from "../api/_lib/telemetry-identity.ts";
 
 const repositoryRoot = fileURLToPath(new URL("..", import.meta.url));
 const migrationsDirectory = join(repositoryRoot, "db", "migrations");
@@ -667,6 +671,251 @@ test("activation, claim, Checkout, and credential invariants execute against Pos
         );
       }
       assert.equal(await telemetryIdentityRow(databasePool, absentInstallIdHash), null);
+    });
+
+    await t.test("private telemetry UUID attachment is immutable and transaction-safe", async () => {
+      const directInstallIdHash = "6".repeat(64);
+      const attachInstallIdHash = "7".repeat(64);
+      const failingInstallIdHash = "8".repeat(64);
+      const deviceIdHash = privateIdentifierHash("telemetry-private-attach-device");
+      const otherDeviceIdHash = privateIdentifierHash("telemetry-private-other-device");
+      const owner = await seedAccount(databasePool, "telemetry-private-owner");
+      const otherOwner = await seedAccount(databasePool, "telemetry-private-other-owner");
+      const warnings = [];
+      const originalWarn = console.warn;
+      console.warn = (...args) => warnings.push(args);
+
+      let attachLinkId;
+      let failingLinkId;
+      try {
+        await withDatabaseTransaction(databasePool, async (client) => {
+          const created = await linkTelemetryIdentity(client, {
+            licenseNamespace: "production",
+            installIdHash: directInstallIdHash,
+            deviceIdHash,
+          });
+          assert.equal(created.outcome, "created");
+          assert.match(created.telemetryIdentityLinkId, /^[0-9a-f-]{36}$/i);
+
+          assert.deepEqual(await linkTelemetryIdentity(client, {
+            licenseNamespace: "production",
+            installIdHash: directInstallIdHash,
+            deviceIdHash,
+          }), {
+            outcome: "seen",
+            telemetryIdentityLinkId: created.telemetryIdentityLinkId,
+          });
+          assert.deepEqual(await linkTelemetryIdentity(client, {
+            licenseNamespace: "production",
+            installIdHash: directInstallIdHash,
+            deviceIdHash,
+            accountId: owner.accountId,
+          }), {
+            outcome: "linked",
+            telemetryIdentityLinkId: created.telemetryIdentityLinkId,
+          });
+
+          const attachCreated = await linkTelemetryIdentity(client, {
+            licenseNamespace: "production",
+            installIdHash: attachInstallIdHash,
+            deviceIdHash,
+          });
+          assert.equal(attachCreated.outcome, "created");
+          attachLinkId = attachCreated.telemetryIdentityLinkId;
+
+          assert.deepEqual(await attachTelemetryIdentityAccount(client, {
+            licenseNamespace: "production",
+            telemetryIdentityLinkId: attachLinkId,
+            deviceIdHash,
+            accountId: owner.accountId,
+          }), { outcome: "linked", telemetryIdentityLinkId: attachLinkId });
+          assert.deepEqual(await attachTelemetryIdentityAccount(client, {
+            licenseNamespace: "production",
+            telemetryIdentityLinkId: attachLinkId,
+            deviceIdHash,
+            accountId: owner.accountId,
+          }), { outcome: "seen", telemetryIdentityLinkId: attachLinkId });
+
+          for (const [options, conflict] of [
+            [{
+              licenseNamespace: "production",
+              telemetryIdentityLinkId: attachLinkId,
+              deviceIdHash: otherDeviceIdHash,
+              accountId: owner.accountId,
+            }, "device"],
+            [{
+              licenseNamespace: "test",
+              telemetryIdentityLinkId: attachLinkId,
+              deviceIdHash,
+              accountId: owner.accountId,
+            }, "device"],
+            [{
+              licenseNamespace: "production",
+              telemetryIdentityLinkId: attachLinkId,
+              deviceIdHash,
+              accountId: otherOwner.accountId,
+            }, "account"],
+          ]) {
+            const result = await attachTelemetryIdentityAccount(client, options);
+            assert.deepEqual(result, { outcome: "conflict", conflict });
+            assert.equal("telemetryIdentityLinkId" in result, false);
+          }
+
+          const failingCreated = await linkTelemetryIdentity(client, {
+            licenseNamespace: "production",
+            installIdHash: failingInstallIdHash,
+            deviceIdHash,
+          });
+          assert.equal(failingCreated.outcome, "created");
+          failingLinkId = failingCreated.telemetryIdentityLinkId;
+        });
+
+        assert.deepEqual(await telemetryIdentityRowById(databasePool, attachLinkId), {
+          license_namespace: "production",
+          device_id_hash: deviceIdHash,
+          account_id: owner.accountId,
+          linked: true,
+        });
+
+        await databasePool.query(
+          `update public.sidestream_telemetry_identity_links set account_id = null where id = $1`,
+          [attachLinkId],
+        );
+        await withDatabaseTransaction(databasePool, async (client) => {
+          const deletedAccountConflict = await attachTelemetryIdentityAccount(client, {
+            licenseNamespace: "production",
+            telemetryIdentityLinkId: attachLinkId,
+            deviceIdHash,
+            accountId: otherOwner.accountId,
+          });
+          assert.deepEqual(deletedAccountConflict, {
+            outcome: "conflict",
+            conflict: "account",
+          });
+          assert.equal("telemetryIdentityLinkId" in deletedAccountConflict, false);
+        });
+        assert.deepEqual(await telemetryIdentityRowById(databasePool, attachLinkId), {
+          license_namespace: "production",
+          device_id_hash: deviceIdHash,
+          account_id: null,
+          linked: true,
+        });
+
+        const failOpenActivation = await seedActivation(databasePool, {
+          label: "telemetry-attach-write-fail-open",
+          deviceId: "telemetry-private-attach-device",
+        });
+        await databasePool.query(
+          `
+            create function public.sidestream_reject_telemetry_attach_test()
+            returns trigger
+            language plpgsql
+            as $$
+            begin
+              if new.install_id_hash = repeat('8', 64) and new.account_id is not null then
+                raise exception 'simulated telemetry attachment failure';
+              end if;
+              return new;
+            end
+            $$;
+
+            create trigger sidestream_reject_telemetry_attach_test
+            before update on public.sidestream_telemetry_identity_links
+            for each row execute function public.sidestream_reject_telemetry_attach_test()
+          `,
+        );
+        try {
+          await withDatabaseTransaction(databasePool, async (client) => {
+            await client.query(
+              `update public.sidestream_activation_sessions set app_version = '1.0.15' where id = $1`,
+              [failOpenActivation.activationId],
+            );
+            assert.deepEqual(await attachTelemetryIdentityAccount(client, {
+              licenseNamespace: "production",
+              telemetryIdentityLinkId: failingLinkId,
+              deviceIdHash,
+              accountId: owner.accountId,
+            }), { outcome: "unavailable", reason: "write_failed" });
+            const surroundingWrite = await client.query(
+              `select app_version from public.sidestream_activation_sessions where id = $1`,
+              [failOpenActivation.activationId],
+            );
+            assert.equal(surroundingWrite.rows[0].app_version, "1.0.15");
+          });
+        } finally {
+          await databasePool.query(
+            `
+              drop trigger sidestream_reject_telemetry_attach_test
+                on public.sidestream_telemetry_identity_links;
+              drop function public.sidestream_reject_telemetry_attach_test()
+            `,
+          );
+        }
+        assert.equal(
+          (await telemetryIdentityRowById(databasePool, failingLinkId)).account_id,
+          null,
+        );
+        const committedWrite = await databasePool.query(
+          `select app_version from public.sidestream_activation_sessions where id = $1`,
+          [failOpenActivation.activationId],
+        );
+        assert.equal(committedWrite.rows[0].app_version, "1.0.15");
+
+        const absentSchemaActivation = await seedActivation(databasePool, {
+          label: "telemetry-attach-schema-fail-open",
+          deviceId: "telemetry-private-attach-device",
+        });
+        await databasePool.query(
+          `alter table public.sidestream_telemetry_identity_links rename to sidestream_telemetry_identity_links_absent_attach_test`,
+        );
+        try {
+          await withDatabaseTransaction(databasePool, async (client) => {
+            await client.query(
+              `update public.sidestream_activation_sessions set app_version = '1.0.16' where id = $1`,
+              [absentSchemaActivation.activationId],
+            );
+            assert.deepEqual(await attachTelemetryIdentityAccount(client, {
+              licenseNamespace: "production",
+              telemetryIdentityLinkId: attachLinkId,
+              deviceIdHash,
+              accountId: owner.accountId,
+            }), { outcome: "unavailable", reason: "schema_absent" });
+          });
+        } finally {
+          await databasePool.query(
+            `alter table public.sidestream_telemetry_identity_links_absent_attach_test rename to sidestream_telemetry_identity_links`,
+          );
+        }
+        const committedSchemaAbsentWrite = await databasePool.query(
+          `select app_version from public.sidestream_activation_sessions where id = $1`,
+          [absentSchemaActivation.activationId],
+        );
+        assert.equal(committedSchemaAbsentWrite.rows[0].app_version, "1.0.16");
+      } finally {
+        console.warn = originalWarn;
+      }
+
+      assert.deepEqual(warnings.map(([message, details]) => [message, details]), [
+        ["Telemetry identity bridge conflict", { conflict: "device" }],
+        ["Telemetry identity bridge conflict", { conflict: "device" }],
+        ["Telemetry identity bridge conflict", { conflict: "account" }],
+        ["Telemetry identity bridge conflict", { conflict: "account" }],
+        ["Telemetry identity bridge write unavailable", undefined],
+      ]);
+      assert.doesNotMatch(
+        JSON.stringify(warnings),
+        new RegExp([
+          directInstallIdHash,
+          attachInstallIdHash,
+          failingInstallIdHash,
+          deviceIdHash,
+          otherDeviceIdHash,
+          owner.accountId,
+          otherOwner.accountId,
+          attachLinkId,
+          failingLinkId,
+        ].join("|")),
+      );
     });
 
     let currentCredentials;
@@ -1517,6 +1766,34 @@ async function telemetryIdentityTimestamps(pool, installIdHash) {
     [installIdHash],
   );
   return result.rows[0];
+}
+
+async function telemetryIdentityRowById(pool, telemetryIdentityLinkId) {
+  const result = await pool.query(
+    `
+      select license_namespace, device_id_hash, account_id,
+        linked_at is not null as linked
+      from public.sidestream_telemetry_identity_links
+      where id = $1
+    `,
+    [telemetryIdentityLinkId],
+  );
+  return result.rows[0] || null;
+}
+
+async function withDatabaseTransaction(pool, callback) {
+  const client = await pool.connect();
+  try {
+    await client.query("begin");
+    const result = await callback(client);
+    await client.query("commit");
+    return result;
+  } catch (error) {
+    await client.query("rollback");
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 async function attachedCheckout(pool, activationKey) {
