@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
-import { access, readFile } from "node:fs/promises";
+import { access, readFile, readdir } from "node:fs/promises";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 import {
   linkTelemetryIdentity,
@@ -13,6 +15,7 @@ const DEVICE_A = "c".repeat(64);
 const DEVICE_B = "d".repeat(64);
 const ACCOUNT_A = "11111111-1111-4111-8111-111111111111";
 const ACCOUNT_B = "22222222-2222-4222-8222-222222222222";
+const REPOSITORY_ROOT = fileURLToPath(new URL("..", import.meta.url));
 
 test("only the optional install hash survives compatibility payload normalization", () => {
   assert.deepEqual(normalizeTelemetryIdentityInput({
@@ -163,6 +166,102 @@ test("claim URLs/forms contain no telemetry or retired Customer 360 identity fie
     (error) => error?.code === "ENOENT",
   );
 });
+
+test("retired Customer 360 runtime and browser surfaces stay absent", async () => {
+  const retiredRuntimePaths = [
+    "api/_lib/customer-360-contract.ts",
+    "api/_lib/customer-admin.ts",
+    "api/_lib/customer-commerce.ts",
+    "api/_lib/customer-identity.ts",
+    "api/_lib/customer-profiles.ts",
+    "api/_lib/customer-query.ts",
+    "api/_lib/customer-usage.ts",
+    "api/internal/customer-usage/sync.ts",
+    "api/internal/customers/index.ts",
+    "api/internal/customers/[customerId].ts",
+    "scripts/backfill-customer-360.mjs",
+    "scripts/run-customer-360-tests.mjs",
+    "scripts/verify-customer-360-backfill.mjs",
+  ];
+  for (const path of retiredRuntimePaths) {
+    await assert.rejects(
+      access(join(REPOSITORY_ROOT, path)),
+      (error) => error?.code === "ENOENT",
+      path,
+    );
+  }
+
+  const runtimeFiles = [
+    ...(await listFiles("api")).filter((path) => path.endsWith(".ts")),
+    ...(await listFiles("scripts")).filter((path) => path.endsWith(".mjs")),
+    "package.json",
+    "vercel.json",
+  ];
+  const runtimeSources = await Promise.all(runtimeFiles.map(async (path) => ({
+    path,
+    source: await readFile(join(REPOSITORY_ROOT, path), "utf8"),
+  })));
+  const retiredRuntimeReference = new RegExp([
+    "customer-(?:360-contract|admin|commerce|identity|profiles|query|usage)",
+    "internal/(?:customer-usage|customers)",
+    "sidestream_customer_(?:profiles|identity_(?:links|reviews)|installs|profile_merges|commerce|money|usage)",
+  ].join("|"), "i");
+  for (const { path, source } of runtimeSources) {
+    assert.doesNotMatch(source, retiredRuntimeReference, path);
+  }
+
+  assert.deepEqual(
+    runtimeSources
+      .filter(({ source }) => source.includes("installIdHash"))
+      .map(({ path }) => path)
+      .sort(),
+    [
+      "api/_lib/account.ts",
+      "api/_lib/telemetry-identity.ts",
+      "api/activation/start.ts",
+      "api/activation/status.ts",
+      "api/license/refresh.ts",
+      "api/license/verify.ts",
+    ],
+  );
+  assert.deepEqual(
+    runtimeSources
+      .filter(({ path }) => /identity/i.test(path))
+      .map(({ path }) => path),
+    ["api/_lib/telemetry-identity.ts"],
+  );
+
+  const browserFiles = [
+    "index.html",
+    "account.html",
+    "thank-you.html",
+    "upgrade.html",
+    "Sidestream front end 2/Sidestream.html",
+    ...(await listFiles("components")).filter((path) => /\.(?:js|jsx|ts|tsx)$/.test(path)),
+    ...(await listFiles("src")).filter((path) => /\.(?:js|jsx|ts|tsx)$/.test(path)),
+  ];
+  for (const path of browserFiles) {
+    const source = await readFile(join(REPOSITORY_ROOT, path), "utf8");
+    assert.doesNotMatch(
+      source,
+      /installIdHash|supportCode|installerReceiptIdHash|customerIdentity/i,
+      path,
+    );
+  }
+});
+
+async function listFiles(relativeDirectory) {
+  const entries = await readdir(join(REPOSITORY_ROOT, relativeDirectory), {
+    withFileTypes: true,
+  });
+  const files = [];
+  for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
+    const path = `${relativeDirectory}/${entry.name}`;
+    if (entry.isDirectory()) files.push(...await listFiles(path));
+    else if (entry.isFile()) files.push(path);
+  }
+  return files;
+}
 
 function link(client, options) {
   return linkTelemetryIdentity(client, {
