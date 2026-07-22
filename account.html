@@ -174,7 +174,10 @@
             <p class="value" id="account-plan">Checking...</p>
           </div>
           <div class="actions">
-            <a class="button primary" id="upgrade-link" href="/upgrade.html">Upgrade</a>
+            <form id="upgrade-form" method="post" action="/api/checkout/create">
+              <input type="hidden" name="intent" value="account_purchase">
+              <button class="primary" id="upgrade-button" type="submit">Upgrade</button>
+            </form>
             <button class="secondary" id="billing-button" type="button">Open Stripe portal</button>
           </div>
         </div>
@@ -207,7 +210,8 @@
     const signInLink = document.getElementById("sign-in-link");
     const accountEmail = document.getElementById("account-email");
     const accountPlan = document.getElementById("account-plan");
-    const upgradeLink = document.getElementById("upgrade-link");
+    const upgradeForm = document.getElementById("upgrade-form");
+    const upgradeButton = document.getElementById("upgrade-button");
     const billingButton = document.getElementById("billing-button");
     const purchaseRow = document.getElementById("purchase-row");
     const receiptButton = document.getElementById("receipt-button");
@@ -258,10 +262,15 @@
       accountPlan.textContent = describePlan(session.license);
       const hasActiveLicense = Boolean(session.license && session.license.active);
       accountPlan.classList.toggle("status", hasActiveLicense);
-      upgradeLink.hidden = hasActiveLicense;
+      upgradeForm.hidden = hasActiveLicense;
       billingButton.hidden = !session.billing.hasCustomer;
       purchaseRow.hidden = !session.billing.hasCustomer;
     }
+
+    upgradeForm.addEventListener("submit", () => {
+      upgradeButton.disabled = true;
+      upgradeButton.textContent = "Opening Stripe...";
+    });
 
     billingButton.addEventListener("click", async () => {
       billingButton.disabled = true;

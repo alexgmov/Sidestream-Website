@@ -1179,9 +1179,14 @@ export async function createOrReuseCheckoutSession(options: {
       const stripeCustomerId = row.intent_kind === "account" && options.session
         ? await findOrCreateStripeCustomer(options.session, client)
         : "";
-      const cancelUrl = new URL("/api/checkout/start", options.baseUrl);
+      const cancelUrl = new URL(
+        row.intent_kind === "account" ? "/account.html" : "/api/checkout/start",
+        options.baseUrl,
+      );
       cancelUrl.searchParams.set("checkout", "cancelled");
-      cancelUrl.searchParams.set("intent", options.browserToken);
+      if (row.intent_kind !== "account") {
+        cancelUrl.searchParams.set("intent", options.browserToken);
+      }
       const metadata: Record<string, string> = {
         sidestream_plan: SIDESTREAM_PRO_PLAN_KEY,
         sidestream_price_id: stripePriceId,

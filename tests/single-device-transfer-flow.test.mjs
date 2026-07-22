@@ -138,7 +138,8 @@ test("activation purchase requires a signed intent POST before the locked worker
   assert.ok(legacyRedirect >= 0 && intentValidation > legacyRedirect);
   assert.ok(sessionRead > intentValidation && activeOwner > sessionRead);
   assert.ok(rateLimit > activeOwner && lockedWorker > rateLimit);
-  assert.match(create, /cleanString\(payload\.intent, 32\) !== "purchase"/);
+  assert.match(create, /const purchaseIntent = cleanString\(payload\.intent, 32\)/);
+  assert.match(create, /purchaseIntent !== "purchase"/);
   assert.match(create, /No caller-controlled[\s\S]+activation tuple reaches Stripe/);
   assert.doesNotMatch(create, /getStripe\(\)/);
   assert.doesNotMatch(create, /stripe\.checkout\.sessions\.create/);
