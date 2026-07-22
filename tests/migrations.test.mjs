@@ -41,6 +41,8 @@ const CUSTOMER_360_MIGRATION_CHECKSUMS = new Map([
 ]);
 
 const CUSTOMER_360_RETIREMENT_MIGRATION = "20260722120000_retire_customer_360.sql";
+const ACTIVATION_TELEMETRY_LINK_MIGRATION =
+  "20260722230000_add_activation_telemetry_link.sql";
 
 function knownBaselineSnapshot(rowSecurityEnabled = false) {
   return {
@@ -61,7 +63,7 @@ function knownBaselineSnapshot(rowSecurityEnabled = false) {
 
 test("migration files are ordered, checksummed, and append-only baseline files are pinned", async () => {
   const migrations = validateMigrationFiles(await loadMigrationFiles());
-  assert.equal(migrations.length, 24);
+  assert.equal(migrations.length, 25);
   assert.deepEqual(
     migrations.map((migration) => migration.filename),
     [...migrations.map((migration) => migration.filename)].sort(),
@@ -85,6 +87,7 @@ test("migration files are ordered, checksummed, and append-only baseline files a
     "20260715123000_add_customer_usage_aggregates.sql",
     "20260715124000_add_customer_360_read_model.sql",
     CUSTOMER_360_RETIREMENT_MIGRATION,
+    ACTIVATION_TELEMETRY_LINK_MIGRATION,
   ]) {
     assert.ok(migrations.some((migration) => migration.filename === filename));
   }
@@ -94,7 +97,8 @@ test("migration files are ordered, checksummed, and append-only baseline files a
       checksum,
     );
   }
-  assert.equal(migrations.at(-1)?.filename, CUSTOMER_360_RETIREMENT_MIGRATION);
+  assert.equal(migrations.at(-2)?.filename, CUSTOMER_360_RETIREMENT_MIGRATION);
+  assert.equal(migrations.at(-1)?.filename, ACTIVATION_TELEMETRY_LINK_MIGRATION);
 });
 
 test("Customer 360 retirement leaves one private telemetry identity bridge", async () => {
@@ -225,6 +229,43 @@ test("Customer 360 retirement leaves one private telemetry identity bridge", asy
       new RegExp(`drop table(?: if exists)? public\\.${protectedTable}\\b`, "i"),
     );
   }
+});
+
+test("activation telemetry reference preserves the anonymous bridge key and privacy boundary", async () => {
+  const migration = await readFile(new URL(
+    `../db/migrations/${ACTIVATION_TELEMETRY_LINK_MIGRATION}`,
+    import.meta.url,
+  ), "utf8");
+
+  assert.match(
+    migration,
+    /alter table public\.sidestream_telemetry_identity_links[\s\S]*add column id uuid not null default gen_random_uuid\(\)/,
+  );
+  assert.match(
+    migration,
+    /add constraint sidestream_telemetry_identity_links_id_unique unique \(id\)/,
+  );
+  assert.match(
+    migration,
+    /alter table public\.sidestream_activation_sessions[\s\S]*add column telemetry_identity_link_id uuid/,
+  );
+  assert.match(
+    migration,
+    /foreign key \(telemetry_identity_link_id\)[\s\S]*references public\.sidestream_telemetry_identity_links \(id\)[\s\S]*on delete set null/,
+  );
+  assert.match(
+    migration,
+    /create index sidestream_activation_sessions_telemetry_identity_link_idx[\s\S]*on public\.sidestream_activation_sessions \(telemetry_identity_link_id\)/,
+  );
+  assert.doesNotMatch(migration, /primary key/i);
+  assert.doesNotMatch(
+    migration,
+    /email|stripe|payment|behavior(?:al)?|payload|support_code|installer_receipt/i,
+  );
+  assert.doesNotMatch(
+    migration,
+    /create table|materialized view|create trigger|disable row level security|\bgrant\b|\bcascade\b|\bdrop\b/i,
+  );
 });
 
 test("Customer query migration exposes only compact live read models", async () => {
