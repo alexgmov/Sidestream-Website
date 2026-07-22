@@ -1778,6 +1778,9 @@
       if (utmSource === "reddit" && utmMedium === "social" && utmCampaign === "1") {
         source = "reddit-1";
       }
+      if (utmSource === "reddit" && utmMedium === "social" && utmCampaign === "2") {
+        source = "reddit-2";
+      }
       if (!source) return;
 
       fetch("/api/referral-visit", {

@@ -25,6 +25,16 @@
   ],
   "redirects": [
     {
+      "source": "/reddit/2",
+      "destination": "https://sidestream.tv/?utm_source=reddit&utm_medium=social&utm_campaign=2",
+      "permanent": false
+    },
+    {
+      "source": "/reddit/2/",
+      "destination": "https://sidestream.tv/?utm_source=reddit&utm_medium=social&utm_campaign=2",
+      "permanent": false
+    },
+    {
       "source": "/reddit/1",
       "destination": "https://sidestream.tv/?utm_source=reddit&utm_medium=social&utm_campaign=1",
       "permanent": false

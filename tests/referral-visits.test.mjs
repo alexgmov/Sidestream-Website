@@ -132,6 +132,10 @@ test("daily visitor hashes are deterministic, source scoped, and rotate by day",
     now: new Date("2026-07-21T12:00:00.000Z"),
     secret: "secret-a",
   });
+  const redditTwo = buildReferralVisitEvent(request, "reddit-2", {
+    now: new Date("2026-07-21T12:00:00.000Z"),
+    secret: "secret-a",
+  });
 
   assert.equal(first.visitorHash, repeat.visitorHash);
   assert.notEqual(first.visitorHash, nextDay.visitorHash);
@@ -139,11 +143,13 @@ test("daily visitor hashes are deterministic, source scoped, and rotate by day",
   assert.notEqual(instagramBio.visitorHash, alexInstagram.visitorHash);
   assert.notEqual(alexInstagram.visitorHash, metaAdsOne.visitorHash);
   assert.notEqual(metaAdsOne.visitorHash, redditOne.visitorHash);
+  assert.notEqual(redditOne.visitorHash, redditTwo.visitorHash);
   assert.equal(parseReferralVisitSource(" ManyChat "), "manychat");
   assert.equal(parseReferralVisitSource(" Instagram-Bio "), "instagram-bio");
   assert.equal(parseReferralVisitSource(" Instagram-Alex "), "instagram-alex");
   assert.equal(parseReferralVisitSource(" Meta-Ads-1 "), "meta-ads-1");
   assert.equal(parseReferralVisitSource(" Reddit-1 "), "reddit-1");
+  assert.equal(parseReferralVisitSource(" Reddit-2 "), "reddit-2");
   assert.equal(parseReferralVisitSource("gmail"), null);
 });
 
@@ -231,10 +237,21 @@ test("landing page and Vercel config preserve short tracking routes", () => {
     redirect.destination === "https://sidestream.tv/?utm_source=reddit&utm_medium=social&utm_campaign=1" &&
     redirect.permanent === false
   ));
+  assert.ok(vercel.redirects.some((redirect) =>
+    redirect.source === "/reddit/2" &&
+    redirect.destination === "https://sidestream.tv/?utm_source=reddit&utm_medium=social&utm_campaign=2" &&
+    redirect.permanent === false
+  ));
+  assert.ok(vercel.redirects.some((redirect) =>
+    redirect.source === "/reddit/2/" &&
+    redirect.destination === "https://sidestream.tv/?utm_source=reddit&utm_medium=social&utm_campaign=2" &&
+    redirect.permanent === false
+  ));
   assert.match(html, /instagram-bio/);
   assert.match(html, /instagram-alex/);
   assert.match(html, /meta-ads-1/);
   assert.match(html, /reddit-1/);
+  assert.match(html, /reddit-2/);
 });
 
 function fakeRequest(headers = {}) {
