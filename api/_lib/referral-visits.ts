@@ -13,7 +13,8 @@ const HASH_SECRET_ENV = "SIDESTREAM_INSTALLER_ANALYTICS_HASH_SECRET";
 export type ReferralVisitSource =
   | "manychat"
   | "instagram-bio"
-  | "instagram-alex";
+  | "instagram-alex"
+  | "meta-ads-1";
 
 export type ReferralVisitEvent = Readonly<{
   source: ReferralVisitSource;
@@ -27,7 +28,8 @@ export function parseReferralVisitSource(value: unknown): ReferralVisitSource | 
   const source = value.trim().toLowerCase();
   return source === "manychat" ||
     source === "instagram-bio" ||
-    source === "instagram-alex"
+    source === "instagram-alex" ||
+    source === "meta-ads-1"
     ? source
     : null;
 }

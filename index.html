@@ -1772,6 +1772,9 @@
         if (utmCampaign === "bio") source = "instagram-bio";
         if (utmCampaign === "alex-bio") source = "instagram-alex";
       }
+      if (utmSource === "meta" && utmMedium === "paid_social" && utmCampaign === "1") {
+        source = "meta-ads-1";
+      }
       if (!source) return;
 
       fetch("/api/referral-visit", {
