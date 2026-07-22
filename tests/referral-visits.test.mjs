@@ -120,12 +120,18 @@ test("daily visitor hashes are deterministic, source scoped, and rotate by day",
     now: new Date("2026-07-21T12:00:00.000Z"),
     secret: "secret-a",
   });
+  const alexInstagram = buildReferralVisitEvent(request, "instagram-alex", {
+    now: new Date("2026-07-21T12:00:00.000Z"),
+    secret: "secret-a",
+  });
 
   assert.equal(first.visitorHash, repeat.visitorHash);
   assert.notEqual(first.visitorHash, nextDay.visitorHash);
   assert.notEqual(first.visitorHash, instagramBio.visitorHash);
+  assert.notEqual(instagramBio.visitorHash, alexInstagram.visitorHash);
   assert.equal(parseReferralVisitSource(" ManyChat "), "manychat");
   assert.equal(parseReferralVisitSource(" Instagram-Bio "), "instagram-bio");
+  assert.equal(parseReferralVisitSource(" Instagram-Alex "), "instagram-alex");
   assert.equal(parseReferralVisitSource("gmail"), null);
 });
 
@@ -158,7 +164,7 @@ test("referral report counts unique daily humans and scanners without exposing h
   });
 });
 
-test("landing page and Vercel config preserve both short tracking routes", () => {
+test("landing page and Vercel config preserve all short tracking routes", () => {
   const html = readFileSync(path.join(repoRoot, "index.html"), "utf8");
   const vercel = JSON.parse(readFileSync(path.join(repoRoot, "vercel.json"), "utf8"));
   assert.match(html, /fetch\("\/api\/referral-visit"/);
@@ -173,7 +179,13 @@ test("landing page and Vercel config preserve both short tracking routes", () =>
     redirect.destination === "https://sidestream.tv/?utm_source=instagram&utm_medium=social&utm_campaign=bio" &&
     redirect.permanent === false
   ));
+  assert.ok(vercel.redirects.some((redirect) =>
+    redirect.source === "/alex" &&
+    redirect.destination === "https://sidestream.tv/?utm_source=instagram&utm_medium=social&utm_campaign=alex-bio" &&
+    redirect.permanent === false
+  ));
   assert.match(html, /instagram-bio/);
+  assert.match(html, /instagram-alex/);
 });
 
 function fakeRequest(headers = {}) {

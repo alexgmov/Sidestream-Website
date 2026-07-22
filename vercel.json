@@ -25,6 +25,11 @@
   ],
   "redirects": [
     {
+      "source": "/alex",
+      "destination": "https://sidestream.tv/?utm_source=instagram&utm_medium=social&utm_campaign=alex-bio",
+      "permanent": false
+    },
+    {
       "source": "/ig",
       "destination": "https://sidestream.tv/?utm_source=instagram&utm_medium=social&utm_campaign=bio",
       "permanent": false

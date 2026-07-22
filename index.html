@@ -1766,11 +1766,12 @@
       const utmSource = params.get("utm_source")?.trim().toLowerCase();
       const utmMedium = params.get("utm_medium")?.trim().toLowerCase();
       const utmCampaign = params.get("utm_campaign")?.trim().toLowerCase();
-      const source = utmSource === "manychat"
-        ? "manychat"
-        : utmSource === "instagram" && utmMedium === "social" && utmCampaign === "bio"
-          ? "instagram-bio"
-          : null;
+      let source = null;
+      if (utmSource === "manychat") source = "manychat";
+      if (utmSource === "instagram" && utmMedium === "social") {
+        if (utmCampaign === "bio") source = "instagram-bio";
+        if (utmCampaign === "alex-bio") source = "instagram-alex";
+      }
       if (!source) return;
 
       fetch("/api/referral-visit", {
