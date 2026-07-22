@@ -401,3 +401,22 @@ test("shipped v1.0.14 Upgrade claims rewrite directly to Checkout", () => {
   ));
   assert.equal(post.headers.get("x-middleware-next"), "1");
 });
+
+test("older unmarked shipped Upgrade claims redirect before account authentication", async () => {
+  const claim = await readFile(new URL("../api/activation/claim.ts", import.meta.url), "utf8");
+  const pendingUpgrade = claim.indexOf(
+    "await isPendingShippedPanelUpgrade(activationKey)",
+  );
+  const checkoutRedirect = claim.indexOf(
+    'new URL("/api/checkout/start", baseUrl)',
+    pendingUpgrade,
+  );
+  const accountAuthentication = claim.indexOf(
+    "const session = await getSession(request)",
+    pendingUpgrade,
+  );
+
+  assert.ok(pendingUpgrade >= 0);
+  assert.ok(checkoutRedirect > pendingUpgrade);
+  assert.ok(accountAuthentication > checkoutRedirect);
+});
