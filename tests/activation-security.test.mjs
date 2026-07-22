@@ -26,6 +26,9 @@ import {
 const repositoryRoot = fileURLToPath(new URL("..", import.meta.url));
 const migrationsDirectory = join(repositoryRoot, "db", "migrations");
 const accountSourcePath = join(repositoryRoot, "api", "_lib", "account.ts");
+const CUSTOMER_360_RETIREMENT_MIGRATION = "20260722120000_retire_customer_360.sql";
+const ACTIVATION_TELEMETRY_LINK_MIGRATION =
+  "20260722230000_add_activation_telemetry_link.sql";
 const TEST_SECRET = "activation-security-test-secret-with-32-bytes";
 const CONTROLLED_ENVIRONMENT = [
   "SIDESTREAM_POSTGRES_URL",
@@ -966,11 +969,275 @@ async function applyMigrations(pool) {
   const migrations = (await readdir(migrationsDirectory))
     .filter((name) => name.endsWith(".sql"))
     .sort();
-  for (const migration of migrations) {
-    await pool.query(await readFile(join(migrationsDirectory, migration), "utf8"));
+  const telemetryLinkMigrationIndex = migrations.indexOf(ACTIVATION_TELEMETRY_LINK_MIGRATION);
+  assert.equal(
+    migrations[telemetryLinkMigrationIndex - 1],
+    CUSTOMER_360_RETIREMENT_MIGRATION,
+  );
+
+  await pool.query("create role anon nologin");
+  await pool.query("create role authenticated nologin");
+
+  for (const [index, migration] of migrations.entries()) {
+    const sql = await readFile(join(migrationsDirectory, migration), "utf8");
+    if (index === telemetryLinkMigrationIndex) {
+      await verifyActivationTelemetryLinkMigration(pool, sql);
+    } else {
+      await pool.query(sql);
+    }
   }
   assert.ok(
     migrations.includes("20260713201000_enforce_activation_credential_invariants.sql"),
+  );
+  assert.equal(migrations.at(-1), ACTIVATION_TELEMETRY_LINK_MIGRATION);
+}
+
+async function verifyActivationTelemetryLinkMigration(pool, migrationSql) {
+  const existingInstallHashes = ["a".repeat(64), "b".repeat(64)];
+  for (const [index, installIdHash] of existingInstallHashes.entries()) {
+    await pool.query(
+      `
+        insert into public.sidestream_telemetry_identity_links (
+          license_namespace, install_id_hash, device_id_hash,
+          first_seen_at, last_seen_at
+        ) values ('production', $1, $2, now(), now())
+      `,
+      [installIdHash, String(index + 1).repeat(64)],
+    );
+  }
+  await insertActivationWithPrecedingRuntimeShape(
+    pool,
+    "activation-existing-before-telemetry-reference",
+  );
+
+  await pool.query(migrationSql);
+
+  const backfill = await pool.query(
+    `
+      select id, install_id_hash
+      from public.sidestream_telemetry_identity_links
+      where install_id_hash = any($1::text[])
+      order by install_id_hash
+    `,
+    [existingInstallHashes],
+  );
+  assert.equal(backfill.rowCount, 2);
+  assert.equal(new Set(backfill.rows.map((row) => row.id)).size, 2);
+  assert.ok(backfill.rows.every((row) => /^[0-9a-f-]{36}$/i.test(row.id)));
+
+  const columns = await pool.query(
+    `
+      select table_name, column_name, is_nullable, column_default
+      from information_schema.columns
+      where table_schema = 'public'
+        and (
+          (table_name = 'sidestream_telemetry_identity_links' and column_name = 'id')
+          or (
+            table_name = 'sidestream_activation_sessions'
+            and column_name = 'telemetry_identity_link_id'
+          )
+        )
+      order by table_name, column_name
+    `,
+  );
+  assert.deepEqual(columns.rows, [
+    {
+      table_name: "sidestream_activation_sessions",
+      column_name: "telemetry_identity_link_id",
+      is_nullable: "YES",
+      column_default: null,
+    },
+    {
+      table_name: "sidestream_telemetry_identity_links",
+      column_name: "id",
+      is_nullable: "NO",
+      column_default: "gen_random_uuid()",
+    },
+  ]);
+
+  const constraints = await pool.query(
+    `
+      select conname, contype, pg_get_constraintdef(oid) as definition
+      from pg_constraint
+      where conrelid in (
+        'public.sidestream_telemetry_identity_links'::regclass,
+        'public.sidestream_activation_sessions'::regclass
+      )
+        and conname in (
+          'sidestream_telemetry_identity_links_pkey',
+          'sidestream_telemetry_identity_links_id_unique',
+          'sidestream_activation_sessions_telemetry_identity_link_fk'
+        )
+      order by conname
+    `,
+  );
+  assert.deepEqual(
+    constraints.rows.map((row) => [row.conname, row.contype, row.definition]),
+    [
+      [
+        "sidestream_activation_sessions_telemetry_identity_link_fk",
+        "f",
+        "FOREIGN KEY (telemetry_identity_link_id) REFERENCES sidestream_telemetry_identity_links(id) ON DELETE SET NULL",
+      ],
+      [
+        "sidestream_telemetry_identity_links_id_unique",
+        "u",
+        "UNIQUE (id)",
+      ],
+      [
+        "sidestream_telemetry_identity_links_pkey",
+        "p",
+        "PRIMARY KEY (license_namespace, install_id_hash)",
+      ],
+    ],
+  );
+
+  const referenceIndex = await pool.query(
+    `
+      select indexdef
+      from pg_indexes
+      where schemaname = 'public'
+        and indexname = 'sidestream_activation_sessions_telemetry_identity_link_idx'
+    `,
+  );
+  assert.equal(referenceIndex.rowCount, 1);
+  assert.match(referenceIndex.rows[0].indexdef, /\(telemetry_identity_link_id\)$/);
+
+  const rowSecurity = await pool.query(
+    `
+      select relname, relrowsecurity
+      from pg_class
+      where oid in (
+        'public.sidestream_telemetry_identity_links'::regclass,
+        'public.sidestream_activation_sessions'::regclass
+      )
+      order by relname
+    `,
+  );
+  assert.deepEqual(rowSecurity.rows, [
+    { relname: "sidestream_activation_sessions", relrowsecurity: true },
+    { relname: "sidestream_telemetry_identity_links", relrowsecurity: true },
+  ]);
+
+  const directPrivileges = await pool.query(
+    `
+      select role_name, table_name, privilege_type,
+        has_table_privilege(
+          role_name,
+          format('public.%I', table_name),
+          privilege_type
+        ) as allowed
+      from (values ('anon'), ('authenticated')) as roles(role_name)
+      cross join (
+        values
+          ('sidestream_activation_sessions'),
+          ('sidestream_telemetry_identity_links')
+      ) as tables(table_name)
+      cross join (values ('SELECT'), ('INSERT'), ('UPDATE'), ('DELETE'))
+        as privileges(privilege_type)
+    `,
+  );
+  assert.ok(directPrivileges.rows.every((row) => row.allowed === false));
+
+  await assert.rejects(
+    pool.query(
+      `update public.sidestream_telemetry_identity_links set id = null where install_id_hash = $1`,
+      [existingInstallHashes[0]],
+    ),
+    (error) => error.code === "23502",
+  );
+  await assert.rejects(
+    pool.query(
+      `update public.sidestream_telemetry_identity_links set id = $1 where install_id_hash = $2`,
+      [backfill.rows[0].id, existingInstallHashes[1]],
+    ),
+    (error) => error.code === "23505",
+  );
+  await assert.rejects(
+    pool.query(
+      `
+        update public.sidestream_activation_sessions
+        set telemetry_identity_link_id = $1
+        where activation_key = 'activation-existing-before-telemetry-reference'
+      `,
+      [randomUUID()],
+    ),
+    (error) => error.code === "23503",
+  );
+
+  const precedingRuntimeInstallHash = "c".repeat(64);
+  const precedingRuntimeBridge = await pool.query(
+    `
+      insert into public.sidestream_telemetry_identity_links (
+        license_namespace, install_id_hash, device_id_hash, account_id,
+        first_seen_at, last_seen_at, linked_at
+      ) values ('production', $1, $2, null, now(), now(), null)
+      returning id
+    `,
+    [precedingRuntimeInstallHash, "3".repeat(64)],
+  );
+  assert.match(precedingRuntimeBridge.rows[0].id, /^[0-9a-f-]{36}$/i);
+  await assert.rejects(
+    pool.query(
+      `
+        insert into public.sidestream_telemetry_identity_links (
+          license_namespace, install_id_hash, device_id_hash,
+          first_seen_at, last_seen_at
+        ) values ('production', $1, $2, now(), now())
+      `,
+      [precedingRuntimeInstallHash, "4".repeat(64)],
+    ),
+    (error) => error.code === "23505",
+  );
+
+  const precedingRuntimeActivationKey =
+    "activation-created-after-telemetry-reference-by-preceding-runtime";
+  await insertActivationWithPrecedingRuntimeShape(pool, precedingRuntimeActivationKey);
+  const oldWrite = await pool.query(
+    `
+      select telemetry_identity_link_id
+      from public.sidestream_activation_sessions
+      where activation_key = $1
+    `,
+    [precedingRuntimeActivationKey],
+  );
+  assert.equal(oldWrite.rows[0].telemetry_identity_link_id, null);
+
+  await pool.query(
+    `
+      update public.sidestream_activation_sessions
+      set telemetry_identity_link_id = $2
+      where activation_key = $1
+    `,
+    [precedingRuntimeActivationKey, precedingRuntimeBridge.rows[0].id],
+  );
+  await pool.query(
+    `delete from public.sidestream_telemetry_identity_links where id = $1`,
+    [precedingRuntimeBridge.rows[0].id],
+  );
+  const detached = await pool.query(
+    `
+      select telemetry_identity_link_id
+      from public.sidestream_activation_sessions
+      where activation_key = $1
+    `,
+    [precedingRuntimeActivationKey],
+  );
+  assert.equal(detached.rows[0].telemetry_identity_link_id, null);
+}
+
+async function insertActivationWithPrecedingRuntimeShape(pool, activationKey) {
+  await pool.query(
+    `
+      insert into public.sidestream_activation_sessions (
+        activation_key, device_id_hash, app_version, build_channel,
+        source, status, expires_at
+      ) values (
+        $1, $2, '1.0.14', 'stable', 'preceding-runtime', 'pending',
+        now() + interval '1 day'
+      )
+    `,
+    [activationKey, "f".repeat(64)],
   );
 }
 
