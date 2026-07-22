@@ -45,12 +45,6 @@ type ActivationDecisionContext = {
   latestDeviceIdHash: string;
 };
 
-type CustomerIdentityFields = {
-  installIdHash?: string;
-  supportCode?: string;
-  installerReceiptIdHash?: string;
-};
-
 export default async function handler(
   request: AccountRequest,
   response: ServerResponse,
@@ -65,21 +59,10 @@ export default async function handler(
     const requestUrl = new URL(request.url || "/api/activation/claim", baseUrl);
     const activationKey = cleanString(requestUrl.searchParams.get("activation"), 160);
     if (!activationKey) return sendJson(response, 400, { error: "Missing activation key" });
-    const identity = readCustomerIdentityFields({
-      installIdHash: requestUrl.searchParams.get("installIdHash"),
-      supportCode: requestUrl.searchParams.get("supportCode"),
-      installerReceiptIdHash: requestUrl.searchParams.get("installerReceiptIdHash"),
-    });
-    if (!identity) {
-      return sendJson(response, 400, {
-        error: "Invalid customer identity",
-        code: "invalid_customer_identity",
-      });
-    }
 
     const session = await getSession(request);
     if (!session) {
-      const nextPath = activationClaimPath(activationKey, identity);
+      const nextPath = activationClaimPath(activationKey);
       const signIn = new URL("/api/auth/google/start", baseUrl);
       signIn.searchParams.set("next", nextPath);
       return redirect(response, signIn.toString(), 302);
@@ -139,7 +122,6 @@ export default async function handler(
         activeDevice: activation.activeDevice,
         transferLimit: transferLimit.limit,
         remainingTransfers: transferLimit.remainingTransfers,
-        identity,
       }));
     }
 
@@ -149,7 +131,6 @@ export default async function handler(
       email: session.email,
       appVersion: activation.appVersion,
       sameDevice: decision.decision === "same_device",
-      identity,
     }));
   }
 
@@ -167,17 +148,6 @@ export default async function handler(
     return sendJson(response, 400, {
       error: "Invalid restore confirmation",
       code: "invalid_intent",
-    });
-  }
-  const identity = readCustomerIdentityFields({
-    installIdHash: form.get("installIdHash"),
-    supportCode: form.get("supportCode"),
-    installerReceiptIdHash: form.get("installerReceiptIdHash"),
-  });
-  if (!identity) {
-    return sendJson(response, 400, {
-      error: "Invalid customer identity",
-      code: "invalid_customer_identity",
     });
   }
   if (!validateActivationPost(request, activationKey, session.accountId, csrfToken)) {
@@ -247,7 +217,6 @@ export default async function handler(
 
     const claimed = await claimActivationToAccount(activationKey, session.accountId, {
       environment,
-      identity,
     });
     if (!claimed.claimed) {
       return sendJson(response, 409, {
@@ -285,7 +254,6 @@ export default async function handler(
   }
   const claimed = await claimActivationToAccount(activationKey, session.accountId, {
     environment,
-    identity,
   });
   if (!claimed.claimed) {
     return sendJson(response, 409, {
@@ -526,7 +494,6 @@ function reconnectPage(options: {
   email: string;
   appVersion: string;
   sameDevice: boolean;
-  identity: CustomerIdentityFields;
 }) {
   return decisionPage({
     title: options.sameDevice
@@ -543,7 +510,6 @@ function reconnectPage(options: {
       csrfToken: options.csrfToken,
       intent: "restore",
       label: options.sameDevice ? "Reconnect this device" : "Connect this device",
-      identity: options.identity,
     }),
   });
 }
@@ -556,7 +522,6 @@ function transferPage(options: {
   activeDevice: NonNullable<ActivationDecisionContext["activeDevice"]>;
   transferLimit: number;
   remainingTransfers: number;
-  identity: CustomerIdentityFields;
 }) {
   const device = formatActiveDevice(options.activeDevice);
   return decisionPage({
@@ -565,7 +530,7 @@ function transferPage(options: {
     email: options.email,
     appVersion: options.appVersion,
     detail: `${device}. ${options.remainingTransfers} of ${options.transferLimit} device moves remain in the current rolling 30-day window.`,
-    action: `<form method="post" action="/api/activation/claim"><input type="hidden" name="activation" value="${escapeHtml(options.activationKey)}"><input type="hidden" name="csrf" value="${escapeHtml(options.csrfToken)}"><input type="hidden" name="intent" value="transfer">${customerIdentityHiddenInputs(options.identity)}<label class="confirm"><input type="checkbox" name="transfer_confirmation" value="deactivate_previous_device" required><span>I understand the previous device will be deactivated.</span></label><button type="submit">Move Sidestream Pro here</button></form>`,
+    action: `<form method="post" action="/api/activation/claim"><input type="hidden" name="activation" value="${escapeHtml(options.activationKey)}"><input type="hidden" name="csrf" value="${escapeHtml(options.csrfToken)}"><input type="hidden" name="intent" value="transfer"><label class="confirm"><input type="checkbox" name="transfer_confirmation" value="deactivate_previous_device" required><span>I understand the previous device will be deactivated.</span></label><button type="submit">Move Sidestream Pro here</button></form>`,
   });
 }
 
@@ -584,52 +549,13 @@ function claimForm(options: {
   csrfToken: string;
   intent: "restore";
   label: string;
-  identity: CustomerIdentityFields;
 }) {
-  return `<form method="post" action="/api/activation/claim"><input type="hidden" name="activation" value="${escapeHtml(options.activationKey)}"><input type="hidden" name="csrf" value="${escapeHtml(options.csrfToken)}"><input type="hidden" name="intent" value="${options.intent}">${customerIdentityHiddenInputs(options.identity)}<button type="submit">${escapeHtml(options.label)}</button></form>`;
+  return `<form method="post" action="/api/activation/claim"><input type="hidden" name="activation" value="${escapeHtml(options.activationKey)}"><input type="hidden" name="csrf" value="${escapeHtml(options.csrfToken)}"><input type="hidden" name="intent" value="${options.intent}"><button type="submit">${escapeHtml(options.label)}</button></form>`;
 }
 
-function activationClaimPath(
-  activationKey: string,
-  identity: CustomerIdentityFields,
-) {
+function activationClaimPath(activationKey: string) {
   const params = new URLSearchParams({ activation: activationKey });
-  for (const [key, value] of Object.entries(identity)) {
-    if (value) params.set(key, value);
-  }
   return `/api/activation/claim?${params.toString()}`;
-}
-
-function customerIdentityHiddenInputs(identity: CustomerIdentityFields) {
-  return Object.entries(identity)
-    .filter((entry): entry is [string, string] => Boolean(entry[1]))
-    .map(([name, value]) =>
-      `<input type="hidden" name="${name}" value="${escapeHtml(value)}">`
-    )
-    .join("");
-}
-
-function readCustomerIdentityFields(values: Record<string, unknown>) {
-  const installIdHash = readOptionalIdentity(values.installIdHash, /^[0-9a-f]{64}$/);
-  const supportCode = readOptionalIdentity(
-    values.supportCode,
-    /^SIDE-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}$/,
-  );
-  const installerReceiptIdHash = readOptionalIdentity(
-    values.installerReceiptIdHash,
-    /^[0-9a-f]{64}$/,
-  );
-  if ([installIdHash, supportCode, installerReceiptIdHash].includes(null)) return null;
-  return {
-    ...(installIdHash ? { installIdHash } : {}),
-    ...(supportCode ? { supportCode } : {}),
-    ...(installerReceiptIdHash ? { installerReceiptIdHash } : {}),
-  };
-}
-
-function readOptionalIdentity(value: unknown, pattern: RegExp): string | null | undefined {
-  if (value === undefined || value === null || value === "") return undefined;
-  return typeof value === "string" && pattern.test(value) ? value : null;
 }
 
 function decisionPage(options: {

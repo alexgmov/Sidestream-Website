@@ -131,10 +131,16 @@ test("activation, claim, Checkout, and credential invariants execute against Pos
         label: "claim-get",
         deviceId: "claim-get-device",
       });
+      const privateInstallHash = "9".repeat(64);
+      const claimUrl =
+        `/api/activation/claim?activation=${activation.activationKey}` +
+        `&installIdHash=${privateInstallHash}` +
+        "&supportCode=SIDE-ABCD-EFGH-IJKL" +
+        `&installerReceiptIdHash=${"8".repeat(64)}`;
 
       const anonymous = await invokeHandler(claimHandler, {
         method: "GET",
-        url: `/api/activation/claim?activation=${activation.activationKey}`,
+        url: claimUrl,
         headers: requestHeaders(),
       });
       assert.equal(anonymous.statusCode, 302);
@@ -146,16 +152,24 @@ test("activation, claim, Checkout, and credential invariants execute against Pos
         decodeURIComponent(anonymous.headers.location),
         /\/api\/activation\/claim\?activation=activation-claim-get/,
       );
+      assert.doesNotMatch(
+        decodeURIComponent(anonymous.headers.location),
+        /installIdHash|supportCode|installerReceiptIdHash|9999999999/,
+      );
 
       const signedIn = await invokeHandler(claimHandler, {
         method: "GET",
-        url: `/api/activation/claim?activation=${activation.activationKey}`,
+        url: claimUrl,
         headers: requestHeaders({ cookie: sessionCookie(owner) }),
       });
       assert.equal(signedIn.statusCode, 200);
       assert.equal(signedIn.headers["cache-control"], "no-store");
       assert.match(signedIn.body, /Connect Sidestream Pro to this device/);
       assert.match(signedIn.body, /name="csrf"/);
+      assert.doesNotMatch(
+        signedIn.body,
+        /installIdHash|supportCode|installerReceiptIdHash|9999999999/,
+      );
 
       const afterGets = await activationState(databasePool, activation.activationKey);
       assert.deepEqual(afterGets, { account_id: null, status: "pending" });
@@ -477,6 +491,179 @@ test("activation, claim, Checkout, and credential invariants execute against Pos
         [activation.activationId],
       );
       assert.equal(reconciliation.rows[0].reconciliation_last_attempt_at, null);
+    });
+
+    await t.test("telemetry installs first-bind, link verified accounts, and fail open", async () => {
+      const installIdHash = "1".repeat(64);
+      const resetInstallIdHash = "2".repeat(64);
+      const absentInstallIdHash = "3".repeat(64);
+      const deviceId = "telemetry-bridge-device";
+      const start = async (installHash, requestedDeviceId = deviceId) =>
+        invokeHandler(startHandler, {
+          method: "POST",
+          url: "/api/activation/start",
+          headers: requestHeaders({ contentType: "application/json" }),
+          body: JSON.stringify({
+            deviceId: requestedDeviceId,
+            appVersion: "1.0.14",
+            buildChannel: "stable",
+            installIdHash: installHash,
+            supportCode: { ignored: true },
+            installerReceiptIdHash: "legacy-value-is-not-validated",
+          }),
+        });
+
+      const started = await start(installIdHash);
+      assert.equal(started.statusCode, 200);
+      const activation = JSON.parse(started.body);
+      assert.equal("installIdHash" in activation, false);
+      assert.deepEqual(await telemetryIdentityRow(databasePool, installIdHash), {
+        device_id_hash: privateIdentifierHash(deviceId),
+        account_id: null,
+        linked_at: null,
+      });
+
+      const reset = await start(resetInstallIdHash);
+      assert.equal(reset.statusCode, 200);
+      assert.deepEqual(await telemetryIdentityRow(databasePool, resetInstallIdHash), {
+        device_id_hash: privateIdentifierHash(deviceId),
+        account_id: null,
+        linked_at: null,
+      });
+
+      const owner = await seedAccount(databasePool, "telemetry-owner");
+      await databasePool.query(
+        `
+          update public.sidestream_activation_sessions
+          set account_id = $2, license_id = $3, status = 'paid'
+          where activation_key = $1
+        `,
+        [activation.activationKey, owner.accountId, owner.licenseId],
+      );
+      const linked = await invokeHandler(statusHandler, {
+        method: "POST",
+        url: "/api/activation/status",
+        headers: requestHeaders({ contentType: "application/json" }),
+        body: JSON.stringify({
+          activationKey: activation.activationKey,
+          deviceId,
+          installIdHash,
+          supportCode: 42,
+          installerReceiptIdHash: { ignored: true },
+        }),
+      });
+      assert.equal(linked.statusCode, 200);
+      const linkedStatus = JSON.parse(linked.body);
+      assert.equal(linkedStatus.status, "active");
+      const linkedRow = await telemetryIdentityRow(databasePool, installIdHash);
+      assert.equal(linkedRow.device_id_hash, privateIdentifierHash(deviceId));
+      assert.equal(linkedRow.account_id, owner.accountId);
+      assert.ok(linkedRow.linked_at instanceof Date);
+
+      await databasePool.query(
+        `
+          update public.sidestream_telemetry_identity_links
+          set last_seen_at = linked_at
+          where license_namespace = 'production' and install_id_hash = $1
+        `,
+        [installIdHash],
+      );
+      const beforeRepeat = await telemetryIdentityTimestamps(databasePool, installIdHash);
+      const repeated = await invokeHandler(statusHandler, {
+        method: "POST",
+        url: "/api/activation/status",
+        headers: requestHeaders({ contentType: "application/json" }),
+        body: JSON.stringify({ activationKey: activation.activationKey, deviceId, installIdHash }),
+      });
+      assert.equal(repeated.statusCode, 200);
+      const afterRepeat = await telemetryIdentityTimestamps(databasePool, installIdHash);
+      assert.equal(afterRepeat.linked_at.getTime(), beforeRepeat.linked_at.getTime());
+      assert.ok(afterRepeat.last_seen_at.getTime() > beforeRepeat.last_seen_at.getTime());
+
+      const verifyInstallIdHash = "4".repeat(64);
+      const verified = await account.verifyLicenseToken(
+        linkedStatus.licenseToken,
+        deviceId,
+        environment,
+        {
+          installIdHash: verifyInstallIdHash,
+          supportCode: { ignored: true },
+          installerReceiptIdHash: "ignored",
+        },
+      );
+      assert.equal(verified.active, true);
+      const verifyIdentity = await telemetryIdentityRow(databasePool, verifyInstallIdHash);
+      assert.equal(verifyIdentity.device_id_hash, privateIdentifierHash(deviceId));
+      assert.equal(verifyIdentity.account_id, owner.accountId);
+      assert.ok(verifyIdentity.linked_at instanceof Date);
+
+      const refreshInstallIdHash = "5".repeat(64);
+      const refreshed = await account.refreshLicenseToken(
+        linkedStatus.refreshToken,
+        deviceId,
+        environment,
+        {
+          installIdHash: refreshInstallIdHash,
+          supportCode: 42,
+          installerReceiptIdHash: null,
+        },
+      );
+      assert.equal(refreshed.active, true);
+      const refreshIdentity = await telemetryIdentityRow(
+        databasePool,
+        refreshInstallIdHash,
+      );
+      assert.equal(refreshIdentity.device_id_hash, privateIdentifierHash(deviceId));
+      assert.equal(refreshIdentity.account_id, owner.accountId);
+      assert.ok(refreshIdentity.linked_at instanceof Date);
+
+      const wrongDevice = await start(installIdHash, "telemetry-conflicting-device");
+      assert.equal(wrongDevice.statusCode, 200);
+      assert.equal(
+        (await telemetryIdentityRow(databasePool, installIdHash)).device_id_hash,
+        privateIdentifierHash(deviceId),
+      );
+
+      const otherStart = await start(installIdHash);
+      const otherActivation = JSON.parse(otherStart.body);
+      const otherOwner = await seedAccount(databasePool, "telemetry-other-owner");
+      await databasePool.query(
+        `
+          update public.sidestream_activation_sessions
+          set account_id = $2, license_id = $3, status = 'paid'
+          where activation_key = $1
+        `,
+        [otherActivation.activationKey, otherOwner.accountId, otherOwner.licenseId],
+      );
+      const accountConflict = await invokeHandler(statusHandler, {
+        method: "POST",
+        url: "/api/activation/status",
+        headers: requestHeaders({ contentType: "application/json" }),
+        body: JSON.stringify({
+          activationKey: otherActivation.activationKey,
+          deviceId,
+          installIdHash,
+        }),
+      });
+      assert.equal(accountConflict.statusCode, 200);
+      assert.equal(JSON.parse(accountConflict.body).status, "active");
+      assert.equal(
+        (await telemetryIdentityRow(databasePool, installIdHash)).account_id,
+        owner.accountId,
+      );
+
+      await databasePool.query(
+        `alter table public.sidestream_telemetry_identity_links rename to sidestream_telemetry_identity_links_absent_test`,
+      );
+      try {
+        const absentSchema = await start(absentInstallIdHash);
+        assert.equal(absentSchema.statusCode, 200);
+      } finally {
+        await databasePool.query(
+          `alter table public.sidestream_telemetry_identity_links_absent_test rename to sidestream_telemetry_identity_links`,
+        );
+      }
+      assert.equal(await telemetryIdentityRow(databasePool, absentInstallIdHash), null);
     });
 
     let currentCredentials;
@@ -802,8 +989,8 @@ async function loadRuntimeModules() {
       "./license-environment.js": pathToFileURL(
         join(repositoryRoot, "api", "_lib", "license-environment.ts"),
       ).href,
-      "./customer-identity.js": pathToFileURL(
-        join(repositoryRoot, "api", "_lib", "customer-identity.ts"),
+      "./telemetry-identity.js": pathToFileURL(
+        join(repositoryRoot, "api", "_lib", "telemetry-identity.ts"),
       ).href,
       "./postgres.js": pathToFileURL(
         join(repositoryRoot, "api", "_lib", "postgres.ts"),
@@ -840,13 +1027,19 @@ export function __setActivationSecurityStripeClient(value: Stripe | null) {
     temporaryModuleDirectory,
     "start",
     join(repositoryRoot, "api", "activation", "start.ts"),
-    { "../_lib/account.js": accountModuleUrl },
+    {
+      "../_lib/account.js": accountModuleUrl,
+      "../_lib/telemetry-identity.js": helperImports["./telemetry-identity.js"],
+    },
   );
     const statusModuleUrl = await writeRouteModule(
     temporaryModuleDirectory,
     "status",
     join(repositoryRoot, "api", "activation", "status.ts"),
-    { "../_lib/account.js": accountModuleUrl },
+    {
+      "../_lib/account.js": accountModuleUrl,
+      "../_lib/telemetry-identity.js": helperImports["./telemetry-identity.js"],
+    },
   );
 
     const nonce = randomUUID();
@@ -1031,6 +1224,30 @@ async function activationState(pool, activationKey) {
   const result = await pool.query(
     `select account_id, status from public.sidestream_activation_sessions where activation_key = $1`,
     [activationKey],
+  );
+  return result.rows[0];
+}
+
+async function telemetryIdentityRow(pool, installIdHash) {
+  const result = await pool.query(
+    `
+      select device_id_hash, account_id, linked_at
+      from public.sidestream_telemetry_identity_links
+      where license_namespace = 'production' and install_id_hash = $1
+    `,
+    [installIdHash],
+  );
+  return result.rows[0] || null;
+}
+
+async function telemetryIdentityTimestamps(pool, installIdHash) {
+  const result = await pool.query(
+    `
+      select linked_at, last_seen_at
+      from public.sidestream_telemetry_identity_links
+      where license_namespace = 'production' and install_id_hash = $1
+    `,
+    [installIdHash],
   );
   return result.rows[0];
 }
