@@ -10,7 +10,7 @@ import { isLikelyScanner } from "./installer-referral.js";
 const REFERRAL_BLOB_PREFIX = "sidestream/referrals/v1";
 const HASH_SECRET_ENV = "SIDESTREAM_INSTALLER_ANALYTICS_HASH_SECRET";
 
-export type ReferralVisitSource = "manychat";
+export type ReferralVisitSource = "manychat" | "instagram-bio";
 
 export type ReferralVisitEvent = Readonly<{
   source: ReferralVisitSource;
@@ -20,9 +20,9 @@ export type ReferralVisitEvent = Readonly<{
 }>;
 
 export function parseReferralVisitSource(value: unknown): ReferralVisitSource | null {
-  return typeof value === "string" && value.trim().toLowerCase() === "manychat"
-    ? "manychat"
-    : null;
+  if (typeof value !== "string") return null;
+  const source = value.trim().toLowerCase();
+  return source === "manychat" || source === "instagram-bio" ? source : null;
 }
 
 export function buildReferralVisitEvent(

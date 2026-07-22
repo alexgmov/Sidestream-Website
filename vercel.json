@@ -25,6 +25,11 @@
   ],
   "redirects": [
     {
+      "source": "/ig",
+      "destination": "https://sidestream.tv/?utm_source=instagram&utm_medium=social&utm_campaign=bio",
+      "permanent": false
+    },
+    {
       "source": "/m",
       "destination": "https://sidestream.tv/?utm_source=manychat",
       "permanent": false
