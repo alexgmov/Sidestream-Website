@@ -30,6 +30,7 @@ The database is the concurrency backstop. `public.sidestream_account_devices` ke
 | Trusted deployment, host, database, and credential namespaces | `api/_lib/license-environment.ts` |
 | Transaction locking, activation, transfer, verify, refresh, download authorization, status, and deactivation | `api/_lib/account.ts` |
 | Non-authoritative telemetry install association | `api/_lib/telemetry-identity.ts` / `public.sidestream_telemetry_identity_links` |
+| Private activation-to-telemetry foreign key | `db/migrations/20260722230000_add_activation_telemetry_link.sql` / `public.sidestream_activation_sessions.telemetry_identity_link_id` |
 | Account decision and confirmed transfer page | `api/activation/claim.ts` |
 | Signed-in coarse device status and deactivation UI | `account.html` |
 | Activation-aware restore, move, or purchase entry | `upgrade.html` |
@@ -59,18 +60,45 @@ Account UI and API output are intentionally coarse: platform plus activation/las
 
 `public.sidestream_telemetry_identity_links` is a separate private bridge from a
 FlowState telemetry `installIdHash` to the same server-HMAC device digest and,
-optionally, an account already verified by the account runtime. It does not
-create, select, revoke, replace, or authorize a `sidestream_account_devices` row;
-it does not consume or reset a transfer; and it is never account ownership,
-device ownership, payment, entitlement, or download-authorization proof.
+optionally, an account already verified by the account runtime. The install hash
+is a persistent OS-profile telemetry association, not authentication, hardware
+identity, a device credential, or ownership proof. A reset or separate
+installation remains a separate anonymous bridge row even when it runs on the
+same device. Separate rows may converge on one verified account only after each
+installation participates in an explicit verified restore/transfer or Checkout
+action.
+
+The additive activation-linkage migration gives every bridge row a private
+server-generated UUID and adds nullable, indexed
+`sidestream_activation_sessions.telemetry_identity_link_id` with `ON DELETE SET
+NULL`. Activation start writes that reference only after a successful first
+bind. The reference does not create, select, revoke, replace, or authorize a
+`sidestream_account_devices` row; it does not consume or reset a transfer; and
+it is never account ownership, device ownership, payment, entitlement, or
+download-authorization proof.
 
 Only the four CEP JSON routes for activation start/status and license
 verify/refresh accept the optional install hash. Claim, Checkout, account pages,
-URLs, query strings, and browser forms contain no association value. Support
-code and installer receipt remain telemetry/support concepts and are ignored by
-the website association path. A missing bridge schema, failed bridge write, or
-first-binding conflict leaves the device/entitlement operation independent and
-must never weaken the single-device checks documented here.
+URLs, query strings, and browser forms contain no telemetry association or
+private UUID. Of the linkage values, only the activation key crosses the browser
+boundary. Support code and installer receipt remain telemetry/support concepts
+and are ignored by the website association path.
+
+After an authenticated, same-origin, CSRF-valid restore or transfer POST, the
+account transaction immediately attaches the verified account through the
+activation's private reference. Claim GET and Google OAuth remain read-only. A
+verified Checkout attaches only after canonical payment verification, active
+entitlement fulfillment, and successful activation binding. Status, verify, and
+refresh remain fallback repair paths. Missing bridge/reference schema, write
+failure, or first-binding conflict leaves activation, Checkout, entitlement,
+and device decisions independent and must never weaken the single-device checks
+documented here.
+
+`sidestream_accounts` owns verified email/contact identity;
+`sidestream_licenses` and the Stripe lifecycle own payment and entitlement;
+account-device tables own device authority. No Customer 360 directory,
+materializer, sync, cron, behavioral profile, or duplicated email/payment state
+was restored by this association.
 
 ## Environment contract
 
@@ -116,8 +144,8 @@ The mutation is a same-origin, account-bound, CSRF-protected POST. Transfer uses
 | Route | Success | Stable failure/state contract |
 | --- | --- | --- |
 | `POST /api/activation/status` | `active` with a device-scoped credential family | Status payloads include `pending`, `pending_payment`, `completed`, `not_found`, `device_mismatch`, `expired`, `transfer_required`, `transfer_limit_reached`, `device_replaced`, and `device_deactivated`. Device-policy states are returned in the JSON `status`/`code`; clients must not treat every HTTP 200 as active. |
-| `GET /api/activation/claim` | Read-only HTML decision page | Authentication redirect, unavailable/limit page, or `409`; it never binds on GET. |
-| `POST /api/activation/claim` | Confirmed restore or transfer redirect | `invalid_intent`, `csrf_rejected`, `transfer_intent_required`, `transfer_limit_reached`, `binding_changed`, or `unavailable`. |
+| `GET /api/activation/claim` | Read-only HTML decision page | Authentication redirect, unavailable/limit page, or `409`; it never binds an activation, device, or telemetry account on GET. |
+| `POST /api/activation/claim` | Confirmed restore or transfer redirect; the verified account is attached to the private telemetry reference when available | `invalid_intent`, `csrf_rejected`, `transfer_intent_required`, `transfer_limit_reached`, `binding_changed`, or `unavailable`. Telemetry attachment failure remains fail-open. |
 | `POST /api/license/verify` | `200` with `active: true` | `400 invalid_request`; `401 invalid_token`, `revoked`, `device_mismatch`, `device_replaced`, or `device_deactivated`; `403 license_inactive`; `503 license_environment_unavailable`. |
 | `POST /api/license/refresh` | `200` with a rotated/replayed active credential family | Same status classes as verify. A two-minute predecessor window returns the same rotated family after a lost response; callers retain credentials on transient failures. |
 | `POST /api/license/authorize-download` | Exactly `{ "active": true }` | `401 device_replaced` or `device_deactivated`; `403 license_inactive`; retryable `503 authorization_unavailable`. It does not return account, device, token, or license details. |
@@ -189,6 +217,22 @@ The harness rejects a target matching any configured runtime database URL, creat
 
 Useful narrower commands are `npm run test:single-device-postgres`, `npm run test:single-device-ops`, and `npm run test:entitlement`.
 
+For activation-to-telemetry linkage changes, also run:
+
+```bash
+node --experimental-strip-types --test \
+  tests/telemetry-identity.test.mjs \
+  tests/activation-security.test.mjs \
+  tests/entitlement.test.mjs
+npm run test:migrations
+```
+
+Those suites prove separate anonymous installs, the private foreign key,
+read-only GET/OAuth boundaries, immediate restore/transfer and Checkout
+attachment, fallback repair, immutable first binding, and transaction-safe
+partial/missing-schema failure. They do not replace real isolated-Test browser
+and Premiere proof.
+
 ## Production procedure status
 
 The production section that formerly appeared here is intentionally gone. It
@@ -203,3 +247,10 @@ would need; it does not provide executable status, migration, deployment,
 support, fallback, or rollback steps. Do not reconstruct the retired procedure
 from Git history, tickets, or this domain reference. No Production action was
 performed while neutralizing this document.
+
+The runbook also records the required non-executable order: reduced runtime,
+isolated Test inventory/backup, retirement plus additive linkage migrations,
+enhanced runtime, real browser/Premiere linkage proof, and then a separate
+explicit approval before any Production action. This source documentation did
+not change a provider, Vercel alias, Stripe account, CEP package, Preview, Test,
+or Production environment.
