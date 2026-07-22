@@ -491,17 +491,11 @@ export async function query() { throw new Error("Inject a Postgres query into qu
     source: "api/_lib/maintenance.ts",
     replacements: { "./postgres.js": postgresStubUrl },
   });
-  const customerIdentityUrl = await writeSchemaModule({
+  const telemetryIdentityUrl = await writeSchemaModule({
     schema,
     temporaryDirectory,
-    name: "customer-identity",
-    source: "api/_lib/customer-identity.ts",
-  });
-  const customerCommerceUrl = await writeSchemaModule({
-    schema,
-    temporaryDirectory,
-    name: "customer-commerce",
-    source: "api/_lib/customer-commerce.ts",
+    name: "telemetry-identity",
+    source: "api/_lib/telemetry-identity.ts",
   });
   const accountUrl = await writeSchemaModule({
     schema,
@@ -515,7 +509,7 @@ export async function query() { throw new Error("Inject a Postgres query into qu
         "../api/_lib/license-environment.ts",
         import.meta.url,
       ).href,
-      "./customer-identity.js": customerIdentityUrl,
+      "./telemetry-identity.js": telemetryIdentityUrl,
       "./maintenance.js": maintenanceUrl,
       "./postgres.js": postgresStubUrl,
     },
@@ -539,7 +533,6 @@ export function __setPostgresIntegrationStripeClient(value: Stripe | null) {
     source: "api/_lib/stripe-events.ts",
     replacements: {
       "./account.js": accountStubUrl,
-      "./customer-commerce.js": customerCommerceUrl,
       "./license-environment.js": new URL(
         "../api/_lib/license-environment.ts",
         import.meta.url,

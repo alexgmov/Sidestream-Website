@@ -21,22 +21,6 @@ const INTERNAL_CRONS = Object.freeze([
     schedule: "13 4 * * *",
     source: "api/internal/maintenance.ts",
   },
-  {
-    path: "/api/internal/customer-usage/sync",
-    schedule: "27 5 * * *",
-    source: "api/internal/customer-usage/sync.ts",
-  },
-]);
-
-const PROTECTED_ADMIN_ROUTES = Object.freeze([
-  {
-    path: "/api/internal/customers",
-    source: "api/internal/customers/index.ts",
-  },
-  {
-    path: "/api/internal/customers/[customerId]",
-    source: "api/internal/customers/[customerId].ts",
-  },
 ]);
 
 const RELEASE_SOURCES = Object.freeze([
@@ -73,55 +57,13 @@ export async function validateVercelContract(root = REPOSITORY_ROOT) {
       `${expected.source} must explicitly admit Vercel Cron GET`,
     );
     requireCondition(
-      !/SIDESTREAM_(?:DOWNLOAD_LEADS_REPLAY|STRIPE_EVENTS_PROCESS|MAINTENANCE|CUSTOMER_USAGE)_SECRET/.test(source),
+      !/SIDESTREAM_(?:DOWNLOAD_LEADS_REPLAY|STRIPE_EVENTS_PROCESS|MAINTENANCE)_SECRET/.test(source),
       `${expected.source} must not introduce a second scheduler secret`,
     );
   }
 
-  for (const expected of PROTECTED_ADMIN_ROUTES) {
-    requireCondition(
-      !configuredCrons.some((cron) => cron?.path === expected.path),
-      `${expected.path} is an on-demand admin route and must not be a Vercel cron`,
-    );
-    const source = await readFile(path.join(root, expected.source), "utf8");
-    requireCondition(
-      /authorizeCustomerAdminRequest/.test(source),
-      `${expected.source} must use the shared customer admin guard`,
-    );
-    requireCondition(
-      /(?:method|authorizeCustomerAdminRequest)/.test(source),
-      `${expected.source} must have an explicit protected request boundary`,
-    );
-  }
-
-  const adminGuardSource = await readFile(
-    path.join(root, "api/_lib/customer-admin.ts"),
-    "utf8",
-  );
-  for (const marker of [
-    "SIDESTREAM_CRM_ADMIN_SECRET",
-    "authorization",
-    "Bearer ${secret}",
-    "timingSafeEqual",
-    "browser_origin_forbidden",
-    "Cache-Control",
-    "no-store",
-  ]) {
-    requireCondition(
-      adminGuardSource.includes(marker),
-      `Customer admin guard is missing ${marker}`,
-    );
-  }
-  requireCondition(
-    !/Access-Control-Allow-Origin/i.test(adminGuardSource),
-    "Customer admin routes must not enable browser CORS",
-  );
-
   const internalRouteFiles = await listTypeScriptFiles(path.join(root, "api", "internal"));
-  const expectedRouteFiles = [
-    ...INTERNAL_CRONS.map((cron) => cron.source),
-    ...PROTECTED_ADMIN_ROUTES.map((route) => route.source),
-  ].sort();
+  const expectedRouteFiles = INTERNAL_CRONS.map((cron) => cron.source).sort();
   const actualRouteFiles = internalRouteFiles
     .map((filename) => path.relative(root, filename).split(path.sep).join("/"))
     .sort();
@@ -145,21 +87,6 @@ export async function validateVercelContract(root = REPOSITORY_ROOT) {
     authTestSource.includes("GET-only Vercel cron routes"),
     "Cron contract tests must cover the allowed method surface",
   );
-  const adminTestSource = await readFile(
-    path.join(root, "tests/customer-360/query-api.test.mjs"),
-    "utf8",
-  );
-  for (const expected of PROTECTED_ADMIN_ROUTES) {
-    requireCondition(
-      adminTestSource.includes(expected.path),
-      `Missing admin auth coverage marker for ${expected.path}`,
-    );
-  }
-  requireCondition(
-    adminTestSource.includes("missing, wrong, and multiple SIDESTREAM_CRM_ADMIN_SECRET"),
-    "Customer admin tests must cover missing, incorrect, and multiple authorization",
-  );
-
   for (const filename of RELEASE_SOURCES) {
     await access(path.join(root, filename));
   }
@@ -199,7 +126,6 @@ export async function validateVercelContract(root = REPOSITORY_ROOT) {
 
   return {
     crons: INTERNAL_CRONS.length,
-    adminRoutes: PROTECTED_ADMIN_ROUTES.length,
     internalRoutes: actualRouteFiles.length,
     releaseEndpoints: 2,
   };
@@ -227,7 +153,7 @@ function requireCondition(condition, message) {
 async function main() {
   const result = await validateVercelContract();
   console.log(
-    `PASS: Vercel contract covers ${result.crons} crons, ${result.adminRoutes} protected admin routes, ${result.internalRoutes} internal routes, and ${result.releaseEndpoints} release endpoints.`,
+    `PASS: Vercel contract covers ${result.crons} crons, ${result.internalRoutes} internal routes, and ${result.releaseEndpoints} release endpoints.`,
   );
 }
 

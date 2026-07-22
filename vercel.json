@@ -17,10 +17,6 @@
     {
       "path": "/api/internal/maintenance",
       "schedule": "13 4 * * *"
-    },
-    {
-      "path": "/api/internal/customer-usage/sync",
-      "schedule": "27 5 * * *"
     }
   ],
   "redirects": [

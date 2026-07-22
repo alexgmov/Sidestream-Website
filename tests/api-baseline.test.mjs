@@ -9,6 +9,7 @@ import {
 import { loadInjectedHandler } from "./helpers/handler-loader.mjs";
 import { invokeHandler } from "./helpers/http.mjs";
 import { findRuntimeDdl } from "../scripts/assert-no-runtime-ddl.mjs";
+import { listApiTestFiles } from "../scripts/run-api-tests.mjs";
 
 const JSON_HEADERS = { "content-type": "application/json" };
 const FORM_HEADERS = {
@@ -38,6 +39,23 @@ test("the runtime-DDL guard recognizes schema mutations without flagging product
     ["schema-object DDL", "schema-object DDL"],
   );
   assert.deepEqual(findRuntimeDdl("This action will revoke its Pro access."), []);
+});
+
+test("API discovery separates Postgres-only suites from mixed and configuration coverage", async () => {
+  const selected = new Set(
+    (await listApiTestFiles()).map((filename) => filename.split("/").at(-1)),
+  );
+  for (const postgresOnly of [
+    "activation-security.test.mjs",
+    "maintenance.test.mjs",
+    "postgres-integration.test.mjs",
+    "single-device-postgres.test.mjs",
+    "stripe-events.test.mjs",
+  ]) {
+    assert.equal(selected.has(postgresOnly), false, postgresOnly);
+  }
+  assert.equal(selected.has("checkout-abuse.test.mjs"), true);
+  assert.equal(selected.has("postgres-config.test.mjs"), true);
 });
 
 test("start, status, verify, and refresh handlers require a device ID", async () => {
@@ -95,6 +113,75 @@ test("start, status, verify, and refresh handlers require a device ID", async ()
   assert.equal(started.response.statusCode, 200);
   assert.equal(started.response.json.activationKey, "activation-deterministic");
   assert.equal(harness.store.activations.size, 1);
+});
+
+test("older CEP association fields remain ignored JSON compatibility extras", async () => {
+  const harness = createApiContractHarness();
+  const [start, status, verify, refresh] = await Promise.all([
+    loadAccountHandler("../api/activation/start.ts", harness),
+    loadAccountHandler("../api/activation/status.ts", harness),
+    loadAccountHandler("../api/license/verify.ts", harness),
+    loadAccountHandler("../api/license/refresh.ts", harness),
+  ]);
+  const retiredExtras = {
+    supportCode: { invalid: "legacy-shape" },
+    installerReceiptIdHash: "not-a-hash",
+  };
+
+  const started = await invokeHandler(start, {
+    method: "POST",
+    url: "/api/activation/start",
+    headers: JSON_HEADERS,
+    body: {
+      deviceId: "legacy-device",
+      appVersion: "1.0.13",
+      ...retiredExtras,
+    },
+  });
+  assert.equal(started.response.statusCode, 200);
+
+  const { activation } = harness.seedPaidActivation({
+    activationKey: "activation-legacy-extras",
+    deviceId: "legacy-device",
+  });
+  const activated = await invokeHandler(status, {
+    method: "POST",
+    url: "/api/activation/status",
+    headers: JSON_HEADERS,
+    body: {
+      activationKey: activation.activationKey,
+      deviceId: "legacy-device",
+      ...retiredExtras,
+    },
+  });
+  assert.equal(activated.response.statusCode, 200);
+  assert.equal(activated.response.json.status, "active");
+
+  const verified = await invokeHandler(verify, {
+    method: "POST",
+    url: "/api/license/verify",
+    headers: JSON_HEADERS,
+    body: {
+      licenseToken: activated.response.json.licenseToken,
+      deviceId: "legacy-device",
+      ...retiredExtras,
+    },
+  });
+  assert.equal(verified.response.statusCode, 200);
+  assert.equal(verified.response.json.active, true);
+
+  const refreshed = await invokeHandler(refresh, {
+    method: "POST",
+    url: "/api/license/refresh",
+    headers: JSON_HEADERS,
+    body: {
+      refreshToken: activated.response.json.refreshToken,
+      deviceId: "legacy-device",
+      ...retiredExtras,
+    },
+  });
+  assert.equal(refreshed.response.statusCode, 200);
+  assert.equal(refreshed.response.json.active, true);
 });
 
 test("restore GET is read-only and POST requires an origin/account/activation-bound expiring HMAC", async () => {

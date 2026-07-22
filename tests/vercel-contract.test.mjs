@@ -10,7 +10,6 @@ const INTERNAL_CRON_PATHS = Object.freeze([
   "/api/internal/stripe-events/process",
   "/api/internal/download-leads/replay",
   "/api/internal/maintenance",
-  "/api/internal/customer-usage/sync",
 ]);
 
 const modules = await loadCronModules();
@@ -18,26 +17,19 @@ const modules = await loadCronModules();
 test("the static Vercel contract includes every protected cron and both release routes", async () => {
   const result = await validateVercelContract();
   assert.deepEqual(result, {
-    crons: 4,
-    adminRoutes: 2,
-    internalRoutes: 6,
+    crons: 3,
+    internalRoutes: 3,
     releaseEndpoints: 2,
   });
 });
 
-test("customer list and detail are protected on-demand admin routes, never crons", async () => {
-  const result = await validateVercelContract();
-  assert.equal(result.adminRoutes, 2);
-  assert.equal(result.crons, 4);
-});
-
-test("the human-only bundle verifier requires both customer functions", async () => {
+test("the human-only bundle verifier requires retained public and internal functions", async () => {
   const source = await readFile(
     new URL("../scripts/verify-vercel-build.mjs", import.meta.url),
     "utf8",
   );
-  assert.match(source, /api\/internal\/customers\/index\.func/);
-  assert.match(source, /api\/internal\/customers\/\[customerId\]\.func/);
+  assert.match(source, /api\/download\.func/);
+  assert.match(source, /api\/internal\/maintenance\.func/);
   assert.match(source, /A human must run `npx vercel build` first/);
 });
 
@@ -122,7 +114,6 @@ function createRoutes(options = {}) {
   let replayRuns = 0;
   let replayDeletes = 0;
   let replayPageInput = null;
-  let usageRuns = 0;
   const blob = {
     pathname: "sidestream/download-leads/lead_v1_test.json",
     etag: "test-etag",
@@ -183,25 +174,6 @@ function createRoutes(options = {}) {
       }),
       work: () => maintenanceRuns,
     },
-    {
-      path: INTERNAL_CRON_PATHS[3],
-      handler: modules.usage.createCustomerUsageSyncHandler({
-        runSync: async () => {
-          usageRuns += 1;
-          return {
-            outcome: "completed",
-            licenseNamespace: "test",
-            batches: 1,
-            sourceRowsScanned: 2,
-            dailyBucketsWritten: 1,
-            profilesRefreshed: 1,
-            sourceFreshnessAt: "2026-07-15T00:00:00.000Z",
-          };
-        },
-        log: () => {},
-      }),
-      work: () => usageRuns,
-    },
   ];
 }
 
@@ -213,7 +185,7 @@ async function loadCronModules() {
       this.code = code;
     }
   }
-  const [stripe, replay, maintenance, usage] = await Promise.all([
+  const [stripe, replay, maintenance] = await Promise.all([
     loadInjectedModule(new URL("../api/internal/stripe-events/process.ts", import.meta.url), {
       "../../_lib/stripe-events.js": {
         drainStripeEventQueue: async () => {
@@ -252,15 +224,8 @@ async function loadCronModules() {
         },
       },
     }),
-    loadInjectedModule(new URL("../api/internal/customer-usage/sync.ts", import.meta.url), {
-      "../../_lib/customer-usage.js": {
-        runCustomerUsageSync: async () => {
-          throw new Error("The test must inject a customer usage sync");
-        },
-      },
-    }),
   ]);
-  return { stripe, replay, maintenance, usage };
+  return { stripe, replay, maintenance };
 }
 
 function restoreEnvironment(name, value) {

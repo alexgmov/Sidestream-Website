@@ -1,23 +1,21 @@
 #!/usr/bin/env node
 
 import { spawn } from "node:child_process";
-import { readdir } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import {
-  CUSTOMER_360_NON_POSTGRES_TESTS,
-  CUSTOMER_360_POSTGRES_TESTS,
-} from "./run-customer-360-tests.mjs";
 
 const TESTS_DIRECTORY = path.resolve("tests");
-const ROOT_POSTGRES_ONLY_TESTS = new Set([
+const POSTGRES_ONLY_TESTS = new Set([
+  "activation-security.test.mjs",
+  "maintenance.test.mjs",
   "postgres-integration.test.mjs",
   "single-device-postgres.test.mjs",
+  "stripe-events.test.mjs",
 ]);
-const CUSTOMER_360_POSTGRES_ONLY_TESTS = new Set(CUSTOMER_360_POSTGRES_TESTS);
-const CUSTOMER_360_CLASSIFIED_TESTS = new Set([
-  ...CUSTOMER_360_NON_POSTGRES_TESTS,
-  ...CUSTOMER_360_POSTGRES_TESTS,
+const API_SAFE_POSTGRES_TESTS = new Set([
+  "checkout-abuse.test.mjs",
+  "postgres-config.test.mjs",
 ]);
 
 export async function listApiTestFiles(directory = TESTS_DIRECTORY) {
@@ -25,23 +23,22 @@ export async function listApiTestFiles(directory = TESTS_DIRECTORY) {
   const relativeFiles = files.map((filename) => normalizeRelativePath(
     path.relative(directory, filename),
   ));
-  const customer360Files = relativeFiles.filter((filename) =>
-    filename.startsWith("customer-360/")
+  const sources = await Promise.all(files.map((filename) => readFile(filename, "utf8")));
+  const unclassifiedPostgresDependencies = relativeFiles.filter((filename, index) =>
+    /\bfrom\s+["']pg["']/.test(sources[index]) &&
+    !POSTGRES_ONLY_TESTS.has(filename) &&
+    !API_SAFE_POSTGRES_TESTS.has(filename)
   );
-  const unclassifiedCustomer360 = customer360Files.filter((filename) =>
-    !CUSTOMER_360_CLASSIFIED_TESTS.has(filename)
-  );
-  if (unclassifiedCustomer360.length > 0) {
+  if (unclassifiedPostgresDependencies.length > 0) {
     throw new Error(
-      `Classify new Customer 360 tests explicitly: ${unclassifiedCustomer360.join(", ")}`,
+      `Classify new Postgres-dependent tests explicitly: ${unclassifiedPostgresDependencies.join(", ")}`,
     );
   }
 
   const unknownPostgresTests = relativeFiles.filter((filename) =>
     path.basename(filename).includes("postgres") &&
-    filename !== "postgres-config.test.mjs" &&
-    !ROOT_POSTGRES_ONLY_TESTS.has(filename) &&
-    !CUSTOMER_360_POSTGRES_ONLY_TESTS.has(filename)
+    !POSTGRES_ONLY_TESTS.has(filename) &&
+    !API_SAFE_POSTGRES_TESTS.has(filename)
   );
   if (unknownPostgresTests.length > 0) {
     throw new Error(
@@ -51,8 +48,7 @@ export async function listApiTestFiles(directory = TESTS_DIRECTORY) {
 
   const selected = files.filter((filename, index) => {
     const relative = relativeFiles[index];
-    return !ROOT_POSTGRES_ONLY_TESTS.has(relative) &&
-      !CUSTOMER_360_POSTGRES_ONLY_TESTS.has(relative);
+    return !POSTGRES_ONLY_TESTS.has(relative);
   });
   if (selected.length === 0) throw new Error("No API test suites were discovered");
   return selected;
