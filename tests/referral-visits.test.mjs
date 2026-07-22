@@ -128,16 +128,22 @@ test("daily visitor hashes are deterministic, source scoped, and rotate by day",
     now: new Date("2026-07-21T12:00:00.000Z"),
     secret: "secret-a",
   });
+  const redditOne = buildReferralVisitEvent(request, "reddit-1", {
+    now: new Date("2026-07-21T12:00:00.000Z"),
+    secret: "secret-a",
+  });
 
   assert.equal(first.visitorHash, repeat.visitorHash);
   assert.notEqual(first.visitorHash, nextDay.visitorHash);
   assert.notEqual(first.visitorHash, instagramBio.visitorHash);
   assert.notEqual(instagramBio.visitorHash, alexInstagram.visitorHash);
   assert.notEqual(alexInstagram.visitorHash, metaAdsOne.visitorHash);
+  assert.notEqual(metaAdsOne.visitorHash, redditOne.visitorHash);
   assert.equal(parseReferralVisitSource(" ManyChat "), "manychat");
   assert.equal(parseReferralVisitSource(" Instagram-Bio "), "instagram-bio");
   assert.equal(parseReferralVisitSource(" Instagram-Alex "), "instagram-alex");
   assert.equal(parseReferralVisitSource(" Meta-Ads-1 "), "meta-ads-1");
+  assert.equal(parseReferralVisitSource(" Reddit-1 "), "reddit-1");
   assert.equal(parseReferralVisitSource("gmail"), null);
 });
 
@@ -170,7 +176,7 @@ test("referral report counts unique daily humans and scanners without exposing h
   });
 });
 
-test("landing page and Vercel config preserve both short tracking routes", () => {
+test("landing page and Vercel config preserve short tracking routes", () => {
   const html = readFileSync(path.join(repoRoot, "index.html"), "utf8");
   const vercel = JSON.parse(readFileSync(path.join(repoRoot, "vercel.json"), "utf8"));
   assert.match(html, /fetch\("\/api\/referral-visit"/);
@@ -215,9 +221,20 @@ test("landing page and Vercel config preserve both short tracking routes", () =>
     redirect.destination === "https://sidestream.tv/?utm_source=meta&utm_medium=paid_social&utm_campaign=1" &&
     redirect.permanent === false
   ));
+  assert.ok(vercel.redirects.some((redirect) =>
+    redirect.source === "/reddit/1" &&
+    redirect.destination === "https://sidestream.tv/?utm_source=reddit&utm_medium=social&utm_campaign=1" &&
+    redirect.permanent === false
+  ));
+  assert.ok(vercel.redirects.some((redirect) =>
+    redirect.source === "/reddit/1/" &&
+    redirect.destination === "https://sidestream.tv/?utm_source=reddit&utm_medium=social&utm_campaign=1" &&
+    redirect.permanent === false
+  ));
   assert.match(html, /instagram-bio/);
   assert.match(html, /instagram-alex/);
   assert.match(html, /meta-ads-1/);
+  assert.match(html, /reddit-1/);
 });
 
 function fakeRequest(headers = {}) {

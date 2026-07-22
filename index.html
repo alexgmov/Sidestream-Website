@@ -1775,6 +1775,9 @@
       if (utmSource === "meta" && utmMedium === "paid_social" && utmCampaign === "1") {
         source = "meta-ads-1";
       }
+      if (utmSource === "reddit" && utmMedium === "social" && utmCampaign === "1") {
+        source = "reddit-1";
+      }
       if (!source) return;
 
       fetch("/api/referral-visit", {

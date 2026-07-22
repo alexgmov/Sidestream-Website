@@ -14,7 +14,8 @@ export type ReferralVisitSource =
   | "manychat"
   | "instagram-bio"
   | "instagram-alex"
-  | "meta-ads-1";
+  | "meta-ads-1"
+  | "reddit-1";
 
 export type ReferralVisitEvent = Readonly<{
   source: ReferralVisitSource;
@@ -29,7 +30,8 @@ export function parseReferralVisitSource(value: unknown): ReferralVisitSource | 
   return source === "manychat" ||
     source === "instagram-bio" ||
     source === "instagram-alex" ||
-    source === "meta-ads-1"
+    source === "meta-ads-1" ||
+    source === "reddit-1"
     ? source
     : null;
 }
