@@ -2,10 +2,6 @@ import { randomUUID } from "node:crypto";
 import type Stripe from "stripe";
 import * as account from "./account.js";
 import {
-  materializeCustomerCommerceEvent,
-  type CustomerCommerceQuery,
-} from "./customer-commerce.js";
-import {
   resolveLicenseEnvironment,
   type LicenseEnvironmentServerState,
 } from "./license-environment.js";
@@ -183,7 +179,7 @@ export async function drainStripeEventQueue(
 ): Promise<StripeEventDrainSummary> {
   const query = options.query || runtimeQuery;
   const processEvent = options.processEvent ||
-    ((event: Stripe.Event) => reconcileStripeEvent(event, query));
+    ((event: Stripe.Event) => reconcileStripeEvent(event));
   const now = options.now || Date.now;
   const random = options.random || Math.random;
   const log = options.log || logStripeEventOutcome;
@@ -251,13 +247,12 @@ export async function drainStripeEventQueue(
 
 export async function reconcileStripeEvent(
   event: Stripe.Event,
-  commerceQuery: CustomerCommerceQuery = runtimeQuery,
   serverEnv: LicenseEnvironmentServerState = process.env,
 ): Promise<StripeEventProcessingResult> {
   assertStripeEventIdentity(event);
   const environment = resolveLicenseEnvironment({ serverEnv });
   if (!environment) {
-    throw new StripeEventProcessingError("commerce_environment_unresolved");
+    throw new StripeEventProcessingError("license_environment_unresolved");
   }
   if (typeof event.livemode !== "boolean") {
     throw new StripeEventProcessingError("invalid_event_livemode");
@@ -266,25 +261,8 @@ export async function reconcileStripeEvent(
   if (signedEventNamespace !== environment.namespace) {
     throw new StripeEventProcessingError("stripe_event_namespace_mismatch");
   }
-  // Preserve the inherited entitlement decision first. Commerce is an
-  // independent projection: if its schema or normalization fails, the durable
-  // queue retries the money work without changing the entitlement result.
   const entitlement = await reconcileInheritedEntitlement(event);
-  const commerce = await materializeCustomerCommerceEvent(
-    event,
-    commerceQuery,
-    environment.namespace,
-  );
   if (entitlement) return entitlement;
-
-  if (commerce.recognized) {
-    return {
-      status: "processed",
-      outcome: commerce.applied > 0
-        ? "commerce_reconciled"
-        : "commerce_stale_noop",
-    };
-  }
   return { status: "ignored", outcome: "unsupported_event_type" };
 }
 
