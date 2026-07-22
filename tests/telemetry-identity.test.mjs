@@ -289,9 +289,20 @@ test("claim URLs/forms contain no telemetry or retired Customer 360 identity fie
   const claim = await readFile(new URL("../api/activation/claim.ts", import.meta.url), "utf8");
   assert.doesNotMatch(
     claim,
-    /installIdHash|supportCode|installerReceiptIdHash|customerIdentity|customer identity/i,
+    /installIdHash|telemetryIdentityLinkId|telemetry_identity_link_id|supportCode|installerReceiptIdHash|customerIdentity|customer identity/i,
   );
   assert.match(claim, /new URLSearchParams\(\{ activation: activationKey \}\)/);
+
+  for (const route of [
+    "../api/auth/google/start.ts",
+    "../api/auth/google/callback.ts",
+  ]) {
+    const source = await readFile(new URL(route, import.meta.url), "utf8");
+    assert.doesNotMatch(
+      source,
+      /installIdHash|telemetryIdentityLinkId|telemetry_identity_link_id|supportCode|installerReceiptIdHash/i,
+    );
+  }
 
   for (const route of [
     "../api/activation/start.ts",
@@ -387,7 +398,7 @@ test("retired Customer 360 runtime and browser surfaces stay absent", async () =
     const source = await readFile(join(REPOSITORY_ROOT, path), "utf8");
     assert.doesNotMatch(
       source,
-      /installIdHash|supportCode|installerReceiptIdHash|customerIdentity/i,
+      /installIdHash|telemetryIdentityLinkId|telemetry_identity_link_id|supportCode|installerReceiptIdHash|customerIdentity/i,
       path,
     );
   }

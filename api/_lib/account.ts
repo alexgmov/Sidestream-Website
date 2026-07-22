@@ -58,6 +58,7 @@ import {
   type ResolvedLicenseEnvironment,
 } from "./license-environment.js";
 import {
+  attachTelemetryIdentityAccount,
   linkTelemetryIdentity,
   normalizeTelemetryIdentityInput,
 } from "./telemetry-identity.js";
@@ -87,6 +88,10 @@ const ACTIVATION_TOKEN_REPLAY_SECONDS = 10 * 60;
 const MAX_BODY_BYTES = 64 * 1024;
 const DEVICE_POLICY_MODE_ENV = "SIDESTREAM_DEVICE_POLICY_MODE";
 const ACCOUNT_DEVICE_LOCK_PREFIX = "sidestream:device-support";
+const ACTIVATION_TELEMETRY_REFERENCE_SAVEPOINT =
+  "sidestream_activation_telemetry_reference";
+const ACTIVATION_TELEMETRY_ATTACH_SAVEPOINT =
+  "sidestream_activation_telemetry_attach";
 export const DEVICE_DEACTIVATION_INTENT = "deactivate_active_device";
 export const SIDESTREAM_PRO_PLAN_KEY = "sidestream_pro";
 const SIDESTREAM_LEGACY_UNLIMITED_PLAN_KEY = "sidestream_unlimited";
@@ -1901,7 +1906,8 @@ export async function createActivationSession(
       const activationId = inserted.rows[0]?.id;
       if (!activationId) throw new Error("Activation insert did not return an ID");
 
-      await linkTelemetryIdentity(client, {
+      await linkActivationTelemetryIdentity(client, {
+        activationId,
         licenseNamespace: environment.namespace,
         installIdHash: identity.installIdHash,
         deviceIdHash,
@@ -2084,7 +2090,7 @@ export async function claimActivationToAccount(
     environment?: ResolvedLicenseEnvironment;
   } = {},
 ) {
-  requireMatchingLicenseEnvironment(options.environment);
+  const environment = requireMatchingLicenseEnvironment(options.environment);
   return withPgClient(async (client) => {
     await client.query("begin");
     try {
@@ -2120,6 +2126,11 @@ export async function claimActivationToAccount(
         status: row.status,
         expired: row.expired,
       })) {
+        await attachActivationTelemetryIdentityAccount(client, {
+          activationId: row.id,
+          licenseNamespace: environment.namespace,
+          accountId,
+        });
         await client.query("commit");
         return { claimed: true as const };
       }
@@ -2152,6 +2163,11 @@ export async function claimActivationToAccount(
         return { claimed: false as const, reason: "conflict" as const };
       }
 
+      await attachActivationTelemetryIdentityAccount(client, {
+        activationId: row.id,
+        licenseNamespace: environment.namespace,
+        accountId,
+      });
       await client.query("commit");
       return { claimed: true as const };
     } catch (error) {
@@ -3322,6 +3338,12 @@ export async function fulfillCheckoutSession(
           [activationId, activationKey, accountId, licenseId, checkoutSessionId],
         );
         activationBound = Boolean(bound.rows[0]);
+        if (activationBound) {
+          await attachActivationTelemetryIdentityAccount(client, {
+            activationId,
+            accountId,
+          });
+        }
       }
 
       await client.query(
@@ -3889,6 +3911,93 @@ async function linkTelemetryIdentityTransaction(
       throw error;
     }
   });
+}
+
+async function linkActivationTelemetryIdentity(
+  client: PoolClient,
+  options: Parameters<typeof linkTelemetryIdentity>[1] & { activationId: string },
+) {
+  await client.query(`savepoint ${ACTIVATION_TELEMETRY_REFERENCE_SAVEPOINT}`);
+  try {
+    const result = await linkTelemetryIdentity(client, options);
+    if (
+      result.outcome === "created" ||
+      result.outcome === "seen" ||
+      result.outcome === "linked"
+    ) {
+      const referenced = await client.query<{ id: string }>(
+        `
+          update public.sidestream_activation_sessions
+          set telemetry_identity_link_id = $2::uuid
+          where id = $1
+          returning id
+        `,
+        [options.activationId, result.telemetryIdentityLinkId],
+      );
+      if (!referenced.rows[0]) {
+        throw new Error("Activation telemetry reference write lost its row");
+      }
+    }
+    await client.query(`release savepoint ${ACTIVATION_TELEMETRY_REFERENCE_SAVEPOINT}`);
+    if (result.outcome === "unavailable" && result.reason === "schema_absent") {
+      console.warn("Activation telemetry bridge unavailable", { reason: result.reason });
+    }
+    return result;
+  } catch {
+    await client.query(`rollback to savepoint ${ACTIVATION_TELEMETRY_REFERENCE_SAVEPOINT}`);
+    await client.query(`release savepoint ${ACTIVATION_TELEMETRY_REFERENCE_SAVEPOINT}`);
+    console.warn("Activation telemetry bridge reference unavailable");
+    return { outcome: "unavailable" as const, reason: "write_failed" as const };
+  }
+}
+
+async function attachActivationTelemetryIdentityAccount(
+  client: PoolClient,
+  options: {
+    activationId: string;
+    licenseNamespace?: string;
+    accountId: string;
+  },
+) {
+  await client.query(`savepoint ${ACTIVATION_TELEMETRY_ATTACH_SAVEPOINT}`);
+  try {
+    const activation = await client.query<{
+      device_id_hash: string;
+      telemetry_identity_link_id: string | null;
+    }>(
+      `
+        select device_id_hash, telemetry_identity_link_id
+        from public.sidestream_activation_sessions
+        where id = $1
+        for update
+      `,
+      [options.activationId],
+    );
+    const row = activation.rows[0];
+    if (!row?.telemetry_identity_link_id) {
+      await client.query(`release savepoint ${ACTIVATION_TELEMETRY_ATTACH_SAVEPOINT}`);
+      return { outcome: "skipped" as const };
+    }
+
+    const licenseNamespace =
+      options.licenseNamespace || requireMatchingLicenseEnvironment().namespace;
+    const result = await attachTelemetryIdentityAccount(client, {
+      licenseNamespace,
+      telemetryIdentityLinkId: row.telemetry_identity_link_id,
+      deviceIdHash: row.device_id_hash,
+      accountId: options.accountId,
+    });
+    await client.query(`release savepoint ${ACTIVATION_TELEMETRY_ATTACH_SAVEPOINT}`);
+    if (result.outcome === "unavailable" && result.reason === "schema_absent") {
+      console.warn("Activation telemetry bridge unavailable", { reason: result.reason });
+    }
+    return result;
+  } catch {
+    await client.query(`rollback to savepoint ${ACTIVATION_TELEMETRY_ATTACH_SAVEPOINT}`);
+    await client.query(`release savepoint ${ACTIVATION_TELEMETRY_ATTACH_SAVEPOINT}`);
+    console.warn("Activation telemetry account attachment unavailable");
+    return { outcome: "unavailable" as const, reason: "write_failed" as const };
+  }
 }
 
 async function findBillingResource(
