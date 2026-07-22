@@ -84,7 +84,7 @@ test("ManyChat POST schedules a privacy-limited visit write without delaying the
 test("unsupported sources, methods, content types, and oversized bodies fail closed", async () => {
   for (const request of [
     { method: "GET", body: { source: "manychat" }, expected: 405 },
-    { body: { source: "instagram" }, expected: 400 },
+    { body: { source: "tiktok" }, expected: 400 },
     { body: { source: "manychat" }, contentType: "text/plain", expected: 415 },
     { rawBody: JSON.stringify({ source: "manychat", padding: "x".repeat(1_100) }), expected: 413 },
   ]) {
@@ -116,10 +116,16 @@ test("daily visitor hashes are deterministic, source scoped, and rotate by day",
     now: new Date("2026-07-22T00:00:00.000Z"),
     secret: "secret-a",
   });
+  const instagramBio = buildReferralVisitEvent(request, "instagram-bio", {
+    now: new Date("2026-07-21T12:00:00.000Z"),
+    secret: "secret-a",
+  });
 
   assert.equal(first.visitorHash, repeat.visitorHash);
   assert.notEqual(first.visitorHash, nextDay.visitorHash);
+  assert.notEqual(first.visitorHash, instagramBio.visitorHash);
   assert.equal(parseReferralVisitSource(" ManyChat "), "manychat");
+  assert.equal(parseReferralVisitSource(" Instagram-Bio "), "instagram-bio");
   assert.equal(parseReferralVisitSource("gmail"), null);
 });
 
@@ -152,7 +158,7 @@ test("referral report counts unique daily humans and scanners without exposing h
   });
 });
 
-test("landing page and Vercel config preserve the short ManyChat tracking route", () => {
+test("landing page and Vercel config preserve both short tracking routes", () => {
   const html = readFileSync(path.join(repoRoot, "index.html"), "utf8");
   const vercel = JSON.parse(readFileSync(path.join(repoRoot, "vercel.json"), "utf8"));
   assert.match(html, /fetch\("\/api\/referral-visit"/);
@@ -162,6 +168,12 @@ test("landing page and Vercel config preserve the short ManyChat tracking route"
     redirect.destination === "https://sidestream.tv/?utm_source=manychat" &&
     redirect.permanent === false
   ));
+  assert.ok(vercel.redirects.some((redirect) =>
+    redirect.source === "/ig" &&
+    redirect.destination === "https://sidestream.tv/?utm_source=instagram&utm_medium=social&utm_campaign=bio" &&
+    redirect.permanent === false
+  ));
+  assert.match(html, /instagram-bio/);
 });
 
 function fakeRequest(headers = {}) {
