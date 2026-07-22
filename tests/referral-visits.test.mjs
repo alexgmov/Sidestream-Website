@@ -173,6 +173,26 @@ test("landing page and Vercel config preserve both short tracking routes", () =>
     redirect.destination === "https://sidestream.tv/?utm_source=instagram&utm_medium=social&utm_campaign=bio" &&
     redirect.permanent === false
   ));
+  assert.ok(vercel.redirects.some((redirect) =>
+    redirect.source === "/ig/" &&
+    redirect.destination === "https://sidestream.tv/?utm_source=instagram&utm_medium=social&utm_campaign=bio" &&
+    redirect.permanent === false
+  ));
+  assert.ok(vercel.redirects.some((redirect) =>
+    redirect.source === "/alex" &&
+    redirect.destination === "https://sidestream.tv/?utm_source=instagram&utm_medium=social&utm_campaign=alex-bio" &&
+    redirect.permanent === false
+  ));
+  assert.ok(vercel.redirects.some((redirect) =>
+    redirect.source === "/alex/" &&
+    redirect.destination === "https://sidestream.tv/?utm_source=instagram&utm_medium=social&utm_campaign=alex-bio" &&
+    redirect.permanent === false
+  ));
+  assert.ok(vercel.redirects.some((redirect) =>
+    redirect.source === "/m/" &&
+    redirect.destination === "https://sidestream.tv/?utm_source=manychat" &&
+    redirect.permanent === false
+  ));
   assert.match(html, /instagram-bio/);
 });
 
