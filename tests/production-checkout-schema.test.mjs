@@ -179,6 +179,34 @@ test("catalog verification is exact, read-only, and reads no customer rows", () 
   assert.doesNotMatch(CATALOG_SQL, /FROM\s+public\.sidestream_/iu);
 });
 
+test("catalog requires exact migration indexes while allowing the later maintenance index", async () => {
+  const maintenanceMigration = await readFile(
+    path.join(
+      repoRoot,
+      "db/migrations/20260713206000_add_maintenance_indexes.sql",
+    ),
+    "utf8",
+  );
+  assert.match(
+    maintenanceMigration,
+    /create index if not exists sidestream_checkout_intents_retention_idx\s+on public\.sidestream_checkout_intents \(expires_at, id\);/u,
+  );
+
+  const indexCheck = CATALOG_SQL.match(
+    /SELECT 'checkout_indexes'[\s\S]*?UNION ALL/u,
+  )?.[0];
+  assert.ok(indexCheck);
+  assert.match(indexCheck, /index_class\.relname/u);
+  assert.match(indexCheck, /ix\.indisunique/u);
+  assert.match(indexCheck, /ix\.indisprimary/u);
+  assert.match(indexCheck, /pg_get_indexdef/u);
+  assert.match(indexCheck, /ix\.indoption/u);
+  assert.match(indexCheck, /pg_get_expr\(ix\.indpred/u);
+  assert.match(indexCheck, /\) @> \$json\$\[/u);
+  assert.doesNotMatch(indexCheck, /\) = \$json\$\[/u);
+  assert.doesNotMatch(indexCheck, /sidestream_checkout_intents_retention_idx/u);
+});
+
 test("catalog classification requires both parents and rejects a conflicting shape", () => {
   assert.equal(classifyCatalog(absentCatalog), "absent");
   assert.equal(classifyCatalog(presentCatalog), "present");

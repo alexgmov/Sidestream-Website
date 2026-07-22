@@ -67,7 +67,7 @@ const CHECKOUT_CONSTRAINTS = `[
   ["sidestream_checkout_intents_stripe_session_fields_together", "c", "CHECK (stripe_checkout_session_id IS NULL AND stripe_checkout_url IS NULL AND stripe_price_id IS NULL AND stripe_product_id IS NULL AND stripe_session_expires_at IS NULL OR length(TRIM(BOTH FROM stripe_checkout_session_id)) > 0 AND length(TRIM(BOTH FROM stripe_checkout_url)) > 0 AND length(TRIM(BOTH FROM stripe_price_id)) > 0 AND length(TRIM(BOTH FROM stripe_product_id)) > 0 AND stripe_session_expires_at IS NOT NULL)"]
 ]`;
 
-const CHECKOUT_INDEXES = `[
+const REQUIRED_CHECKOUT_INDEXES = `[
   ["sidestream_checkout_intents_account_idx", false, false, ["account_id", "created_at"], [0, 3], "(account_id IS NOT NULL)"],
   ["sidestream_checkout_intents_activation_idx", false, false, ["activation_session_id", "created_at"], [0, 3], "(activation_session_id IS NOT NULL)"],
   ["sidestream_checkout_intents_browser_token_unique", true, false, ["browser_token_hash"], [0], ""],
@@ -138,7 +138,7 @@ WITH checks(name, passed) AS (
       ),
       to_jsonb(ix.indoption::int2[]),
       COALESCE(pg_get_expr(ix.indpred, ix.indrelid), '')
-    ) ORDER BY index_class.relname), '[]'::jsonb) = $json$${CHECKOUT_INDEXES}$json$::jsonb
+    ) ORDER BY index_class.relname), '[]'::jsonb) @> $json$${REQUIRED_CHECKOUT_INDEXES}$json$::jsonb
     FROM pg_index ix
     JOIN pg_class index_class ON index_class.oid = ix.indexrelid
     WHERE ix.indrelid = to_regclass('public.sidestream_checkout_intents')
