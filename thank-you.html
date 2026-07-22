@@ -20,10 +20,7 @@
 
   * { box-sizing: border-box; }
   body {
-    background:
-      radial-gradient(circle at 76% 18%, rgba(70, 215, 138, 0.13), transparent 26rem),
-      radial-gradient(circle at 16% 78%, rgba(255, 0, 51, 0.14), transparent 30rem),
-      linear-gradient(145deg, #050506 0%, #111114 48%, #050506 100%);
+    background: var(--bg);
     color: var(--ink);
     font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", Helvetica, Arial, sans-serif;
     margin: 0;
@@ -69,14 +66,6 @@
     letter-spacing: 0;
     line-height: 0.88;
     margin: 0;
-  }
-
-  .lede {
-    color: var(--soft);
-    font-size: clamp(1rem, 2vw, 1.22rem);
-    line-height: 1.55;
-    margin: 0;
-    max-width: 650px;
   }
 
   .panel {
@@ -133,7 +122,6 @@
     <main>
       <p class="eyebrow">Payment received</p>
       <h1>Thank you.</h1>
-      <p class="lede">Sidestream Pro is unlocking on your license now. Stripe handles the receipt, and Sidestream will finish activation as soon as the payment is confirmed.</p>
 
       <section class="panel">
         <p class="status good">If Checkout started inside Sidestream, you can return to Premiere now.</p>
