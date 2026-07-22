@@ -28,12 +28,12 @@ const MIGRATION_RELATIVE_PATH =
 const MIGRATION_SHA256 =
   "030ba613aa8eb72ddbebdf9d431f0bc1f24efd7c3836592e611f74717821db94";
 const APPLY_CONFIRMATION = "--confirm-production-device-schema";
-const EXPECTED_VERCEL_PROJECT = Object.freeze({
+export const EXPECTED_VERCEL_PROJECT = Object.freeze({
   projectId: "prj_x9sRcnoAAfF6VPxseJYLBgxhhPyh",
   orgId: "team_ZcKImJwvlcCrE15nTEOWT2NC",
   projectName: "sidestream",
 });
-const EXPECTED_NEON_RESOURCE = Object.freeze({
+export const EXPECTED_NEON_RESOURCE = Object.freeze({
   storeId: "store_y3hmEgLPHG5Fgb7D",
   storeName: "neon-purple-island",
   externalResourceId: "dark-butterfly-59697025",
@@ -426,7 +426,7 @@ function parsePostgresUrl(selector, value) {
   };
 }
 
-function connectionIdentity(connection) {
+export function connectionIdentity(connection) {
   const canonicalHost = connection.hostname.replace(/^([^.]+)-pooler\./u, "$1.");
   return `${canonicalHost}:${connection.port}/${connection.database}`;
 }
@@ -544,7 +544,7 @@ function verifyMigration(repoRoot) {
   return migrationPath;
 }
 
-function requireExecutable(path, description) {
+export function requireExecutable(path, description) {
   try {
     accessSync(path, constants.X_OK);
   } catch {
@@ -576,7 +576,7 @@ function cleanNeonEnvironment(environment) {
   };
 }
 
-function runChild(spawn, command, args, options, phase) {
+export function runChild(spawn, command, args, options, phase) {
   const result = spawn(command, args, {
     encoding: "utf8",
     maxBuffer: 1024 * 1024,
@@ -590,14 +590,15 @@ function runChild(spawn, command, args, options, phase) {
   return result;
 }
 
-function pullProductionEnvironment({
+export function pullProductionEnvironment({
   environment,
   linkRoot,
   spawn,
+  temporaryPrefix = "sidestream-device-schema-",
   temporaryRoot,
   vercelPath,
 }) {
-  const directory = mkdtempSync(join(temporaryRoot, "sidestream-device-schema-"));
+  const directory = mkdtempSync(join(temporaryRoot, temporaryPrefix));
   const environmentPath = join(directory, "production.env");
   closeSync(openSync(environmentPath, "wx", 0o600));
   chmodSync(environmentPath, 0o600);
@@ -663,7 +664,7 @@ function parseLinkedNeonResource(stdout) {
   return matches[0];
 }
 
-function resolveLinkedNeonConnection({
+export function resolveLinkedNeonConnection({
   environment,
   linkRoot,
   npxPath,
@@ -726,12 +727,15 @@ function resolveLinkedNeonConnection({
   };
 }
 
-function psqlEnvironment(connection) {
+export function psqlEnvironment(
+  connection,
+  appName = "sidestream-production-device-schema",
+) {
   return {
     LANG: "C",
     LC_ALL: "C",
     PATH: "/opt/homebrew/bin:/usr/bin:/bin",
-    PGAPPNAME: "sidestream-production-device-schema",
+    PGAPPNAME: appName,
     PGCHANNELBINDING: "require",
     PGCONNECT_TIMEOUT: "15",
     PGDATABASE: connection.database,
@@ -746,7 +750,7 @@ function psqlEnvironment(connection) {
   };
 }
 
-function commonPsqlArgs() {
+export function commonPsqlArgs() {
   return [
     "--no-psqlrc",
     "--set=ON_ERROR_STOP=1",
@@ -850,7 +854,7 @@ function parseMode(args) {
   return applyCount === 1 ? "apply" : "verify";
 }
 
-function targetFingerprint(connection) {
+export function targetFingerprint(connection) {
   return createHash("sha256")
     .update(connectionIdentity(connection))
     .digest("hex")
