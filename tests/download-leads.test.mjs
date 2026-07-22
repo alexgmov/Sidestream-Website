@@ -11,6 +11,7 @@ const testSecret = "download-lead-tests-use-a-stable-secret-value";
 let compiledDirectory;
 let createDownloadLeadHandler;
 let createDownloadLinkHandler;
+let createResolveWaitlistHandler;
 let createDownloadLeadReplayHandler;
 let helpers;
 let emailHelpers;
@@ -46,6 +47,9 @@ before(async () => {
   ));
   ({ createDownloadLinkHandler } = await import(
     pathToFileURL(path.join(compiledDirectory, "api", "send-download-links.js")).href
+  ));
+  ({ createResolveWaitlistHandler } = await import(
+    pathToFileURL(path.join(compiledDirectory, "api", "resolve-waitlist.js")).href
   ));
   emailHelpers = await import(
     pathToFileURL(path.join(compiledDirectory, "api", "_lib", "download-link-email.js")).href
@@ -372,6 +376,138 @@ test("capture route returns Retry-After for a consumed database limit", async ()
   assert.equal(response.headers.get("retry-after"), "42");
   assert.equal(response.body.code, "rate_limited");
   assert.equal(fallbackCalls, 0);
+});
+
+test("Resolve waitlist route fixes the source and writes one deterministic Blob record", async () => {
+  const consumed = [];
+  const stored = [];
+  const logs = [];
+  const allowedRateLimit = {
+    allowed: true,
+    limit: 5,
+    remaining: 4,
+    retryAfterSeconds: 0,
+    resetAt: "2026-07-14T12:10:00.000Z",
+  };
+  const handler = createResolveWaitlistHandler({
+    now: () => new Date("2026-07-14T12:00:00.000Z"),
+    consumeLimit: async (lead, options) => {
+      consumed.push({ lead, options });
+      return allowedRateLimit;
+    },
+    storeLead: async (pathname, lead) => stored.push({ pathname, lead }),
+    log: (entry) => logs.push(entry),
+  });
+  const response = await invoke(handler, {
+    path: "/api/resolve-waitlist",
+    headers: {
+      "content-type": "application/json",
+      "x-forwarded-for": "203.0.113.44",
+      referer: "https://sidestream.tv/?email=private@example.com",
+    },
+    body: JSON.stringify({
+      email: "Person@Example.com",
+      source: "attacker-controlled-source",
+      page: "/?email=private@example.com",
+      utmCampaign: "resolve_launch",
+    }),
+  });
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(response.body, { ok: true });
+  assert.equal(response.headers.get("ratelimit-limit"), "5");
+  assert.equal(consumed.length, 1);
+  assert.equal(consumed[0].lead.email, "person@example.com");
+  assert.equal(consumed[0].lead.ctaSource, "davinci-resolve-waitlist");
+  assert.equal(consumed[0].lead.sourcePage, "/");
+  assert.equal(consumed[0].lead.referrer, "https://sidestream.tv/");
+  assert.equal(consumed[0].lead.utmCampaign, "resolve_launch");
+  assert.equal(consumed[0].options.ipAddress, "203.0.113.44");
+  assert.equal(stored.length, 1);
+  assert.equal(stored[0].lead, consumed[0].lead);
+  assert.match(
+    stored[0].pathname,
+    /^sidestream\/resolve-waitlist\/v1\/fallback-v2\/[0-9a-f]{2}\/[0-9a-f]{64}\.json$/,
+  );
+  assert.equal(stored[0].pathname.includes("person"), false);
+  assert.deepEqual(logs, [{
+    event: "resolve_waitlist_capture",
+    outcome: "accepted",
+    count: 1,
+  }]);
+  assert.equal(JSON.stringify(logs).includes("person@example.com"), false);
+});
+
+test("Resolve waitlist route rejects invalid requests before Blob access", async () => {
+  let blobCalls = 0;
+  const handler = createResolveWaitlistHandler({
+    consumeLimit: async () => {
+      blobCalls += 1;
+      throw new Error("unexpected limiter call");
+    },
+    storeLead: async () => {
+      blobCalls += 1;
+    },
+    log: () => {},
+  });
+  const unsupported = await invoke(handler, {
+    path: "/api/resolve-waitlist",
+    headers: { "content-type": "text/plain" },
+    body: JSON.stringify({ email: "person@example.com" }),
+  });
+  const invalid = await invoke(handler, {
+    path: "/api/resolve-waitlist",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ email: "not-an-email" }),
+  });
+
+  assert.equal(unsupported.status, 415);
+  assert.equal(invalid.status, 400);
+  assert.equal(invalid.body.code, "invalid_email");
+  assert.equal(blobCalls, 0);
+});
+
+test("Resolve waitlist route rate limits and fails closed when Blob is unavailable", async () => {
+  let storeCalls = 0;
+  const limitedHandler = createResolveWaitlistHandler({
+    consumeLimit: async () => ({
+      allowed: false,
+      limit: 5,
+      remaining: 0,
+      retryAfterSeconds: 60,
+      resetAt: "2026-07-14T12:10:00.000Z",
+    }),
+    storeLead: async () => {
+      storeCalls += 1;
+    },
+    log: () => {},
+  });
+  const limited = await invoke(limitedHandler, {
+    path: "/api/resolve-waitlist",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ email: "person@example.com" }),
+  });
+  assert.equal(limited.status, 429);
+  assert.equal(limited.headers.get("retry-after"), "60");
+  assert.equal(storeCalls, 0);
+
+  const unavailableHandler = createResolveWaitlistHandler({
+    consumeLimit: async () => {
+      throw new Error("Blob failed for private@example.com");
+    },
+    storeLead: async () => {
+      storeCalls += 1;
+    },
+    log: () => {},
+  });
+  const unavailable = await invoke(unavailableHandler, {
+    path: "/api/resolve-waitlist",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ email: "private@example.com" }),
+  });
+  assert.equal(unavailable.status, 503);
+  assert.equal(unavailable.body.code, "waitlist_unavailable");
+  assert.equal(storeCalls, 0);
 });
 
 test("database outage writes one deterministic private-safe fallback identity", async () => {

@@ -339,6 +339,18 @@
   .btn[data-windows-download] {
     --download-platform-mark: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M3 5.3l8-1.1v7.4H3V5.3zm9-1.3l9-1.3v8.9h-9V4zm0 8.9h9v8.8l-9-1.3v-7.5zM3 12.9h8v7.3l-8-1.1v-6.2z'/%3E%3C/svg%3E");
   }
+  .btn[data-resolve-waitlist-open] {
+    border-radius: 999px;
+    background: #fff;
+    color: #000;
+    border-color: #fff;
+    backdrop-filter: none;
+  }
+  .resolve-mark {
+    flex: none;
+    width: 18px;
+    height: 16px;
+  }
   .btn[data-download]::before,
   .btn[data-windows-download]::before {
     content: "";
@@ -353,7 +365,8 @@
     width: 13px;
   }
   .btn[data-download]:hover,
-  .btn[data-windows-download]:hover {
+  .btn[data-windows-download]:hover,
+  .btn[data-resolve-waitlist-open]:hover {
     background: var(--blue);
     color: #fff;
     border-color: var(--blue);
@@ -1153,18 +1166,18 @@
     </section>
   </div>
 
-  <div class="email-gate" id="windows-waitlist-gate" hidden>
-    <button class="email-gate-backdrop" type="button" data-windows-waitlist-close aria-label="Close Windows waitlist prompt"></button>
-    <section class="email-gate-dialog" role="dialog" aria-modal="true" aria-labelledby="windows-waitlist-title" aria-describedby="windows-waitlist-copy">
-      <button class="email-gate-close" type="button" data-windows-waitlist-close aria-label="Close Windows waitlist prompt"></button>
-      <p class="email-gate-eyebrow">Windows waitlist</p>
-      <h2 class="email-gate-title" id="windows-waitlist-title">Join the Windows waitlist</h2>
-      <p class="email-gate-copy" id="windows-waitlist-copy">Drop your email and we will notify you when the Windows build is ready.</p>
-      <form class="email-gate-form" id="windows-waitlist-form" novalidate>
-        <label class="email-gate-label" for="windows-waitlist-input">Email</label>
-        <input class="email-gate-input" id="windows-waitlist-input" name="email" type="email" inputmode="email" autocomplete="email" placeholder="you@email.com" required>
-        <p class="email-gate-message" id="windows-waitlist-status" aria-live="polite"></p>
-        <button class="btn btn-primary btn-lg" id="windows-waitlist-submit" type="submit">Join waitlist</button>
+  <div class="email-gate" id="resolve-waitlist-gate" hidden>
+    <button class="email-gate-backdrop" type="button" data-resolve-waitlist-close aria-label="Close DaVinci Resolve waitlist prompt"></button>
+    <section class="email-gate-dialog" role="dialog" aria-modal="true" aria-labelledby="resolve-waitlist-title" aria-describedby="resolve-waitlist-copy">
+      <button class="email-gate-close" type="button" data-resolve-waitlist-close aria-label="Close DaVinci Resolve waitlist prompt"></button>
+      <p class="email-gate-eyebrow">DaVinci Resolve</p>
+      <h2 class="email-gate-title" id="resolve-waitlist-title">Join the Resolve waitlist</h2>
+      <p class="email-gate-copy" id="resolve-waitlist-copy">Drop your email and we will notify you when Sidestream for DaVinci Resolve is ready.</p>
+      <form class="email-gate-form" id="resolve-waitlist-form" novalidate>
+        <label class="email-gate-label" for="resolve-waitlist-input">Email</label>
+        <input class="email-gate-input" id="resolve-waitlist-input" name="email" type="email" inputmode="email" autocomplete="email" placeholder="you@email.com" required>
+        <p class="email-gate-message" id="resolve-waitlist-status" aria-live="polite"></p>
+        <button class="btn btn-primary btn-lg" id="resolve-waitlist-submit" type="submit">Join waitlist</button>
       </form>
     </section>
   </div>
@@ -1210,6 +1223,14 @@
           <div class="cta-row desktop-download-ctas">
             <a class="btn btn-primary btn-lg" href="https://sidestream.tv/api/download" data-download aria-label="Download Sidestream for Mac">Download</a>
             <a class="btn btn-primary btn-lg" href="https://sidestream.tv/api/download?platform=win32-x64" data-windows-download aria-label="Download Sidestream for Windows">Download</a>
+            <button class="btn btn-primary btn-lg" type="button" data-resolve-waitlist-open aria-haspopup="dialog">
+              <svg class="resolve-mark" viewBox="244 75 123 108" aria-hidden="true" focusable="false">
+                <path d="M305.532 78.807C320.495 78.807 332.643 92.54 332.643 105.761S310.932 144.409 305.532 144.554C300.132 144.699 278.421 118.981 278.421 105.761S290.569 78.807 305.532 78.807Z" fill="#3fa2e6" stroke="#0b0f15" stroke-width="0.8"/>
+                <path d="M305.532 78.807C320.495 78.807 332.643 92.54 332.643 105.761S310.932 144.409 305.532 144.554C300.132 144.699 278.421 118.981 278.421 105.761S290.569 78.807 305.532 78.807Z" fill="#d7fb0e" stroke="#0b0f15" stroke-width="0.8" transform="rotate(120 305.532 144.554)"/>
+                <path d="M305.532 78.807C320.495 78.807 332.643 92.54 332.643 105.761S310.932 144.409 305.532 144.554C300.132 144.699 278.421 118.981 278.421 105.761S290.569 78.807 305.532 78.807Z" fill="#ff062d" stroke="#0b0f15" stroke-width="0.8" transform="rotate(240 305.532 144.554)"/>
+              </svg>
+              Resolve Waitlist
+            </button>
           </div>
           <form class="mobile-download-handoff" id="mobile-download-handoff" novalidate>
             <p class="mobile-download-handoff-title">Get Sidestream on your computer</p>
@@ -1590,20 +1611,20 @@
     const emailGateError = document.getElementById("download-email-error");
     const emailGateSubmit = document.getElementById("download-email-submit");
     const emailGateCloseControls = Array.from(document.querySelectorAll("[data-email-gate-close]"));
-    const windowsWaitlistGate = document.getElementById("windows-waitlist-gate");
-    const windowsWaitlistForm = document.getElementById("windows-waitlist-form");
-    const windowsWaitlistInput = document.getElementById("windows-waitlist-input");
-    const windowsWaitlistSubmit = document.getElementById("windows-waitlist-submit");
-    const windowsWaitlistStatus = document.getElementById("windows-waitlist-status");
-    const windowsWaitlistOpenControls = Array.from(document.querySelectorAll("[data-windows-waitlist-open]"));
-    const windowsWaitlistCloseControls = Array.from(document.querySelectorAll("[data-windows-waitlist-close]"));
+    const resolveWaitlistGate = document.getElementById("resolve-waitlist-gate");
+    const resolveWaitlistForm = document.getElementById("resolve-waitlist-form");
+    const resolveWaitlistInput = document.getElementById("resolve-waitlist-input");
+    const resolveWaitlistSubmit = document.getElementById("resolve-waitlist-submit");
+    const resolveWaitlistStatus = document.getElementById("resolve-waitlist-status");
+    const resolveWaitlistOpenControls = Array.from(document.querySelectorAll("[data-resolve-waitlist-open]"));
+    const resolveWaitlistCloseControls = Array.from(document.querySelectorAll("[data-resolve-waitlist-close]"));
     const mobileDownloadForm = document.getElementById("mobile-download-handoff");
     const mobileDownloadInput = document.getElementById("mobile-download-email");
     const mobileDownloadSubmit = document.getElementById("mobile-download-submit");
     const mobileDownloadStatus = document.getElementById("mobile-download-status");
     const mobileDownloadMedia = window.matchMedia("(max-width: 900px)");
     const downloadEmailStorageKey = "sidestream.download.email";
-    const windowsWaitlistStorageKey = "sidestream.windows.email";
+    const resolveWaitlistStorageKey = "sidestream.resolve.email";
     let pendingDownloadLink = null;
     let pendingDownloadUrl = "/api/download";
     let mobileDownloadAttemptEmail = "";
@@ -1637,17 +1658,17 @@
       }
     }
 
-    function getStoredWindowsWaitlistEmail() {
+    function getStoredResolveWaitlistEmail() {
       try {
-        return window.localStorage.getItem(windowsWaitlistStorageKey) || "";
+        return window.localStorage.getItem(resolveWaitlistStorageKey) || "";
       } catch (error) {
         return "";
       }
     }
 
-    function setStoredWindowsWaitlistEmail(email) {
+    function setStoredResolveWaitlistEmail(email) {
       try {
-        window.localStorage.setItem(windowsWaitlistStorageKey, email);
+        window.localStorage.setItem(resolveWaitlistStorageKey, email);
       } catch (error) {
         // Email capture should still work when localStorage is unavailable.
       }
@@ -1665,17 +1686,17 @@
       window.setTimeout(() => emailGateInput.focus(), 0);
     }
 
-    function openWindowsWaitlist() {
-      if (!windowsWaitlistGate || !windowsWaitlistInput || !windowsWaitlistSubmit || !windowsWaitlistStatus) return;
+    function openResolveWaitlist() {
+      if (!resolveWaitlistGate || !resolveWaitlistInput || !resolveWaitlistSubmit || !resolveWaitlistStatus) return;
 
-      windowsWaitlistStatus.textContent = "";
-      windowsWaitlistStatus.classList.remove("is-error", "is-success");
-      windowsWaitlistSubmit.disabled = false;
-      windowsWaitlistSubmit.textContent = "Join waitlist";
-      windowsWaitlistInput.value = getStoredWindowsWaitlistEmail();
-      windowsWaitlistGate.hidden = false;
+      resolveWaitlistStatus.textContent = "";
+      resolveWaitlistStatus.classList.remove("is-error", "is-success");
+      resolveWaitlistSubmit.disabled = false;
+      resolveWaitlistSubmit.textContent = "Join waitlist";
+      resolveWaitlistInput.value = getStoredResolveWaitlistEmail();
+      resolveWaitlistGate.hidden = false;
       document.body.classList.add("email-gate-open");
-      window.setTimeout(() => windowsWaitlistInput.focus(), 0);
+      window.setTimeout(() => resolveWaitlistInput.focus(), 0);
     }
 
     function closeEmailGate(options = {}) {
@@ -1689,13 +1710,13 @@
       }
     }
 
-    function closeWindowsWaitlist() {
-      if (!windowsWaitlistGate || !windowsWaitlistStatus) return;
+    function closeResolveWaitlist() {
+      if (!resolveWaitlistGate || !resolveWaitlistStatus) return;
 
-      windowsWaitlistGate.hidden = true;
+      resolveWaitlistGate.hidden = true;
       document.body.classList.remove("email-gate-open");
-      windowsWaitlistStatus.textContent = "";
-      windowsWaitlistStatus.classList.remove("is-error", "is-success");
+      resolveWaitlistStatus.textContent = "";
+      resolveWaitlistStatus.classList.remove("is-error", "is-success");
     }
 
     function startDownload(url) {
@@ -1727,6 +1748,36 @@
       } catch (error) {
         console.warn("Sidestream download email capture failed", error);
         return false;
+      } finally {
+        window.clearTimeout(timeout);
+      }
+    }
+
+    async function recordResolveWaitlistEmail(email) {
+      const controller = new AbortController();
+      const timeout = window.setTimeout(() => controller.abort(), 5000);
+
+      try {
+        const response = await fetch("/api/resolve-waitlist", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            email,
+            page: window.location.pathname
+          }),
+          signal: controller.signal
+        });
+
+        if (!response.ok) {
+          const error = new Error("Resolve waitlist returned " + response.status);
+          error.status = response.status;
+          throw error;
+        }
+
+        return { ok: true };
+      } catch (error) {
+        console.warn("Sidestream Resolve waitlist capture failed", error);
+        return { ok: false, status: error && error.status };
       } finally {
         window.clearTimeout(timeout);
       }
@@ -1792,18 +1843,18 @@
     emailGateCloseControls.forEach((control) =>
       control.addEventListener("click", () => closeEmailGate())
     );
-    windowsWaitlistOpenControls.forEach((control) =>
-      control.addEventListener("click", openWindowsWaitlist)
+    resolveWaitlistOpenControls.forEach((control) =>
+      control.addEventListener("click", openResolveWaitlist)
     );
-    windowsWaitlistCloseControls.forEach((control) =>
-      control.addEventListener("click", closeWindowsWaitlist)
+    resolveWaitlistCloseControls.forEach((control) =>
+      control.addEventListener("click", closeResolveWaitlist)
     );
     window.addEventListener("keydown", (ev) => {
       if (ev.key === "Escape" && emailGate && !emailGate.hidden) {
         closeEmailGate();
       }
-      if (ev.key === "Escape" && windowsWaitlistGate && !windowsWaitlistGate.hidden) {
-        closeWindowsWaitlist();
+      if (ev.key === "Escape" && resolveWaitlistGate && !resolveWaitlistGate.hidden) {
+        closeResolveWaitlist();
       }
     });
     emailGateForm.addEventListener("submit", async (ev) => {
@@ -1883,36 +1934,38 @@
         }
       });
     }
-    if (windowsWaitlistForm && windowsWaitlistInput && windowsWaitlistSubmit && windowsWaitlistStatus) {
-      windowsWaitlistForm.addEventListener("submit", async (ev) => {
+    if (resolveWaitlistForm && resolveWaitlistInput && resolveWaitlistSubmit && resolveWaitlistStatus) {
+      resolveWaitlistForm.addEventListener("submit", async (ev) => {
         ev.preventDefault();
-        const email = windowsWaitlistInput.value.trim().toLowerCase();
+        const email = resolveWaitlistInput.value.trim().toLowerCase();
 
-        windowsWaitlistStatus.classList.remove("is-error", "is-success");
+        resolveWaitlistStatus.classList.remove("is-error", "is-success");
         if (!isValidDownloadEmail(email)) {
-          windowsWaitlistStatus.textContent = "Enter a valid email address.";
-          windowsWaitlistStatus.classList.add("is-error");
-          windowsWaitlistInput.focus();
+          resolveWaitlistStatus.textContent = "Enter a valid email address.";
+          resolveWaitlistStatus.classList.add("is-error");
+          resolveWaitlistInput.focus();
           return;
         }
 
-        windowsWaitlistStatus.textContent = "";
-        windowsWaitlistSubmit.disabled = true;
-        windowsWaitlistSubmit.textContent = "Joining...";
+        resolveWaitlistStatus.textContent = "";
+        resolveWaitlistSubmit.disabled = true;
+        resolveWaitlistSubmit.textContent = "Joining...";
 
-        const captured = await recordDownloadEmail(email, "windows-waitlist");
-        if (!captured) {
-          windowsWaitlistStatus.textContent = "Could not save that email. Try again.";
-          windowsWaitlistStatus.classList.add("is-error");
-          windowsWaitlistSubmit.disabled = false;
-          windowsWaitlistSubmit.textContent = "Notify me";
+        const capture = await recordResolveWaitlistEmail(email);
+        if (!capture.ok) {
+          resolveWaitlistStatus.textContent = capture.status === 429
+            ? "Too many requests. Try again in a few minutes."
+            : "Could not save that email. Try again.";
+          resolveWaitlistStatus.classList.add("is-error");
+          resolveWaitlistSubmit.disabled = false;
+          resolveWaitlistSubmit.textContent = "Join waitlist";
           return;
         }
 
-        setStoredWindowsWaitlistEmail(email);
-        windowsWaitlistStatus.textContent = "You're on the Windows list. We will notify you when it is ready.";
-        windowsWaitlistStatus.classList.add("is-success");
-        windowsWaitlistSubmit.textContent = "Joined";
+        setStoredResolveWaitlistEmail(email);
+        resolveWaitlistStatus.textContent = "You're on the DaVinci Resolve list. We will notify you when it is ready.";
+        resolveWaitlistStatus.classList.add("is-success");
+        resolveWaitlistSubmit.textContent = "Joined";
       });
     }
     document.querySelectorAll("[data-purchase]").forEach((el) =>
