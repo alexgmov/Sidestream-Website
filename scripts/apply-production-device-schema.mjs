@@ -21,6 +21,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const SCRIPT_DIRECTORY = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_REPO_ROOT = resolve(SCRIPT_DIRECTORY, "..");
 const VERCEL_PATH = "/opt/homebrew/bin/vercel";
+const NPX_PATH = "/opt/homebrew/bin/npx";
 const PSQL_PATH = "/opt/homebrew/bin/psql";
 const MIGRATION_RELATIVE_PATH =
   "db/migrations/20260714190000_add_single_active_account_devices.sql";
@@ -32,6 +33,15 @@ const EXPECTED_VERCEL_PROJECT = Object.freeze({
   orgId: "team_ZcKImJwvlcCrE15nTEOWT2NC",
   projectName: "sidestream",
 });
+const EXPECTED_NEON_RESOURCE = Object.freeze({
+  storeId: "store_y3hmEgLPHG5Fgb7D",
+  storeName: "neon-purple-island",
+  externalResourceId: "dark-butterfly-59697025",
+  branchName: "main",
+  roleName: "neondb_owner",
+  databaseName: "neondb",
+});
+const NEONCTL_VERSION = "2.35.2";
 const CONNECTION_SELECTORS = Object.freeze([
   "STORAGE_POSTGRES_URL_NON_POOLING",
   "STORAGE_DATABASE_URL_UNPOOLED",
@@ -137,7 +147,10 @@ checks(name, passed) AS (
       a.attname,
       format_type(a.atttypid, a.atttypmod),
       a.attnotnull,
-      COALESCE(pg_get_expr(d.adbin, d.adrelid), '')
+      CASE COALESCE(pg_get_expr(d.adbin, d.adrelid), '')
+        WHEN 'pg_catalog.gen_random_uuid()' THEN 'gen_random_uuid()'
+        ELSE COALESCE(pg_get_expr(d.adbin, d.adrelid), '')
+      END
     ) ORDER BY a.attnum), '[]'::jsonb) = $json$${DEVICE_COLUMNS}$json$::jsonb
     FROM pg_attribute a
     LEFT JOIN pg_attrdef d
@@ -193,7 +206,10 @@ checks(name, passed) AS (
       a.attname,
       format_type(a.atttypid, a.atttypmod),
       a.attnotnull,
-      COALESCE(pg_get_expr(d.adbin, d.adrelid), '')
+      CASE COALESCE(pg_get_expr(d.adbin, d.adrelid), '')
+        WHEN 'pg_catalog.gen_random_uuid()' THEN 'gen_random_uuid()'
+        ELSE COALESCE(pg_get_expr(d.adbin, d.adrelid), '')
+      END
     ) ORDER BY a.attnum), '[]'::jsonb) = $json$${TRANSFER_COLUMNS}$json$::jsonb
     FROM pg_attribute a
     LEFT JOIN pg_attrdef d
@@ -549,6 +565,17 @@ function cleanVercelEnvironment(environment) {
   return clean;
 }
 
+function cleanNeonEnvironment(environment) {
+  return {
+    HOME: environment.HOME,
+    NO_COLOR: "1",
+    NPM_CONFIG_AUDIT: "false",
+    NPM_CONFIG_FUND: "false",
+    NPM_CONFIG_OFFLINE: "true",
+    PATH: environment.PATH || "/opt/homebrew/bin:/usr/bin:/bin",
+  };
+}
+
 function runChild(spawn, command, args, options, phase) {
   const result = spawn(command, args, {
     encoding: "utf8",
@@ -603,6 +630,100 @@ function pullProductionEnvironment({
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
+}
+
+function parseLinkedNeonResource(stdout) {
+  let response;
+  try {
+    response = JSON.parse(String(stdout ?? ""));
+  } catch {
+    throw operatorError("linked Vercel storage inventory returned invalid output");
+  }
+  if (!Array.isArray(response?.stores)) {
+    throw operatorError("linked Vercel storage inventory returned an invalid shape");
+  }
+  const matches = response.stores.filter((store) =>
+    store?.id === EXPECTED_NEON_RESOURCE.storeId &&
+    store?.name === EXPECTED_NEON_RESOURCE.storeName &&
+    store?.type === "integration" &&
+    store?.status === "available" &&
+    store?.externalResourceId === EXPECTED_NEON_RESOURCE.externalResourceId &&
+    store?.product?.slug === "neon" &&
+    Array.isArray(store?.projectsMetadata) &&
+    store.projectsMetadata.some((project) =>
+      project?.projectId === EXPECTED_VERCEL_PROJECT.projectId &&
+      project?.name === EXPECTED_VERCEL_PROJECT.projectName &&
+      Array.isArray(project?.environments) &&
+      project.environments.includes("production")
+    )
+  );
+  if (matches.length !== 1) {
+    throw operatorError("the pinned Production Neon resource binding is unavailable");
+  }
+  return matches[0];
+}
+
+function resolveLinkedNeonConnection({
+  environment,
+  linkRoot,
+  npxPath,
+  spawn,
+  vercelPath,
+}) {
+  if (!environment.HOME) {
+    throw operatorError("HOME is required for the authenticated Neon CLI profile");
+  }
+  requireExecutable(npxPath, "npx");
+  const inventory = runChild(
+    spawn,
+    vercelPath,
+    [
+      "api",
+      "/v1/storage/stores",
+      "--raw",
+      "--no-color",
+      "--non-interactive",
+    ],
+    {
+      cwd: linkRoot,
+      env: cleanVercelEnvironment(environment),
+      stdio: ["ignore", "pipe", "pipe"],
+    },
+    "linked Vercel storage inventory",
+  );
+  parseLinkedNeonResource(inventory.stdout);
+
+  const connectionResult = runChild(
+    spawn,
+    npxPath,
+    [
+      "--offline",
+      "--yes",
+      `neonctl@${NEONCTL_VERSION}`,
+      "connection-string",
+      EXPECTED_NEON_RESOURCE.branchName,
+      `--project-id=${EXPECTED_NEON_RESOURCE.externalResourceId}`,
+      `--role-name=${EXPECTED_NEON_RESOURCE.roleName}`,
+      `--database-name=${EXPECTED_NEON_RESOURCE.databaseName}`,
+      "--pooled=false",
+      "--ssl=verify-full",
+      "--no-color",
+      "--no-analytics",
+    ],
+    {
+      env: cleanNeonEnvironment(environment),
+      stdio: ["ignore", "pipe", "pipe"],
+    },
+    "authenticated Neon connection lookup",
+  );
+  const value = String(connectionResult.stdout ?? "").trim();
+  if (!value || /\r|\n/u.test(value)) {
+    throw operatorError("authenticated Neon connection lookup returned invalid output");
+  }
+  return {
+    ...parsePostgresUrl("STORAGE_POSTGRES_URL_NON_POOLING", value),
+    source: "linked-neon-resource",
+  };
 }
 
 function psqlEnvironment(connection) {
@@ -744,6 +865,7 @@ export function runOperator(args, dependencies = {}) {
   const stdout = dependencies.stdout ?? process.stdout;
   const temporaryRoot = dependencies.temporaryRoot ?? tmpdir();
   const vercelPath = dependencies.vercelPath ?? VERCEL_PATH;
+  const npxPath = dependencies.npxPath ?? NPX_PATH;
   const psqlPath = dependencies.psqlPath ?? PSQL_PATH;
 
   rejectInheritedPostgresSelectors(environment);
@@ -761,7 +883,24 @@ export function runOperator(args, dependencies = {}) {
   if ((pulled.SIDESTREAM_DEVICE_POLICY_MODE ?? "").trim().toLowerCase() === "enforce") {
     throw operatorError("SIDESTREAM_DEVICE_POLICY_MODE=enforce blocks this operation");
   }
-  const connection = selectProductionConnection(pulled);
+  let connection;
+  try {
+    connection = {
+      ...selectProductionConnection(pulled),
+      source: "vercel-production-env",
+    };
+  } catch (error) {
+    if (error.message !== "no allowlisted Production Neon connection selector is available") {
+      throw error;
+    }
+    connection = resolveLinkedNeonConnection({
+      environment,
+      linkRoot: project.root,
+      npxPath,
+      spawn,
+      vercelPath,
+    });
+  }
   const fingerprint = targetFingerprint(connection);
   const before = classifyCatalog(inspectCatalog(spawn, psqlPath, connection));
 
@@ -770,7 +909,7 @@ export function runOperator(args, dependencies = {}) {
       throw operatorError("Production device schema is absent");
     }
     stdout.write(
-      `PASS mode=verify project=${project.link.projectName} projectId=${project.link.projectId} selector=${connection.selector} target=${fingerprint} schema=present\n`,
+      `PASS mode=verify project=${project.link.projectName} projectId=${project.link.projectId} selector=${connection.selector} source=${connection.source} target=${fingerprint} schema=present\n`,
     );
     return { mode, before, after: before, migration: "not-run", fingerprint };
   }
@@ -784,7 +923,7 @@ export function runOperator(args, dependencies = {}) {
   }
   const migration = before === "absent" ? "applied" : "already-present";
   stdout.write(
-    `PASS mode=apply project=${project.link.projectName} projectId=${project.link.projectId} selector=${connection.selector} target=${fingerprint} before=${before} migration=${migration} after=${after}\n`,
+    `PASS mode=apply project=${project.link.projectName} projectId=${project.link.projectId} selector=${connection.selector} source=${connection.source} target=${fingerprint} before=${before} migration=${migration} after=${after}\n`,
   );
   return { mode, before, after, migration, fingerprint };
 }

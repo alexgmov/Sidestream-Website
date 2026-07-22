@@ -32,6 +32,19 @@ const projectLink = {
   orgId: "team_ZcKImJwvlcCrE15nTEOWT2NC",
   projectName: "sidestream",
 };
+const linkedNeonStore = {
+  id: "store_y3hmEgLPHG5Fgb7D",
+  name: "neon-purple-island",
+  type: "integration",
+  status: "available",
+  externalResourceId: "dark-butterfly-59697025",
+  product: { slug: "neon" },
+  projectsMetadata: [{
+    projectId: projectLink.projectId,
+    name: projectLink.projectName,
+    environments: ["production", "preview"],
+  }],
+};
 const unpooledUrl =
   "postgresql://sidestream_owner:very-secret@ep-steady-field.us-east-2.aws.neon.tech/neondb?sslmode=require&channel_binding=require";
 const pooledUrl =
@@ -88,6 +101,8 @@ function serializeEnvironment({
 function createSynchronousChildStub({
   catalogs = [presentCatalog],
   environmentContents = serializeEnvironment(),
+  linkedConnectionUrl = unpooledUrl,
+  linkedStores = [linkedNeonStore],
 } = {}) {
   const calls = [];
   let catalogIndex = 0;
@@ -110,6 +125,16 @@ function createSynchronousChildStub({
         pulledEnvironmentPath = args[2];
         writeFileSync(pulledEnvironmentPath, environmentContents, { mode: 0o644 });
         return { status: 0, stdout: "", stderr: "" };
+      }
+      if (args[0] === "api" && args[1] === "/v1/storage/stores") {
+        return {
+          status: 0,
+          stdout: JSON.stringify({ stores: linkedStores }),
+          stderr: "",
+        };
+      }
+      if (args.includes("neonctl@2.35.2") && args.includes("connection-string")) {
+        return { status: 0, stdout: `${linkedConnectionUrl}\n`, stderr: "" };
       }
       if (args.includes("--file=-")) {
         const catalog = catalogs[Math.min(catalogIndex, catalogs.length - 1)];
@@ -138,6 +163,7 @@ function runWithFixture(root, stub, args, output = []) {
     stdout: { write: (value) => output.push(value) },
     temporaryRoot: root,
     vercelPath: process.execPath,
+    npxPath: process.execPath,
   });
 }
 
@@ -274,6 +300,7 @@ test("verify is read-only, secret-free, scrubbed, and removes the mode-0600 env 
   assert.ok(catalogCall.args.includes("--set=ON_ERROR_STOP=1"));
   assert.ok(catalogCall.args.includes("--file=-"));
   assert.match(catalogCall.options.input, /SET TRANSACTION READ ONLY/u);
+  assert.match(catalogCall.options.input, /pg_catalog\.gen_random_uuid\(\)/u);
   assert.match(catalogCall.options.input, /sidestream_account_devices_one_active_production/u);
   assert.match(catalogCall.options.input, /sidestream_device_transfers_limit_window_idx/u);
   assert.doesNotMatch(catalogCall.options.input, /FROM public\.sidestream_accounts/u);
@@ -286,6 +313,63 @@ test("verify is read-only, secret-free, scrubbed, and removes the mode-0600 env 
     `${catalogCall.command} ${catalogCall.args.join(" ")}`,
     /very-secret|sidestream_owner/u,
   );
+});
+
+test("empty sensitive selectors use only the pinned linked Neon resource", async (context) => {
+  const root = await createFixtureRepository();
+  context.after(() => rm(root, { recursive: true, force: true }));
+  const stub = createSynchronousChildStub({
+    environmentContents: 'SIDESTREAM_DEVICE_POLICY_MODE="observe"\n',
+  });
+  const output = [];
+
+  const result = runWithFixture(root, stub, ["--verify"], output);
+  assert.equal(result.before, "present");
+  assert.match(output.join(""), /source=linked-neon-resource/u);
+  assert.doesNotMatch(output.join(""), /very-secret|sidestream_owner/u);
+  assert.equal(existsSync(path.dirname(stub.pulledEnvironmentPath)), false);
+
+  const inventoryCall = stub.calls[1];
+  assert.deepEqual(inventoryCall.args.slice(0, 2), [
+    "api",
+    "/v1/storage/stores",
+  ]);
+  assert.equal(inventoryCall.options.env.TOP_SECRET, undefined);
+
+  const neonCall = stub.calls[2];
+  assert.ok(neonCall.args.includes("--offline"));
+  assert.ok(neonCall.args.includes("neonctl@2.35.2"));
+  assert.ok(neonCall.args.includes("--project-id=dark-butterfly-59697025"));
+  assert.ok(neonCall.args.includes("--pooled=false"));
+  assert.equal(neonCall.options.env.NPM_CONFIG_OFFLINE, "true");
+  assert.equal(neonCall.options.env.TOP_SECRET, undefined);
+  assert.doesNotMatch(
+    `${neonCall.command} ${neonCall.args.join(" ")}`,
+    /very-secret|sidestream_owner/u,
+  );
+
+  const catalogCall = stub.calls[3];
+  assert.match(catalogCall.options.input, /SET TRANSACTION READ ONLY/u);
+  assert.equal(catalogCall.options.env.PGPASSWORD, "very-secret");
+});
+
+test("linked Neon fallback rejects a mismatched Vercel resource before lookup or psql", async (context) => {
+  const root = await createFixtureRepository();
+  context.after(() => rm(root, { recursive: true, force: true }));
+  const stub = createSynchronousChildStub({
+    environmentContents: "",
+    linkedStores: [{
+      ...linkedNeonStore,
+      externalResourceId: "ancient-breeze-53489732",
+    }],
+  });
+
+  assert.throws(
+    () => runWithFixture(root, stub, ["--verify"]),
+    /pinned Production Neon resource binding is unavailable/u,
+  );
+  assert.equal(stub.calls.length, 2);
+  assert.equal(existsSync(path.dirname(stub.pulledEnvironmentPath)), false);
 });
 
 test("apply requires the exact confirmation before pulling provider state", async (context) => {
