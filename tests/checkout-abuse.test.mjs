@@ -81,6 +81,7 @@ test("anonymous GET surfaces stay read-only while activation GET resumes attache
   let stripeWrites = 0;
   let confirmationSequence = 0;
   let activationResumes = 0;
+  let currentSession = null;
   const confirmation = (activationKey = "", hasCheckoutSession = false) => ({
     intentId: VALID_INTENT_ID,
     browserToken: "browser-capability",
@@ -108,7 +109,7 @@ test("anonymous GET surfaces stay read-only while activation GET resumes attache
           return { ok: true, url: "https://checkout.stripe.test/shipped-panel" };
         },
         getBaseUrl: () => BASE_URL,
-        getSession: async () => null,
+        getSession: async () => currentSession,
         methodNotAllowed,
         redirect,
         async resumeCheckoutIntentConfirmation() {
@@ -147,6 +148,19 @@ test("anonymous GET surfaces stay read-only while activation GET resumes attache
     activation.response.getHeader("location"),
     "https://checkout.stripe.test/shipped-panel",
   );
+  currentSession = accountSession({ active: true });
+  const activeOwner = await invokeHandler(start, {
+    method: "GET",
+    url: "/api/checkout/start?activation=activation-shipped-panel",
+    headers: { host: "sidestream.test", "x-forwarded-proto": "https" },
+  });
+  assert.equal(activeOwner.response.statusCode, 302);
+  assert.equal(
+    activeOwner.response.getHeader("location"),
+    `${BASE_URL}/api/activation/claim?activation=activation-shipped-panel`,
+  );
+  assert.equal(activationResumes, 1);
+  currentSession = null;
   const legacyBare = await invokeHandler(start, {
     method: "GET",
     url: "/api/checkout/start",
@@ -574,9 +588,30 @@ test("shipped activation checkout remains complete on the pre-hardening Producti
     });
     assert.equal(checkout.ok, true);
     assert.match(checkout.url, /^https:\/\/checkout\.stripe\.test\//);
+    const resumedCheckout = await account.createOrResumeActivationCheckout({
+      activationKey: activation.activationKey,
+      baseUrl: BASE_URL,
+    });
+    assert.deepEqual(resumedCheckout, checkout);
     assert.equal(stripe.countWrites("checkout.sessions.create"), 1);
 
     const checkoutSession = stripe.sessionCreateWrites[0].session;
+    assert.equal(
+      stripe.sessionCreateWrites[0].options.idempotencyKey,
+      getActivationCheckoutIdempotencyKey(activation.activationKey),
+    );
+    const attachedCheckout = await databasePool.query(
+      `
+        select stripe_checkout_session_id
+        from public.sidestream_activation_sessions
+        where activation_key = $1
+      `,
+      [activation.activationKey],
+    );
+    assert.equal(
+      attachedCheckout.rows[0].stripe_checkout_session_id,
+      checkoutSession.id,
+    );
     stripe.complete(checkoutSession.id, {
       email: "shipped-panel-buyer@example.com",
       name: "Shipped Panel Buyer",
