@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { access, readFile } from "node:fs/promises";
 import test from "node:test";
 import {
   canonicalLicenseEntitlementRank,
@@ -333,18 +333,11 @@ test("runtime wiring persists lifecycle facts and atomically clears both credent
     accountSource,
     eventsSource,
     migrationSource,
-    commerceSource,
-    commerceMigrationSource,
   ] = await Promise.all([
     readFile(new URL("../api/_lib/account.ts", import.meta.url), "utf8"),
     readFile(new URL("../api/_lib/stripe-events.ts", import.meta.url), "utf8"),
     readFile(new URL(
       "../db/migrations/20260713204000_add_entitlement_lifecycle.sql",
-      import.meta.url,
-    ), "utf8"),
-    readFile(new URL("../api/_lib/customer-commerce.ts", import.meta.url), "utf8"),
-    readFile(new URL(
-      "../db/migrations/20260715122000_add_customer_commerce_ledger.sql",
       import.meta.url,
     ), "utf8"),
   ]);
@@ -367,7 +360,14 @@ test("runtime wiring persists lifecycle facts and atomically clears both credent
   assert.match(accountSource, /prices\.retrieve/);
   assert.match(accountSource, /products\.retrieve/);
   assert.match(eventsSource, /subscriptions\.retrieve/);
-  assert.match(eventsSource, /materializeCustomerCommerceEvent/);
+  assert.doesNotMatch(
+    eventsSource,
+    /customer-commerce|materializeCustomerCommerceEvent|sidestream_customer_commerce_apply/,
+  );
+  await assert.rejects(
+    access(new URL("../api/_lib/customer-commerce.ts", import.meta.url)),
+    (error) => error.code === "ENOENT",
+  );
   for (const eventType of [
     "charge.refunded",
     "charge.dispute.created",
@@ -384,11 +384,6 @@ test("runtime wiring persists lifecycle facts and atomically clears both credent
     accountSource,
     /license_state\.entitlement_status = 'active'[\s\S]*l\.plan_key in/,
   );
-  assert.doesNotMatch(commerceSource, /sidestream_licenses|entitlement_status/);
-  assert.doesNotMatch(commerceMigrationSource, /(?:update|alter table) public\.sidestream_licenses/i);
-  for (const status of ["warning_closed", "prevented", "lost", "won"]) {
-    assert.match(commerceSource, new RegExp(`\\b${status}\\b`));
-  }
 });
 
 test("every production license read tolerates the pre-lifecycle schema", async () => {
