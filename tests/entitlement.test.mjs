@@ -441,8 +441,9 @@ test("shipped v1.0.14 Upgrade claims rewrite directly to Checkout", () => {
   assert.equal(post.headers.get("x-middleware-next"), "1");
 });
 
-test("older unmarked shipped Upgrade claims redirect before account authentication", async () => {
+test("older unmarked shipped Upgrade claims keep active owners out of Checkout", async () => {
   const claim = await readFile(new URL("../api/activation/claim.ts", import.meta.url), "utf8");
+  const sessionRead = claim.indexOf("const session = await getSession(request)");
   const pendingUpgrade = claim.indexOf(
     "await isPendingShippedPanelUpgrade(activationKey)",
   );
@@ -451,11 +452,12 @@ test("older unmarked shipped Upgrade claims redirect before account authenticati
     pendingUpgrade,
   );
   const accountAuthentication = claim.indexOf(
-    "const session = await getSession(request)",
-    pendingUpgrade,
+    "if (!session)",
+    checkoutRedirect,
   );
 
-  assert.ok(pendingUpgrade >= 0);
+  assert.ok(sessionRead >= 0 && pendingUpgrade > sessionRead);
+  assert.match(claim.slice(sessionRead, pendingUpgrade), /!session\?\.license\.active/);
   assert.ok(checkoutRedirect > pendingUpgrade);
   assert.ok(accountAuthentication > checkoutRedirect);
 });

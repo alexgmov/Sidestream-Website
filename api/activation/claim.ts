@@ -78,16 +78,21 @@ export default async function handler(
       });
     }
 
+    const session = await getSession(request);
+
     // Older v1.0.14 activations lack the edge-rewrite marker now returned by
-    // activation/start. Preserve those saved capabilities by classifying only
-    // known, still-pending Upgrade sources before account authentication.
-    if (await isPendingShippedPanelUpgrade(activationKey)) {
+    // activation/start. Preserve those saved capabilities for signed-out and
+    // Free accounts, but keep active owners on the claim path: Checkout sends
+    // them here to reconnect, so sending them back would create a redirect loop.
+    if (
+      !session?.license.active &&
+      await isPendingShippedPanelUpgrade(activationKey)
+    ) {
       const checkoutUrl = new URL("/api/checkout/start", baseUrl);
       checkoutUrl.searchParams.set("activation", activationKey);
       return redirect(response, checkoutUrl.toString(), 302);
     }
 
-    const session = await getSession(request);
     if (!session) {
       const nextPath = activationClaimPath(activationKey, identity);
       const signIn = new URL("/api/auth/google/start", baseUrl);

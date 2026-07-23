@@ -208,6 +208,36 @@ test("restore GET is read-only and POST requires an origin/account/activation-bo
   assert.equal(harness.store.claimCasWinners, 1);
 });
 
+test("active owners bypass saved Upgrade Checkout recovery", async () => {
+  const harness = createApiContractHarness();
+  const claim = await loadAccountHandler("../api/activation/claim.ts", harness);
+  const activation = harness.store.seedActivation({
+    activationKey: "activation-owned-upgrade",
+    deviceId: "device-owner",
+    source: "download_history",
+  });
+
+  const owned = await invokeHandler(claim, {
+    method: "GET",
+    url: "/api/activation/claim?activation=activation-owned-upgrade",
+    session: harness.activeSession("account-owner"),
+  });
+
+  assert.equal(owned.response.statusCode, 200);
+  assert.equal(owned.response.getHeader("location"), undefined);
+  assert.equal(activation.accountId, null, "GET must remain read-only");
+
+  const unowned = await invokeHandler(claim, {
+    method: "GET",
+    url: "/api/activation/claim?activation=activation-owned-upgrade",
+  });
+  assert.equal(unowned.response.statusCode, 302);
+  assert.equal(
+    unowned.response.getHeader("location"),
+    "https://sidestream.test/api/checkout/start?activation=activation-owned-upgrade",
+  );
+});
+
 test("concurrent restore claims expose one compare-and-set winner", async () => {
   const harness = createApiContractHarness();
   const activation = harness.store.seedActivation({

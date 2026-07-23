@@ -84,13 +84,23 @@ test("activation-bearing Checkout GET resumes the shipped-panel path before anon
   assert.doesNotMatch(source, /attachCheckoutSessionToActivation\(/);
 });
 
-test("saved v1.0.14 Upgrade claim URLs recover before account authentication", async () => {
+test("saved v1.0.14 Upgrade claim URLs recover unless the owner is already active", async () => {
   const source = await readFile(files.claim, "utf8");
-  const upgradeRecovery = source.indexOf("isPendingShippedPanelUpgrade(activationKey)");
   const sessionRead = source.indexOf("const session = await getSession(request)");
-  assert.ok(upgradeRecovery >= 0 && upgradeRecovery < sessionRead);
+  const activeOwnerGuard = source.indexOf("!session?.license.active", sessionRead);
+  const upgradeRecovery = source.indexOf(
+    "isPendingShippedPanelUpgrade(activationKey)",
+    activeOwnerGuard,
+  );
+  const authentication = source.indexOf("if (!session)", upgradeRecovery);
+  assert.ok(
+    sessionRead >= 0 &&
+    activeOwnerGuard > sessionRead &&
+    upgradeRecovery > activeOwnerGuard &&
+    authentication > upgradeRecovery,
+  );
   assert.match(
-    source.slice(upgradeRecovery, sessionRead),
+    source.slice(upgradeRecovery, authentication),
     /\/api\/checkout\/start/,
   );
 });
