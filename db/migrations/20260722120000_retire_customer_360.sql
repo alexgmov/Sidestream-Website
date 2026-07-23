@@ -20,10 +20,12 @@ begin
 
   if to_regclass('public.sidestream_customer_identity_reviews') is not null then
     execute 'drop trigger if exists sidestream_customer_identity_reviews_immutable_guard on public.sidestream_customer_identity_reviews';
+    execute 'drop trigger if exists sidestream_customer_identity_reviews_no_truncate on public.sidestream_customer_identity_reviews';
   end if;
 
   if to_regclass('public.sidestream_customer_profile_merges') is not null then
     execute 'drop trigger if exists sidestream_customer_profile_merges_immutable_guard on public.sidestream_customer_profile_merges';
+    execute 'drop trigger if exists sidestream_customer_profile_merges_no_truncate on public.sidestream_customer_profile_merges';
   end if;
 
   if to_regclass('public.sidestream_customer_profiles') is not null then
