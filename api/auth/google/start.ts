@@ -81,7 +81,7 @@ export default async function handler(
       baseUrl,
       rotateCancelledSession: rotateCancelledCheckout,
     });
-    if (!checkout.ok) {
+    if (checkout.ok === false) {
       if (checkout.code === "active_license") {
         return redirectToOwnedCheckout(
           response,
