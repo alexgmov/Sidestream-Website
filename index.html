@@ -1063,6 +1063,12 @@
     .feat-copy.align-right .cta-row { justify-content: flex-start; }
     .sec-pad { padding: 84px 0; }
     .hero-pad { padding: 128px 0 72px; }
+    #hero {
+      flex-direction: column;
+      align-items: stretch;
+      justify-content: flex-end;
+      overflow: hidden;
+    }
     .feature-start {
       margin-top: 0;
       padding-top: 84px;
@@ -1072,7 +1078,21 @@
       backdrop-filter: blur(30px) saturate(108%);
       -webkit-backdrop-filter: blur(30px) saturate(108%);
     }
-    .feature-corner-demo { display: none; }
+    .feature-corner-demo {
+      position: relative;
+      inset: auto;
+      display: block;
+      flex: 0 0 clamp(220px, 34vh, 300px);
+      width: 100%;
+    }
+    .feature-corner-demo-video {
+      left: 50%;
+      top: 0;
+      width: min(700px, 148vw);
+      height: auto;
+      transform: translate(-50%, -8%);
+      transform-origin: center top;
+    }
     h1 { font-size: 3.08rem; }
     .hero-subline { font-size: 1.86rem; }
     .hero-copy.reveal { transform: none; }
@@ -1203,7 +1223,7 @@
     <section class="hero-pad" id="hero">
       <div class="feature-corner-demo" aria-hidden="true">
         <video class="feature-corner-demo-video" autoplay muted loop playsinline preload="metadata">
-          <source src="demos/sidestream-panel-corner.webm" type="video/webm" media="(min-width: 901px)">
+          <source src="demos/sidestream-panel-corner.webm" type="video/webm">
         </video>
       </div>
       <div class="wrap hero-split">
