@@ -179,10 +179,16 @@ base URL/host allowlist. The resolver must select that explicit Test contract
 without weakening real Production isolation even though Vercel injects
 `VERCEL_ENV=production` for the cron target. A configured unauthenticated `401`
 or a queue event rescued through Preview does not prove scheduled cron
-execution. The 2026-07-24 isolated Test cron target still fails with
-`license_environment_unresolved`, and project-wide scheduling remains disabled;
-do not describe automatic cron as passing until a focused resolver fix, aligned
-redeployment, authenticated processor run, and terminal queue proof all pass.
+execution. Retained 2026-07-24 guarded evidence proves the focused resolver
+closure for the isolated Test project only: the explicit
+`SIDESTREAM_TEST_PRODUCTION_TARGET` opt-in was present only on its
+Production-target environment, the same audited source was READY on its Preview
+and Production targets, the resolver selected the `test` namespace, project
+scheduling was enabled, and authenticated manual plus later scheduled processor
+runs both returned `200` from the guarded deployment. The target queue was
+terminal with zero nonterminal Stripe events. This is not real-Production cron
+acceptance and must not be used to claim a Production scheduler, deployment,
+provider, database, or entitlement cutover.
 
 ### Telemetry-first account bridge
 
@@ -403,6 +409,57 @@ The database model permits at most one active device row per account in each nam
 `SIDESTREAM_DEVICE_POLICY_MODE` accepts `off`, `observe`, or `enforce` and defaults to `observe`. Observe mode records pseudonymous policy mismatches; enforce returns `transfer_required`, `transfer_limit_reached`, `device_replaced`, or `device_deactivated` as appropriate. Explicitly revoked/replaced credentials remain invalid in observe mode, and `/api/license/authorize-download` always requires the exact active binding. A newly accepted Pro download is authorized before it starts; if that accepted download is already in progress, a later transfer or deactivation does not cancel it mid-transfer, but future authorization/verify/refresh requests see the new state.
 
 Only server-secret HMAC-SHA-256 device digests plus coarse platform/version/timestamps may be persisted. Raw hardware fingerprints, raw device IDs, serial numbers, and device names are prohibited from storage and logs. OS-backed non-exportable device keys are future hardening, not protection delivered by this implementation. See `docs/single-device-entitlements.md` only for the device schema, API/page states, environment matrix, privacy rules, and conceptual support decisions. No executable Production procedure exists; `docs/api-hardening-runbook.md` records blockers and future capability requirements but authorizes no Production action.
+
+### macOS-only identity acceptance boundary (2026-07-24)
+
+The retained final ledger is a Pass only for `macos_only` acceptance in the
+isolated Test project. Activation-bearing app Upgrade and eligible authenticated
+Free claim flows now go directly through the locked worker to Stripe Sandbox
+after an existing session or state-verified Google OAuth; they do not show the
+purchase-confirmation page. Public website purchases still keep their separate
+signed confirmation, and restore or different-device transfer still requires an
+explicit confirmation because it can change the active device.
+
+Same-device reconnect is free and idempotent. Each accepted reconnect revokes
+every predecessor credential family for the exact account/license/device inside
+the serialized account-device transaction, preserves one active Test device,
+leaves exactly one live family, and does not consume a device move.
+
+Retained resolver, deployment, and cron evidence is part of this bounded Pass:
+the guarded isolated Test Production target resolved the `test` namespace; the
+same audited source was READY on both isolated Test aliases; scheduling was
+enabled; authenticated manual and subsequent scheduled processor calls both
+returned `200` from the guarded deployment; and the target queue reached a
+terminal state with zero nonterminal events. These are guarded Test facts, not
+real-Production acceptance.
+
+Exactly five authenticated macOS rows passed:
+
+| Row | Status | Accepted result |
+| --- | --- | --- |
+| `cancelled_checkout` | Pass | Provider-terminal cancellation plus an unpaid replacement left the activation pending and created no entitlement, active device, credential, or telemetry ownership. |
+| `inactive_entitlement` | Pass | The controlled Test-only inactive fixture could not attach the activation or mint device credentials; exact cleanup left zero marked fixture rows. |
+| `credential_rotation` | Pass | Premiere Test refreshed an expired cached credential, returned to Pro, revoked its predecessor, and retained one live family at the checkpoint. |
+| `cross_account_claim` | Pass | A second authenticated identity received only the generic unavailable result and could not change or learn the paid owner's protected state. |
+| `same_account_reconnect` | Pass | Two recent same-device reconnects stayed free, preserved exactly one active Test device, revoked predecessor families, and left exactly one live family. |
+
+The strict boundary is
+`macos_only; windows_and_installation_b_deferred`.
+`installation_b_transfer` is `DeferredOutOfScope` because no separate OS
+profile, VM, or authorized Test-only reset was created or used. Windows is also
+`DeferredOutOfScope`; no Windows testing occurred. Therefore complete
+cross-install acceptance, complete Windows acceptance, complete cross-platform
+acceptance, and Production acceptance are all explicitly false. Do not describe
+this ledger as complete cross-install, Windows, cross-platform, or Production
+acceptance.
+
+Two observations remain outside product acceptance. First, the cancellation
+entitlement boundary passed, but three older intent rows retained an open
+database label after the provider page became terminal; that is a data-hygiene
+observation only. Second, read-only inspection found concurrent drift on the
+real Production deployment. The run did not cause that drift, made no
+real-Production mutation, and did not change either retained dirty user
+checkout.
 
 The MacBook mockup media is a native autoplaying, muted, looping `<video>` that loads `mockups/mockup1_2.webm` from the canonical root HTML file. The generated VP9-alpha WebM keeps the page publishable; source mockup files such as `.mov`, `.aep`, `.exr`, and `.usdz` are ignored so large production assets do not get committed accidentally. The mockup lives below the two pricing panels and the `.final` CTA inside `.pricing-mockup`, with the "Stop using sketchy websites to download music" panel now positioned above the laptop. It remains centered with a wide responsive video width and a soft bottom mask fade. It intentionally has no CSS drop shadow because filtering the alpha video can reveal a rectangular compositing edge during rotation. The bottom inline script keeps `.macbook-mockup-video` muted and calls `play()` on load/visibility return so the laptop continues spinning in normal browser viewing.
 
@@ -781,6 +838,7 @@ Use the narrowest relevant check after edits:
 
 ## Recent Change Log
 
+- 2026-07-24: Published the strict `macos_only` identity acceptance boundary. Five authenticated macOS rows passed, the direct app-to-Stripe path was revalidated, repeated same-device reconnect retained one active Test device and one live credential family, and guarded isolated Test resolver/deployment/cron proof passed. Windows and `installation_b_transfer` remain `DeferredOutOfScope`; complete cross-install, Windows, cross-platform, and Production acceptance remain false. Retained cancellation-label hygiene and concurrent real-Production drift are observations only.
 - 2026-07-24: Made repeated same-device reconnects credential-idempotent: issuing a new activation credential family now revokes the predecessor for the exact account/license/device inside the existing account-device transaction, leaving one live family without consuming a device move.
 - 2026-07-24: Removed the remaining app-flow Checkout interstitial: an authenticated Free activation claim now redirects to `/api/checkout/start`, which sends the existing session through the locked worker and directly to Stripe. Restore and transfer confirmations remain explicit because they can change the active device; public website purchases still retain their separate confirmation page.
 - 2026-07-24: Split Checkout entry by source: activation-bearing app Upgrade links now skip the confirmation UI, use an existing valid account session or state-verified Google OAuth, bind the first verified account, and enter the existing locked/rate-limited worker; public website purchases without an activation retain the explicit signed confirmation POST. `checkout/start` itself still creates no Stripe resources, invalid capabilities fail closed, active owners divert to claim/account, and cancellation remains a bounded worker-owned rotation. The OAuth handoff uses explicit result discriminants so Vercel's serverless TypeScript analysis narrows the Checkout worker result consistently. The change is deployed only to the isolated Test aliases; the real `sidestream.tv` Production project is untouched.
