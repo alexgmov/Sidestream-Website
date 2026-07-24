@@ -872,6 +872,281 @@ test("single-device entitlement transactions hold in disposable Postgres", {
       assert.ok(new Date(verified.tokenExpiresAt).getTime() > Date.now() + 300 * DAY_MS);
     });
 
+    await t.test("zero-dollar Checkout truth fulfills once under exact completion replays", async () => {
+      const checkoutSessions = new Map();
+      let paymentIntentRetrievals = 0;
+      process.env.SIDESTREAM_LICENSE_NAMESPACE = "production";
+      process.env.SIDESTREAM_POSTGRES_URL = testDatabaseUrl;
+      accountModule.__setIntegrationStripeClient({
+        checkout: {
+          sessions: {
+            async retrieve(sessionId) {
+              const session = checkoutSessions.get(sessionId);
+              assert.ok(session, `unexpected Checkout Session ${sessionId}`);
+              return session;
+            },
+          },
+        },
+        paymentIntents: {
+          async retrieve() {
+            paymentIntentRetrievals += 1;
+            throw new Error("zero-dollar Checkout must not retrieve a PaymentIntent");
+          },
+        },
+      });
+
+      const createScenario = async (label, options = {}) => {
+        const fixture = await seedAccount(databasePool, schema);
+        const suffix = randomBytes(8).toString("hex");
+        const activationKey = `activation_zero_${suffix}`;
+        const checkoutSessionId = `cs_zero_${suffix}`;
+        const priceId = `price_zero_${suffix}`;
+        const customerId = `cus_zero_${suffix}`;
+        const deviceId = `zero-dollar-${label}-${suffix}`;
+        const installIdHash = privateIdentifierHash(`install-${label}-${suffix}`);
+        const deviceIdHash = privateIdentifierHash(deviceId);
+        const telemetryLink = await databasePool.query(
+          `
+            insert into ${quotedSchema}.sidestream_telemetry_identity_links (
+              license_namespace, install_id_hash, device_id_hash,
+              first_seen_at, last_seen_at
+            ) values ('production', $1, $2, now(), now())
+            returning id
+          `,
+          [installIdHash, deviceIdHash],
+        );
+        const telemetryLinkId = telemetryLink.rows[0].id;
+        const activation = await databasePool.query(
+          `
+            insert into ${quotedSchema}.sidestream_activation_sessions (
+              activation_key,
+              device_id_hash,
+              app_version,
+              build_channel,
+              source,
+              status,
+              expires_at,
+              stripe_checkout_session_id,
+              stripe_checkout_price_id,
+              stripe_checkout_product_id,
+              stripe_checkout_expires_at,
+              checkout_attached_at,
+              checkout_claim_grace_until,
+              telemetry_identity_link_id
+            ) values (
+              $1, $2, '1.0.14', 'stable', 'integration', 'pending',
+              now() + interval '1 day', $3, $4, 'prod_UpwXh6oO1OmPyQ',
+              now() + interval '1 hour', now(), now() + interval '70 minutes', $5
+            )
+            returning id
+          `,
+          [
+            activationKey,
+            deviceIdHash,
+            checkoutSessionId,
+            priceId,
+            telemetryLinkId,
+          ],
+        );
+        const session = {
+          id: checkoutSessionId,
+          mode: "payment",
+          status: options.status ?? "complete",
+          payment_status: options.paymentStatus ?? "paid",
+          customer: customerId,
+          payment_intent: null,
+          amount_total: options.amountTotal ?? 0,
+          currency: options.currency ?? "usd",
+          subscription: null,
+          customer_details: {
+            email: fixture.email,
+            name: `Zero Dollar ${label}`,
+          },
+          metadata: {
+            sidestream_plan: "sidestream_pro",
+            sidestream_price_id: priceId,
+            sidestream_activation_key: activationKey,
+          },
+          line_items: {
+            data: [{
+              quantity: 1,
+              price: {
+                id: priceId,
+                product: { id: "prod_UpwXh6oO1OmPyQ" },
+              },
+            }],
+            has_more: false,
+          },
+        };
+        checkoutSessions.set(checkoutSessionId, session);
+        return {
+          ...fixture,
+          activationId: activation.rows[0].id,
+          activationKey,
+          checkoutSessionId,
+          customerId,
+          deviceId,
+          telemetryLinkId,
+        };
+      };
+
+      try {
+        const paid = await createScenario("paid");
+        const firstCompletion = await accountModule.fulfillCheckoutSession(
+          paid.checkoutSessionId,
+          paid.activationKey,
+        );
+        const replayedCompletion = await accountModule.fulfillCheckoutSession(
+          paid.checkoutSessionId,
+          paid.activationKey,
+        );
+        assert.deepEqual(firstCompletion, { fulfilled: true, activationBound: true });
+        assert.deepEqual(replayedCompletion, { fulfilled: true, activationBound: true });
+
+        const firstStatus = await accountModule.getActivationStatus(
+          paid.activationKey,
+          paid.deviceId,
+          {
+            skipReconciliation: true,
+            environment: production,
+            platform: "macos",
+          },
+        );
+        const replayedStatus = await accountModule.getActivationStatus(
+          paid.activationKey,
+          paid.deviceId,
+          {
+            skipReconciliation: true,
+            environment: production,
+            platform: "macos",
+          },
+        );
+        assert.equal(firstStatus.status, "active");
+        assert.equal(replayedStatus.status, "active");
+        assert.equal(replayedStatus.licenseToken, firstStatus.licenseToken);
+        assert.equal(replayedStatus.refreshToken, firstStatus.refreshToken);
+
+        const paidState = await databasePool.query(
+          `
+            select
+              (select count(*)::int from ${quotedSchema}.sidestream_licenses
+                where stripe_checkout_session_id = $1) as licenses,
+              (select count(*)::int from ${quotedSchema}.sidestream_account_devices
+                where account_id = $2
+                  and license_namespace = 'production'
+                  and revoked_at is null) as active_devices,
+              (select count(*)::int from ${quotedSchema}.sidestream_license_tokens
+                where account_id = $2) as credential_families,
+              (select count(*)::int from ${quotedSchema}.sidestream_license_tokens
+                where account_id = $2 and revoked_at is null) as live_credential_families,
+              (select count(*)::int from ${quotedSchema}.sidestream_activation_sessions
+                where stripe_checkout_session_id = $1) as activations,
+              (select count(*)::int
+                from ${quotedSchema}.sidestream_activation_sessions a
+                join ${quotedSchema}.sidestream_licenses l on l.id = a.license_id
+                where a.stripe_checkout_session_id = $1
+                  and a.account_id = $2
+                  and l.stripe_checkout_session_id = $1
+                  and a.telemetry_identity_link_id = $3) as attached_activations,
+              (select count(*)::int from ${quotedSchema}.sidestream_telemetry_identity_links
+                where id = $3) as telemetry_links,
+              (select count(*)::int from ${quotedSchema}.sidestream_telemetry_identity_links
+                where id = $3 and account_id = $2 and linked_at is not null)
+                as attached_telemetry_links
+          `,
+          [paid.checkoutSessionId, paid.accountId, paid.telemetryLinkId],
+        );
+        assert.deepEqual(paidState.rows[0], {
+          licenses: 1,
+          active_devices: 1,
+          credential_families: 1,
+          live_credential_families: 1,
+          activations: 1,
+          attached_activations: 1,
+          telemetry_links: 1,
+          attached_telemetry_links: 1,
+        });
+
+        const legacy = await createScenario("legacy", {
+          paymentStatus: "no_payment_required",
+        });
+        assert.deepEqual(
+          await accountModule.fulfillCheckoutSession(
+            legacy.checkoutSessionId,
+            legacy.activationKey,
+          ),
+          { fulfilled: true, activationBound: true },
+        );
+        const legacyLicense = await databasePool.query(
+          `
+            select status_reason, amount_paid::int as amount_paid, currency
+            from ${quotedSchema}.sidestream_licenses
+            where stripe_checkout_session_id = $1
+          `,
+          [legacy.checkoutSessionId],
+        );
+        assert.deepEqual(legacyLicense.rows[0], {
+          status_reason: "checkout_no_payment_required",
+          amount_paid: 0,
+          currency: "usd",
+        });
+
+        const rejectedScenarios = [
+          {
+            fixture: await createScenario("unpaid", { paymentStatus: "unpaid" }),
+            reason: "payment_incomplete",
+          },
+          {
+            fixture: await createScenario("nonzero", { amountTotal: 999 }),
+            reason: "missing_payment_intent",
+          },
+          {
+            fixture: await createScenario("malformed-currency", { currency: "USD" }),
+            reason: "missing_payment_intent",
+          },
+          {
+            fixture: await createScenario("incomplete", { status: "open" }),
+            reason: "checkout_incomplete",
+          },
+        ];
+        for (const scenario of rejectedScenarios) {
+          assert.deepEqual(
+            await accountModule.fulfillCheckoutSession(
+              scenario.fixture.checkoutSessionId,
+              scenario.fixture.activationKey,
+            ),
+            { fulfilled: false, reason: scenario.reason },
+          );
+          const rejectedState = await databasePool.query(
+            `
+              select
+                (select count(*)::int from ${quotedSchema}.sidestream_licenses
+                  where stripe_checkout_session_id = $1) as licenses,
+                (select count(*)::int from ${quotedSchema}.sidestream_activation_sessions
+                  where id = $2 and account_id is not null) as attached_activations,
+                (select count(*)::int from ${quotedSchema}.sidestream_telemetry_identity_links
+                  where id = $3 and account_id is not null) as attached_telemetry_links
+            `,
+            [
+              scenario.fixture.checkoutSessionId,
+              scenario.fixture.activationId,
+              scenario.fixture.telemetryLinkId,
+            ],
+          );
+          assert.deepEqual(rejectedState.rows[0], {
+            licenses: 0,
+            attached_activations: 0,
+            attached_telemetry_links: 0,
+          });
+        }
+        assert.equal(paymentIntentRetrievals, 0);
+      } finally {
+        accountModule.__setIntegrationStripeClient(null);
+        delete process.env.SIDESTREAM_LICENSE_NAMESPACE;
+        delete process.env.SIDESTREAM_POSTGRES_URL;
+      }
+    });
+
     await t.test("exact Checkout truth and entitlement upserts preserve support state", async () => {
       const exactSession = {
         id: "cs_exact",

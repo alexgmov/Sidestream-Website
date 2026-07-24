@@ -383,6 +383,17 @@ export function createApiContractHarness(options = {}) {
         paidPlanKeys: ["sidestream_pro", "sidestream_unlimited"],
       });
       if (!verification.ok) return { fulfilled: false, reason: verification.reason };
+      if (
+        !session.payment_intent &&
+        (
+          (session.payment_status !== "paid" &&
+            session.payment_status !== "no_payment_required") ||
+          session.amount_total !== 0 ||
+          !/^[a-z]{3}$/.test(cleanString(session.currency, 4))
+        )
+      ) {
+        return { fulfilled: false, reason: "missing_payment_intent" };
+      }
 
       const accountId = cleanString(session.metadata?.sidestream_account_id, 80) ||
         cleanString(session.contract_account_id, 80);
@@ -579,6 +590,11 @@ export function createPaidCheckoutSession(options = {}) {
     mode: options.mode ?? "payment",
     status: options.status ?? "complete",
     payment_status: options.paymentStatus ?? "paid",
+    payment_intent: Object.hasOwn(options, "paymentIntent")
+      ? options.paymentIntent
+      : "pi_contract",
+    amount_total: Object.hasOwn(options, "amountTotal") ? options.amountTotal : 999,
+    currency: Object.hasOwn(options, "currency") ? options.currency : "usd",
     expires_at: Math.floor(expiresAt / 1000),
     customer: options.customer ?? "cus_contract",
     contract_account_id: accountId,

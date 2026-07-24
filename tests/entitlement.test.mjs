@@ -20,6 +20,7 @@ import {
   validateClaimCsrfToken,
   verifyPaidCheckoutSession,
 } from "../api/_lib/entitlement.ts";
+import { createApiContractHarness } from "./helpers/api-contract-harness.mjs";
 
 const validCheckout = {
   id: "cs_test_paid",
@@ -112,6 +113,84 @@ test("only the exact attached paid Session, Price, Product, and quantity verifie
   for (const [session, reason] of rejected) {
     assert.equal(verifyPaidCheckoutSession(session, checkoutExpectation).reason, reason);
   }
+});
+
+test("missing PaymentIntent is accepted only for canonical zero-dollar Checkout truth", async () => {
+  const cases = [
+    {
+      label: "paid-zero",
+      session: { paymentIntent: null, amountTotal: 0, currency: "usd" },
+      expected: { fulfilled: true, activationBound: true },
+    },
+    {
+      label: "legacy-no-payment-required",
+      session: {
+        paymentIntent: null,
+        amountTotal: 0,
+        currency: "usd",
+        paymentStatus: "no_payment_required",
+      },
+      expected: { fulfilled: true, activationBound: true },
+    },
+    {
+      label: "unpaid-zero",
+      session: {
+        paymentIntent: null,
+        amountTotal: 0,
+        currency: "usd",
+        paymentStatus: "unpaid",
+      },
+      expected: { fulfilled: false, reason: "payment_incomplete" },
+    },
+    {
+      label: "nonzero",
+      session: { paymentIntent: null, amountTotal: 999, currency: "usd" },
+      expected: { fulfilled: false, reason: "missing_payment_intent" },
+    },
+    {
+      label: "uppercase-currency",
+      session: { paymentIntent: null, amountTotal: 0, currency: "USD" },
+      expected: { fulfilled: false, reason: "missing_payment_intent" },
+    },
+    {
+      label: "incomplete",
+      session: {
+        paymentIntent: null,
+        amountTotal: 0,
+        currency: "usd",
+        status: "open",
+      },
+      expected: { fulfilled: false, reason: "checkout_incomplete" },
+    },
+  ];
+
+  for (const scenario of cases) {
+    const harness = createApiContractHarness();
+    const seeded = harness.seedPaidActivation({
+      activationKey: `activation-${scenario.label}`,
+      sessionId: `cs_${scenario.label}`,
+      session: scenario.session,
+    });
+    assert.deepEqual(
+      await harness.dependencies.fulfillCheckoutSession(
+        seeded.session.id,
+        seeded.activation.activationKey,
+      ),
+      scenario.expected,
+      scenario.label,
+    );
+  }
+
+  const source = await readFile(new URL("../api/_lib/account.ts", import.meta.url), "utf8");
+  const start = source.indexOf("async function retrieveCanonicalCheckoutPayment");
+  const end = source.indexOf("async function retrieveCanonicalPaymentFacts", start);
+  const canonicalPaymentSource = source.slice(start, end);
+  assert.ok(start >= 0 && end > start);
+  assert.match(canonicalPaymentSource, /payment_status !== "paid"/);
+  assert.match(canonicalPaymentSource, /payment_status !== "no_payment_required"/);
+  assert.match(canonicalPaymentSource, /amount_total !== 0/);
+  assert.match(canonicalPaymentSource, /!\/\^\[a-z\]\{3\}\$\/\.test\(currency\)/);
+  assert.match(canonicalPaymentSource, /reason: "missing_payment_intent"/);
 });
 
 test("wrong devices and account overwrites fail closed", () => {
