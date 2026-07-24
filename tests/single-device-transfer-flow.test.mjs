@@ -130,9 +130,10 @@ test("activation purchase reaches the locked worker only behind a valid account 
     callbackRateLimit,
   );
 
-  assert.match(claim, /form method="post" action="\/api\/checkout\/create"/);
-  assert.match(claim, /name="activationKey"/);
-  assert.match(claim, /name="intent" value="purchase"/);
+  assert.match(claim, /new URL\("\/api\/checkout\/start", baseUrl\)/);
+  assert.match(claim, /checkoutUrl\.searchParams\.set\("activation", activationKey\)/);
+  assert.doesNotMatch(claim, /form method="post" action="\/api\/checkout\/create"/);
+  assert.doesNotMatch(claim, /Continue to secure checkout/);
   assert.ok(startIntent >= 0 && startAuth > startIntent);
   assert.doesNotMatch(start, /createOrReuseCheckoutSession\(/);
   assert.ok(authSession >= 0 && authRateLimit > authSession && authWorker > authRateLimit);

@@ -85,11 +85,9 @@ export default async function handler(
       if (!activation.canPurchase) {
         return sendConfirmationPage(response, 409, unavailablePage());
       }
-      return sendConfirmationPage(response, 200, purchasePage({
-        activationKey,
-        email: session.email,
-        appVersion: activation.appVersion,
-      }));
+      const checkoutUrl = new URL("/api/checkout/start", baseUrl);
+      checkoutUrl.searchParams.set("activation", activationKey);
+      return redirect(response, checkoutUrl.toString(), 303);
     }
 
     const decision = getDeviceDecision(activation, environment.namespace);
@@ -471,21 +469,6 @@ function sendConfirmationPage(response: ServerResponse, statusCode: number, html
   response.setHeader("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'");
   response.setHeader("X-Frame-Options", "DENY");
   response.end(html);
-}
-
-function purchasePage(options: {
-  activationKey: string;
-  email: string;
-  appVersion: string;
-}) {
-  return decisionPage({
-    title: "Unlock Sidestream Pro here?",
-    description: "This account is currently Free. Continue to the existing $9.99 one-time Stripe Checkout for this Sidestream activation.",
-    email: options.email,
-    appVersion: options.appVersion,
-    detail: "One purchase unlocks Pro on one active production device at a time.",
-    action: `<form method="post" action="/api/checkout/create"><input type="hidden" name="activationKey" value="${escapeHtml(options.activationKey)}"><input type="hidden" name="intent" value="purchase"><button type="submit">Continue to secure checkout</button></form>`,
-  });
 }
 
 function reconnectPage(options: {
