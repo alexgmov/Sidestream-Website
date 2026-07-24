@@ -1,6 +1,7 @@
 export const LICENSE_ENVIRONMENT_VARIABLES = {
   namespace: "SIDESTREAM_LICENSE_NAMESPACE",
   deploymentEnvironment: "VERCEL_ENV",
+  testProductionTarget: "SIDESTREAM_TEST_PRODUCTION_TARGET",
   productionApiHosts: "SIDESTREAM_PRODUCTION_API_HOSTS",
   testApiHosts: "SIDESTREAM_TEST_API_HOSTS",
   productionDatabaseUrl: "SIDESTREAM_POSTGRES_URL",
@@ -64,7 +65,14 @@ export function resolveLicenseEnvironment(options: {
   const explicitNamespace = readConfiguredNamespace(options.serverEnv);
   if (explicitNamespace === "invalid") return null;
 
-  const deploymentNamespace = readDeploymentNamespace(options.serverEnv);
+  const testProductionTarget = readTestProductionTarget(options.serverEnv);
+  if (testProductionTarget === "invalid") return null;
+
+  const deploymentNamespace = readDeploymentNamespace(
+    options.serverEnv,
+    explicitNamespace,
+    testProductionTarget,
+  );
   if (deploymentNamespace === "invalid") return null;
 
   const productionHosts = readApiHosts(
@@ -180,16 +188,33 @@ function readConfiguredNamespace(
 
 function readDeploymentNamespace(
   serverEnv: LicenseEnvironmentServerState,
+  explicitNamespace: LicenseEnvironment | null,
+  testProductionTarget: boolean,
 ): LicenseEnvironment | "invalid" | null {
   const value = serverEnv[LICENSE_ENVIRONMENT_VARIABLES.deploymentEnvironment];
-  if (value === undefined || value === null || value === "") return null;
+  if (value === undefined || value === null || value === "") {
+    return testProductionTarget ? "invalid" : null;
+  }
 
   const normalized = normalizeString(value);
+  if (testProductionTarget) {
+    return explicitNamespace === "test" && normalized === "production"
+      ? "test"
+      : "invalid";
+  }
   if (normalized === "production") return "production";
   if (normalized === "preview" || normalized === "development" || normalized === "test") {
     return "test";
   }
   return "invalid";
+}
+
+function readTestProductionTarget(
+  serverEnv: LicenseEnvironmentServerState,
+): boolean | "invalid" {
+  const value = serverEnv[LICENSE_ENVIRONMENT_VARIABLES.testProductionTarget];
+  if (value === undefined || value === null || value === "") return false;
+  return value === "1" ? true : "invalid";
 }
 
 function readApiHosts(
