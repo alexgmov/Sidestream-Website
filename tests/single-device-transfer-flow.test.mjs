@@ -63,19 +63,24 @@ test("rolling device-transfer limit blocks before a fourth default move", () => 
   assert.equal(blocked.remainingTransfers, 0);
 });
 
-test("activation-bearing Checkout GET stays on a read-only confirmation boundary", async () => {
+test("activation-bearing Checkout GET redirects without an intermediate confirmation", async () => {
   const source = await readFile(files.checkoutStart, "utf8");
   const legacyHostGuard = source.indexOf("activationKey && isLegacyVercelHost");
   const canonicalRedirect = source.indexOf("canonicalConfirmation", legacyHostGuard);
   const sessionRead = source.indexOf("const session = await getSession(request)");
   const activeOwnerRedirect = source.indexOf("/api/activation/claim", sessionRead);
   const confirmation = source.indexOf("createCheckoutIntentConfirmation", sessionRead);
+  const authRedirect = source.indexOf("/api/auth/google/start", confirmation);
+  const publicConfirmation = source.indexOf("Confirm Sidestream Pro purchase", authRedirect);
 
   assert.ok(legacyHostGuard >= 0 && canonicalRedirect > legacyHostGuard);
   assert.ok(sessionRead > canonicalRedirect && activeOwnerRedirect > sessionRead);
-  assert.ok(confirmation > activeOwnerRedirect);
+  assert.ok(confirmation > activeOwnerRedirect && authRedirect > confirmation);
+  assert.ok(publicConfirmation > authRedirect);
   assert.match(source, /if \(method !== "GET"\)/);
-  assert.match(source, /GET is a read\/confirmation boundary for Stripe/);
+  assert.match(source, /GET only mints or resumes an opaque capability/);
+  assert.doesNotMatch(source, /Confirm this Sidestream activation purchase/);
+  assert.doesNotMatch(source, /createOrReuseCheckoutSession\(/);
   assert.doesNotMatch(source, /stripe\.checkout\.sessions\.create/);
   assert.doesNotMatch(source, /attachCheckoutSessionToActivation\(/);
 });
@@ -101,28 +106,44 @@ test("claim GET authenticates first and stays a no-store read-only decision", as
   assert.match(source, /noindex,nofollow/);
 });
 
-test("activation purchase requires a signed intent POST before the locked worker", async () => {
-  const [claim, create] = await Promise.all([
+test("activation purchase reaches the locked worker only behind a valid account session", async () => {
+  const [claim, start, authStart, callback, create] = await Promise.all([
     readFile(files.claim, "utf8"),
+    readFile(files.checkoutStart, "utf8"),
+    readFile(new URL("../api/auth/google/start.ts", import.meta.url), "utf8"),
+    readFile(new URL("../api/auth/google/callback.ts", import.meta.url), "utf8"),
     readFile(files.checkoutCreate, "utf8"),
   ]);
-  const legacyRedirect = create.indexOf("legacyActivationKey &&");
-  const intentValidation = create.indexOf(
-    "validateCheckoutIntentConfirmation({",
-    legacyRedirect,
+  const startIntent = start.indexOf("createCheckoutIntentConfirmation");
+  const startAuth = start.indexOf("/api/auth/google/start", startIntent);
+  const authSession = authStart.indexOf("const session = await getSession(request)");
+  const authRateLimit = authStart.indexOf("await consumeRateLimit", authSession);
+  const authWorker = authStart.indexOf(
+    "await createOrReuseCheckoutSession",
+    authRateLimit,
   );
-  const sessionRead = create.indexOf("const session = await getSession(request)");
-  const activeOwner = create.indexOf("session?.license.active", sessionRead);
-  const rateLimit = create.indexOf("await consumeRateLimit", activeOwner);
-  const lockedWorker = create.indexOf("await createOrReuseCheckoutSession", rateLimit);
+  const callbackState = callback.indexOf("returnedState !== expectedState");
+  const callbackSession = callback.indexOf("getAccountSessionById", callbackState);
+  const callbackRateLimit = callback.indexOf("await consumeRateLimit", callbackSession);
+  const callbackWorker = callback.indexOf(
+    "await createOrReuseCheckoutSession",
+    callbackRateLimit,
+  );
 
   assert.match(claim, /form method="post" action="\/api\/checkout\/create"/);
   assert.match(claim, /name="activationKey"/);
   assert.match(claim, /name="intent" value="purchase"/);
+  assert.ok(startIntent >= 0 && startAuth > startIntent);
+  assert.doesNotMatch(start, /createOrReuseCheckoutSession\(/);
+  assert.ok(authSession >= 0 && authRateLimit > authSession && authWorker > authRateLimit);
+  assert.ok(
+    callbackState >= 0 &&
+      callbackSession > callbackState &&
+      callbackRateLimit > callbackSession &&
+      callbackWorker > callbackRateLimit,
+  );
+  assert.match(callback, /deferAccountBindingCheck: true/);
   assert.match(create, /application\/x-www-form-urlencoded/);
-  assert.ok(legacyRedirect >= 0 && intentValidation > legacyRedirect);
-  assert.ok(sessionRead > intentValidation && activeOwner > sessionRead);
-  assert.ok(rateLimit > activeOwner && lockedWorker > rateLimit);
   assert.match(create, /cleanString\(payload\.intent, 32\) !== "purchase"/);
   assert.match(create, /No caller-controlled[\s\S]+activation tuple reaches Stripe/);
   assert.doesNotMatch(create, /getStripe\(\)/);

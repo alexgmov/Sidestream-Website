@@ -73,6 +73,8 @@ import {
 const SESSION_COOKIE = "sidestream_session";
 const OAUTH_STATE_COOKIE = "sidestream_oauth_state";
 const OAUTH_NEXT_COOKIE = "sidestream_oauth_next";
+const OAUTH_CHECKOUT_INTENT_COOKIE = "sidestream_oauth_checkout_intent";
+const OAUTH_CHECKOUT_ROTATE_COOKIE = "sidestream_oauth_checkout_rotate";
 const SESSION_MAX_AGE_SECONDS = 60 * 60 * 24 * 30;
 const OAUTH_MAX_AGE_SECONDS = 60 * 10;
 const ACTIVATION_TTL_HOURS = 24;
@@ -400,7 +402,12 @@ export function getGoogleAuthUrl(
 export function setOAuthCookies(
   request: IncomingMessage,
   response: ServerResponse,
-  options: { state: string; nextPath: string },
+  options: {
+    state: string;
+    nextPath: string;
+    checkoutIntentToken?: string;
+    rotateCancelledCheckout?: boolean;
+  },
 ) {
   appendSetCookies(response, [
     serializeCookie(OAUTH_STATE_COOKIE, options.state, {
@@ -417,6 +424,32 @@ export function setOAuthCookies(
       sameSite: "Lax",
       secure: shouldUseSecureCookies(request),
     }),
+    serializeCookie(
+      OAUTH_CHECKOUT_INTENT_COOKIE,
+      options.checkoutIntentToken || "",
+      {
+        httpOnly: true,
+        maxAge: options.checkoutIntentToken ? OAUTH_MAX_AGE_SECONDS : 0,
+        path: "/",
+        sameSite: "Lax",
+        secure: shouldUseSecureCookies(request),
+      },
+    ),
+    serializeCookie(
+      OAUTH_CHECKOUT_ROTATE_COOKIE,
+      options.checkoutIntentToken && options.rotateCancelledCheckout
+        ? "cancelled"
+        : "",
+      {
+        httpOnly: true,
+        maxAge: options.checkoutIntentToken && options.rotateCancelledCheckout
+          ? OAUTH_MAX_AGE_SECONDS
+          : 0,
+        path: "/",
+        sameSite: "Lax",
+        secure: shouldUseSecureCookies(request),
+      },
+    ),
   ]);
 }
 
@@ -439,6 +472,20 @@ export function clearOAuthCookies(
       sameSite: "Lax",
       secure: shouldUseSecureCookies(request),
     }),
+    serializeCookie(OAUTH_CHECKOUT_INTENT_COOKIE, "", {
+      httpOnly: true,
+      maxAge: 0,
+      path: "/",
+      sameSite: "Lax",
+      secure: shouldUseSecureCookies(request),
+    }),
+    serializeCookie(OAUTH_CHECKOUT_ROTATE_COOKIE, "", {
+      httpOnly: true,
+      maxAge: 0,
+      path: "/",
+      sameSite: "Lax",
+      secure: shouldUseSecureCookies(request),
+    }),
   ]);
 }
 
@@ -455,6 +502,20 @@ export function getOAuthNextPath(request: IncomingMessage) {
   } catch {
     return "/account.html";
   }
+}
+
+export function getOAuthCheckoutIntent(request: IncomingMessage) {
+  const browserToken = cleanString(
+    getCookie(request, OAUTH_CHECKOUT_INTENT_COOKIE),
+    160,
+  );
+  return {
+    requested: Boolean(browserToken),
+    browserToken,
+    rotateCancelledSession:
+      Boolean(browserToken) &&
+      getCookie(request, OAUTH_CHECKOUT_ROTATE_COOKIE) === "cancelled",
+  };
 }
 
 export async function exchangeGoogleCode(
@@ -737,6 +798,75 @@ export async function requireSession(
   return session;
 }
 
+export async function getAccountSessionById(
+  accountId: string,
+): Promise<AccountSession | null> {
+  const result = await query<{
+    account_id: string;
+    email: string;
+    display_name: string | null;
+    avatar_url: string | null;
+    stripe_customer_id: string | null;
+    license_status: string | null;
+    plan_key: string | null;
+    entitlement_status: string | null;
+    current_period_end: Date | string | null;
+    cancel_at_period_end: boolean | null;
+    grace_until: Date | string | null;
+    features: Record<string, unknown> | null;
+  }>(
+    `
+      select
+        a.id as account_id,
+        a.email,
+        a.display_name,
+        a.avatar_url,
+        a.stripe_customer_id,
+        l.status as license_status,
+        l.plan_key,
+        license_state.entitlement_status,
+        l.current_period_end,
+        l.cancel_at_period_end,
+        l.grace_until,
+        l.features
+      from public.sidestream_accounts a
+      left join public.sidestream_licenses l on l.account_id = a.id
+      left join lateral (
+        select ${LICENSE_ENTITLEMENT_STATUS_SQL} as entitlement_status
+      ) license_state on true
+      where a.id = $1::uuid
+      -- Only canonically reconciled paid rows may outrank another license.
+      order by (case
+          when license_state.entitlement_status = 'active'
+            and l.plan_key in ('sidestream_pro', 'sidestream_unlimited') then 0
+          else 1
+        end),
+        l.updated_at desc nulls last
+      limit 1
+    `,
+    [accountId],
+  );
+  const row = result.rows[0];
+  if (!row) return null;
+
+  return {
+    accountId: row.account_id,
+    email: row.email,
+    name: row.display_name || "",
+    avatarUrl: row.avatar_url || "",
+    stripeCustomerId: row.stripe_customer_id || "",
+    license: buildLicenseSummary({
+      status: row.license_status,
+      planKey: row.plan_key,
+      entitlementStatus: row.entitlement_status,
+      currentPeriodEnd: row.current_period_end,
+      cancelAtPeriodEnd: row.cancel_at_period_end,
+      graceUntil: row.grace_until,
+      features: row.features,
+    }),
+  };
+}
+
 export function publicSessionPayload(session: AccountSession | null) {
   if (!session) {
     return { authenticated: false };
@@ -857,6 +987,7 @@ export async function createCheckoutIntentConfirmation(options: {
 export async function resumeCheckoutIntentConfirmation(options: {
   browserToken: string;
   session?: AccountSession | null;
+  deferAccountBindingCheck?: boolean;
   now?: Date;
 }): Promise<CheckoutIntentConfirmation | null> {
   const browserToken = cleanString(options.browserToken, 160);
@@ -882,13 +1013,35 @@ export async function resumeCheckoutIntentConfirmation(options: {
   );
   const row = result.rows[0];
   if (!row) return null;
-  if (row.account_id && row.account_id !== options.session?.accountId) return null;
+  if (
+    row.account_id &&
+    row.account_id !== options.session?.accountId &&
+    !options.deferAccountBindingCheck
+  ) return null;
   if (
     row.intent_kind === "activation" &&
     (!row.activation_key ||
       !row.activation_expires_at ||
       new Date(row.activation_expires_at).getTime() <= now.getTime())
   ) return null;
+  if (
+    row.intent_kind === "activation" &&
+    !row.account_id &&
+    options.session &&
+    !options.deferAccountBindingCheck
+  ) {
+    const bound = await query<{ id: string }>(
+      `
+        update public.sidestream_checkout_intents
+        set account_id = $2::uuid, updated_at = $3::timestamptz
+        where id = $1::uuid
+          and (account_id is null or account_id = $2::uuid)
+        returning id
+      `,
+      [row.id, options.session.accountId, now.toISOString()],
+    );
+    if (!bound.rows[0]) return null;
+  }
 
   return buildCheckoutIntentConfirmation({
     intentId: row.id,
@@ -1178,7 +1331,7 @@ export async function createOrReuseCheckoutSession(options: {
 
       const stripePriceId = await getSidestreamProPriceId();
       const stripeProductId = getSidestreamProProductId();
-      const stripeCustomerId = row.intent_kind === "account" && options.session
+      const stripeCustomerId = options.session
         ? await findOrCreateStripeCustomer(options.session, client)
         : "";
       const cancelUrl = new URL("/api/checkout/start", options.baseUrl);
@@ -1189,7 +1342,7 @@ export async function createOrReuseCheckoutSession(options: {
         sidestream_price_id: stripePriceId,
         sidestream_checkout_intent_id: row.id,
       };
-      if (row.intent_kind === "account" && options.session) {
+      if (options.session) {
         metadata.sidestream_account_id = options.session.accountId;
       }
       if (activationKey) metadata.sidestream_activation_key = activationKey;
