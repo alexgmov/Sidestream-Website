@@ -33,10 +33,19 @@ function testEnv(overrides = {}) {
   };
 }
 
+function isolatedTestProductionEnv(overrides = {}) {
+  return testEnv({
+    VERCEL_ENV: "production",
+    SIDESTREAM_TEST_PRODUCTION_TARGET: "1",
+    ...overrides,
+  });
+}
+
 test("deployment contract gives Test a separate API host and database variable", () => {
   assert.deepEqual(LICENSE_ENVIRONMENT_VARIABLES, {
     namespace: "SIDESTREAM_LICENSE_NAMESPACE",
     deploymentEnvironment: "VERCEL_ENV",
+    testProductionTarget: "SIDESTREAM_TEST_PRODUCTION_TARGET",
     productionApiHosts: "SIDESTREAM_PRODUCTION_API_HOSTS",
     testApiHosts: "SIDESTREAM_TEST_API_HOSTS",
     productionDatabaseUrl: "SIDESTREAM_POSTGRES_URL",
@@ -94,6 +103,136 @@ test("Test resolves only with its explicit API allowlist and dedicated database"
     },
     credentialNamespaceRequired: true,
   });
+});
+
+test("isolated Test Production target resolves with and without a trusted host", () => {
+  const serverEnv = isolatedTestProductionEnv();
+  const expectedDatabase = {
+    environmentVariable: "SIDESTREAM_TEST_POSTGRES_URL",
+    connectionString: testDatabase,
+  };
+
+  assert.deepEqual(resolveLicenseEnvironment({ serverEnv }), {
+    namespace: "test",
+    apiHost: null,
+    allowedApiHosts: ["test-api.sidestream.example"],
+    database: expectedDatabase,
+    credentialNamespaceRequired: true,
+  });
+  assert.deepEqual(resolveLicenseEnvironment({
+    serverEnv,
+    trustedRequestHost: "test-api.sidestream.example",
+  }), {
+    namespace: "test",
+    apiHost: "test-api.sidestream.example",
+    allowedApiHosts: ["test-api.sidestream.example"],
+    database: expectedDatabase,
+    credentialNamespaceRequired: true,
+  });
+});
+
+test("isolated Test Production target opt-in fails closed on every conflict", () => {
+  const cases = [
+    {
+      name: "missing opt-in",
+      serverEnv: isolatedTestProductionEnv({
+        SIDESTREAM_TEST_PRODUCTION_TARGET: undefined,
+      }),
+    },
+    {
+      name: "malformed opt-in",
+      serverEnv: isolatedTestProductionEnv({
+        SIDESTREAM_TEST_PRODUCTION_TARGET: "true",
+      }),
+    },
+    {
+      name: "whitespace-padded opt-in",
+      serverEnv: isolatedTestProductionEnv({
+        SIDESTREAM_TEST_PRODUCTION_TARGET: " 1 ",
+      }),
+    },
+    {
+      name: "non-string opt-in",
+      serverEnv: isolatedTestProductionEnv({
+        SIDESTREAM_TEST_PRODUCTION_TARGET: 1,
+      }),
+    },
+    {
+      name: "opt-in without explicit Test namespace",
+      serverEnv: isolatedTestProductionEnv({
+        SIDESTREAM_LICENSE_NAMESPACE: undefined,
+      }),
+    },
+    {
+      name: "opt-in with Production namespace",
+      serverEnv: productionEnv({
+        SIDESTREAM_TEST_PRODUCTION_TARGET: "1",
+        SIDESTREAM_TEST_API_HOSTS: "test-api.sidestream.example",
+        SIDESTREAM_TEST_POSTGRES_URL: testDatabase,
+      }),
+    },
+    {
+      name: "opt-in without Production deployment state",
+      serverEnv: isolatedTestProductionEnv({
+        VERCEL_ENV: undefined,
+      }),
+    },
+    {
+      name: "opt-in with Preview deployment state",
+      serverEnv: isolatedTestProductionEnv({
+        VERCEL_ENV: "preview",
+      }),
+    },
+    {
+      name: "missing Test hosts",
+      serverEnv: isolatedTestProductionEnv({
+        SIDESTREAM_TEST_API_HOSTS: undefined,
+      }),
+    },
+    {
+      name: "missing Test database",
+      serverEnv: isolatedTestProductionEnv({
+        SIDESTREAM_TEST_POSTGRES_URL: undefined,
+      }),
+    },
+    {
+      name: "unknown trusted host",
+      serverEnv: isolatedTestProductionEnv(),
+      trustedRequestHost: "unknown.example",
+    },
+    {
+      name: "Production trusted host",
+      serverEnv: isolatedTestProductionEnv(),
+      trustedRequestHost: "sidestream.tv",
+    },
+    {
+      name: "overlapping Test and Production host",
+      serverEnv: isolatedTestProductionEnv({
+        SIDESTREAM_TEST_API_HOSTS: "sidestream.tv",
+      }),
+      trustedRequestHost: "sidestream.tv",
+    },
+    {
+      name: "matching Production and Test database",
+      serverEnv: isolatedTestProductionEnv({
+        SIDESTREAM_POSTGRES_URL:
+          "postgresql://other-user:other-secret@test.db.example/sidestream_test",
+      }),
+    },
+  ];
+
+  for (const { name, ...options } of cases) {
+    assert.equal(resolveLicenseEnvironment(options), null, name);
+  }
+});
+
+test("real Production still resolves normally when Test Production opt-in is absent", () => {
+  const serverEnv = productionEnv();
+  assert.equal("SIDESTREAM_TEST_PRODUCTION_TARGET" in serverEnv, false);
+  assert.equal(resolveLicenseEnvironment({
+    serverEnv,
+    trustedRequestHost: "sidestream.tv",
+  })?.namespace, "production");
 });
 
 test("known trusted host can resolve when deployment state is unavailable", () => {

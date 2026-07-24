@@ -43,6 +43,7 @@ test("Stripe events use a durable claimed queue with bounded retry and protected
     "POSTGRES_PRISMA_URL",
     "POSTGRES_URL_NON_POOLING",
     "SIDESTREAM_LICENSE_NAMESPACE",
+    "SIDESTREAM_TEST_PRODUCTION_TARGET",
     "SIDESTREAM_TEST_API_HOSTS",
     "VERCEL_ENV",
     "POSTGRES_SSL",
@@ -1141,6 +1142,7 @@ function configureAccountRuntime(connectionString) {
     "POSTGRES_URL",
     "POSTGRES_PRISMA_URL",
     "POSTGRES_URL_NON_POOLING",
+    "SIDESTREAM_TEST_PRODUCTION_TARGET",
   ]) {
     delete process.env[name];
   }
