@@ -365,8 +365,9 @@ test("legacy-host bare Checkout fails safe before Stripe", async () => {
   const checkoutSource = await readFile(new URL("../api/checkout/start.ts", import.meta.url), "utf8");
   const upgradeSource = await readFile(new URL("../upgrade.html", import.meta.url), "utf8");
   const guardIndex = checkoutSource.indexOf("isLegacyVercelHost(request.headers.host)");
-  const stripeIndex = checkoutSource.indexOf("const stripe = getStripe()");
-  assert.ok(guardIndex >= 0 && guardIndex < stripeIndex);
+  assert.ok(guardIndex >= 0);
+  assert.doesNotMatch(checkoutSource, /getStripe\(\)/);
+  assert.doesNotMatch(checkoutSource, /createOrReuseCheckoutSession\(/);
   assert.match(checkoutSource, /checkout.*activation_required/s);
   assert.match(upgradeSource, /checkoutState === "activation_required"/);
   assert.match(upgradeSource, /checkoutLink\.hidden = true/);
@@ -393,15 +394,44 @@ test("paid completion grace is database-bounded and unpaid Sessions fail verific
   ).ok, false);
 });
 
-test("both Checkout routes attach instead of pre-binding attacker activation links", async () => {
-  for (const route of ["../api/checkout/start.ts", "../api/checkout/create.ts"]) {
-    const source = await readFile(new URL(route, import.meta.url), "utf8");
-    assert.doesNotMatch(source, /bindActivationToAccount/);
-    assert.match(source, /attachCheckoutSessionToActivation/);
-    assert.match(source, /getActivationCheckoutIdempotencyKey/);
-    assert.match(source, /license\.active/);
-    assert.match(source, /\/api\/activation\/claim/);
+test("Checkout start mints capabilities while authenticated handlers own the worker", async () => {
+  const [start, create, authStart, callback, account] = await Promise.all([
+    readFile(new URL("../api/checkout/start.ts", import.meta.url), "utf8"),
+    readFile(new URL("../api/checkout/create.ts", import.meta.url), "utf8"),
+    readFile(new URL("../api/auth/google/start.ts", import.meta.url), "utf8"),
+    readFile(new URL("../api/auth/google/callback.ts", import.meta.url), "utf8"),
+    readFile(new URL("../api/_lib/account.ts", import.meta.url), "utf8"),
+  ]);
+
+  assert.doesNotMatch(start, /bindActivationToAccount/);
+  assert.doesNotMatch(start, /attachCheckoutSessionToActivation/);
+  assert.doesNotMatch(start, /createOrReuseCheckoutSession\(/);
+  assert.match(start, /createCheckoutIntentConfirmation/);
+  assert.match(start, /\/api\/auth\/google\/start/);
+  assert.match(start, /confirmation\.activationKey/);
+  assert.match(start, /Confirm Sidestream Pro purchase/);
+  assert.match(start, /\/api\/activation\/claim/);
+
+  assert.doesNotMatch(create, /bindActivationToAccount/);
+  assert.match(create, /createOrReuseCheckoutSession/);
+  assert.match(create, /license\.active/);
+
+  for (const authenticatedRoute of [authStart, callback]) {
+    const rateLimit = authenticatedRoute.indexOf("await consumeRateLimit");
+    const worker = authenticatedRoute.indexOf(
+      "await createOrReuseCheckoutSession",
+      rateLimit,
+    );
+    assert.ok(rateLimit >= 0 && worker > rateLimit);
+    assert.match(authenticatedRoute, /\/api\/activation\/claim/);
+    assert.match(authenticatedRoute, /active_license/);
   }
+  assert.match(callback, /returnedState !== expectedState/);
+  assert.match(callback, /getAccountSessionById/);
+  assert.match(callback, /deferAccountBindingCheck: true/);
+  assert.match(account, /sidestream_oauth_checkout_intent/);
+  assert.match(account, /sidestream_oauth_checkout_rotate/);
+  assert.match(account, /deferAccountBindingCheck/);
 });
 
 test("account implementation bounds status replay and uses locked refresh/fulfillment CAS", async () => {

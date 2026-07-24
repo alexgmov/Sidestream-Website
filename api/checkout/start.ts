@@ -37,10 +37,9 @@ export default async function handler(
     }
   }
 
-  // GET is a read/confirmation boundary for Stripe. In particular, the old
-  // `const stripe = getStripe()` path is forbidden here. The confirmed POST
-  // owns attachCheckoutSessionToActivation and
-  // getActivationCheckoutIdempotencyKey behavior through the intent worker.
+  // GET only mints or resumes an opaque capability. Activation-bearing app
+  // requests continue through an authenticated handler; this route never
+  // invokes the Checkout worker or creates Stripe resources.
   const session = await getSession(request);
   if (session?.license.active) {
     if (activationKey) {
@@ -48,9 +47,11 @@ export default async function handler(
       restoreUrl.searchParams.set("activation", activationKey);
       return redirect(response, restoreUrl.toString(), 302);
     }
-    const accountUrl = new URL("/account.html", baseUrl);
-    accountUrl.searchParams.set("checkout", "already_owned");
-    return redirect(response, accountUrl.toString(), 302);
+    if (!browserToken) {
+      const accountUrl = new URL("/account.html", baseUrl);
+      accountUrl.searchParams.set("checkout", "already_owned");
+      return redirect(response, accountUrl.toString(), 302);
+    }
   }
 
   const confirmation = browserToken
@@ -65,15 +66,31 @@ export default async function handler(
     );
   }
 
+  if (session?.license.active) {
+    if (confirmation.activationKey) {
+      const restoreUrl = new URL("/api/activation/claim", baseUrl);
+      restoreUrl.searchParams.set("activation", confirmation.activationKey);
+      return redirect(response, restoreUrl.toString(), 302);
+    }
+    const accountUrl = new URL("/account.html", baseUrl);
+    accountUrl.searchParams.set("checkout", "already_owned");
+    return redirect(response, accountUrl.toString(), 302);
+  }
+
+  if (confirmation.activationKey) {
+    const signInUrl = new URL("/api/auth/google/start", baseUrl);
+    signInUrl.searchParams.set("checkout_intent", confirmation.browserToken);
+    if (checkoutState === "cancelled") {
+      signInUrl.searchParams.set("checkout", "cancelled");
+    }
+    return redirect(response, signInUrl.toString(), 303);
+  }
+
   return sendConfirmationPage(
     response,
     200,
-    confirmation.activationKey
-      ? "Confirm this Sidestream activation purchase"
-      : "Confirm Sidestream Pro purchase",
-    confirmation.activationKey
-      ? "This $9.99 one-time purchase will stay attached to the exact Sidestream activation that opened this page."
-      : "Continue only if you intend to buy Sidestream Pro for $9.99 as a one-time payment.",
+    "Confirm Sidestream Pro purchase",
+    "Continue only if you intend to buy Sidestream Pro for $9.99 as a one-time payment.",
     checkoutForm(confirmation, checkoutState === "cancelled"),
   );
 }

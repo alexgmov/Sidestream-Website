@@ -48,9 +48,10 @@ const CONTROLLED_ENVIRONMENT = [
   "POSTGRES_POOL_MAX",
 ];
 
-test("GET and crawler-visible checkout surfaces cannot write Stripe resources", async () => {
+test("Checkout start bypasses confirmation only for app activation intents and never writes Stripe", async () => {
   let stripeWrites = 0;
   let confirmationSequence = 0;
+  let session = null;
   const confirmation = (activationKey = "", hasCheckoutSession = false) => ({
     intentId: VALID_INTENT_ID,
     browserToken: "browser-capability",
@@ -72,11 +73,12 @@ test("GET and crawler-visible checkout surfaces cannot write Stripe resources", 
           return confirmation(options.activationKey || "");
         },
         getBaseUrl: () => BASE_URL,
-        getSession: async () => null,
+        getSession: async () => session,
         methodNotAllowed,
         redirect,
-        async resumeCheckoutIntentConfirmation() {
+        async resumeCheckoutIntentConfirmation({ browserToken }) {
           confirmationSequence += 1;
+          if (browserToken === "tampered-capability") return null;
           return confirmation("activation-legacy-1.0.13", true);
         },
       },
@@ -87,20 +89,71 @@ test("GET and crawler-visible checkout surfaces cannot write Stripe resources", 
     },
   );
 
-  const previews = [
-    "/api/checkout/start",
-    "/api/checkout/start?activation=activation-legacy-1.0.12",
-    "/api/checkout/start?intent=browser-capability&checkout=cancelled",
-  ];
-  for (const url of previews) {
-    const { response } = await invokeHandler(start, {
-      method: "GET",
-      url,
-      headers: { host: "sidestream.test", "x-forwarded-proto": "https" },
-    });
-    assert.equal(response.statusCode, 200);
-    assert.match(response.body, /<form method="post" action="\/api\/checkout\/create">/);
-  }
+  const publicPurchase = await invokeHandler(start, {
+    method: "GET",
+    url: "/api/checkout/start",
+    headers: { host: "sidestream.test", "x-forwarded-proto": "https" },
+  });
+  assert.equal(publicPurchase.response.statusCode, 200);
+  assert.match(
+    publicPurchase.response.body,
+    /<form method="post" action="\/api\/checkout\/create">/,
+  );
+
+  const activation = await invokeHandler(start, {
+    method: "GET",
+    url: "/api/checkout/start?activation=activation-legacy-1.0.12",
+    headers: { host: "sidestream.test", "x-forwarded-proto": "https" },
+  });
+  assert.equal(activation.response.statusCode, 303);
+  assert.equal(
+    activation.response.getHeader("location"),
+    `${BASE_URL}/api/auth/google/start?checkout_intent=browser-capability`,
+  );
+  assert.doesNotMatch(activation.response.body, /Confirm this Sidestream/);
+
+  const cancelled = await invokeHandler(start, {
+    method: "GET",
+    url: "/api/checkout/start?intent=browser-capability&checkout=cancelled",
+    headers: { host: "sidestream.test", "x-forwarded-proto": "https" },
+  });
+  assert.equal(cancelled.response.statusCode, 303);
+  assert.equal(
+    cancelled.response.getHeader("location"),
+    `${BASE_URL}/api/auth/google/start?checkout_intent=browser-capability&checkout=cancelled`,
+  );
+
+  const tampered = await invokeHandler(start, {
+    method: "GET",
+    url: "/api/checkout/start?intent=tampered-capability",
+    headers: { host: "sidestream.test", "x-forwarded-proto": "https" },
+  });
+  assert.equal(tampered.response.statusCode, 409);
+  assert.doesNotMatch(tampered.response.body, /checkoutIntentId/);
+
+  session = accountSession({ active: true });
+  const owner = await invokeHandler(start, {
+    method: "GET",
+    url: "/api/checkout/start?activation=activation-owner",
+    headers: { host: "sidestream.test", "x-forwarded-proto": "https" },
+  });
+  assert.equal(owner.response.statusCode, 302);
+  assert.equal(
+    owner.response.getHeader("location"),
+    `${BASE_URL}/api/activation/claim?activation=activation-owner`,
+  );
+  const cancelledOwner = await invokeHandler(start, {
+    method: "GET",
+    url: "/api/checkout/start?intent=browser-capability&checkout=cancelled",
+    headers: { host: "sidestream.test", "x-forwarded-proto": "https" },
+  });
+  assert.equal(cancelledOwner.response.statusCode, 302);
+  assert.equal(
+    cancelledOwner.response.getHeader("location"),
+    `${BASE_URL}/api/activation/claim?activation=activation-legacy-1.0.13`,
+  );
+  session = null;
+
   const legacyBare = await invokeHandler(start, {
     method: "GET",
     url: "/api/checkout/start",
@@ -118,7 +171,7 @@ test("GET and crawler-visible checkout surfaces cannot write Stripe resources", 
     legacyActivation.response.getHeader("location"),
     `${BASE_URL}/api/checkout/start?activation=activation-legacy-1.0.13`,
   );
-  assert.equal(confirmationSequence, 3);
+  assert.equal(confirmationSequence, 5);
   assert.equal(stripeWrites, 0);
 
   const complete = await loadInjectedHandler(
@@ -158,6 +211,289 @@ test("GET and crawler-visible checkout surfaces cannot write Stripe resources", 
   assert.doesNotMatch(llms, /Checkout endpoint:.*api\/checkout\/start/);
   assert.match(upgrade, /href="\/api\/checkout\/start"/);
   assert.doesNotMatch(stripComments(startSource), /\bgetStripe\s*\(/);
+  assert.doesNotMatch(stripComments(startSource), /\bcreateOrReuseCheckoutSession\s*\(/);
+});
+
+test("OAuth start sends valid sessions to locked Checkout and persists signed-out continuation", async () => {
+  let session = null;
+  let storedCookies = null;
+  let checkoutCalls = 0;
+  let limiterCalls = 0;
+  let rateAllowed = true;
+  let activationKey = "activation-oauth-start";
+  const rotations = [];
+  const resumeOptions = [];
+  const handler = await loadInjectedHandler(
+    new URL("../api/auth/google/start.ts", import.meta.url),
+    {
+      "../../_lib/account.js": {
+        cleanString,
+        async createOrReuseCheckoutSession(options) {
+          checkoutCalls += 1;
+          rotations.push(options.rotateCancelledSession);
+          assert.equal(options.intentId, VALID_INTENT_ID);
+          assert.equal(options.browserToken, "browser-capability");
+          assert.equal(options.session, session);
+          return {
+            ok: true,
+            url: "https://checkout.stripe.test/session",
+            reused: checkoutCalls > 1,
+          };
+        },
+        getBaseUrl: () => BASE_URL,
+        getClientIp: () => "127.0.0.1",
+        getGoogleAuthUrl: () => "https://accounts.google.test/oauth",
+        getSession: async () => session,
+        methodNotAllowed,
+        randomToken: () => "oauth-state",
+        redirect,
+        async resumeCheckoutIntentConfirmation(options) {
+          resumeOptions.push(options);
+          if (options.browserToken !== "browser-capability") return null;
+          return {
+            intentId: VALID_INTENT_ID,
+            browserToken: options.browserToken,
+            activationKey,
+          };
+        },
+        sanitizeNextPath: () => "/account.html",
+        sendGoogleSignInError(response, statusCode) {
+          response.statusCode = statusCode;
+          response.end("invalid");
+        },
+        setOAuthCookies(_request, _response, options) {
+          storedCookies = options;
+        },
+      },
+      "../../_lib/rate-limit.js": {
+        applyRateLimitHeaders,
+        async consumeRateLimit() {
+          limiterCalls += 1;
+          return rateLimitResult(rateAllowed);
+        },
+        sendRateLimitExceeded,
+      },
+    },
+  );
+
+  const signedOut = await invokeHandler(handler, {
+    method: "GET",
+    url: "/api/auth/google/start?checkout_intent=browser-capability&checkout=cancelled",
+  });
+  assert.equal(signedOut.response.statusCode, 302);
+  assert.equal(
+    signedOut.response.getHeader("location"),
+    "https://accounts.google.test/oauth",
+  );
+  assert.deepEqual(storedCookies, {
+    state: "oauth-state",
+    nextPath: "/account.html",
+    checkoutIntentToken: "browser-capability",
+    rotateCancelledCheckout: true,
+  });
+  assert.equal(resumeOptions.at(-1).deferAccountBindingCheck, true);
+  assert.equal(checkoutCalls, 0);
+
+  const invalid = await invokeHandler(handler, {
+    method: "GET",
+    url: "/api/auth/google/start?checkout_intent=tampered-capability",
+  });
+  assert.equal(invalid.response.statusCode, 400);
+  assert.equal(checkoutCalls, 0);
+
+  session = accountSession({ active: false });
+  const direct = await invokeHandler(handler, {
+    method: "GET",
+    url: "/api/auth/google/start?checkout_intent=browser-capability",
+  });
+  assert.equal(direct.response.statusCode, 303);
+  assert.equal(
+    direct.response.getHeader("location"),
+    "https://checkout.stripe.test/session",
+  );
+  assert.equal(resumeOptions.at(-1).deferAccountBindingCheck, false);
+  assert.equal(checkoutCalls, 1);
+  assert.deepEqual(rotations, [false]);
+  assert.equal(limiterCalls, 1);
+
+  const rotated = await invokeHandler(handler, {
+    method: "GET",
+    url: "/api/auth/google/start?checkout_intent=browser-capability&checkout=cancelled",
+  });
+  assert.equal(rotated.response.statusCode, 303);
+  assert.deepEqual(rotations, [false, true]);
+
+  session = accountSession({ active: true });
+  const owner = await invokeHandler(handler, {
+    method: "GET",
+    url: "/api/auth/google/start?checkout_intent=browser-capability",
+  });
+  assert.equal(owner.response.statusCode, 303);
+  assert.equal(
+    owner.response.getHeader("location"),
+    `${BASE_URL}/api/activation/claim?activation=activation-oauth-start`,
+  );
+  assert.equal(checkoutCalls, 2);
+
+  activationKey = "";
+  const publicOwner = await invokeHandler(handler, {
+    method: "GET",
+    url: "/api/auth/google/start?checkout_intent=browser-capability",
+  });
+  assert.equal(
+    publicOwner.response.getHeader("location"),
+    `${BASE_URL}/account.html?checkout=already_owned`,
+  );
+
+  session = accountSession({ active: false });
+  rateAllowed = false;
+  const limited = await invokeHandler(handler, {
+    method: "GET",
+    url: "/api/auth/google/start?checkout_intent=browser-capability",
+  });
+  assert.equal(limited.response.statusCode, 429);
+  assert.equal(checkoutCalls, 2);
+});
+
+test("state-verified OAuth callback revalidates account binding before Checkout", async () => {
+  let checkoutIntent = {
+    requested: true,
+    browserToken: "browser-capability",
+    rotateCancelledSession: false,
+  };
+  let activeLicense = false;
+  let activationKey = "activation-oauth-callback";
+  let rateAllowed = true;
+  let workerResult = null;
+  let exchangeCalls = 0;
+  let checkoutCalls = 0;
+  let resumeCalls = 0;
+  const rotations = [];
+  const session = () => accountSession({ active: activeLicense });
+  const handler = await loadInjectedHandler(
+    new URL("../api/auth/google/callback.ts", import.meta.url),
+    {
+      "../../_lib/account.js": {
+        clearOAuthCookies() {},
+        async createOrReuseCheckoutSession(options) {
+          checkoutCalls += 1;
+          rotations.push(options.rotateCancelledSession);
+          return workerResult || {
+            ok: true,
+            url: "https://checkout.stripe.test/session",
+            reused: checkoutCalls > 1,
+          };
+        },
+        async createWebSession() {},
+        async exchangeGoogleCode() {
+          exchangeCalls += 1;
+          return { sub: "google-subject", email: "buyer@example.com" };
+        },
+        async getAccountSessionById() {
+          return session();
+        },
+        getBaseUrl: () => BASE_URL,
+        getClientIp: () => "127.0.0.1",
+        getOAuthCheckoutIntent: () => checkoutIntent,
+        getOAuthNextPath: () => "/account.html",
+        getOAuthState: () => "oauth-state",
+        methodNotAllowed,
+        redirect,
+        async resumeCheckoutIntentConfirmation(options) {
+          resumeCalls += 1;
+          if (options.browserToken !== "browser-capability") return null;
+          if (options.session === null) {
+            assert.equal(options.deferAccountBindingCheck, true);
+          } else {
+            assert.equal(options.session.accountId, session().accountId);
+          }
+          return {
+            intentId: VALID_INTENT_ID,
+            browserToken: options.browserToken,
+            activationKey,
+          };
+        },
+        sendGoogleSignInError(response, statusCode) {
+          response.statusCode = statusCode;
+          response.end("failed");
+        },
+        async upsertGoogleAccount() {
+          return session().accountId;
+        },
+      },
+      "../../_lib/rate-limit.js": {
+        applyRateLimitHeaders,
+        async consumeRateLimit() {
+          return rateLimitResult(rateAllowed);
+        },
+        sendRateLimitExceeded,
+      },
+    },
+  );
+  const callbackRequest = {
+    method: "GET",
+    url: "/api/auth/google/callback?code=google-code&state=oauth-state",
+  };
+
+  const accepted = await invokeHandler(handler, callbackRequest);
+  assert.equal(accepted.response.statusCode, 303);
+  assert.equal(
+    accepted.response.getHeader("location"),
+    "https://checkout.stripe.test/session",
+  );
+  assert.equal(resumeCalls, 2);
+  assert.equal(checkoutCalls, 1);
+  assert.deepEqual(rotations, [false]);
+
+  checkoutIntent = { ...checkoutIntent, rotateCancelledSession: true };
+  const rotated = await invokeHandler(handler, callbackRequest);
+  assert.equal(rotated.response.statusCode, 303);
+  assert.deepEqual(rotations, [false, true]);
+
+  activeLicense = true;
+  const owner = await invokeHandler(handler, callbackRequest);
+  assert.equal(owner.response.statusCode, 303);
+  assert.equal(
+    owner.response.getHeader("location"),
+    `${BASE_URL}/api/activation/claim?activation=activation-oauth-callback`,
+  );
+  assert.equal(checkoutCalls, 2);
+
+  activeLicense = false;
+  checkoutIntent = {
+    requested: true,
+    browserToken: "tampered-capability",
+    rotateCancelledSession: false,
+  };
+  const exchangeCallsBeforeTamper = exchangeCalls;
+  const tampered = await invokeHandler(handler, callbackRequest);
+  assert.equal(tampered.response.statusCode, 400);
+  assert.equal(exchangeCalls, exchangeCallsBeforeTamper);
+  assert.equal(checkoutCalls, 2);
+
+  checkoutIntent = {
+    requested: true,
+    browserToken: "browser-capability",
+    rotateCancelledSession: false,
+  };
+  rateAllowed = false;
+  const limited = await invokeHandler(handler, callbackRequest);
+  assert.equal(limited.response.statusCode, 429);
+  assert.equal(checkoutCalls, 2);
+
+  rateAllowed = true;
+  workerResult = {
+    ok: false,
+    statusCode: 409,
+    error: "Already active",
+    code: "active_license",
+  };
+  const racedOwner = await invokeHandler(handler, callbackRequest);
+  assert.equal(racedOwner.response.statusCode, 303);
+  assert.equal(
+    racedOwner.response.getHeader("location"),
+    `${BASE_URL}/api/activation/claim?activation=activation-oauth-callback`,
+  );
 });
 
 test("Checkout POST rejects CSRF, throttling, and active owners before Stripe work", async () => {
@@ -356,10 +692,47 @@ test("database-backed intents serialize retries, rotate deliberately, and fulfil
       session: null,
     });
     assert.ok(activationConfirmation);
+    const resumedActivation = await account.resumeCheckoutIntentConfirmation({
+      browserToken: activationConfirmation.browserToken,
+      session: buyerSession,
+    });
+    assert.equal(resumedActivation?.intentId, activationConfirmation.intentId);
+    const intentBinding = await databasePool.query(
+      `
+        select account_id
+        from public.sidestream_checkout_intents
+        where id = $1
+      `,
+      [activationConfirmation.intentId],
+    );
+    assert.equal(intentBinding.rows[0].account_id, buyerSession.accountId);
+
+    const attacker = await seedFreeAccount(databasePool, "checkout-attacker");
+    const attackerSession = accountSession({
+      accountId: attacker.accountId,
+      email: attacker.email,
+      active: false,
+    });
+    assert.equal(
+      await account.resumeCheckoutIntentConfirmation({
+        browserToken: activationConfirmation.browserToken,
+        session: attackerSession,
+      }),
+      null,
+    );
+    const rejectedAccount = await account.createOrReuseCheckoutSession({
+      intentId: activationConfirmation.intentId,
+      browserToken: activationConfirmation.browserToken,
+      session: attackerSession,
+      baseUrl: BASE_URL,
+    });
+    assert.equal(rejectedAccount.ok, false);
+    assert.equal(rejectedAccount.code, "intent_account_mismatch");
+
     const activationCheckout = await account.createOrReuseCheckoutSession({
       intentId: activationConfirmation.intentId,
       browserToken: activationConfirmation.browserToken,
-      session: null,
+      session: buyerSession,
       baseUrl: BASE_URL,
     });
     assert.equal(activationCheckout.ok, true);
@@ -371,6 +744,12 @@ test("database-backed intents serialize retries, rotate deliberately, and fulfil
     assert.equal(
       activationWrite.params.metadata.sidestream_activation_key,
       activationKey,
+    );
+    assert.equal(activationWrite.params.customer, buyerSession.stripeCustomerId);
+    assert.equal(activationWrite.params.customer_creation, undefined);
+    assert.equal(
+      activationWrite.params.metadata.sidestream_account_id,
+      buyerSession.accountId,
     );
     const attached = await databasePool.query(
       `
@@ -408,14 +787,14 @@ test("database-backed intents serialize retries, rotate deliberately, and fulfil
       `,
       [activationKey],
     );
-    assert.ok(fulfilledActivation.rows[0].account_id);
+    assert.equal(fulfilledActivation.rows[0].account_id, buyerSession.accountId);
     assert.equal(
       fulfilledActivation.rows[0].stripe_checkout_session_id,
       activationWrite.session.id,
     );
     const fulfilledIntent = await databasePool.query(
       `
-        select state, stripe_customer_id
+        select state, account_id, stripe_customer_id
         from public.sidestream_checkout_intents
         where id = $1
       `,
@@ -423,6 +802,7 @@ test("database-backed intents serialize retries, rotate deliberately, and fulfil
     );
     assert.deepEqual(fulfilledIntent.rows[0], {
       state: "completed",
+      account_id: buyerSession.accountId,
       stripe_customer_id: activationWrite.session.customer,
     });
 
