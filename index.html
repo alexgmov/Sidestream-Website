@@ -532,6 +532,12 @@
     line-height: 1.2;
     letter-spacing: -0.02em;
   }
+  .mobile-download-handoff-subtext {
+    margin: 8px 0 0;
+    color: rgba(226, 232, 240, 0.68);
+    font-size: 14px;
+    line-height: 1.45;
+  }
   .mobile-download-handoff-fields {
     display: grid;
     gap: 10px;
@@ -1082,17 +1088,31 @@
       position: relative;
       inset: auto;
       display: block;
-      flex: 0 0 clamp(220px, 34vh, 300px);
+      flex: 0 0 clamp(360px, 43vh, 380px);
       width: 100%;
-      -webkit-mask-image: linear-gradient(to bottom, #000 0%, #000 80%, transparent 100%);
-      mask-image: linear-gradient(to bottom, #000 0%, #000 80%, transparent 100%);
+      -webkit-mask-image: linear-gradient(
+        180deg,
+        #000 0%,
+        #000 86%,
+        rgba(0, 0, 0, 0.78) 91%,
+        rgba(0, 0, 0, 0.35) 97%,
+        transparent 100%
+      );
+      mask-image: linear-gradient(
+        180deg,
+        #000 0%,
+        #000 86%,
+        rgba(0, 0, 0, 0.78) 91%,
+        rgba(0, 0, 0, 0.35) 97%,
+        transparent 100%
+      );
     }
     .feature-corner-demo-video {
-      left: 58%;
+      left: 50%;
       top: 0;
-      width: min(720px, 150vw);
+      width: min(700px, 148vw);
       height: auto;
-      transform: translate(-50%, -12%);
+      transform: translate(-50%, -8%);
       transform-origin: center top;
     }
     h1 { font-size: 3.08rem; }
@@ -1119,6 +1139,12 @@
   @media (max-width: 520px) {
     h1 { font-size: 2.58rem; }
     .hero-subline { font-size: 1.48rem; }
+    .feature-corner-demo { transform: translateY(-24px); }
+    .feature-corner-demo-video {
+      left: 70%;
+      width: min(630px, 133.2vw);
+      transform: translate(-50%, -8%);
+    }
     #hero .cta-row { align-items: stretch; width: 100%; }
     #hero .cta-row .btn { width: 100%; }
     .rotating-copy { min-width: 0; width: 100%; }
@@ -1255,7 +1281,8 @@
             </button>
           </div>
           <form class="mobile-download-handoff" id="mobile-download-handoff" novalidate>
-            <p class="mobile-download-handoff-title">Get Sidestream on your computer</p>
+            <p class="mobile-download-handoff-title">On your phone?</p>
+            <p class="mobile-download-handoff-subtext">We'll email you a link with a discount code for 20% off to open later on your computer</p>
             <div class="mobile-download-handoff-fields">
               <label class="mobile-download-handoff-label" for="mobile-download-email">Email address</label>
               <input class="mobile-download-handoff-input" id="mobile-download-email" name="email" type="email" inputmode="email" autocomplete="email" enterkeyhint="send" placeholder="you@email.com" required>
