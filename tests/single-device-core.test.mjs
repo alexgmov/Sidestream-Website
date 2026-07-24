@@ -208,6 +208,22 @@ test("account core serializes every credential path on the account namespace", a
   const bindingCheck = source.indexOf("const activationBinding = await checkActivationDeviceBinding");
   const replayCutoff = source.indexOf("!isActivationTokenReplayAllowed", bindingCheck);
   assert.ok(bindingCheck >= 0 && replayCutoff > bindingCheck);
+
+  const issueStart = source.indexOf("async function issueLicenseTokenPair");
+  const issueEnd = source.indexOf("type RefreshCredentialRow", issueStart);
+  const issue = source.slice(issueStart, issueEnd);
+  const replayRead = issue.indexOf("from public.sidestream_license_tokens");
+  const revokePredecessor = issue.indexOf("update public.sidestream_license_tokens");
+  const insertSuccessor = issue.indexOf("insert into public.sidestream_license_tokens");
+  assert.ok(
+    replayRead >= 0 &&
+      revokePredecessor > replayRead &&
+      insertSuccessor > revokePredecessor,
+  );
+  assert.match(
+    issue,
+    /where account_id = \$1\s+and license_id = \$2\s+and device_id_hash = \$3\s+and revoked_at is null/,
+  );
 });
 
 test("confirmed transfer is one transaction with CAS, total family revocation, and one audit", async () => {

@@ -505,6 +505,60 @@ test("single-device entitlement transactions hold in disposable Postgres", {
       primaryFixture.activation = activation;
     });
 
+    await t.test("same-device reconnect replaces the predecessor credential family", async () => {
+      const fixture = await seedAccount(databasePool, schema);
+      const firstActivation = await seedActivation(databasePool, schema, fixture, {
+        deviceId: "reconnect-a",
+        appVersion: "1.0.15",
+      });
+      const firstCredentials = await accountModule.getActivationStatus(
+        firstActivation.activationKey,
+        "reconnect-a",
+        { skipReconciliation: true, environment: production, platform: "macos" },
+      );
+      assert.equal(firstCredentials.status, "active");
+
+      const reconnectActivation = await seedActivation(databasePool, schema, fixture, {
+        deviceId: "reconnect-a",
+        appVersion: "1.0.15",
+      });
+      const reconnectCredentials = await accountModule.getActivationStatus(
+        reconnectActivation.activationKey,
+        "reconnect-a",
+        { skipReconciliation: true, environment: production, platform: "macos" },
+      );
+      assert.equal(reconnectCredentials.status, "active");
+      assert.notEqual(reconnectCredentials.licenseToken, firstCredentials.licenseToken);
+      assert.equal(
+        (await accountModule.verifyLicenseToken(
+          firstCredentials.licenseToken,
+          "reconnect-a",
+          production,
+        )).code,
+        "revoked",
+      );
+
+      const state = await databasePool.query(
+        `
+          select
+            (select count(*)::int from ${quotedSchema}.sidestream_account_devices
+              where account_id = $1
+                and license_namespace = 'production'
+                and revoked_at is null) as active_devices,
+            (select count(*)::int from ${quotedSchema}.sidestream_license_tokens
+              where account_id = $1) as credential_families,
+            (select count(*)::int from ${quotedSchema}.sidestream_license_tokens
+              where account_id = $1 and revoked_at is null) as live_credential_families
+        `,
+        [fixture.accountId],
+      );
+      assert.deepEqual(state.rows[0], {
+        active_devices: 1,
+        credential_families: 2,
+        live_credential_families: 1,
+      });
+    });
+
     await t.test("observe records a second device while enforce requires transfer", async () => {
       const fixture = await seedAccount(databasePool, schema);
       const first = await seedActivation(databasePool, schema, fixture, {
