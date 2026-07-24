@@ -1259,7 +1259,7 @@
             <div class="mobile-download-handoff-fields">
               <label class="mobile-download-handoff-label" for="mobile-download-email">Email address</label>
               <input class="mobile-download-handoff-input" id="mobile-download-email" name="email" type="email" inputmode="email" autocomplete="email" enterkeyhint="send" placeholder="you@email.com" required>
-              <button class="btn btn-primary mobile-download-handoff-submit" id="mobile-download-submit" type="submit">Send me the links</button>
+              <button class="btn btn-primary mobile-download-handoff-submit" id="mobile-download-submit" type="submit">Email me the download link</button>
             </div>
             <p class="mobile-download-handoff-status" id="mobile-download-status" aria-live="polite"></p>
           </form>
@@ -1984,7 +1984,7 @@
             : "Could not send the email. Try again.";
           mobileDownloadStatus.classList.add("is-error");
           mobileDownloadSubmit.disabled = false;
-          mobileDownloadSubmit.textContent = "Send me the links";
+          mobileDownloadSubmit.textContent = "Email me the download link";
         } finally {
           window.clearTimeout(timeout);
         }
