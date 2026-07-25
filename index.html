@@ -8,7 +8,7 @@
 <meta name="robots" content="index, follow, max-image-preview:large" />
 <meta name="application-name" content="Sidestream" />
 <meta name="apple-mobile-web-app-title" content="Sidestream" />
-<meta name="theme-color" content="#000000" />
+<meta name="theme-color" content="#1b1b1b" />
 <link rel="canonical" href="https://sidestream.tv/" />
 <link rel="sitemap" type="application/xml" href="https://sidestream.tv/sitemap.xml" />
 <meta property="og:type" content="website" />
@@ -178,8 +178,6 @@
     position: fixed;
     inset: 0;
     z-index: 0;
-    width: 100vw;
-    height: 100vh;
     overflow: hidden;
     pointer-events: none;
   }
@@ -1139,10 +1137,14 @@
   @media (max-width: 520px) {
     h1 { font-size: 2.58rem; }
     .hero-subline { font-size: 1.48rem; }
-    .feature-corner-demo { transform: translateY(-24px); }
+    .hero-copy.reveal { transform: translateY(-88px); }
+    .feature-corner-demo {
+      flex-basis: clamp(260px, 32vh, 300px);
+      transform: translateY(-60px);
+    }
     .feature-corner-demo-video {
       left: 70%;
-      width: min(630px, 133.2vw);
+      width: min(590px, 124vw);
       transform: translate(-50%, -8%);
     }
     #hero .cta-row { align-items: stretch; width: 100%; }
@@ -1150,7 +1152,7 @@
     .rotating-copy { min-width: 0; width: 100%; }
     .pricing-line { white-space: normal; }
     .beta-title { font-size: 26px; }
-    .hero-pad { padding-bottom: 64px; }
+    .hero-pad { padding-bottom: 48px; }
     .feature-start { padding-top: 72px; }
     .feature-glass::before { inset: 0; }
     .pricing-mockup {
