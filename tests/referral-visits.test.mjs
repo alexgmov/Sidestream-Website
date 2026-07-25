@@ -99,6 +99,30 @@ test("unsupported sources, methods, content types, and oversized bodies fail clo
   }
 });
 
+test("numbered Meta sources are accepted only within the documented range", async () => {
+  for (const source of ["meta-ads-1", "meta-ads-2", "meta-ads-999"]) {
+    const recorded = [];
+    const backgroundTasks = [];
+    const handler = createReferralVisitHandler({
+      recordVisit: async (event) => recorded.push(event),
+      scheduleBackground: (operation) => backgroundTasks.push(operation),
+      logTrackingError: () => assert.fail("tracking should not fail"),
+    });
+    const result = await invoke(handler, { body: { source } });
+
+    assert.equal(result.response.status, 204);
+    await result.handlerDone;
+    await Promise.all(backgroundTasks);
+    assert.equal(recorded[0]?.source, source);
+  }
+
+  for (const source of ["meta-ads-0", "meta-ads-01", "meta-ads-1000"]) {
+    const result = await invoke(createReferralVisitHandler(), { body: { source } });
+    assert.equal(result.response.status, 400);
+    await result.handlerDone;
+  }
+});
+
 test("daily visitor hashes are deterministic, source scoped, and rotate by day", () => {
   const request = fakeRequest({
     "user-agent": "Mozilla/5.0 Chrome/140.0",
@@ -128,6 +152,10 @@ test("daily visitor hashes are deterministic, source scoped, and rotate by day",
     now: new Date("2026-07-21T12:00:00.000Z"),
     secret: "secret-a",
   });
+  const metaAds999 = buildReferralVisitEvent(request, "meta-ads-999", {
+    now: new Date("2026-07-21T12:00:00.000Z"),
+    secret: "secret-a",
+  });
   const redditOne = buildReferralVisitEvent(request, "reddit-1", {
     now: new Date("2026-07-21T12:00:00.000Z"),
     secret: "secret-a",
@@ -142,12 +170,18 @@ test("daily visitor hashes are deterministic, source scoped, and rotate by day",
   assert.notEqual(first.visitorHash, instagramBio.visitorHash);
   assert.notEqual(instagramBio.visitorHash, alexInstagram.visitorHash);
   assert.notEqual(alexInstagram.visitorHash, metaAdsOne.visitorHash);
-  assert.notEqual(metaAdsOne.visitorHash, redditOne.visitorHash);
+  assert.notEqual(metaAdsOne.visitorHash, metaAds999.visitorHash);
+  assert.notEqual(metaAds999.visitorHash, redditOne.visitorHash);
   assert.notEqual(redditOne.visitorHash, redditTwo.visitorHash);
   assert.equal(parseReferralVisitSource(" ManyChat "), "manychat");
   assert.equal(parseReferralVisitSource(" Instagram-Bio "), "instagram-bio");
   assert.equal(parseReferralVisitSource(" Instagram-Alex "), "instagram-alex");
   assert.equal(parseReferralVisitSource(" Meta-Ads-1 "), "meta-ads-1");
+  assert.equal(parseReferralVisitSource(" Meta-Ads-2 "), "meta-ads-2");
+  assert.equal(parseReferralVisitSource(" Meta-Ads-999 "), "meta-ads-999");
+  assert.equal(parseReferralVisitSource("meta-ads-0"), null);
+  assert.equal(parseReferralVisitSource("meta-ads-01"), null);
+  assert.equal(parseReferralVisitSource("meta-ads-1000"), null);
   assert.equal(parseReferralVisitSource(" Reddit-1 "), "reddit-1");
   assert.equal(parseReferralVisitSource(" Reddit-2 "), "reddit-2");
   assert.equal(parseReferralVisitSource("gmail"), null);
@@ -218,13 +252,13 @@ test("landing page and Vercel config preserve short tracking routes", () => {
     redirect.permanent === false
   ));
   assert.ok(vercel.redirects.some((redirect) =>
-    redirect.source === "/meta/1" &&
-    redirect.destination === "https://sidestream.tv/?utm_source=meta&utm_medium=paid_social&utm_campaign=1" &&
+    redirect.source === "/meta/:campaign([1-9]\\d{0,2})" &&
+    redirect.destination === "https://sidestream.tv/?utm_source=meta&utm_medium=paid_social&utm_campaign=:campaign" &&
     redirect.permanent === false
   ));
   assert.ok(vercel.redirects.some((redirect) =>
-    redirect.source === "/meta/1/" &&
-    redirect.destination === "https://sidestream.tv/?utm_source=meta&utm_medium=paid_social&utm_campaign=1" &&
+    redirect.source === "/meta/:campaign([1-9]\\d{0,2})/" &&
+    redirect.destination === "https://sidestream.tv/?utm_source=meta&utm_medium=paid_social&utm_campaign=:campaign" &&
     redirect.permanent === false
   ));
   assert.ok(vercel.redirects.some((redirect) =>
@@ -249,7 +283,8 @@ test("landing page and Vercel config preserve short tracking routes", () => {
   ));
   assert.match(html, /instagram-bio/);
   assert.match(html, /instagram-alex/);
-  assert.match(html, /meta-ads-1/);
+  assert.match(html, /meta-ads-\$\{utmCampaign\}/);
+  assert.match(html, /\^\[1-9\]\\d\{0,2\}\$/);
   assert.match(html, /reddit-1/);
   assert.match(html, /reddit-2/);
 });
