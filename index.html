@@ -1894,8 +1894,12 @@
         if (utmCampaign === "bio") source = "instagram-bio";
         if (utmCampaign === "alex-bio") source = "instagram-alex";
       }
-      if (utmSource === "meta" && utmMedium === "paid_social" && utmCampaign === "1") {
-        source = "meta-ads-1";
+      if (
+        utmSource === "meta" &&
+        utmMedium === "paid_social" &&
+        /^[1-9]\d{0,2}$/.test(utmCampaign || "")
+      ) {
+        source = `meta-ads-${utmCampaign}`;
       }
       if (utmSource === "reddit" && utmMedium === "social" && utmCampaign === "1") {
         source = "reddit-1";
