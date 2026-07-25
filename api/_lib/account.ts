@@ -5922,6 +5922,17 @@ async function issueLicenseTokenPair(options: {
       const refreshExpiresAt = addDays(new Date(), REFRESH_TOKEN_TTL_DAYS).toISOString();
       await client.query(
         `
+          update public.sidestream_license_tokens
+          set revoked_at = now(), updated_at = now()
+          where account_id = $1
+            and license_id = $2
+            and device_id_hash = $3
+            and revoked_at is null
+        `,
+        [options.accountId, options.licenseId, deviceIdHash],
+      );
+      await client.query(
+        `
           insert into public.sidestream_license_tokens (
             account_id,
             license_id,

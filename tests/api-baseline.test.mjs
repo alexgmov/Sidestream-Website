@@ -272,6 +272,33 @@ test("concurrent restore claims expose one compare-and-set winner", async () => 
   assert.equal(activation.status, "restored");
 });
 
+test("a Free authenticated activation claim redirects into direct app Checkout", async () => {
+  const harness = createApiContractHarness();
+  const claim = await loadAccountHandler("../api/activation/claim.ts", harness);
+  const activation = harness.store.seedActivation({
+    activationKey: "activation-direct-checkout",
+    deviceId: "device-direct-checkout",
+  });
+
+  const result = await invokeHandler(claim, {
+    method: "GET",
+    url: "/api/activation/claim?activation=activation-direct-checkout",
+    session: {
+      accountId: "account-free",
+      email: "free@example.test",
+      license: { active: false },
+    },
+  });
+
+  assert.equal(result.response.statusCode, 303);
+  assert.equal(
+    result.response.getHeader("location"),
+    "https://sidestream.test/api/checkout/start?activation=activation-direct-checkout",
+  );
+  assert.equal(activation.accountId, null, "redirect must not bind the signed-in account");
+  assert.equal(harness.store.claimCasWinners, 0);
+});
+
 test("a wrong device cannot reconcile Checkout or mint/rotate credentials", async () => {
   const harness = createApiContractHarness();
   const { activation } = harness.seedPaidActivation({

@@ -126,11 +126,17 @@ test("claim GET authenticates first and stays a no-store read-only decision", as
   assert.match(source, /noindex,nofollow/);
 });
 
-test("activation purchase requires a signed intent POST before the locked worker", async () => {
-  const [claim, create] = await Promise.all([
+test("activation claim redirects into the existing activation Checkout worker", async () => {
+  const [claim, start, create] = await Promise.all([
     readFile(files.claim, "utf8"),
+    readFile(files.checkoutStart, "utf8"),
     readFile(files.checkoutCreate, "utf8"),
   ]);
+  const startIntent = start.indexOf("const activationKey = cleanString");
+  const startSession = start.indexOf("const session = await getSession(request)");
+  const startWorker = start.indexOf("createOrResumeActivationCheckout", startSession);
+  const callbackRateLimit = create.indexOf("await consumeRateLimit");
+  const callbackWorker = create.indexOf("await createOrReuseCheckoutSession");
   const legacyRedirect = create.indexOf("legacyActivationKey &&");
   const intentValidation = create.indexOf(
     "validateCheckoutIntentConfirmation({",
@@ -141,9 +147,12 @@ test("activation purchase requires a signed intent POST before the locked worker
   const rateLimit = create.indexOf("await consumeRateLimit", activeOwner);
   const lockedWorker = create.indexOf("await createOrReuseCheckoutSession", rateLimit);
 
-  assert.match(claim, /form method="post" action="\/api\/checkout\/create"/);
-  assert.match(claim, /name="activationKey"/);
-  assert.match(claim, /name="intent" value="purchase"/);
+  assert.match(claim, /new URL\("\/api\/checkout\/start", baseUrl\)/);
+  assert.match(claim, /checkoutUrl\.searchParams\.set\("activation", activationKey\)/);
+  assert.doesNotMatch(claim, /form method="post" action="\/api\/checkout\/create"/);
+  assert.doesNotMatch(claim, /Continue to secure checkout/);
+  assert.ok(startIntent >= 0 && startSession > startIntent && startWorker > startSession);
+  assert.ok(callbackRateLimit >= 0 && callbackWorker > callbackRateLimit);
   assert.match(create, /application\/x-www-form-urlencoded/);
   assert.ok(legacyRedirect >= 0 && intentValidation > legacyRedirect);
   assert.ok(sessionRead > intentValidation && activeOwner > sessionRead);

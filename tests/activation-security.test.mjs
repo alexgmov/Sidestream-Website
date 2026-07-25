@@ -763,9 +763,7 @@ test("activation, claim, Checkout, and credential invariants execute against Pos
     });
   } finally {
     if (runtimeModules) {
-      const postgresModule = await import(
-        pathToFileURL(join(repositoryRoot, "api", "_lib", "postgres.ts")).href
-      );
+      const postgresModule = await import(runtimeModules.postgresModuleUrl);
       await postgresModule.getPostgresPool().end();
       await rm(runtimeModules.temporaryModuleDirectory, { recursive: true, force: true });
     }
@@ -792,6 +790,16 @@ async function loadRuntimeModules() {
     join(repositoryRoot, "tests", ".activation-security-modules-"),
   );
   try {
+    const postgresModuleUrl = await writeRouteModule(
+      temporaryModuleDirectory,
+      "postgres",
+      join(repositoryRoot, "api", "_lib", "postgres.ts"),
+      {
+        "./postgres-target.js": pathToFileURL(
+          join(repositoryRoot, "api", "_lib", "postgres-target.ts"),
+        ).href,
+      },
+    );
     const helperImports = {
       "./entitlement.js": pathToFileURL(
         join(repositoryRoot, "api", "_lib", "entitlement.ts"),
@@ -805,9 +813,7 @@ async function loadRuntimeModules() {
       "./customer-identity.js": pathToFileURL(
         join(repositoryRoot, "api", "_lib", "customer-identity.ts"),
       ).href,
-      "./postgres.js": pathToFileURL(
-        join(repositoryRoot, "api", "_lib", "postgres.ts"),
-      ).href,
+      "./postgres.js": postgresModuleUrl,
     };
     helperImports["./maintenance.js"] = await writeRouteModule(
       temporaryModuleDirectory,
@@ -861,6 +867,7 @@ export function __setActivationSecurityStripeClient(value: Stripe | null) {
       claimHandler: claim.default,
       startHandler: start.default,
       statusHandler: status.default,
+      postgresModuleUrl,
       temporaryModuleDirectory,
     };
   } catch (error) {
