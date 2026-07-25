@@ -45,13 +45,13 @@
       "permanent": false
     },
     {
-      "source": "/meta/1",
-      "destination": "https://sidestream.tv/?utm_source=meta&utm_medium=paid_social&utm_campaign=1",
+      "source": "/meta/:campaign([1-9]\\d{0,2})",
+      "destination": "https://sidestream.tv/?utm_source=meta&utm_medium=paid_social&utm_campaign=:campaign",
       "permanent": false
     },
     {
-      "source": "/meta/1/",
-      "destination": "https://sidestream.tv/?utm_source=meta&utm_medium=paid_social&utm_campaign=1",
+      "source": "/meta/:campaign([1-9]\\d{0,2})/",
+      "destination": "https://sidestream.tv/?utm_source=meta&utm_medium=paid_social&utm_campaign=:campaign",
       "permanent": false
     },
     {
