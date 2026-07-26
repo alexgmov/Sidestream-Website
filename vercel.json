@@ -26,7 +26,7 @@
   "redirects": [
     {
       "source": "/ig",
-      "destination": "https://sidestream.tv/?utm_source=instagram-bio",
+      "destination": "https://sidestream.tv/?utm_source=instagram&utm_medium=social&utm_campaign=bio",
       "permanent": false
     },
     {
