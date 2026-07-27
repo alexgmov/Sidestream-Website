@@ -531,6 +531,9 @@ async function loadAccountHandler(relativePath, harness) {
   return loadInjectedHandler(new URL(relativePath, import.meta.url), {
     "../_lib/account.js": harness.dependencies,
     "../../_lib/account.js": harness.dependencies,
+    "../_lib/paid-acquisition.js": {
+      getPaidAcquisitionActivationOutcome: async () => null,
+    },
   });
 }
 

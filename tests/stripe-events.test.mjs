@@ -1166,6 +1166,12 @@ async function loadAccountRuntime(directory) {
     join(repositoryRoot, "api/_lib/maintenance.ts"),
     { "./postgres.js": postgresUrl },
   );
+  const paidAcquisitionUrl = await writeAdaptedModule(
+    directory,
+    "paid-acquisition",
+    join(repositoryRoot, "api/_lib/paid-acquisition.ts"),
+    { "./postgres.js": postgresUrl },
+  );
   const accountUrl = await writeAdaptedModule(
     directory,
     "account",
@@ -1185,6 +1191,7 @@ async function loadAccountRuntime(directory) {
         join(repositoryRoot, "api/_lib/customer-identity.ts"),
       ).href,
       "./maintenance.js": maintenanceUrl,
+      "./paid-acquisition.js": paidAcquisitionUrl,
       "./postgres.js": postgresUrl,
     },
   );

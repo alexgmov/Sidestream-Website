@@ -35,11 +35,6 @@
       "permanent": false
     },
     {
-      "source": "/mc",
-      "destination": "https://sidestream.tv/?utm_source=manychat",
-      "permanent": false
-    },
-    {
       "source": "/mc/",
       "destination": "https://sidestream.tv/?utm_source=manychat",
       "permanent": false
@@ -100,6 +95,12 @@
     },
     {
       "source": "/thank-you.html",
+      "headers": [
+        { "key": "X-Robots-Tag", "value": "noindex, nofollow" }
+      ]
+    },
+    {
+      "source": "/mobile-paid-prototype.html",
       "headers": [
         { "key": "X-Robots-Tag", "value": "noindex, nofollow" }
       ]

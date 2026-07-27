@@ -662,6 +662,12 @@ async function loadRuntimeModules() {
       join(repositoryRoot, "api", "_lib", "maintenance.ts"),
       { "./postgres.js": imports["./postgres.js"] },
     )).href;
+    imports["./paid-acquisition.js"] = pathToFileURL(await writeAdaptedModule(
+      temporaryModuleDirectory,
+      "paid-acquisition",
+      join(repositoryRoot, "api", "_lib", "paid-acquisition.ts"),
+      { "./postgres.js": imports["./postgres.js"] },
+    )).href;
     let source = await readFile(
       join(repositoryRoot, "api", "_lib", "account.ts"),
       "utf8",

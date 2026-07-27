@@ -155,15 +155,22 @@ test("referral report counts unique daily humans and scanners without exposing h
 test("landing page and Vercel config preserve the /m and /mc route forms", () => {
   const html = readFileSync(path.join(repoRoot, "index.html"), "utf8");
   const vercel = JSON.parse(readFileSync(path.join(repoRoot, "vercel.json"), "utf8"));
+  const middleware = readFileSync(path.join(repoRoot, "middleware.ts"), "utf8");
   assert.match(html, /fetch\("\/api\/referral-visit"/);
   assert.match(html, /utm_source/);
-  for (const source of ["/m", "/m/", "/mc", "/mc/"]) {
+  for (const source of ["/m", "/m/", "/mc/"]) {
     assert.ok(vercel.redirects.some((redirect) =>
       redirect.source === source &&
       redirect.destination === "https://sidestream.tv/?utm_source=manychat" &&
       redirect.permanent === false
     ));
   }
+  assert.equal(
+    vercel.redirects.some((redirect) => redirect.source === "/mc"),
+    false,
+  );
+  assert.match(middleware, /matcher:\s*"\/mc"/);
+  assert.match(middleware, /SIDESTREAM_PAID_ACQUISITION_ASSIGNMENT_SECRET/);
 });
 
 function fakeRequest(headers = {}) {

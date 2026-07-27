@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "platform": "macos-universal",
+  "version": "0.0.0-paid-fixture",
+  "filename": "Sidestream-0.0.0-paid-fixture-Mac-Installer.dmg",
+  "sizeBytes": 1048576,
+  "sha256": "7db30990d8030929b11aaf27446c6f32c5b46df3228cd13414271948660facbc",
+  "artifactId": "fixture-paid-onboarding-macos-universal-v1"
+}

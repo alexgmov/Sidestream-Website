@@ -36,6 +36,9 @@ Sidestream is an HTML-first landing page for a Premiere Pro panel that lets edit
 - `api/auth/google/start.ts` and `api/auth/google/callback.ts` - Google OAuth redirect/callback handlers. They require the configured callback to share the browser-facing start origin before setting a short-lived HTTP-only state cookie, upsert `sidestream_accounts`, issue a server-side session cookie, and render a retryable noindex HTML error instead of raw JSON when sign-in state is stale.
 - `api/auth/session.ts` and `api/auth/logout.ts` - Account-session JSON and logout endpoints used by `account.html`.
 - `api/checkout/start.ts` and `api/checkout/complete.ts` - Authenticated one-time Sidestream Pro Checkout flow. Start sends signed-out users through Google authentication, creates a locked database intent for the signed-in Free account, creates or reuses the Stripe Session, and redirects to Stripe. Checkout Session idempotency includes a canonical SHA-256 fingerprint of every Stripe request parameter plus the logical attempt, so historical Upgrade paths recover safely after changes to Price/Product, URLs, metadata, promotions, expiry, or customer mode instead of colliding with an older Stripe request. Completion re-fetches Stripe truth before fulfillment and returns through the literal `{CHECKOUT_SESSION_ID}` placeholder. A complete zero-total Stripe order may omit its PaymentIntent while reporting either `paid` or `no_payment_required`; fulfillment accepts that shape only when the exact Session/Price/Product/activation checks pass, the amount is exactly zero, and the currency is valid.
+- `middleware.ts`, `api/paid-acquisition/*`, and `api/_lib/paid-acquisition.ts` - Default-off paid mobile acquisition boundary. Only exact eligible top-level mobile `GET /mc` navigation can receive the signed sticky 50/50 assignment; missing assignment configuration, uncertain clients, control traffic, and non-eligible traffic fall back to the canonical ManyChat destination. The paid Checkout POST reuses the current server-owned Sidestream Pro Product/Price and durable core intent worker without changing ordinary signed-in Free-account Checkout.
+- `api/_lib/paid-installer-email.ts`, `api/_lib/paid-release-manifest.ts`, `api/paid-download.ts`, `api/releases/paid-latest.ts`, and `data/release-manifest.paid*.json` - Isolated paid-onboarding email and installer surfaces. Provider delivery stays disabled unless `SIDESTREAM_PAID_ACQUISITION_EMAIL_ENABLED=1`; the paid artifact does not grant entitlement by itself.
+- `db/migrations/20260727010000_add_paid_acquisition_experiment.sql`, `docs/paid-acquisition-contract.md`, `docs/paid-acquisition-runbook.md`, and `tests/paid*.test.mjs` - Namespaced paid-acquisition schema, normative contract/runbook, and deterministic provider-free evidence. Committing the migration does not apply it to any database, and this reconciliation performed no environment, migration-apply, email, payment, or deployment action.
 - `api/billing/portal.ts` - Authenticated Stripe Customer Portal redirect creator for customer billing details and invoice history where Stripe has actual Invoice objects to show.
 - `api/billing/receipt.ts` - Authenticated one-time purchase receipt helper. It finds the signed-in account's latest Sidestream license PaymentIntent and returns the Stripe charge receipt URL, covering older Checkout payments that did not create invoices.
 - `api/stripe/webhook.ts`, `api/_lib/stripe-events.ts`, and `api/internal/stripe-events/process.ts` - Signature verification, durable event recording, leased `SKIP LOCKED` claims, retry/backoff/dead-letter isolation, and watermark-protected entitlement reconciliation. Customer/account reads do not process this queue.
@@ -97,9 +100,10 @@ Sidestream is an HTML-first landing page for a Premiere Pro panel that lets edit
 - Download and upgrade actions - `[data-download]`, `[data-windows-download]`, `[data-purchase]`, `#mobile-download-handoff`, and `#toast`; desktop Mac/Windows CTAs retain their direct installers, while viewports at or below `900px` replace the hero platform choice with an email form whose helper reads "Enter your email and receive a download link" and route lower-page download taps back to that form. The form's empty `aria-live` status stays hidden until validation or delivery feedback is available. The Sidestream Pro sequence is: Upgrade button, Google authentication, Stripe payment.
 - Installer and update fulfillment - `data/release-manifest.json` is the default Mac release pointer and `data/release-manifest.windows.json` is the Windows beta pointer. `api/download.ts` and `api/releases/latest.ts` resolve the same platform-specific manifest so artifact and update truth cannot drift. Bare requests remain Mac, `win32-x64` selects Windows, and unknown platforms return `404` instead of silently serving the wrong OS.
 - Installer referral attribution - Gmail launch URLs use `utm_source=gmail`, `utm_medium=email`, a bounded campaign ID, and optional `utm_content=pilot` or `utm_content=main` batch ID. Only a successful tagged installer `GET` creates `public.sidestream_installer_requests`; `HEAD`, `304`, invalid tags, and failed fulfillment create nothing. The event stores no email, raw IP, or raw user agent. Scanner-like `GET`s remain visible with `likely_scanner = true` so reports can separate them instead of pretending they never happened.
-- Landing referral attribution - `https://sidestream.tv/mc` and its trailing-slash form temporarily redirect to the canonical root with `utm_source=manychat`. The loaded page POSTs only that allowlisted source to `/api/referral-visit`; private Blob pathnames dedupe repeated visits from the same anonymous request fingerprint on the same UTC day and separate likely-human from likely-scanner traffic. This measures landing visitor-days, not downloads, installs, activations, purchases, or durable identities.
+- Landing referral attribution - `/m`, `/m/`, `/mc/`, and exact `/mc` when the paid experiment is default-off/control/ineligible reach the canonical root with `utm_source=manychat`. The loaded page POSTs only that allowlisted source to `/api/referral-visit`; private Blob pathnames dedupe repeated visits from the same anonymous request fingerprint on the same UTC day and separate likely-human from likely-scanner traffic. This measures landing visitor-days, not downloads, installs, activations, purchases, or durable identities.
 - Download lead capture and replay - `api/download-lead.ts`, `api/_lib/download-leads.ts`, and `api/internal/download-leads/replay.ts` validate at most 8 KiB of JSON, converge repeated `(email, cta_source)` submissions, enforce 5/email and 20/IP per ten minutes, and fall back to deterministic private Blob records when Postgres fails. Scheduled replay processes 25 mapped records and deletes only after commit plus ETag match; manual replay is bounded to 100 and defaults to preserving records. Historical `windows-waitlist` rows remain queryable.
 - Account/auth/billing/device entitlement - `account.html`, `thank-you.html`, `api/_lib/account.ts`, `api/_lib/entitlement.ts`, `api/_lib/device-policy.ts`, `api/_lib/license-environment.ts`, `api/auth/*`, `api/checkout/*`, `api/billing/*`, `api/stripe/webhook.ts`, `api/activation/*`, `api/account/device.ts`, and `api/license/*` own Google account management, the server-owned $14.99 one-time Sidestream Pro Product/Price, Checkout intents, namespace-separated active-device rows, restricted Test isolation, refund/dispute lifecycle, confirmed transfers, download authorization, deactivation, and device-bound access/refresh credentials. Device mismatch policy defaults to `observe`; only explicit `enforce` blocks, and Customer 360 does not change that mode. The API/operator contract is `docs/api-hardening-runbook.md`; device/support details are in `docs/single-device-entitlements.md`.
+- Paid mobile acquisition - Exact `/mc` is an unlinked, default-off experiment entry owned by `middleware.ts`; `/m`, `/m/`, and `/mc/` retain their existing redirects. Eligible paid-cohort navigation is internally rendered from the deterministic `public/mobile-paid-prototype.html`, which is generated from the current canonical root and published at `/mobile-paid-prototype.html` while using the same current `$14.99` server-owned Product/Price. Paid Checkout, verified email, installer receipt, claim, artifact, and lifecycle records remain namespaced and cannot be selected by browser-supplied price, product, amount, currency, cohort, or environment.
 - Customer 360 commerce ledger - `api/_lib/customer-commerce.ts`, `20260715122000_add_customer_commerce_ledger.sql`, and `tests/customer-360/commerce*.test.mjs`; settled money comes from one canonical PaymentIntent or standalone Charge per payment group. Before that instrument exists, a paid InvoicePayment edge makes the related Invoice the preferred fallback and suppresses only the Checkout view resolving to the same namespace/profile/currency payment key. Gross and its `off_stripe_paid_minor` subset stay currency-separated, unrelated Checkout fallbacks remain independent, paid InvoicePayment edges never collapse many-to-many allocations into alias equivalence, and contradictory live identity evidence triggers sticky whole-group quarantine.
 - Customer 360 usage and private reads - `api/_lib/customer-usage.ts`, `api/_lib/customer-query.ts`, `api/internal/customer-usage/sync.ts`, `api/internal/customers/index.ts`, and `api/internal/customers/[customerId].ts`; schema-versioned telemetry becomes replaceable UTC daily aggregates with exhaustive stored/derivable first/last use and attempt timestamps, outcome counts, lifetime and rolling activity, attempts-per-active-day frequency, coarse client summaries, and source/materialization freshness. The compact list/detail projection exposes only its documented subset, requires an authenticated admin body to select an authorized namespace, binds that namespace into signed keyset cursors, and exposes neither total accepted attempts nor current subscription status. The full cross-repo field/privacy/rollout contract is `docs/customer-360.md`.
 - Customer 360 backfill - `scripts/backfill-customer-360.mjs` and `scripts/verify-customer-360-backfill.mjs`; reviewed offline identity exports become privacy-safe candidate/orphan/conflict plans. Dry-run is the default and Production apply is unavailable. Any Test apply requires separate approval after dry-run review.
@@ -123,13 +127,20 @@ The current canonical public landing URL for crawlers is:
 https://sidestream.tv/
 ```
 
-The short first-party ManyChat referral URL is:
+The existing first-party ManyChat control URL is:
 
 ```text
-https://sidestream.tv/mc
+https://sidestream.tv/m
 ```
 
-It returns a temporary redirect to `https://sidestream.tv/?utm_source=manychat`, then the loaded page records a privacy-limited daily visitor in the `manychat` bucket. `/mc/` is supported identically.
+`/m`, `/m/`, and `/mc/` return the existing temporary redirect to
+`https://sidestream.tv/?utm_source=manychat`. Exact `/mc` is reserved for the
+default-off paid-acquisition experiment. Without a valid server-only assignment
+secret it returns the same safe ManyChat destination; when separately enabled,
+only an eligible top-level mobile `GET` can receive a sticky control/paid
+assignment. The route is not linked from the canonical site. See
+`docs/paid-acquisition-runbook.md`; this repository state does not authorize an
+environment change or Production enablement.
 
 The old exported static page path, `/Sidestream%20front%20end%202/Sidestream.html`, is kept only as a compatibility route. Vercel returns a server-side `308` to `https://sidestream.tv/`; the built fallback HTML contains no meta refresh or JavaScript redirect.
 
@@ -162,6 +173,12 @@ operator response.
 | `/api/auth/logout` | `POST` | Clears the server session |
 | `/api/checkout/start` | `GET` | `302` to Google authentication when signed out; `303` to Stripe Checkout for a signed-in Free account |
 | `/api/checkout/complete` | `GET` | Exact Stripe re-verification then `303` to thank-you; not-ready is `409` |
+| `/api/paid-acquisition/landing` | `GET` (internal rewrite only) | Private no-store paid landing after an exact signed paid `/mc` assignment proof |
+| `/api/paid-acquisition/checkout` | `POST` | Idempotent paid-cohort Checkout start using only the current server-owned Product/Price and a durable core intent |
+| `/api/paid-acquisition/artifact` | `GET` | Verified paid receipt/session fulfillment then `302` to the selected short-lived paid artifact URL |
+| `/api/paid-acquisition/claim` | `GET` | Receipt-cookie and Google-auth claim/recovery boundary without browser-selected payment or environment truth |
+| `/api/paid-download` | `GET`, `HEAD` | Receipt-gated paid artifact redirect or matching metadata after manifest and Blob integrity checks |
+| `/api/releases/paid-latest` | `GET`, `HEAD`, `OPTIONS` | Public paid-onboarding manifest metadata without private artifact identifiers |
 | `/api/billing/portal`, `/api/billing/receipt` | `POST` | Authenticated Stripe portal redirect or latest receipt JSON |
 | `/api/stripe/webhook` | `POST` | `200 {"received":true}` after durable insert; duplicate adds `"duplicate":true` |
 | `/api/activation/start`, `/api/activation/status` | `POST` | Start returns activation key/expiry/URLs; status returns a stable activation/device state |
@@ -563,6 +580,26 @@ or Postgres:
 npm run verify:checkout-contract
 ```
 
+Regenerate and verify the isolated paid mobile landing after changing the
+canonical HTML or paid offer:
+
+```bash
+node scripts/build-paid-landing.mjs
+node scripts/build-paid-landing.mjs --check
+```
+
+Run all deterministic paid-acquisition fixtures without contacting Stripe,
+Resend, Vercel Blob, or Postgres:
+
+```bash
+npm run test:paid-acquisition-e2e
+node scripts/verify-paid-acquisition-e2e-fixtures.mjs
+```
+
+These checks prove only the local contract. They do not enable `/mc`, apply the
+namespaced migration, send paid email, publish artifacts, make a payment, or
+prove a deployed surface.
+
 The supported Production command requires a clean local commit equal to remote
 `origin/main`, verifies the immutable checkout baselines and exact linked Vercel
 project, runs the focused entitlement suite, builds the Production artifact,
@@ -607,6 +644,7 @@ Use the narrowest relevant check after edits:
 - Run `npm run build` after shader, TypeScript, Tailwind, HTML mount, Vite config, or package changes.
 - Run `npm run test:download-referral` after changing installer attribution or `/api/download`. It verifies that tagged `GET`s are recorded only after a successful redirect, while `HEAD`, `304`, bad platforms, fulfillment errors, database errors, and database timeouts cannot create a false successful event or block delivery.
 - Run `npm run test:referral-visits` after changing `/m`, `/mc`, `/api/referral-visit`, the ManyChat browser hook, private-Blob referral storage, or its report. It verifies all four short-route forms, the allowlisted source, bounded request body, response-before-storage behavior, daily anonymous dedupe inputs, scanner separation, and hash-free aggregate output.
+- After changing paid `/mc` routing, the generated paid landing, paid Checkout/email/artifact/claim handlers, the entitlement bridge, or the paid schema, run `node --experimental-strip-types --test tests/paid*.test.mjs`, `npm run test:paid-acquisition-e2e`, `node scripts/verify-paid-acquisition-e2e-fixtures.mjs`, `npm run test:entitlement`, and `npm run typecheck`. Recheck that ordinary signed-in Free-account Checkout still redirects directly to Stripe, uses the current `$14.99` Product/Price and full request fingerprint, and that `/m`, root, free download, account, activation, and all non-exact `/mc` redirects are unchanged.
 - After SEO/GEO metadata changes, run `npm run build`, confirm `dist/robots.txt`, `dist/sitemap.xml`, `dist/llms.txt`, and the current versioned social-card asset exist, validate both source and built sitemap XML, confirm the built sitemap contains a generated ISO `<lastmod>` while the source contains only the generator marker, and spot-check the built HTML for the absolute canonical URL, meta description, Open Graph/Twitter image tags, and valid JSON-LD. When replacing a social card, publish it under a new filename and use a new share-query value because X may cache both the fetched page metadata and image URL.
 - Run `npx vercel@latest build` after routing/header changes, then `npm run verify:vercel-build`. Inspect `.vercel/output/config.json`, then verify a deployed response: `www`, the old-host root/non-API paths, `/index.html`, and `/Sidestream%20front%20end%202/Sidestream.html` must return `308` with `Location: https://sidestream.tv/`; old-host `/api/activation/start` must execute instead of redirecting; `/api/auth/session`, `HEAD /api/download`, `/account.html`, and `/thank-you.html` must return `X-Robots-Tag: noindex, nofollow`. Do not issue `GET /api/download` just to test headers.
 - After publishing analytics changes, visit the deployed site without a content blocker and allow roughly 30 seconds before checking the Vercel Analytics dashboard for page-view data.
@@ -655,6 +693,7 @@ Use the narrowest relevant check after edits:
 ## Known Gotchas
 
 - A Vercel Production deployment can be Ready while originating from stale source. Production source is only a clean commit equal to remote `origin/main` and linked to `alex-3685s-projects/sidestream`; use `npm run deploy:production`, then verify the canonical `sidestream.tv` alias and live `/api/checkout/start` response.
+- The paid `/mc` foundation is default-off, unlinked, and additive. Missing `SIDESTREAM_PAID_ACQUISITION_ASSIGNMENT_SECRET` must continue to fall back to the canonical ManyChat destination, and paid provider delivery must remain off unless `SIDESTREAM_PAID_ACQUISITION_EMAIL_ENABLED=1`. Do not configure either setting, apply the paid migration, publish paid artifacts, or deploy from this documentation alone. Paid Checkout must resolve the same current `$14.99` Product/Price as ordinary Checkout; never restore the audited branch's older hard-coded USD 999 assumption.
 - Customer 360 captured money authority is the PaymentIntent `amount_received`, or `amount_captured` on a standalone Charge when no PaymentIntent exists. A paid Checkout or Invoice is a fallback only while its related settled instrument is absent, and refresh must replace rather than add that fallback when stronger truth arrives. Before instrument arrival, suppress a Checkout fallback only when a paid Invoice fact in the same namespace, profile, and currency has a paid InvoicePayment edge resolving to that Checkout payment key; prefer the Invoice and leave unrelated Checkout fallbacks countable. Checkout authorization must never re-inflate a partial capture. Invoice `amount_paid` is full gross customer money; `amount_paid_off_stripe` is a nonnegative subset of gross, not a deduction or an amount to add twice. Paid InvoicePayment rows are allocation edges keyed by `invoice_payment.id`; open/canceled rows do not attribute money, and an invoice/instrument many-to-many graph must not become alias equivalence.
 - Customer 360 identity safety is a payment-group invariant. If any retained alias, trusted identity evidence, or already-safe owner resolves one canonical payment group to different live profiles, the namespace advisory lock must clear `profile_id` and set `identity_conflict=true` on every materialization in that group before totals refresh. This whole-group quarantine is sticky across replay, later one-owner rows, and identity-link triggers; only an explicit group-wide recomputation after a deterministic profile merge may clear it. A Stripe customer link alone never scopes unrelated product money.
 - Customer 360 database `created_at` values reach TypeScript as fixed-width six-microsecond UTC timestamps without a timezone suffix. Compare two canonical values lexically before `Date.parse`; parsing first treats them as local time, can reverse order across a DST gap, and violates the database trigger's `(created_at, id)` total-order contract. ISO inputs from pure callers still use parsed instant ordering, and equal timestamps still use the UUID tie-breaker.
@@ -742,6 +781,7 @@ Use the narrowest relevant check after edits:
 
 ## Recent Change Log
 
+- 2026-07-27: Reconciled the audited default-off paid `/mc` acquisition foundation onto current Production `main` while retaining the signed-in Free-account direct Stripe path, full Checkout request fingerprint, current `$14.99` Product/Price, `/m` family redirects, root/free/account/ordinary activation behavior, zero-total fulfillment support, and guarded Production deployment. Paid email remains disabled by default; no environment, database-apply, external provider, or deployment action occurred.
 - 2026-07-27: Increased the worldwide USD Sidestream Pro one-time price from `$9.99` to `$14.99` across the immutable Stripe Price resolver, visible landing-page offer, structured data, crawler copy, sandbox promotion tooling, verification fixtures, and operator documentation. Existing completed one-time entitlements remain unchanged; new Checkout Sessions resolve `sidestream_pro_once_1499`.
 - 2026-07-27: Checkout reuse now compares every open account or activation Session's persisted Product and Price with the currently selected catalog before redirecting. A stale pre-change Session is expired and replaced under the existing locked intent instead of preserving its former amount; completed purchases remain resumable.
 - 2026-07-27: Restored `/m` and `/m/` as temporary ManyChat aliases beside `/mc` and `/mc/`, all redirecting to the canonical landing page with `utm_source=manychat`, and expanded the route contract test so future deployments cannot silently drop either short-link family.
