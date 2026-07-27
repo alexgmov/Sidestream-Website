@@ -25,6 +25,16 @@
   ],
   "redirects": [
     {
+      "source": "/m",
+      "destination": "https://sidestream.tv/?utm_source=manychat",
+      "permanent": false
+    },
+    {
+      "source": "/m/",
+      "destination": "https://sidestream.tv/?utm_source=manychat",
+      "permanent": false
+    },
+    {
       "source": "/mc",
       "destination": "https://sidestream.tv/?utm_source=manychat",
       "permanent": false
