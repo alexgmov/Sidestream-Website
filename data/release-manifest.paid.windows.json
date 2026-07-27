@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "platform": "windows-x64",
+  "version": "0.0.0-paid-fixture",
+  "filename": "Sidestream-0.0.0-paid-fixture-Windows-Installer.exe",
+  "sizeBytes": 524288,
+  "sha256": "cedb222f699be23d93243e908fbbb089acdda18c362ca561e00cb6140b706367",
+  "artifactId": "fixture-paid-onboarding-windows-x64-v1"
+}
