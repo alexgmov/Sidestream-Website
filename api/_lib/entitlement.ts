@@ -147,14 +147,37 @@ export function getActivationCheckoutIdempotencyKey(activationKey: string) {
   return `sidestream_activation_${digest}`;
 }
 
+export function getCheckoutParametersFingerprint(parameters: unknown) {
+  const canonicalize = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(canonicalize);
+    if (value && typeof value === "object") {
+      return Object.fromEntries(
+        Object.entries(value as Record<string, unknown>)
+          .filter(([, nested]) => nested !== undefined)
+          .sort(([left], [right]) => left.localeCompare(right))
+          .map(([key, nested]) => [key, canonicalize(nested)]),
+      );
+    }
+    return value;
+  };
+
+  return createHash("sha256")
+    .update(JSON.stringify(canonicalize(parameters)))
+    .digest("hex");
+}
+
 export function getCheckoutSessionIdempotencyKey(options: {
   kind: CheckoutIntentKind;
   intentId: string;
   activationKey?: string;
   attempt: number;
+  parametersFingerprint: string;
 }) {
   if (!Number.isSafeInteger(options.attempt) || options.attempt < 0) {
     throw new TypeError("Checkout attempt must be a non-negative integer");
+  }
+  if (!/^[a-f0-9]{64}$/.test(options.parametersFingerprint)) {
+    throw new TypeError("Checkout parameters fingerprint must be a SHA-256 digest");
   }
 
   if (options.kind === "activation") {
@@ -162,11 +185,11 @@ export function getCheckoutSessionIdempotencyKey(options: {
       throw new TypeError("Activation Checkout requires an activation key");
     }
     const base = getActivationCheckoutIdempotencyKey(options.activationKey);
-    return options.attempt === 0 ? base : `${base}_retry_${options.attempt}`;
+    return `${base}_params_${options.parametersFingerprint}_attempt_${options.attempt}`;
   }
 
   const digest = createHash("sha256").update(options.intentId).digest("hex");
-  return `sidestream_${options.kind}_intent_${digest}_attempt_${options.attempt}`;
+  return `sidestream_${options.kind}_intent_${digest}_params_${options.parametersFingerprint}_attempt_${options.attempt}`;
 }
 
 export function getStripeCustomerIdempotencyKey(accountId: string) {

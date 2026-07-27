@@ -8,6 +8,8 @@ import {
   deriveActivationTokenPair,
   deriveRefreshRotationTokens,
   getActivationCheckoutIdempotencyKey,
+  getCheckoutParametersFingerprint,
+  getCheckoutSessionIdempotencyKey,
   getStripeCheckoutWindow,
   hasSameOrigin,
   isLegacyVercelHost,
@@ -58,6 +60,42 @@ test("activation Checkout idempotency is stable without exposing the key", () =>
   assert.equal(first, getActivationCheckoutIdempotencyKey("secret-activation"));
   assert.notEqual(first, getActivationCheckoutIdempotencyKey("another-activation"));
   assert.doesNotMatch(first, /secret-activation/);
+});
+
+test("Checkout idempotency rotates when any Stripe request parameter changes", () => {
+  const parameters = {
+    mode: "payment",
+    line_items: [{ price: "price_current", quantity: 1 }],
+    metadata: { plan: "sidestream_pro", activation: "activation-secret" },
+  };
+  const reordered = {
+    metadata: { activation: "activation-secret", plan: "sidestream_pro" },
+    line_items: [{ quantity: 1, price: "price_current" }],
+    mode: "payment",
+  };
+  const fingerprint = getCheckoutParametersFingerprint(parameters);
+  assert.equal(fingerprint, getCheckoutParametersFingerprint(reordered));
+
+  const key = getCheckoutSessionIdempotencyKey({
+    kind: "activation",
+    intentId: "intent-current",
+    activationKey: "activation-secret",
+    attempt: 0,
+    parametersFingerprint: fingerprint,
+  });
+  const repricedKey = getCheckoutSessionIdempotencyKey({
+    kind: "activation",
+    intentId: "intent-current",
+    activationKey: "activation-secret",
+    attempt: 0,
+    parametersFingerprint: getCheckoutParametersFingerprint({
+      ...parameters,
+      line_items: [{ price: "price_replacement", quantity: 1 }],
+    }),
+  });
+  assert.notEqual(key, repricedKey);
+  assert.ok(key.length <= 255);
+  assert.doesNotMatch(key, /activation-secret/);
 });
 
 test("Checkout expiry and paid-completion grace stay inside activation expiry at millisecond boundaries", () => {

@@ -15,6 +15,7 @@ import {
   deriveActivationTokenPair,
   deriveRefreshRotationTokens,
   getCheckoutSessionIdempotencyKey,
+  getCheckoutParametersFingerprint,
   getStripeCustomerIdempotencyKey,
   getStripeCheckoutWindow,
   getStripePriceIdempotencyKey,
@@ -1185,6 +1186,7 @@ export async function createOrReuseCheckoutSession(options: {
             intentId: row.id,
             activationKey,
             attempt,
+            parametersFingerprint: getCheckoutParametersFingerprint(checkoutParams),
           }),
         },
       );

@@ -15,7 +15,11 @@ import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { Pool } from "pg";
-import { getActivationCheckoutIdempotencyKey } from "../api/_lib/entitlement.ts";
+import {
+  getActivationCheckoutIdempotencyKey,
+  getCheckoutParametersFingerprint,
+  getCheckoutSessionIdempotencyKey,
+} from "../api/_lib/entitlement.ts";
 import { loadInjectedHandler } from "./helpers/handler-loader.mjs";
 import { invokeHandler } from "./helpers/http.mjs";
 
@@ -287,6 +291,18 @@ test("database-backed intents serialize retries, rotate deliberately, and fulfil
     assert.equal(activationCheckout.ok, true);
     let activationWrite = stripe.sessionCreateWrites.at(-1);
     assert.equal(
+      activationWrite.options.idempotencyKey,
+      getCheckoutSessionIdempotencyKey({
+        kind: "activation",
+        intentId: activationIntent.intentId,
+        activationKey,
+        attempt: 0,
+        parametersFingerprint: getCheckoutParametersFingerprint(
+          activationWrite.params,
+        ),
+      }),
+    );
+    assert.notEqual(
       activationWrite.options.idempotencyKey,
       getActivationCheckoutIdempotencyKey(activationKey),
     );
