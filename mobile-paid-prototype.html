@@ -54,7 +54,7 @@
 
         const supportingCopy = doc.createElement("p");
         supportingCopy.className = "mobile-download-handoff-subtext";
-        supportingCopy.textContent = "We’ll email you the download link once your purchase is complete.";
+        supportingCopy.textContent = "We’ll email your download link after purchase.";
 
         const actionGroup = doc.createElement("div");
         actionGroup.className = "mobile-download-handoff-fields";
@@ -63,7 +63,7 @@
         purchaseLink.className = "btn btn-primary mobile-download-handoff-submit mobile-paid-purchase-link";
         purchaseLink.href = CHECKOUT_PATH;
         purchaseLink.setAttribute("aria-label", "Buy Sidestream Pro now for $9.99, one-time purchase");
-        purchaseLink.textContent = "Buy now — $9.99";
+        purchaseLink.textContent = "Buy Now $9.99";
 
         actionGroup.append(purchaseLink);
         card.append(title, supportingCopy, actionGroup);
@@ -81,7 +81,7 @@
         doc.querySelectorAll("script:not([src])").forEach((script) => {
           script.textContent = script.textContent.replaceAll(
             "Email me the download link",
-            "Buy now — $9.99"
+            "Buy Now $9.99"
           );
         });
 
@@ -138,9 +138,9 @@
           proPurchaseLink.setAttribute("href", CHECKOUT_PATH);
           proPurchaseLink.setAttribute(
             "aria-label",
-            "Upgrade to Sidestream Pro for $9.99, one-time purchase"
+            "Buy Sidestream Pro for $9.99, one-time purchase"
           );
-          proPurchaseLink.textContent = "Upgrade to Pro";
+          proPurchaseLink.textContent = "Buy Now";
         }
 
         doc.querySelector("#pricing .final")?.remove();
