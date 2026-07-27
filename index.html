@@ -997,6 +997,13 @@
     background-position: center;
   }
   .plan .btn { width: 100%; margin-top: auto; }
+  .pricing-download-ctas {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+    margin-top: auto;
+  }
+  .plan .pricing-download-ctas .btn { margin-top: 0; }
 
   /* ---------- Final CTA ---------- */
   .final {
@@ -1118,6 +1125,7 @@
     .hero-copy.reveal { transform: none; }
     #hero .desktop-download-ctas { display: none; }
     .mobile-download-handoff { display: block; }
+    .pricing-download-ctas { display: none; }
     .feat-copy p { max-width: none; }
     #pricing { padding-top: 74px; }
     .pricing-head { margin-bottom: 74px; }
@@ -1341,7 +1349,10 @@
               <li>Maximum audio and video quality</li>
               <li>5 free downloads every day</li>
             </ul>
-            <a class="btn btn-secondary" href="https://sidestream.tv/api/download" data-download aria-label="Free Download for Mac">Free Download</a>
+            <div class="pricing-download-ctas" role="group" aria-label="Free downloads">
+              <a class="btn btn-secondary" href="https://sidestream.tv/api/download" data-download aria-label="Download Sidestream for Mac">Download</a>
+              <a class="btn btn-secondary" href="https://sidestream.tv/api/download?platform=win32-x64" data-windows-download aria-label="Download Sidestream for Windows">Download</a>
+            </div>
           </div>
           <div class="plan featured reveal" role="group" aria-label="Sidestream Pro one-time purchase">
             <div class="plan-beta-content">
