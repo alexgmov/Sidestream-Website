@@ -8,6 +8,7 @@ const OUTPUT_ROOT = path.resolve(".vercel/output");
 const REQUIRED_FUNCTIONS = Object.freeze([
   "api/download.func",
   "api/resolve-waitlist.func",
+  "api/after-effects-waitlist.func",
   "api/releases/latest.func",
   "api/internal/stripe-events/process.func",
   "api/internal/download-leads/replay.func",
@@ -20,6 +21,9 @@ const REQUIRED_INDEX_MARKERS = Object.freeze([
   ["Resolve waitlist CTA", "data-resolve-waitlist-open"],
   ["Resolve waitlist modal", 'id="resolve-waitlist-gate"'],
   ["Resolve waitlist browser route", 'fetch("/api/resolve-waitlist"'],
+  ["After Effects waitlist CTA", "data-after-effects-waitlist-open"],
+  ["After Effects waitlist modal", 'id="after-effects-waitlist-gate"'],
+  ["After Effects waitlist browser route", 'fetch("/api/after-effects-waitlist"'],
 ]);
 
 export async function verifyVercelBuild(outputRoot = OUTPUT_ROOT) {

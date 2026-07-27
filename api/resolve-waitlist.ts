@@ -25,9 +25,9 @@ import {
 const RESOLVE_WAITLIST_SOURCE = "davinci-resolve-waitlist";
 export const RESOLVE_WAITLIST_BLOB_PREFIX = "sidestream/resolve-waitlist/v1";
 
-type ResolveWaitlistRequest = IncomingMessage & { method?: string };
+type BlobWaitlistRequest = IncomingMessage & { method?: string };
 
-type ResolveWaitlistHandlerDependencies = Readonly<{
+export type BlobWaitlistHandlerDependencies = Readonly<{
   now: () => Date;
   consumeLimit: (
     lead: CanonicalDownloadLead,
@@ -35,6 +35,13 @@ type ResolveWaitlistHandlerDependencies = Readonly<{
   ) => Promise<RateLimitResult>;
   storeLead: (pathname: string, lead: CanonicalDownloadLead) => Promise<void>;
   log: (entry: Record<string, string | number>) => void;
+}>;
+
+export type BlobWaitlistConfiguration = Readonly<{
+  source: string;
+  blobPrefix: string;
+  rateLimitScope: string;
+  logEvent: string;
 }>;
 
 class RequestBodyError extends Error {
@@ -48,20 +55,35 @@ class RequestBodyError extends Error {
   }
 }
 
-const defaultDependencies: ResolveWaitlistHandlerDependencies = {
-  now: () => new Date(),
-  consumeLimit: consumeResolveWaitlistRateLimit,
-  storeLead: writeDeterministicDownloadLeadFallback,
-  log: (entry) => console.info(JSON.stringify(entry)),
-};
-
 export function createResolveWaitlistHandler(
-  overrides: Partial<ResolveWaitlistHandlerDependencies> = {},
+  overrides: Partial<BlobWaitlistHandlerDependencies> = {},
 ) {
+  return createBlobWaitlistHandler({
+    source: RESOLVE_WAITLIST_SOURCE,
+    blobPrefix: RESOLVE_WAITLIST_BLOB_PREFIX,
+    rateLimitScope: "resolve-waitlist",
+    logEvent: "resolve_waitlist_capture",
+  }, overrides);
+}
+
+export function createBlobWaitlistHandler(
+  configuration: BlobWaitlistConfiguration,
+  overrides: Partial<BlobWaitlistHandlerDependencies> = {},
+) {
+  const defaultDependencies: BlobWaitlistHandlerDependencies = {
+    now: () => new Date(),
+    consumeLimit: (lead, options) => consumeWaitlistRateLimit(
+      configuration.rateLimitScope,
+      lead,
+      options,
+    ),
+    storeLead: writeDeterministicDownloadLeadFallback,
+    log: (entry) => console.info(JSON.stringify(entry)),
+  };
   const dependencies = { ...defaultDependencies, ...overrides };
 
-  return async function resolveWaitlistHandler(
-    request: ResolveWaitlistRequest,
+  return async function blobWaitlistHandler(
+    request: BlobWaitlistRequest,
     response: ServerResponse,
   ) {
     const method = (request.method || "GET").toUpperCase();
@@ -92,7 +114,7 @@ export function createResolveWaitlistHandler(
     let lead: CanonicalDownloadLead;
     try {
       lead = buildCanonicalDownloadLead(
-        { ...payload, source: RESOLVE_WAITLIST_SOURCE },
+        { ...payload, source: configuration.source },
         {
           capturedAt: now,
           referrer: firstHeaderValue(request.headers.referer),
@@ -107,7 +129,7 @@ export function createResolveWaitlistHandler(
       }
       if (error instanceof DownloadLeadConfigurationError) {
         dependencies.log({
-          event: "resolve_waitlist_capture",
+          event: configuration.logEvent,
           outcome: "configuration_error",
           count: 1,
         });
@@ -127,7 +149,7 @@ export function createResolveWaitlistHandler(
       });
     } catch (error) {
       dependencies.log({
-        event: "resolve_waitlist_capture",
+        event: configuration.logEvent,
         outcome: "rate_limit_unavailable",
         count: 1,
         errorCode: safeOperationalErrorCode(error),
@@ -140,7 +162,7 @@ export function createResolveWaitlistHandler(
 
     if (!rateLimit.allowed) {
       dependencies.log({
-        event: "resolve_waitlist_capture",
+        event: configuration.logEvent,
         outcome: "rate_limited",
         count: 1,
       });
@@ -150,19 +172,19 @@ export function createResolveWaitlistHandler(
 
     const pathname = getDeterministicLeadBlobPathname(
       lead.leadKey,
-      RESOLVE_WAITLIST_BLOB_PREFIX,
+      configuration.blobPrefix,
     );
     try {
       await dependencies.storeLead(pathname, lead);
       dependencies.log({
-        event: "resolve_waitlist_capture",
+        event: configuration.logEvent,
         outcome: "accepted",
         count: 1,
       });
       return sendJson(response, 200, { ok: true });
     } catch (error) {
       dependencies.log({
-        event: "resolve_waitlist_capture",
+        event: configuration.logEvent,
         outcome: "storage_unavailable",
         count: 1,
         errorCode: safeOperationalErrorCode(error),
@@ -178,12 +200,13 @@ export function createResolveWaitlistHandler(
 const handler = createResolveWaitlistHandler();
 export default handler;
 
-async function consumeResolveWaitlistRateLimit(
+async function consumeWaitlistRateLimit(
+  scope: string,
   lead: CanonicalDownloadLead,
   options: { ipAddress: string; now: Date },
 ) {
   return consumeBlobRateLimit({
-    scope: "resolve-waitlist",
+    scope,
     dimensions: [
       {
         name: "email",

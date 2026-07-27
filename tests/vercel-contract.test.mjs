@@ -31,7 +31,7 @@ test("customer list and detail are protected on-demand admin routes, never crons
   assert.equal(result.crons, 4);
 });
 
-test("the human-only bundle verifier requires customer, Resolve API, and Resolve UI surfaces", async () => {
+test("the human-only bundle verifier requires customer and both waitlist API/UI surfaces", async () => {
   const source = await readFile(
     new URL("../scripts/verify-vercel-build.mjs", import.meta.url),
     "utf8",
@@ -42,6 +42,10 @@ test("the human-only bundle verifier requires customer, Resolve API, and Resolve
   assert.match(source, /data-resolve-waitlist-open/);
   assert.match(source, /resolve-waitlist-gate/);
   assert.match(source, /fetch\("\/api\/resolve-waitlist"/);
+  assert.match(source, /api\/after-effects-waitlist\.func/);
+  assert.match(source, /data-after-effects-waitlist-open/);
+  assert.match(source, /after-effects-waitlist-gate/);
+  assert.match(source, /fetch\("\/api\/after-effects-waitlist"/);
   assert.match(source, /A human must run `npx vercel build` first/);
 });
 

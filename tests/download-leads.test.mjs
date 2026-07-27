@@ -12,6 +12,7 @@ let compiledDirectory;
 let createDownloadLeadHandler;
 let createDownloadLinkHandler;
 let createResolveWaitlistHandler;
+let createAfterEffectsWaitlistHandler;
 let createDownloadLeadReplayHandler;
 let helpers;
 let emailHelpers;
@@ -50,6 +51,9 @@ before(async () => {
   ));
   ({ createResolveWaitlistHandler } = await import(
     pathToFileURL(path.join(compiledDirectory, "api", "resolve-waitlist.js")).href
+  ));
+  ({ createAfterEffectsWaitlistHandler } = await import(
+    pathToFileURL(path.join(compiledDirectory, "api", "after-effects-waitlist.js")).href
   ));
   emailHelpers = await import(
     pathToFileURL(path.join(compiledDirectory, "api", "_lib", "download-link-email.js")).href
@@ -432,6 +436,66 @@ test("Resolve waitlist route fixes the source and writes one deterministic Blob 
   assert.equal(stored[0].pathname.includes("person"), false);
   assert.deepEqual(logs, [{
     event: "resolve_waitlist_capture",
+    outcome: "accepted",
+    count: 1,
+  }]);
+  assert.equal(JSON.stringify(logs).includes("person@example.com"), false);
+});
+
+test("After Effects waitlist route fixes its source and writes to its own deterministic Blob prefix", async () => {
+  const consumed = [];
+  const stored = [];
+  const logs = [];
+  const allowedRateLimit = {
+    allowed: true,
+    limit: 5,
+    remaining: 4,
+    retryAfterSeconds: 0,
+    resetAt: "2026-07-27T12:10:00.000Z",
+  };
+  const handler = createAfterEffectsWaitlistHandler({
+    now: () => new Date("2026-07-27T12:00:00.000Z"),
+    consumeLimit: async (lead, options) => {
+      consumed.push({ lead, options });
+      return allowedRateLimit;
+    },
+    storeLead: async (pathname, lead) => stored.push({ pathname, lead }),
+    log: (entry) => logs.push(entry),
+  });
+  const response = await invoke(handler, {
+    path: "/api/after-effects-waitlist",
+    headers: {
+      "content-type": "application/json",
+      "x-forwarded-for": "203.0.113.45",
+      referer: "https://sidestream.tv/?email=private@example.com",
+    },
+    body: JSON.stringify({
+      email: "Person@Example.COM",
+      source: "attacker-selected-source",
+      page: "/?email=private@example.com",
+      utm_campaign: "after_effects_launch",
+    }),
+  });
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(response.body, { ok: true });
+  assert.equal(response.headers.get("ratelimit-limit"), "5");
+  assert.equal(consumed.length, 1);
+  assert.equal(consumed[0].lead.email, "person@example.com");
+  assert.equal(consumed[0].lead.ctaSource, "after-effects-waitlist");
+  assert.equal(consumed[0].lead.sourcePage, "/");
+  assert.equal(consumed[0].lead.referrer, "https://sidestream.tv/");
+  assert.equal(consumed[0].lead.utmCampaign, "after_effects_launch");
+  assert.equal(consumed[0].options.ipAddress, "203.0.113.45");
+  assert.equal(stored.length, 1);
+  assert.equal(stored[0].lead, consumed[0].lead);
+  assert.match(
+    stored[0].pathname,
+    /^sidestream\/after-effects-waitlist\/v1\/fallback-v2\/[0-9a-f]{2}\/[0-9a-f]{64}\.json$/,
+  );
+  assert.equal(stored[0].pathname.includes("person"), false);
+  assert.deepEqual(logs, [{
+    event: "after_effects_waitlist_capture",
     outcome: "accepted",
     count: 1,
   }]);

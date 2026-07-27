@@ -337,7 +337,8 @@
   .btn[data-windows-download] {
     --download-platform-mark: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M3 5.3l8-1.1v7.4H3V5.3zm9-1.3l9-1.3v8.9h-9V4zm0 8.9h9v8.8l-9-1.3v-7.5zM3 12.9h8v7.3l-8-1.1v-6.2z'/%3E%3C/svg%3E");
   }
-  .btn[data-resolve-waitlist-open] {
+  .btn[data-resolve-waitlist-open],
+  .btn[data-after-effects-waitlist-open] {
     border-radius: 999px;
     background: #fff;
     color: #000;
@@ -348,6 +349,20 @@
     flex: none;
     width: 18px;
     height: 16px;
+  }
+  .after-effects-mark {
+    display: inline-grid;
+    place-items: center;
+    flex: none;
+    width: 18px;
+    height: 18px;
+    border-radius: 3px;
+    background: #00005b;
+    color: #9999ff;
+    font-size: 10px;
+    font-weight: 700;
+    line-height: 1;
+    letter-spacing: -0.04em;
   }
   .btn[data-download]::before,
   .btn[data-windows-download]::before {
@@ -364,7 +379,8 @@
   }
   .btn[data-download]:hover,
   .btn[data-windows-download]:hover,
-  .btn[data-resolve-waitlist-open]:hover {
+  .btn[data-resolve-waitlist-open]:hover,
+  .btn[data-after-effects-waitlist-open]:hover {
     background: var(--blue);
     color: #fff;
     border-color: var(--blue);
@@ -1239,6 +1255,22 @@
     </section>
   </div>
 
+  <div class="email-gate" id="after-effects-waitlist-gate" hidden>
+    <button class="email-gate-backdrop" type="button" data-after-effects-waitlist-close aria-label="Close After Effects waitlist prompt"></button>
+    <section class="email-gate-dialog" role="dialog" aria-modal="true" aria-labelledby="after-effects-waitlist-title" aria-describedby="after-effects-waitlist-copy">
+      <button class="email-gate-close" type="button" data-after-effects-waitlist-close aria-label="Close After Effects waitlist prompt"></button>
+      <p class="email-gate-eyebrow">Adobe After Effects</p>
+      <h2 class="email-gate-title" id="after-effects-waitlist-title">Join the After Effects waitlist</h2>
+      <p class="email-gate-copy" id="after-effects-waitlist-copy">Drop your email and we will notify you when Sidestream for After Effects is ready.</p>
+      <form class="email-gate-form" id="after-effects-waitlist-form" novalidate>
+        <label class="email-gate-label" for="after-effects-waitlist-input">Email</label>
+        <input class="email-gate-input" id="after-effects-waitlist-input" name="email" type="email" inputmode="email" autocomplete="email" placeholder="you@email.com" required>
+        <p class="email-gate-message" id="after-effects-waitlist-status" aria-live="polite"></p>
+        <button class="btn btn-primary btn-lg" id="after-effects-waitlist-submit" type="submit">Join waitlist</button>
+      </form>
+    </section>
+  </div>
+
   <!-- ===================== HEADER ===================== -->
   <header id="hdr">
     <div class="wrap nav">
@@ -1290,6 +1322,10 @@
                 <path d="M305.532 78.807C320.495 78.807 332.643 92.54 332.643 105.761S310.932 144.409 305.532 144.554C300.132 144.699 278.421 118.981 278.421 105.761S290.569 78.807 305.532 78.807Z" fill="#ff062d" stroke="#0b0f15" stroke-width="0.8" transform="rotate(240 305.532 144.554)"/>
               </svg>
               Resolve Waitlist
+            </button>
+            <button class="btn btn-primary btn-lg" type="button" data-after-effects-waitlist-open aria-haspopup="dialog">
+              <span class="after-effects-mark" aria-hidden="true">Ae</span>
+              After Effects Waitlist
             </button>
           </div>
           <form class="mobile-download-handoff" id="mobile-download-handoff" novalidate>
@@ -1762,6 +1798,13 @@
     const resolveWaitlistStatus = document.getElementById("resolve-waitlist-status");
     const resolveWaitlistOpenControls = Array.from(document.querySelectorAll("[data-resolve-waitlist-open]"));
     const resolveWaitlistCloseControls = Array.from(document.querySelectorAll("[data-resolve-waitlist-close]"));
+    const afterEffectsWaitlistGate = document.getElementById("after-effects-waitlist-gate");
+    const afterEffectsWaitlistForm = document.getElementById("after-effects-waitlist-form");
+    const afterEffectsWaitlistInput = document.getElementById("after-effects-waitlist-input");
+    const afterEffectsWaitlistSubmit = document.getElementById("after-effects-waitlist-submit");
+    const afterEffectsWaitlistStatus = document.getElementById("after-effects-waitlist-status");
+    const afterEffectsWaitlistOpenControls = Array.from(document.querySelectorAll("[data-after-effects-waitlist-open]"));
+    const afterEffectsWaitlistCloseControls = Array.from(document.querySelectorAll("[data-after-effects-waitlist-close]"));
     const mobileDownloadForm = document.getElementById("mobile-download-handoff");
     const mobileDownloadInput = document.getElementById("mobile-download-email");
     const mobileDownloadSubmit = document.getElementById("mobile-download-submit");
@@ -1769,6 +1812,7 @@
     const mobileDownloadMedia = window.matchMedia("(max-width: 900px)");
     const downloadEmailStorageKey = "sidestream.download.email";
     const resolveWaitlistStorageKey = "sidestream.resolve.email";
+    const afterEffectsWaitlistStorageKey = "sidestream.after-effects.email";
     let pendingDownloadLink = null;
     let pendingDownloadUrl = "/api/download";
     let mobileDownloadAttemptEmail = "";
@@ -1818,6 +1862,22 @@
       }
     }
 
+    function getStoredAfterEffectsWaitlistEmail() {
+      try {
+        return window.localStorage.getItem(afterEffectsWaitlistStorageKey) || "";
+      } catch (error) {
+        return "";
+      }
+    }
+
+    function setStoredAfterEffectsWaitlistEmail(email) {
+      try {
+        window.localStorage.setItem(afterEffectsWaitlistStorageKey, email);
+      } catch (error) {
+        // Email capture should still work when localStorage is unavailable.
+      }
+    }
+
     function openEmailGate(link) {
       pendingDownloadLink = link;
       pendingDownloadUrl = link.getAttribute("href") || "/api/download";
@@ -1843,6 +1903,19 @@
       window.setTimeout(() => resolveWaitlistInput.focus(), 0);
     }
 
+    function openAfterEffectsWaitlist() {
+      if (!afterEffectsWaitlistGate || !afterEffectsWaitlistInput || !afterEffectsWaitlistSubmit || !afterEffectsWaitlistStatus) return;
+
+      afterEffectsWaitlistStatus.textContent = "";
+      afterEffectsWaitlistStatus.classList.remove("is-error", "is-success");
+      afterEffectsWaitlistSubmit.disabled = false;
+      afterEffectsWaitlistSubmit.textContent = "Join waitlist";
+      afterEffectsWaitlistInput.value = getStoredAfterEffectsWaitlistEmail();
+      afterEffectsWaitlistGate.hidden = false;
+      document.body.classList.add("email-gate-open");
+      window.setTimeout(() => afterEffectsWaitlistInput.focus(), 0);
+    }
+
     function closeEmailGate(options = {}) {
       emailGate.hidden = true;
       document.body.classList.remove("email-gate-open");
@@ -1861,6 +1934,15 @@
       document.body.classList.remove("email-gate-open");
       resolveWaitlistStatus.textContent = "";
       resolveWaitlistStatus.classList.remove("is-error", "is-success");
+    }
+
+    function closeAfterEffectsWaitlist() {
+      if (!afterEffectsWaitlistGate || !afterEffectsWaitlistStatus) return;
+
+      afterEffectsWaitlistGate.hidden = true;
+      document.body.classList.remove("email-gate-open");
+      afterEffectsWaitlistStatus.textContent = "";
+      afterEffectsWaitlistStatus.classList.remove("is-error", "is-success");
     }
 
     function startDownload(url) {
@@ -1921,6 +2003,36 @@
         return { ok: true };
       } catch (error) {
         console.warn("Sidestream Resolve waitlist capture failed", error);
+        return { ok: false, status: error && error.status };
+      } finally {
+        window.clearTimeout(timeout);
+      }
+    }
+
+    async function recordAfterEffectsWaitlistEmail(email) {
+      const controller = new AbortController();
+      const timeout = window.setTimeout(() => controller.abort(), 5000);
+
+      try {
+        const response = await fetch("/api/after-effects-waitlist", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            email,
+            page: window.location.pathname
+          }),
+          signal: controller.signal
+        });
+
+        if (!response.ok) {
+          const error = new Error("After Effects waitlist returned " + response.status);
+          error.status = response.status;
+          throw error;
+        }
+
+        return { ok: true };
+      } catch (error) {
+        console.warn("Sidestream After Effects waitlist capture failed", error);
         return { ok: false, status: error && error.status };
       } finally {
         window.clearTimeout(timeout);
@@ -2012,12 +2124,21 @@
     resolveWaitlistCloseControls.forEach((control) =>
       control.addEventListener("click", closeResolveWaitlist)
     );
+    afterEffectsWaitlistOpenControls.forEach((control) =>
+      control.addEventListener("click", openAfterEffectsWaitlist)
+    );
+    afterEffectsWaitlistCloseControls.forEach((control) =>
+      control.addEventListener("click", closeAfterEffectsWaitlist)
+    );
     window.addEventListener("keydown", (ev) => {
       if (ev.key === "Escape" && emailGate && !emailGate.hidden) {
         closeEmailGate();
       }
       if (ev.key === "Escape" && resolveWaitlistGate && !resolveWaitlistGate.hidden) {
         closeResolveWaitlist();
+      }
+      if (ev.key === "Escape" && afterEffectsWaitlistGate && !afterEffectsWaitlistGate.hidden) {
+        closeAfterEffectsWaitlist();
       }
     });
     emailGateForm.addEventListener("submit", async (ev) => {
@@ -2129,6 +2250,40 @@
         resolveWaitlistStatus.textContent = "You're on the DaVinci Resolve list. We will notify you when it is ready.";
         resolveWaitlistStatus.classList.add("is-success");
         resolveWaitlistSubmit.textContent = "Joined";
+      });
+    }
+    if (afterEffectsWaitlistForm && afterEffectsWaitlistInput && afterEffectsWaitlistSubmit && afterEffectsWaitlistStatus) {
+      afterEffectsWaitlistForm.addEventListener("submit", async (ev) => {
+        ev.preventDefault();
+        const email = afterEffectsWaitlistInput.value.trim().toLowerCase();
+
+        afterEffectsWaitlistStatus.classList.remove("is-error", "is-success");
+        if (!isValidDownloadEmail(email)) {
+          afterEffectsWaitlistStatus.textContent = "Enter a valid email address.";
+          afterEffectsWaitlistStatus.classList.add("is-error");
+          afterEffectsWaitlistInput.focus();
+          return;
+        }
+
+        afterEffectsWaitlistStatus.textContent = "";
+        afterEffectsWaitlistSubmit.disabled = true;
+        afterEffectsWaitlistSubmit.textContent = "Joining...";
+
+        const capture = await recordAfterEffectsWaitlistEmail(email);
+        if (!capture.ok) {
+          afterEffectsWaitlistStatus.textContent = capture.status === 429
+            ? "Too many requests. Try again in a few minutes."
+            : "Could not save that email. Try again.";
+          afterEffectsWaitlistStatus.classList.add("is-error");
+          afterEffectsWaitlistSubmit.disabled = false;
+          afterEffectsWaitlistSubmit.textContent = "Join waitlist";
+          return;
+        }
+
+        setStoredAfterEffectsWaitlistEmail(email);
+        afterEffectsWaitlistStatus.textContent = "You're on the After Effects list. We will notify you when it is ready.";
+        afterEffectsWaitlistStatus.classList.add("is-success");
+        afterEffectsWaitlistSubmit.textContent = "Joined";
       });
     }
     document.querySelectorAll("[data-purchase]").forEach((el) =>
