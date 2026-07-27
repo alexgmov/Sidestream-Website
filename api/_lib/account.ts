@@ -69,6 +69,13 @@ import {
   normalizePostgresConnectionString,
   requireRuntimePostgresTarget,
 } from "./postgres.js";
+import {
+  PAID_ACQUISITION_EXPERIMENT_ID,
+  PAID_ACQUISITION_SOURCE,
+  associatePaidAcquisitionActivation,
+  completePaidAcquisitionCheckout,
+  recordPaidAcquisitionLifecycle,
+} from "./paid-acquisition.js";
 
 const SESSION_COOKIE = "sidestream_session";
 const OAUTH_STATE_COOKIE = "sidestream_oauth_state";
@@ -493,7 +500,7 @@ export async function exchangeGoogleCode(
   const profile = await profileResponse.json() as GoogleProfile;
   const email = normalizeEmail(profile.email);
 
-  if (!profile.sub || !email || profile.email_verified === false) {
+  if (!profile.sub || !email || profile.email_verified !== true) {
     throw new Error("Google account did not return a verified email");
   }
 
@@ -934,6 +941,7 @@ export async function createOrReuseCheckoutSession(options: {
   session: AccountSession | null;
   baseUrl: string;
   rotateCancelledSession?: boolean;
+  paidAcquisition?: boolean;
 }): Promise<CheckoutIntentResult> {
   const now = new Date();
   const browserTokenHash = hashToken(options.browserToken);
@@ -1205,6 +1213,10 @@ export async function createOrReuseCheckoutSession(options: {
         sidestream_price_id: stripePriceId,
         sidestream_checkout_intent_id: row.id,
       };
+      if (options.paidAcquisition) {
+        metadata.sidestream_paid_acquisition =
+          PAID_ACQUISITION_EXPERIMENT_ID;
+      }
       if (row.intent_kind === "account" && options.session) {
         metadata.sidestream_account_id = options.session.accountId;
       }
@@ -1235,7 +1247,7 @@ export async function createOrReuseCheckoutSession(options: {
         ...(!stripeCustomerId ? { customer_creation: "always" as const } : {}),
         line_items: [{ price: stripePriceId, quantity: 1 }],
         payment_method_types: ["card"],
-        allow_promotion_codes: true,
+        allow_promotion_codes: !options.paidAcquisition,
         billing_address_collection: "auto",
         success_url: buildCheckoutCompletionUrl(options.baseUrl, activationKey),
         cancel_url: cancelUrl.toString(),
@@ -1888,6 +1900,7 @@ export async function createActivationSession(
   const deviceId = cleanString(payload.deviceId, 240);
   if (!deviceId) throw new Error("Missing device ID");
 
+  let paidActivation = false;
   await withPgClient(async (client) => {
     await client.query("begin");
     try {
@@ -1923,6 +1936,18 @@ export async function createActivationSession(
       const activationId = inserted.rows[0]?.id;
       if (!activationId) throw new Error("Activation insert did not return an ID");
 
+      if (
+        cleanString(payload.source, 120) === PAID_ACQUISITION_SOURCE &&
+        typeof payload.installerReceiptIdHash === "string" &&
+        /^[0-9a-f]{64}$/.test(payload.installerReceiptIdHash)
+      ) {
+        paidActivation = await associatePaidAcquisitionActivation(client, {
+          environment: environment.namespace,
+          activationRef: activationId,
+          installerReceiptIdHash: payload.installerReceiptIdHash,
+        });
+      }
+
       await attachCustomerIdentity(client, {
         environment,
         identity,
@@ -1941,7 +1966,11 @@ export async function createActivationSession(
     activationKey,
     expiresAt: expiresAt.toISOString(),
     upgradeUrl: `${getBaseUrl(request)}/api/checkout/start?activation=${encodeURIComponent(activationKey)}`,
-    restoreUrl: `${getBaseUrl(request)}/api/activation/claim?activation=${encodeURIComponent(activationKey)}`,
+    restoreUrl: `${getBaseUrl(request)}${
+      paidActivation
+        ? "/api/paid-acquisition/claim"
+        : "/api/activation/claim"
+    }?activation=${encodeURIComponent(activationKey)}`,
   };
 }
 
@@ -3210,6 +3239,11 @@ export async function fulfillCheckoutSession(
   if (expectedActivationKey && activationKey !== expectedActivationKey) {
     return { fulfilled: false as const, reason: "activation_mismatch" };
   }
+  const paidAcquisitionCheckout =
+    cleanString(
+      checkoutSession.metadata?.sidestream_paid_acquisition,
+      120,
+    ) === PAID_ACQUISITION_EXPERIMENT_ID;
 
   const subscriptionId = normalizeStripeId(checkoutSession.subscription);
   if (subscriptionId) {
@@ -3233,10 +3267,12 @@ export async function fulfillCheckoutSession(
     return { fulfilled: true as const, activationBound: false };
   }
 
-  let expectedPriceId = cleanString(
-    checkoutSession.metadata?.sidestream_price_id,
-    160,
-  );
+  let expectedPriceId = paidAcquisitionCheckout
+    ? await getSidestreamProPriceId()
+    : cleanString(
+        checkoutSession.metadata?.sidestream_price_id,
+        160,
+      );
   let expectedProductId = getSidestreamProProductId();
   let activationId = "";
 
@@ -3285,6 +3321,22 @@ export async function fulfillCheckoutSession(
   if (!canonicalPayment.ok) {
     return { fulfilled: false as const, reason: canonicalPayment.reason };
   }
+  if (
+    paidAcquisitionCheckout &&
+    (
+      checkoutSession.payment_status !== "paid" ||
+      checkoutSession.amount_total !== SIDESTREAM_PRO_PRICE.unitAmount ||
+      canonicalPayment.noPaymentRequired ||
+      !canonicalPayment.facts ||
+      canonicalPayment.facts.amountPaid !== SIDESTREAM_PRO_PRICE.unitAmount ||
+      canonicalPayment.currency !== SIDESTREAM_PRO_PRICE.currency
+    )
+  ) {
+    return {
+      fulfilled: false as const,
+      reason: "paid_acquisition_amount_mismatch",
+    };
+  }
 
   const stripeAccountId = await findOrCreateAccountForStripeCustomer(customerId, {
     email: checkoutSession.customer_details?.email || checkoutSession.customer_email,
@@ -3297,7 +3349,7 @@ export async function fulfillCheckoutSession(
   const accountId = stripeAccountId || metadataAccountId;
   if (!accountId) return { fulfilled: false as const, reason: "missing_account" };
 
-  return withPgClient(async (client) => {
+  const fulfillment = await withPgClient(async (client) => {
     await client.query("begin");
     try {
       await client.query("select pg_advisory_xact_lock(hashtext($1))", [
@@ -3393,12 +3445,42 @@ export async function fulfillCheckoutSession(
       );
 
       await client.query("commit");
-      return { fulfilled: true as const, activationBound };
+      return {
+        fulfilled: true as const,
+        activationBound,
+        licenseId,
+      };
     } catch (error) {
       await client.query("rollback");
       throw error;
     }
   });
+  if (!fulfillment.fulfilled) return fulfillment;
+  if (
+    paidAcquisitionCheckout &&
+    canonicalPayment.facts
+  ) {
+    await completePaidAcquisitionCheckout({
+      environment: requireMatchingLicenseEnvironment().namespace,
+      verifiedCheckoutSessionRef: checkoutSessionId,
+      canonicalPaymentRef: canonicalPayment.facts.paymentIntentId,
+      verifiedCheckoutEmail:
+        checkoutSession.customer_details?.email ||
+        checkoutSession.customer_email ||
+        "",
+      verifiedProductRef: expectedProductId,
+      verifiedPriceRef: expectedPriceId,
+      verifiedQuantity: 1,
+      verifiedAmountMinor: canonicalPayment.facts.amountPaid,
+      verifiedCurrency: canonicalPayment.currency,
+      accountRef: accountId,
+      entitlementRef: fulfillment.licenseId,
+    });
+  }
+  return {
+    fulfilled: true as const,
+    activationBound: fulfillment.activationBound,
+  };
 }
 
 async function retrieveCanonicalCheckoutPayment(
@@ -3610,7 +3692,7 @@ export async function reconcileOneTimePaymentLifecycle(
     return { fulfilled: false as const, reason: canonical.reason };
   }
 
-  return withPgClient(async (client) => {
+  const reconciliation = await withPgClient(async (client) => {
     await client.query("begin");
     try {
       await client.query("select pg_advisory_xact_lock(hashtext($1))", [
@@ -3676,6 +3758,28 @@ export async function reconcileOneTimePaymentLifecycle(
       throw error;
     }
   });
+  if (reconciliation.fulfilled) {
+    if (reconciliation.entitlementStatus === "unknown") {
+      return reconciliation;
+    }
+    try {
+      await recordPaidAcquisitionLifecycle({
+        environment: requireMatchingLicenseEnvironment().namespace,
+        canonicalPaymentRef: canonical.facts.paymentIntentId,
+        entitlementStatus: reconciliation.entitlementStatus,
+        reason:
+          canonical.facts.disputeStatus !== "none" &&
+          canonical.facts.disputeStatus !== "won"
+            ? "dispute"
+            : canonical.facts.amountRefunded >= canonical.facts.amountPaid
+              ? "full_refund"
+              : "active",
+      });
+    } catch (error) {
+      if (!isPaidAcquisitionSchemaUnavailable(error)) throw error;
+    }
+  }
+  return reconciliation;
 }
 
 async function upsertLicenseFromOneTimeCheckoutSession(options: {
@@ -3974,6 +4078,17 @@ function isStripeResourceMissing(error: unknown) {
     typeof error === "object" &&
     "code" in error &&
     (error as { code?: unknown }).code === "resource_missing",
+  );
+}
+
+function isPaidAcquisitionSchemaUnavailable(error: unknown) {
+  return Boolean(
+    error &&
+    typeof error === "object" &&
+    "code" in error &&
+    ["42P01", "42703"].includes(
+      String((error as { code?: unknown }).code || ""),
+    ),
   );
 }
 

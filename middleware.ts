@@ -6,10 +6,17 @@ const PAID_COHORT = "mc-paid-v1";
 const ASSIGNMENT_SECRET_NAME =
   "SIDESTREAM_PAID_ACQUISITION_ASSIGNMENT_SECRET";
 const COOKIE_NAME = "__Host-sidestream-mc-mobile-paid-v1";
-const COOKIE_VERSION = "v1";
+const COOKIE_VERSION = "1";
 const COOKIE_MAX_AGE_SECONDS = 2_592_000;
-const PAID_LANDING_PATH = "/mobile-paid-prototype.html";
+const PAID_LANDING_PATH = "/api/paid-acquisition/landing";
+const TEST_PAID_LANDING_PATH = "/mobile-paid-prototype.html";
 const CONTROL_DESTINATION = "https://sidestream.tv/";
+const ASSIGNMENT_SIGNATURE_CONTEXT =
+  "sidestream-paid-acquisition-assignment-cookie-v1";
+const LANDING_PROOF_CONTEXT = "sidestream-paid-acquisition-landing-proof-v1";
+const INTERNAL_ASSIGNMENT_HEADER =
+  "x-sidestream-paid-acquisition-assignment";
+const INTERNAL_PROOF_HEADER = "x-sidestream-paid-acquisition-proof";
 const BOT_SIGNATURES = [
   "bot",
   "crawler",
@@ -64,6 +71,7 @@ export function routePaidExperimentForTest(request, overrides) {
       return new Uint8Array(nonceBytes);
     },
     secret: overrides.secret,
+    paidLandingPath: TEST_PAID_LANDING_PATH,
   });
 }
 
@@ -109,7 +117,11 @@ async function routePaidExperiment(request, runtime) {
       : null;
 
     if (existing) {
-      return cohortResponse(existing.cohort, attribution);
+      return cohortResponse(existing.cohort, attribution, undefined, {
+        ...runtime,
+        key,
+        assignmentCookieValue: suppliedCookie,
+      });
     }
 
     const nonceBytes = runtime.randomBytes(16);
@@ -124,7 +136,13 @@ async function routePaidExperiment(request, runtime) {
       cohort,
       nowSeconds,
     );
-    return cohortResponse(cohort, attribution, cookie);
+    return cohortResponse(cohort, attribution, cookie, {
+      ...runtime,
+      key,
+      assignmentCookieValue: cookie
+        .split(";", 1)[0]
+        .slice(`${COOKIE_NAME}=`.length),
+    });
   } catch {
     return fallback();
   }
@@ -139,6 +157,7 @@ function productionRuntime() {
       return bytes;
     },
     secret: process.env[ASSIGNMENT_SECRET_NAME],
+    paidLandingPath: PAID_LANDING_PATH,
   };
 }
 
@@ -234,14 +253,33 @@ function controlRedirect(attribution, cookie) {
   return new Response(null, { status: 307, headers });
 }
 
-function cohortResponse(cohort, attribution, cookie) {
+async function cohortResponse(cohort, attribution, cookie, runtime) {
   if (cohort === CONTROL_COHORT) return controlRedirect(attribution, cookie);
 
   const destination = attributionUrl(
-    new URL(PAID_LANDING_PATH, CONTROL_DESTINATION),
+    new URL(runtime.paidLandingPath, CONTROL_DESTINATION),
     attribution,
   );
-  const response = rewrite(destination);
+  const proof = bytesToBase64Url(
+    new Uint8Array(
+      await crypto.subtle.sign(
+        "HMAC",
+        runtime.key,
+        encoder.encode(
+          `${LANDING_PROOF_CONTEXT}:${runtime.assignmentCookieValue}:${destination.searchParams.toString()}`,
+        ),
+      ),
+    ),
+  );
+  const requestHeaders = new Headers();
+  requestHeaders.set(
+    INTERNAL_ASSIGNMENT_HEADER,
+    runtime.assignmentCookieValue,
+  );
+  requestHeaders.set(INTERNAL_PROOF_HEADER, proof);
+  const response = rewrite(destination, {
+    request: { headers: requestHeaders },
+  });
   response.headers.set("Cache-Control", "private, no-store");
   if (cookie) response.headers.append("Set-Cookie", cookie);
   return response;
@@ -281,7 +319,9 @@ async function createAssignmentCookie(key, nonce, cohort, issuedAtSeconds) {
       await crypto.subtle.sign(
         "HMAC",
         key,
-        encoder.encode(`${EXPERIMENT_ID}-cookie:${unsigned}`),
+        encoder.encode(
+          `${ASSIGNMENT_SIGNATURE_CONTEXT}:${unsigned.replaceAll(".", ":")}`,
+        ),
       ),
     ),
   );
@@ -337,7 +377,9 @@ async function verifyAssignmentCookie(value, key, nowSeconds) {
     "HMAC",
     key,
     signature,
-    encoder.encode(`${EXPERIMENT_ID}-cookie:${unsigned}`),
+    encoder.encode(
+      `${ASSIGNMENT_SIGNATURE_CONTEXT}:${unsigned.replaceAll(".", ":")}`,
+    ),
   );
   return valid ? { cohort, issuedAtSeconds, nonce } : null;
 }

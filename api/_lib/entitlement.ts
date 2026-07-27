@@ -520,7 +520,11 @@ export function sanitizeAccountNextPath(value: unknown) {
     if (parsed.origin !== "https://sidestream.invalid") return "/account.html";
     if (parsed.pathname === "/account.html") return `${parsed.pathname}${parsed.search}`;
     if (
-      parsed.pathname === "/api/activation/claim" &&
+      (
+        parsed.pathname === "/api/activation/claim" ||
+        parsed.pathname === "/api/paid-acquisition/claim"
+      ) &&
+      parsed.searchParams.size === 1 &&
       parsed.searchParams.has("activation")
     ) {
       return `${parsed.pathname}${parsed.search}`;
