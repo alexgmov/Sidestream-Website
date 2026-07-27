@@ -6,6 +6,8 @@ import { pathToFileURL } from "node:url";
 
 const OUTPUT_ROOT = path.resolve(".vercel/output");
 const REQUIRED_FUNCTIONS = Object.freeze([
+  "api/checkout/start.func",
+  "api/checkout/complete.func",
   "api/download.func",
   "api/releases/latest.func",
   "api/internal/stripe-events/process.func",
@@ -15,6 +17,12 @@ const REQUIRED_FUNCTIONS = Object.freeze([
   "api/internal/customers/index.func",
   "api/internal/customers/[customerId].func",
 ]);
+const BROWSER_UI_MARKERS = Object.freeze([
+  "text/html",
+  "<!doctype html",
+  "<html",
+]);
+const ALLOWED_ROOT_HTML = new Set(["account.html", "index.html", "thank-you.html"]);
 
 export async function verifyVercelBuild(outputRoot = OUTPUT_ROOT) {
   const configPath = path.join(outputRoot, "config.json");
@@ -39,13 +47,73 @@ export async function verifyVercelBuild(outputRoot = OUTPUT_ROOT) {
     }
   }
 
+  const checkoutStartBundle = await readBundle(
+    path.join(outputRoot, "functions", "api/checkout/start.func"),
+  );
+  if (!checkoutStartBundle.includes("/api/auth/google/start")) {
+    throw new Error("Vercel checkout-start bundle omitted the Google authentication redirect");
+  }
+  for (const marker of BROWSER_UI_MARKERS) {
+    if (checkoutStartBundle.includes(marker)) {
+      throw new Error(
+        `Vercel checkout-start bundle contains browser UI marker: ${marker}`,
+      );
+    }
+  }
+
+  const checkoutCompleteBundle = await readBundle(
+    path.join(outputRoot, "functions", "api/checkout/complete.func"),
+  );
+  for (const marker of ["no_payment_required", "amount_total"]) {
+    if (!checkoutCompleteBundle.includes(marker)) {
+      throw new Error(
+        `Vercel checkout-complete bundle omitted zero-total fulfillment marker: ${marker}`,
+      );
+    }
+  }
+
+  const staticRootEntries = await readdir(
+    path.join(outputRoot, "static"),
+    { withFileTypes: true },
+  );
+  const unexpectedRootPages = staticRootEntries
+    .filter(
+      (entry) =>
+        entry.isFile() &&
+        entry.name.endsWith(".html") &&
+        !ALLOWED_ROOT_HTML.has(entry.name),
+    )
+    .map((entry) => entry.name);
+  if (unexpectedRootPages.length > 0) {
+    throw new Error(
+      `Vercel static output contains unexpected root HTML: ${unexpectedRootPages.join(", ")}`,
+    );
+  }
+
   const bundledFiles = await listFiles(path.join(outputRoot, "functions"));
   for (const manifest of ["release-manifest.json", "release-manifest.windows.json"]) {
     if (!bundledFiles.some((filename) => path.basename(filename) === manifest)) {
       throw new Error(`Vercel build omitted ${manifest} from the function bundles`);
     }
   }
-  return { functions: REQUIRED_FUNCTIONS.length, manifests: 2 };
+  return {
+    functions: REQUIRED_FUNCTIONS.length,
+    manifests: 2,
+    checkoutContract: true,
+  };
+}
+
+async function readBundle(directory) {
+  const files = await listFiles(directory);
+  const javascriptFiles = files.filter((filename) =>
+    /\.(?:c|m)?js$/u.test(filename)
+  );
+  if (javascriptFiles.length === 0) {
+    throw new Error(`Vercel function bundle contains no JavaScript: ${directory}`);
+  }
+  return (await Promise.all(
+    javascriptFiles.map((filename) => readFile(filename, "utf8")),
+  )).join("\n");
 }
 
 async function listFiles(directory) {
@@ -66,7 +134,7 @@ async function main() {
   }
   const result = await verifyVercelBuild();
   console.log(
-    `PASS: human-built Vercel output contains ${result.functions} functions and ${result.manifests} release manifests.`,
+    `PASS: human-built Vercel output contains ${result.functions} functions, ${result.manifests} release manifests, and the direct checkout contract.`,
   );
 }
 

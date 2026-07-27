@@ -4,6 +4,11 @@ import test from "node:test";
 import { loadInjectedModule } from "./helpers/handler-loader.mjs";
 import { invokeHandler } from "./helpers/http.mjs";
 import { validateVercelContract } from "../scripts/validate-vercel-contract.mjs";
+import {
+  assertCheckoutSourceContract,
+  PRODUCTION_SOURCE,
+  verifyCheckoutContract,
+} from "../scripts/verify-production-source.mjs";
 
 const CRON_SECRET = "integration-cron-secret";
 const INTERNAL_CRON_PATHS = Object.freeze([
@@ -39,6 +44,80 @@ test("the human-only bundle verifier requires both customer functions", async ()
   assert.match(source, /api\/internal\/customers\/index\.func/);
   assert.match(source, /api\/internal\/customers\/\[customerId\]\.func/);
   assert.match(source, /A human must run `npx vercel build` first/);
+});
+
+test("the source checkout contract is direct and retains both zero-total Stripe statuses", async () => {
+  const result = await verifyCheckoutContract();
+  assert.deepEqual(result, {
+    checkoutRoute: "direct",
+    zeroTotalStatuses: 2,
+    rootHtmlPages: 3,
+  });
+});
+
+test("the checkout contract rejects browser UI and unexpected deployable root pages", () => {
+  const valid = {
+    checkoutStart:
+      "/api/auth/google/start createCheckoutIntent createOrReuseCheckoutSession",
+    account: "isZeroTotalCheckoutWithoutPaymentIntent",
+    entitlement: [
+      'session.payment_status === "paid"',
+      'session.payment_status === "no_payment_required"',
+      "session.amount_total === 0",
+      "session.payment_intent",
+    ].join("\n"),
+    readme: [
+      "1. The user clicks Upgrade.",
+      "2. Google authentication establishes the Sidestream account session.",
+      "3. The browser opens Stripe Checkout for payment.",
+    ].join("\n"),
+    unexpectedRootPages: [],
+  };
+
+  assert.doesNotThrow(() => assertCheckoutSourceContract(valid));
+  assert.throws(
+    () =>
+      assertCheckoutSourceContract({
+        ...valid,
+        checkoutStart: `${valid.checkoutStart} text/html`,
+      }),
+    /browser UI marker/u,
+  );
+  assert.throws(
+    () =>
+      assertCheckoutSourceContract({
+        ...valid,
+        unexpectedRootPages: ["unexpected.html"],
+      }),
+    /Unexpected deployable root HTML/u,
+  );
+});
+
+test("the Production source is remote main with immutable checkout baselines and project identity", () => {
+  assert.equal(PRODUCTION_SOURCE.branch, "main");
+  assert.deepEqual(PRODUCTION_SOURCE.requiredAncestors, [
+    "81a3190f6fbabb684cde605a4e256d2fa6295fe5",
+    "d3d1e82ebd640bf8d6e30df7d54628e4206300a0",
+  ]);
+  assert.equal(
+    PRODUCTION_SOURCE.projectId,
+    "prj_x9sRcnoAAfF6VPxseJYLBgxhhPyh",
+  );
+  assert.equal(PRODUCTION_SOURCE.orgId, "team_ZcKImJwvlcCrE15nTEOWT2NC");
+  assert.equal(PRODUCTION_SOURCE.projectName, "sidestream");
+});
+
+test("the built checkout verifier checks both functions and rejects browser UI", async () => {
+  const source = await readFile(
+    new URL("../scripts/verify-vercel-build.mjs", import.meta.url),
+    "utf8",
+  );
+  assert.match(source, /api\/checkout\/start\.func/u);
+  assert.match(source, /api\/checkout\/complete\.func/u);
+  assert.match(source, /\/api\/auth\/google\/start/u);
+  assert.match(source, /text\/html/u);
+  assert.match(source, /no_payment_required/u);
+  assert.match(source, /Unexpected root HTML|unexpected root HTML/u);
 });
 
 test("missing and incorrect CRON_SECRET authorization is rejected by every internal route", async () => {

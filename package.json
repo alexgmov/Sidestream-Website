@@ -28,8 +28,11 @@
     "test:single-device-ops": "node --experimental-strip-types --test tests/single-device-ops.test.mjs",
     "test:single-device-postgres": "node --experimental-strip-types --test --test-concurrency=1 tests/single-device-postgres.test.mjs",
     "typecheck": "tsc --noEmit",
+    "verify:checkout-contract": "node scripts/verify-production-source.mjs --checkout-only",
+    "verify:production-source": "node scripts/verify-production-source.mjs",
     "verify:vercel-build": "node scripts/verify-vercel-build.mjs",
     "verify:vercel-contract": "node scripts/validate-vercel-contract.mjs",
+    "deploy:production": "npm run verify:production-source && npm run test:entitlement && npx vercel@latest build --prod --yes --scope alex-3685s-projects && npm run verify:vercel-build && npx vercel@latest deploy --prebuilt --prod --yes --scope alex-3685s-projects",
     "preview": "vite preview"
   },
   "dependencies": {
