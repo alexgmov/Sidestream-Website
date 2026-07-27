@@ -31,7 +31,7 @@ The database is the concurrency backstop. `public.sidestream_account_devices` ke
 | Transaction locking, activation, transfer, verify, refresh, download authorization, status, and deactivation | `api/_lib/account.ts` |
 | Account decision and confirmed transfer page | `api/activation/claim.ts` |
 | Signed-in coarse device status and deactivation UI | `account.html` |
-| Activation-aware restore, move, or purchase entry | `upgrade.html` |
+| Authenticated payment entry | `api/checkout/start.ts` |
 | Read-only audit and explicit backfill | `scripts/audit-license-devices.mjs` / `npm run devices:audit` |
 | Read-only support view, binding clear, and temporary move override | `scripts/manage-license-device.mjs` / `npm run devices:manage` |
 | Static and disposable-Postgres proof | `npm run test:single-device` |
@@ -83,9 +83,14 @@ Explicitly revoked lifecycle rows and credentials older than a replacement gener
 
 ### Account decision flow
 
-`upgrade.html` sends activation-bearing recovery to `GET /api/activation/claim`. That GET authenticates first, is no-store/read-only, and shows exactly one decision:
+The paid sequence is exactly:
 
-- Free account: continue to the existing one-time purchase without pre-binding the activation.
+1. The user clicks Upgrade.
+2. Google authentication establishes the Sidestream account session.
+3. The browser opens Stripe Checkout for payment.
+
+For an active owner, `GET /api/activation/claim` authenticates first, is no-store/read-only, and shows exactly one device decision:
+
 - No active production device: connect/restore this device.
 - Same active device: reconnect without consuming a move.
 - Different active device: show coarse prior-device context, remaining moves, and an explicit checkbox confirming that the previous device will be deactivated.
@@ -98,7 +103,7 @@ The mutation is a same-origin, account-bound, CSRF-protected POST. Transfer uses
 | Route | Success | Stable failure/state contract |
 | --- | --- | --- |
 | `POST /api/activation/status` | `active` with a device-scoped credential family | Status payloads include `pending`, `pending_payment`, `completed`, `not_found`, `device_mismatch`, `expired`, `transfer_required`, `transfer_limit_reached`, `device_replaced`, and `device_deactivated`. Device-policy states are returned in the JSON `status`/`code`; clients must not treat every HTTP 200 as active. |
-| `GET /api/activation/claim` | Read-only HTML decision page | Authentication redirect, unavailable/limit page, or `409`; it never binds on GET. |
+| `GET /api/activation/claim` | Authentication and account routing | Free accounts continue to Checkout; active owners receive the read-only device decision; unavailable/limit returns `409`; it never binds on GET. |
 | `POST /api/activation/claim` | Confirmed restore or transfer redirect | `invalid_intent`, `csrf_rejected`, `transfer_intent_required`, `transfer_limit_reached`, `binding_changed`, or `unavailable`. |
 | `POST /api/license/verify` | `200` with `active: true` | `400 invalid_request`; `401 invalid_token`, `revoked`, `device_mismatch`, `device_replaced`, or `device_deactivated`; `403 license_inactive`; `503 license_environment_unavailable`. |
 | `POST /api/license/refresh` | `200` with a rotated/replayed active credential family | Same status classes as verify. A two-minute predecessor window returns the same rotated family after a lost response; callers retain credentials on transient failures. |

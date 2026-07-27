@@ -20,7 +20,6 @@ export default defineConfig({
         index: path.resolve(__dirname, "index.html"),
         account: path.resolve(__dirname, "account.html"),
         thankYou: path.resolve(__dirname, "thank-you.html"),
-        upgrade: path.resolve(__dirname, "upgrade.html"),
         sidestream: path.resolve(
           __dirname,
           "Sidestream front end 2/Sidestream.html",

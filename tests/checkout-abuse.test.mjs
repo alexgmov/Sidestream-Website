@@ -15,10 +15,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { Pool } from "pg";
-import {
-  getActivationCheckoutIdempotencyKey,
-  validateCheckoutIntentPost,
-} from "../api/_lib/entitlement.ts";
+import { getActivationCheckoutIdempotencyKey } from "../api/_lib/entitlement.ts";
 import { loadInjectedHandler } from "./helpers/handler-loader.mjs";
 import { invokeHandler } from "./helpers/http.mjs";
 
@@ -48,142 +45,46 @@ const CONTROLLED_ENVIRONMENT = [
   "POSTGRES_POOL_MAX",
 ];
 
-test("GET and crawler-visible checkout surfaces cannot write Stripe resources", async () => {
-  let stripeWrites = 0;
-  let confirmationSequence = 0;
-  const confirmation = (activationKey = "", hasCheckoutSession = false) => ({
-    intentId: VALID_INTENT_ID,
-    browserToken: "browser-capability",
-    signedToken: "v1.signed",
-    signedTokenExpiresAt: "2026-07-14T12:10:00.000Z",
-    intentExpiresAt: "2026-07-15T12:00:00.000Z",
-    kind: activationKey ? "activation" : "anonymous",
-    activationKey,
-    state: hasCheckoutSession ? "open" : "pending",
-    hasCheckoutSession,
-  });
+test("Upgrade authenticates and then redirects the signed-in buyer to Stripe", async () => {
+  let session = null;
+  let intentCalls = 0;
+  let checkoutCalls = 0;
+  let limiterCalls = 0;
+  let allowed = true;
   const start = await loadInjectedHandler(
     new URL("../api/checkout/start.ts", import.meta.url),
     {
       "../_lib/account.js": {
         cleanString,
-        async createCheckoutIntentConfirmation(options) {
-          confirmationSequence += 1;
-          return confirmation(options.activationKey || "");
+        async createCheckoutIntent(options) {
+          intentCalls += 1;
+          return {
+            intentId: VALID_INTENT_ID,
+            browserToken: "browser-capability",
+            intentExpiresAt: "2026-07-15T12:00:00.000Z",
+            kind: options.activationKey ? "activation" : "account",
+            activationKey: options.activationKey || "",
+          };
         },
-        getBaseUrl: () => BASE_URL,
-        getSession: async () => null,
-        methodNotAllowed,
-        redirect,
-        async resumeCheckoutIntentConfirmation() {
-          confirmationSequence += 1;
-          return confirmation("activation-legacy-1.0.13", true);
-        },
-      },
-      "../_lib/entitlement.js": {
-        isLegacyVercelHost: (host) => String(host || "").split(":", 1)[0] ===
-          "sidestream-xi.vercel.app",
-      },
-    },
-  );
-
-  const previews = [
-    "/api/checkout/start",
-    "/api/checkout/start?activation=activation-legacy-1.0.12",
-    "/api/checkout/start?intent=browser-capability&checkout=cancelled",
-  ];
-  for (const url of previews) {
-    const { response } = await invokeHandler(start, {
-      method: "GET",
-      url,
-      headers: { host: "sidestream.test", "x-forwarded-proto": "https" },
-    });
-    assert.equal(response.statusCode, 200);
-    assert.match(response.body, /<form method="post" action="\/api\/checkout\/create">/);
-  }
-  const legacyBare = await invokeHandler(start, {
-    method: "GET",
-    url: "/api/checkout/start",
-    headers: { host: "sidestream-xi.vercel.app", "x-forwarded-proto": "https" },
-  });
-  assert.equal(legacyBare.response.statusCode, 302);
-  assert.match(legacyBare.response.getHeader("location"), /activation_required/);
-  const legacyActivation = await invokeHandler(start, {
-    method: "GET",
-    url: "/api/checkout/start?activation=activation-legacy-1.0.13",
-    headers: { host: "sidestream-xi.vercel.app", "x-forwarded-proto": "https" },
-  });
-  assert.equal(legacyActivation.response.statusCode, 302);
-  assert.equal(
-    legacyActivation.response.getHeader("location"),
-    `${BASE_URL}/api/checkout/start?activation=activation-legacy-1.0.13`,
-  );
-  assert.equal(confirmationSequence, 3);
-  assert.equal(stripeWrites, 0);
-
-  const complete = await loadInjectedHandler(
-    new URL("../api/checkout/complete.ts", import.meta.url),
-    {
-      "../_lib/account.js": {
-        cleanString,
-        async fulfillCheckoutSession() {
-          // Completion may retrieve Stripe truth and write the license ledger,
-          // but it never creates a Customer, Price, or Checkout Session.
-          return { fulfilled: true };
-        },
-        getBaseUrl: () => BASE_URL,
-        methodNotAllowed,
-        redirect,
-        sendJson,
-      },
-    },
-  );
-  const callbackPreview = await invokeHandler(complete, {
-    method: "GET",
-    url: "/api/checkout/complete?session_id=cs_paid",
-  });
-  assert.equal(callbackPreview.response.statusCode, 303);
-  assert.equal(stripeWrites, 0);
-
-  const [index, account, upgrade, llms, startSource] = await Promise.all([
-    readFile(join(repositoryRoot, "index.html"), "utf8"),
-    readFile(join(repositoryRoot, "account.html"), "utf8"),
-    readFile(join(repositoryRoot, "upgrade.html"), "utf8"),
-    readFile(join(repositoryRoot, "public", "llms.txt"), "utf8"),
-    readFile(join(repositoryRoot, "api", "checkout", "start.ts"), "utf8"),
-  ]);
-  assert.doesNotMatch(index, /href="\/api\/checkout\/start"/);
-  assert.doesNotMatch(index, /"url": "https:\/\/sidestream\.tv\/api\/checkout\/start"/);
-  assert.doesNotMatch(account, /href="\/api\/checkout\/start"/);
-  assert.doesNotMatch(llms, /Checkout endpoint:.*api\/checkout\/start/);
-  assert.match(upgrade, /href="\/api\/checkout\/start"/);
-  assert.doesNotMatch(stripComments(startSource), /\bgetStripe\s*\(/);
-});
-
-test("Checkout POST rejects CSRF, throttling, and active owners before Stripe work", async () => {
-  let session = null;
-  let coreCalls = 0;
-  let limiterCalls = 0;
-  let allowed = true;
-  const create = await loadInjectedHandler(
-    new URL("../api/checkout/create.ts", import.meta.url),
-    {
-      "../_lib/account.js": {
-        cleanString,
         async createOrReuseCheckoutSession() {
-          coreCalls += 1;
-          return { ok: true, url: "https://checkout.stripe.test/session", reused: false };
+          checkoutCalls += 1;
+          return {
+            ok: true,
+            url: "https://checkout.stripe.test/session",
+            reused: false,
+          };
         },
         getBaseUrl: () => BASE_URL,
         getClientIp: () => "127.0.0.1",
         getSession: async () => session,
         methodNotAllowed,
-        readRequestBody,
         redirect,
         sendJson,
-        validateCheckoutIntentConfirmation: ({ signedToken }) => signedToken === "valid-token",
       },
-      "../_lib/entitlement.js": { validateCheckoutIntentPost },
+      "../_lib/entitlement.js": {
+        isLegacyVercelHost: (host) => String(host || "").split(":", 1)[0] ===
+          "sidestream-xi.vercel.app",
+      },
       "../_lib/rate-limit.js": {
         applyRateLimitHeaders,
         async consumeRateLimit() {
@@ -195,61 +96,88 @@ test("Checkout POST rejects CSRF, throttling, and active owners before Stripe wo
     },
   );
 
-  const missingOrigin = await invokeHandler(create, validPost({ origin: "" }));
-  assert.equal(missingOrigin.response.statusCode, 403);
-  assert.equal(missingOrigin.response.json.code, "csrf_rejected");
-
-  const crossOrigin = await invokeHandler(create, validPost({
-    origin: "https://attacker.example",
-  }));
-  assert.equal(crossOrigin.response.statusCode, 403);
-  assert.equal(crossOrigin.response.json.code, "csrf_rejected");
-
-  const crossSiteMetadata = await invokeHandler(create, validPost({
-    fetchSite: "cross-site",
-  }));
-  assert.equal(crossSiteMetadata.response.statusCode, 403);
-
-  const missingToken = await invokeHandler(create, validPost({ token: "" }));
-  assert.equal(missingToken.response.statusCode, 403);
-  assert.equal(missingToken.response.json.code, "csrf_rejected");
-  assert.equal(limiterCalls, 0);
-  assert.equal(coreCalls, 0);
-
-  const legacyClaimForm = await invokeHandler(create, {
-    ...validPost(),
-    body: new URLSearchParams({
-      activationKey: "activation-legacy-1.0.13",
-      intent: "purchase",
-    }).toString(),
+  const signedOut = await invokeHandler(start, {
+    method: "GET",
+    url: "/api/checkout/start?activation=activation-bound",
+    headers: { host: "sidestream.test", "x-forwarded-proto": "https" },
   });
-  assert.equal(legacyClaimForm.response.statusCode, 303);
+  assert.equal(signedOut.response.statusCode, 302);
+  const authUrl = new URL(signedOut.response.getHeader("location"));
+  assert.equal(authUrl.pathname, "/api/auth/google/start");
   assert.equal(
-    legacyClaimForm.response.getHeader("location"),
+    authUrl.searchParams.get("next"),
+    "/api/checkout/start?activation=activation-bound",
+  );
+  assert.equal(intentCalls, 0);
+  assert.equal(checkoutCalls, 0);
+
+  const legacyBare = await invokeHandler(start, {
+    method: "GET",
+    url: "/api/checkout/start",
+    headers: { host: "sidestream-xi.vercel.app", "x-forwarded-proto": "https" },
+  });
+  assert.equal(legacyBare.response.statusCode, 302);
+  assert.equal(
+    legacyBare.response.getHeader("location"),
+    `${BASE_URL}/api/checkout/start`,
+  );
+  const legacyActivation = await invokeHandler(start, {
+    method: "GET",
+    url: "/api/checkout/start?activation=activation-legacy-1.0.13",
+    headers: { host: "sidestream-xi.vercel.app", "x-forwarded-proto": "https" },
+  });
+  assert.equal(legacyActivation.response.statusCode, 302);
+  assert.equal(
+    legacyActivation.response.getHeader("location"),
     `${BASE_URL}/api/checkout/start?activation=activation-legacy-1.0.13`,
   );
-  assert.equal(limiterCalls, 0);
-  assert.equal(coreCalls, 0);
+
+  session = accountSession({ active: false });
+  const accepted = await invokeHandler(start, {
+    method: "GET",
+    url: "/api/checkout/start?activation=activation-bound",
+    headers: { host: "sidestream.test", "x-forwarded-proto": "https" },
+  });
+  assert.equal(accepted.response.statusCode, 303);
+  assert.equal(
+    accepted.response.getHeader("location"),
+    "https://checkout.stripe.test/session",
+  );
+  assert.equal(intentCalls, 1);
+  assert.equal(checkoutCalls, 1);
+  assert.equal(limiterCalls, 1);
 
   allowed = false;
-  const throttled = await invokeHandler(create, validPost());
+  const throttled = await invokeHandler(start, {
+    method: "GET",
+    url: "/api/checkout/start",
+    headers: { host: "sidestream.test", "x-forwarded-proto": "https" },
+  });
   assert.equal(throttled.response.statusCode, 429);
   assert.equal(throttled.response.getHeader("retry-after"), "47");
-  assert.equal(coreCalls, 0);
+  assert.equal(checkoutCalls, 1);
 
   allowed = true;
   session = accountSession({ active: true });
-  const owner = await invokeHandler(create, validPost());
-  assert.equal(owner.response.statusCode, 409);
-  assert.equal(owner.response.json.code, "active_license");
-  assert.equal(owner.response.json.accountUrl, "/account.html");
-  assert.equal(coreCalls, 0);
+  const owner = await invokeHandler(start, {
+    method: "GET",
+    url: "/api/checkout/start",
+    headers: { host: "sidestream.test", "x-forwarded-proto": "https" },
+  });
+  assert.equal(owner.response.statusCode, 302);
+  assert.match(owner.response.getHeader("location"), /checkout=already_owned/);
+  assert.equal(intentCalls, 1);
+  assert.equal(checkoutCalls, 1);
 
-  session = accountSession({ active: false });
-  const accepted = await invokeHandler(create, validPost());
-  assert.equal(accepted.response.statusCode, 303);
-  assert.equal(accepted.response.getHeader("location"), "https://checkout.stripe.test/session");
-  assert.equal(coreCalls, 1);
+  const [index, account, startSource] = await Promise.all([
+    readFile(join(repositoryRoot, "index.html"), "utf8"),
+    readFile(join(repositoryRoot, "account.html"), "utf8"),
+    readFile(join(repositoryRoot, "api", "checkout", "start.ts"), "utf8"),
+  ]);
+  assert.match(index, /href="\/api\/checkout\/start"/);
+  assert.match(account, /href="\/api\/checkout\/start"/);
+  assert.doesNotMatch(startSource, /text\/html|<form|<button/);
+  assert.doesNotMatch(stripComments(startSource), /\bgetStripe\s*\(/);
 });
 
 test("database-backed intents serialize retries, rotate deliberately, and fulfill once", {
@@ -278,21 +206,21 @@ test("database-backed intents serialize retries, rotate deliberately, and fulfil
       email: buyer.email,
       active: false,
     });
-    const confirmation = await account.createCheckoutIntentConfirmation({
+    const intent = await account.createCheckoutIntent({
       session: buyerSession,
     });
-    assert.ok(confirmation);
+    assert.ok(intent);
 
     const [first, second] = await Promise.all([
       account.createOrReuseCheckoutSession({
-        intentId: confirmation.intentId,
-        browserToken: confirmation.browserToken,
+        intentId: intent.intentId,
+        browserToken: intent.browserToken,
         session: buyerSession,
         baseUrl: BASE_URL,
       }),
       account.createOrReuseCheckoutSession({
-        intentId: confirmation.intentId,
-        browserToken: confirmation.browserToken,
+        intentId: intent.intentId,
+        browserToken: intent.browserToken,
         session: buyerSession,
         baseUrl: BASE_URL,
       }),
@@ -309,8 +237,8 @@ test("database-backed intents serialize retries, rotate deliberately, and fulfil
     );
     buyerSession.stripeCustomerId = persistedCustomer.rows[0].stripe_customer_id;
     const rotated = await account.createOrReuseCheckoutSession({
-      intentId: confirmation.intentId,
-      browserToken: confirmation.browserToken,
+      intentId: intent.intentId,
+      browserToken: intent.browserToken,
       session: buyerSession,
       baseUrl: BASE_URL,
       rotateCancelledSession: true,
@@ -324,42 +252,17 @@ test("database-backed intents serialize retries, rotate deliberately, and fulfil
       stripe.sessionCreateWrites[1].options.idempotencyKey,
     );
 
-    const anonymous = await account.createCheckoutIntentConfirmation({ session: null });
-    const anonymousFirst = await account.createOrReuseCheckoutSession({
-      intentId: anonymous.intentId,
-      browserToken: anonymous.browserToken,
-      session: null,
-      baseUrl: BASE_URL,
-    });
-    assert.equal(anonymousFirst.ok, true);
-    await databasePool.query(
-      `
-        update public.sidestream_checkout_intents
-        set stripe_session_expires_at = now() - interval '1 second'
-        where id = $1
-      `,
-      [anonymous.intentId],
-    );
-    const anonymousRotated = await account.createOrReuseCheckoutSession({
-      intentId: anonymous.intentId,
-      browserToken: anonymous.browserToken,
-      session: null,
-      baseUrl: BASE_URL,
-    });
-    assert.equal(anonymousRotated.ok, true);
-    assert.notEqual(anonymousRotated.url, anonymousFirst.url);
-
     const activationKey = "activation-checkout-intent-exact";
     await seedActivation(databasePool, activationKey);
-    const activationConfirmation = await account.createCheckoutIntentConfirmation({
+    const activationIntent = await account.createCheckoutIntent({
       activationKey,
-      session: null,
+      session: buyerSession,
     });
-    assert.ok(activationConfirmation);
+    assert.ok(activationIntent);
     const activationCheckout = await account.createOrReuseCheckoutSession({
-      intentId: activationConfirmation.intentId,
-      browserToken: activationConfirmation.browserToken,
-      session: null,
+      intentId: activationIntent.intentId,
+      browserToken: activationIntent.browserToken,
+      session: buyerSession,
       baseUrl: BASE_URL,
     });
     assert.equal(activationCheckout.ok, true);
@@ -419,29 +322,13 @@ test("database-backed intents serialize retries, rotate deliberately, and fulfil
         from public.sidestream_checkout_intents
         where id = $1
       `,
-      [activationConfirmation.intentId],
+      [activationIntent.intentId],
     );
     assert.deepEqual(fulfilledIntent.rows[0], {
       state: "completed",
       stripe_customer_id: activationWrite.session.customer,
     });
 
-    const accountSource = await readFile(
-      join(repositoryRoot, "api", "_lib", "account.ts"),
-      "utf8",
-    );
-    const migration = await readFile(
-      join(
-        repositoryRoot,
-        "db",
-        "migrations",
-        "20260713203000_add_checkout_intents.sql",
-      ),
-      "utf8",
-    );
-    assert.match(accountSource, /Anonymous Checkout cannot safely infer prior ownership/);
-    assert.match(accountSource, /does not prevent cross-browser purchases/);
-    assert.match(migration, /email Stripe has not collected and verified/);
   } finally {
     if (runtimeModules) {
       const postgresModule = await import(
@@ -625,29 +512,6 @@ class RecordingStripe {
   get sessionCreateWrites() {
     return this.writes.filter((entry) => entry.operation === "checkout.sessions.create");
   }
-}
-
-function validPost(options = {}) {
-  const origin = options.origin === undefined ? BASE_URL : options.origin;
-  const fetchSite = options.fetchSite || "same-origin";
-  const token = options.token === undefined ? "valid-token" : options.token;
-  return {
-    method: "POST",
-    url: "/api/checkout/create",
-    headers: {
-      host: "sidestream.test",
-      "x-forwarded-proto": "https",
-      origin,
-      "sec-fetch-site": fetchSite,
-      "content-type": "application/x-www-form-urlencoded",
-    },
-    body: new URLSearchParams({
-      checkoutIntentId: VALID_INTENT_ID,
-      checkoutIntent: "browser-capability",
-      intentToken: token,
-      intent: "purchase",
-    }).toString(),
-  };
 }
 
 function rateLimitResult(allowed) {
@@ -884,12 +748,6 @@ function restoreEnvironment(snapshot) {
 
 function cleanString(value, maxLength = 240) {
   return typeof value === "string" ? value.trim().slice(0, maxLength) : "";
-}
-
-async function readRequestBody(request) {
-  const chunks = [];
-  for await (const chunk of request) chunks.push(Buffer.from(chunk));
-  return Buffer.concat(chunks).toString("utf8");
 }
 
 function methodNotAllowed(response, allowedMethods) {

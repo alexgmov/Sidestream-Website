@@ -217,7 +217,7 @@ test("restore confirmation has one account-bound HMAC check after origin and for
   }), true);
 });
 
-test("OAuth next paths allow only account and restore confirmation routes", () => {
+test("OAuth next paths allow account, Checkout, and activation claim routes", () => {
   assert.equal(sanitizeAccountNextPath("/account.html?restore=1"), "/account.html?restore=1");
   assert.equal(
     sanitizeAccountNextPath("/api/activation/claim?activation=abc"),
@@ -226,7 +226,15 @@ test("OAuth next paths allow only account and restore confirmation routes", () =
   assert.equal(sanitizeAccountNextPath("/\\evil.example/path"), "/account.html");
   assert.equal(sanitizeAccountNextPath("/%5c%5cevil.example/path"), "/account.html");
   assert.equal(sanitizeAccountNextPath("//evil.example/path"), "/account.html");
-  assert.equal(sanitizeAccountNextPath("/api/checkout/start"), "/account.html");
+  assert.equal(sanitizeAccountNextPath("/api/checkout/start"), "/api/checkout/start");
+  assert.equal(
+    sanitizeAccountNextPath("/api/checkout/start?activation=abc"),
+    "/api/checkout/start?activation=abc",
+  );
+  assert.equal(
+    sanitizeAccountNextPath("/api/checkout/start?checkout=cancelled"),
+    "/account.html",
+  );
 });
 
 test("OAuth redirect origins must match the browser-facing start origin", () => {
@@ -278,20 +286,18 @@ test("legacy clients through 1.0.13 receive compatibility replay and rolling acc
   assert.equal(needsLegacyLicenseCompatibility("unknown"), false);
 });
 
-test("legacy-host bare Checkout fails safe before Stripe", async () => {
+test("legacy-host Checkout redirects to the canonical authenticated route", async () => {
   assert.equal(isLegacyVercelHost("sidestream-xi.vercel.app"), true);
   assert.equal(isLegacyVercelHost("sidestream-xi.vercel.app:443"), true);
   assert.equal(isLegacyVercelHost("sidestream.tv"), false);
 
   const checkoutSource = await readFile(new URL("../api/checkout/start.ts", import.meta.url), "utf8");
-  const upgradeSource = await readFile(new URL("../upgrade.html", import.meta.url), "utf8");
   const guardIndex = checkoutSource.indexOf("isLegacyVercelHost(request.headers.host)");
-  const stripeIndex = checkoutSource.indexOf("const stripe = getStripe()");
-  assert.ok(guardIndex >= 0 && guardIndex < stripeIndex);
-  assert.match(checkoutSource, /checkout.*activation_required/s);
-  assert.match(upgradeSource, /checkoutState === "activation_required"/);
-  assert.match(upgradeSource, /checkoutLink\.hidden = true/);
-  assert.match(upgradeSource, /You have not been charged/);
+  const sessionIndex = checkoutSource.indexOf("const session = await getSession(request)");
+  assert.ok(guardIndex >= 0 && sessionIndex > guardIndex);
+  assert.match(checkoutSource, /canonicalCheckout/);
+  assert.match(checkoutSource, /\/api\/auth\/google\/start/);
+  assert.doesNotMatch(checkoutSource, /text\/html|<form|<button/);
 });
 
 test("unlinked paid buyers receive a no-second-charge recovery path", async () => {
@@ -314,15 +320,17 @@ test("paid completion grace is database-bounded and unpaid Sessions fail verific
   ).ok, false);
 });
 
-test("both Checkout routes attach instead of pre-binding attacker activation links", async () => {
-  for (const route of ["../api/checkout/start.ts", "../api/checkout/create.ts"]) {
-    const source = await readFile(new URL(route, import.meta.url), "utf8");
-    assert.doesNotMatch(source, /bindActivationToAccount/);
-    assert.match(source, /attachCheckoutSessionToActivation/);
-    assert.match(source, /getActivationCheckoutIdempotencyKey/);
-    assert.match(source, /license\.active/);
-    assert.match(source, /\/api\/activation\/claim/);
-  }
+test("Checkout attaches the activation only inside the locked intent worker", async () => {
+  const [route, account] = await Promise.all([
+    readFile(new URL("../api/checkout/start.ts", import.meta.url), "utf8"),
+    readFile(new URL("../api/_lib/account.ts", import.meta.url), "utf8"),
+  ]);
+  assert.doesNotMatch(route, /bindActivationToAccount/);
+  assert.match(route, /createOrReuseCheckoutSession/);
+  assert.match(route, /license\.active/);
+  assert.match(route, /\/api\/activation\/claim/);
+  assert.match(account, /attachCheckoutSessionToActivation/);
+  assert.match(account, /getCheckoutSessionIdempotencyKey/);
 });
 
 test("account implementation bounds status replay and uses locked refresh/fulfillment CAS", async () => {

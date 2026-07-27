@@ -435,7 +435,6 @@ test("OAuth start and callback collapse every unsafe next path to the account ro
     ["encoded backslash", "/%5Cattacker.example/path"],
     ["CRLF", "/account.html%0D%0AX-Injected:yes"],
     ["double encoding", "%2F%2Fattacker.example/path"],
-    ["unrelated route", "/api/checkout/start"],
   ];
 
   for (const [label, nextPath] of rejected) {
@@ -467,6 +466,13 @@ test("OAuth start and callback collapse every unsafe next path to the account ro
     url: `/api/auth/google/callback?state=${encodeURIComponent(harness.oauth.state)}&code=valid`,
   });
   assert.equal(allowedCallback.response.getHeader("location"), allowedPath);
+
+  const checkoutPath = "/api/checkout/start?activation=activation-safe";
+  await invokeHandler(start, {
+    method: "GET",
+    url: `/api/auth/google/start?next=${encodeURIComponent(checkoutPath)}`,
+  });
+  assert.equal(harness.oauth.nextPath, checkoutPath);
 });
 
 test("OAuth start reuses an active server session without sending the user through Google", async () => {

@@ -11,7 +11,6 @@ import {
   type CanonicalOneTimePaymentFacts,
   type CheckoutIntentKind,
   type CredentialDeviceScope,
-  createCheckoutIntentToken,
   createClaimCsrfToken,
   deriveActivationTokenPair,
   deriveRefreshRotationTokens,
@@ -30,7 +29,6 @@ import {
   matchesDeviceHash,
   safeEqual,
   sanitizeAccountNextPath,
-  validateCheckoutIntentToken,
   validateActivationClaimPost,
   validateClaimCsrfToken,
   verifyPaidCheckoutSession,
@@ -82,7 +80,6 @@ const LEGACY_LICENSE_TOKEN_TTL_DAYS = 365;
 const REFRESH_TOKEN_TTL_DAYS = 365;
 const ACTIVATION_RECONCILIATION_COOLDOWN_SECONDS = 5;
 const ACTIVATION_CLAIM_CSRF_TTL_SECONDS = 10 * 60;
-const CHECKOUT_INTENT_CSRF_TTL_SECONDS = 10 * 60;
 const CHECKOUT_INTENT_TTL_HOURS = 24;
 const ACTIVATION_TOKEN_REPLAY_SECONDS = 10 * 60;
 const MAX_BODY_BYTES = 64 * 1024;
@@ -155,16 +152,12 @@ export type LicenseSummary = {
   features: Record<string, unknown>;
 };
 
-export type CheckoutIntentConfirmation = {
+export type CheckoutIntent = {
   intentId: string;
   browserToken: string;
-  signedToken: string;
-  signedTokenExpiresAt: string;
   intentExpiresAt: string;
   kind: CheckoutIntentKind;
   activationKey: string;
-  state: string;
-  hasCheckoutSession: boolean;
 };
 
 export type CheckoutIntentResult =
@@ -771,22 +764,22 @@ type CheckoutIntentRow = {
   activation_checkout_session_id: string | null;
 };
 
-export async function createCheckoutIntentConfirmation(options: {
+export async function createCheckoutIntent(options: {
   activationKey?: string;
-  session?: AccountSession | null;
+  session: AccountSession;
   now?: Date;
-}): Promise<CheckoutIntentConfirmation | null> {
-  if (options.session?.license.active) return null;
+}): Promise<CheckoutIntent | null> {
+  if (options.session.license.active) return null;
 
   const now = options.now || new Date();
   const activationKey = cleanString(options.activationKey, 160);
   const kind: CheckoutIntentKind = activationKey
     ? "activation"
-    : options.session ? "account" : "anonymous";
+    : "account";
   const intentId = randomUUID();
   const browserToken = randomToken(32);
   const expiresAt = addHours(now, CHECKOUT_INTENT_TTL_HOURS);
-  const accountId = options.session?.accountId || null;
+  const accountId = options.session.accountId;
   const result = activationKey
     ? await query<{ id: string }>(
         `
@@ -838,78 +831,12 @@ export async function createCheckoutIntentConfirmation(options: {
       );
   if (!result.rows[0]) return null;
 
-  return buildCheckoutIntentConfirmation({
+  return buildCheckoutIntent({
     intentId,
     browserToken,
     intentExpiresAt: expiresAt,
     kind,
     activationKey,
-    state: "pending",
-    hasCheckoutSession: false,
-    now,
-  });
-}
-
-export async function resumeCheckoutIntentConfirmation(options: {
-  browserToken: string;
-  session?: AccountSession | null;
-  now?: Date;
-}): Promise<CheckoutIntentConfirmation | null> {
-  const browserToken = cleanString(options.browserToken, 160);
-  if (!browserToken) return null;
-  const now = options.now || new Date();
-  const result = await query<CheckoutIntentRow>(
-    `
-      select ci.id, ci.intent_kind, ci.account_id, ci.activation_session_id,
-        ci.state, ci.attempt, ci.stripe_customer_id,
-        ci.stripe_checkout_session_id, ci.stripe_checkout_url,
-        ci.stripe_price_id, ci.stripe_product_id,
-        ci.stripe_session_expires_at, ci.expires_at,
-        a.activation_key, a.expires_at as activation_expires_at,
-        a.stripe_checkout_session_id as activation_checkout_session_id
-      from public.sidestream_checkout_intents ci
-      left join public.sidestream_activation_sessions a
-        on a.id = ci.activation_session_id
-      where ci.browser_token_hash = $1
-        and ci.expires_at > $2::timestamptz
-      limit 1
-    `,
-    [hashToken(browserToken), now.toISOString()],
-  );
-  const row = result.rows[0];
-  if (!row) return null;
-  if (row.account_id && row.account_id !== options.session?.accountId) return null;
-  if (
-    row.intent_kind === "activation" &&
-    (!row.activation_key ||
-      !row.activation_expires_at ||
-      new Date(row.activation_expires_at).getTime() <= now.getTime())
-  ) return null;
-
-  return buildCheckoutIntentConfirmation({
-    intentId: row.id,
-    browserToken,
-    intentExpiresAt: new Date(row.expires_at),
-    kind: row.intent_kind,
-    activationKey: row.activation_key || "",
-    state: row.state,
-    hasCheckoutSession: Boolean(row.stripe_checkout_session_id),
-    now,
-  });
-}
-
-export function validateCheckoutIntentConfirmation(options: {
-  intentId: string;
-  browserToken: string;
-  signedToken: string;
-  now?: Date;
-}) {
-  return validateCheckoutIntentToken({
-    intentId: options.intentId,
-    browserToken: options.browserToken,
-    token: options.signedToken,
-    nowSeconds: Math.floor((options.now || new Date()).getTime() / 1_000),
-    secret: getPrivateServerSecret(),
   });
 }
 
@@ -948,7 +875,7 @@ export async function createOrReuseCheckoutSession(options: {
       if (!row) {
         return commitCheckoutIntentResult(client, checkoutIntentError(
           409,
-          "Checkout confirmation expired",
+          "Checkout request expired",
           "intent_expired",
         ));
       }
@@ -963,14 +890,14 @@ export async function createOrReuseCheckoutSession(options: {
         );
         return commitCheckoutIntentResult(client, checkoutIntentError(
           409,
-          "Checkout confirmation expired",
+          "Checkout request expired",
           "intent_expired",
         ));
       }
       if (row.account_id && row.account_id !== options.session?.accountId) {
         return commitCheckoutIntentResult(client, checkoutIntentError(
           403,
-          "Checkout confirmation does not belong to this account",
+          "Checkout request does not belong to this account",
           "intent_account_mismatch",
         ));
       }
@@ -1177,9 +1104,8 @@ export async function createOrReuseCheckoutSession(options: {
       const stripeCustomerId = row.intent_kind === "account" && options.session
         ? await findOrCreateStripeCustomer(options.session, client)
         : "";
-      const cancelUrl = new URL("/api/checkout/start", options.baseUrl);
+      const cancelUrl = new URL("/account.html", options.baseUrl);
       cancelUrl.searchParams.set("checkout", "cancelled");
-      cancelUrl.searchParams.set("intent", options.browserToken);
       const metadata: Record<string, string> = {
         sidestream_plan: SIDESTREAM_PRO_PLAN_KEY,
         sidestream_price_id: stripePriceId,
@@ -1190,9 +1116,6 @@ export async function createOrReuseCheckoutSession(options: {
       }
       if (activationKey) metadata.sidestream_activation_key = activationKey;
 
-      // Anonymous Checkout cannot safely infer prior ownership from an email
-      // that Stripe has not collected and verified yet. Intent idempotency
-      // prevents retry duplicates; it does not prevent cross-browser purchases.
       const checkoutWindow = activationExpiresAt
         ? getStripeCheckoutWindow(
             activationExpiresAt.getTime(),
@@ -1293,35 +1216,19 @@ export async function createOrReuseCheckoutSession(options: {
   });
 }
 
-function buildCheckoutIntentConfirmation(options: {
+function buildCheckoutIntent(options: {
   intentId: string;
   browserToken: string;
   intentExpiresAt: Date;
   kind: CheckoutIntentKind;
   activationKey: string;
-  state: string;
-  hasCheckoutSession: boolean;
-  now: Date;
-}): CheckoutIntentConfirmation {
-  const signedTokenExpiresAt = addSeconds(
-    options.now,
-    CHECKOUT_INTENT_CSRF_TTL_SECONDS,
-  );
+}): CheckoutIntent {
   return {
     intentId: options.intentId,
     browserToken: options.browserToken,
-    signedToken: createCheckoutIntentToken({
-      intentId: options.intentId,
-      browserToken: options.browserToken,
-      expiresAtSeconds: Math.floor(signedTokenExpiresAt.getTime() / 1_000),
-      secret: getPrivateServerSecret(),
-    }),
-    signedTokenExpiresAt: signedTokenExpiresAt.toISOString(),
     intentExpiresAt: options.intentExpiresAt.toISOString(),
     kind: options.kind,
     activationKey: options.activationKey,
-    state: options.state,
-    hasCheckoutSession: options.hasCheckoutSession,
   };
 }
 
