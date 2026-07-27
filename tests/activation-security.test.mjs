@@ -815,6 +815,12 @@ async function loadRuntimeModules() {
       join(repositoryRoot, "api", "_lib", "maintenance.ts"),
       { "./postgres.js": helperImports["./postgres.js"] },
     );
+    helperImports["./paid-acquisition.js"] = await writeRouteModule(
+      temporaryModuleDirectory,
+      "paid-acquisition",
+      join(repositoryRoot, "api", "_lib", "paid-acquisition.ts"),
+      { "./postgres.js": helperImports["./postgres.js"] },
+    );
     let accountSource = await readFile(accountSourcePath, "utf8");
     accountSource = replaceImports(accountSource, helperImports);
     accountSource += `
@@ -846,7 +852,10 @@ export function __setActivationSecurityStripeClient(value: Stripe | null) {
     temporaryModuleDirectory,
     "status",
     join(repositoryRoot, "api", "activation", "status.ts"),
-    { "../_lib/account.js": accountModuleUrl },
+    {
+      "../_lib/account.js": accountModuleUrl,
+      "../_lib/paid-acquisition.js": helperImports["./paid-acquisition.js"],
+    },
   );
 
     const nonce = randomUUID();
