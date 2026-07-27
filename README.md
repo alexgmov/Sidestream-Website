@@ -566,7 +566,8 @@ npm run verify:checkout-contract
 The supported Production command requires a clean local commit equal to remote
 `origin/main`, verifies the immutable checkout baselines and exact linked Vercel
 project, runs the focused entitlement suite, builds the Production artifact,
-checks its bundled checkout handlers, and deploys that prebuilt artifact:
+checks its bundled Google/Stripe handlers and root-page allowlist, and deploys
+that prebuilt artifact:
 
 ```bash
 npm run deploy:production

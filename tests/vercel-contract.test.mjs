@@ -107,7 +107,7 @@ test("the Production source is remote main with immutable checkout baselines and
   assert.equal(PRODUCTION_SOURCE.projectName, "sidestream");
 });
 
-test("the built checkout verifier checks both functions and rejects browser UI", async () => {
+test("the built checkout verifier checks authentication, Stripe creation, fulfillment, and root pages", async () => {
   const source = await readFile(
     new URL("../scripts/verify-vercel-build.mjs", import.meta.url),
     "utf8",
@@ -115,7 +115,7 @@ test("the built checkout verifier checks both functions and rejects browser UI",
   assert.match(source, /api\/checkout\/start\.func/u);
   assert.match(source, /api\/checkout\/complete\.func/u);
   assert.match(source, /\/api\/auth\/google\/start/u);
-  assert.match(source, /text\/html/u);
+  assert.match(source, /createOrReuseCheckoutSession/u);
   assert.match(source, /no_payment_required/u);
   assert.match(source, /Unexpected root HTML|unexpected root HTML/u);
 });

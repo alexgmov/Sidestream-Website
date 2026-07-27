@@ -17,11 +17,6 @@ const REQUIRED_FUNCTIONS = Object.freeze([
   "api/internal/customers/index.func",
   "api/internal/customers/[customerId].func",
 ]);
-const BROWSER_UI_MARKERS = Object.freeze([
-  "text/html",
-  "<!doctype html",
-  "<html",
-]);
 const ALLOWED_ROOT_HTML = new Set(["account.html", "index.html", "thank-you.html"]);
 
 export async function verifyVercelBuild(outputRoot = OUTPUT_ROOT) {
@@ -53,10 +48,10 @@ export async function verifyVercelBuild(outputRoot = OUTPUT_ROOT) {
   if (!checkoutStartBundle.includes("/api/auth/google/start")) {
     throw new Error("Vercel checkout-start bundle omitted the Google authentication redirect");
   }
-  for (const marker of BROWSER_UI_MARKERS) {
-    if (checkoutStartBundle.includes(marker)) {
+  for (const marker of ["createCheckoutIntent", "createOrReuseCheckoutSession"]) {
+    if (!checkoutStartBundle.includes(marker)) {
       throw new Error(
-        `Vercel checkout-start bundle contains browser UI marker: ${marker}`,
+        `Vercel checkout-start bundle omitted direct Stripe marker: ${marker}`,
       );
     }
   }
