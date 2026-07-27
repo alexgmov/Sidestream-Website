@@ -712,6 +712,7 @@ Use the narrowest relevant check after edits:
 
 ## Recent Change Log
 
+- 2026-07-26: Added a tiny paint-only lower buffer to the animated hero nouns so the `g` descender in “songs” renders fully without changing the headline layout or animation.
 - 2026-07-26: Made Upgrade a single server-owned sequence: Upgrade button, Google authentication, Stripe payment. `/api/checkout/start` now creates the locked Checkout intent and redirects the authenticated Free account to Stripe; activation claims route Free accounts into the same endpoint.
 - 2026-07-26: Restored the screenshot-matched computer-handoff buttons as white Mac and Windows platform capsules inside a dark panel, including the red hover state and CID Windows mark, while retaining the `STREAM20` offer and all surrounding email content.
 - 2026-07-26: Added the short `https://sidestream.tv/mc` ManyChat link and first-party landing-referral attribution through a privacy-limited API, daily private-Blob dedupe, likely-scanner separation, and a read-only aggregate report.
