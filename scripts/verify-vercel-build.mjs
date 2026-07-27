@@ -7,6 +7,7 @@ import { pathToFileURL } from "node:url";
 const OUTPUT_ROOT = path.resolve(".vercel/output");
 const REQUIRED_FUNCTIONS = Object.freeze([
   "api/download.func",
+  "api/resolve-waitlist.func",
   "api/releases/latest.func",
   "api/internal/stripe-events/process.func",
   "api/internal/download-leads/replay.func",
@@ -14,6 +15,11 @@ const REQUIRED_FUNCTIONS = Object.freeze([
   "api/internal/customer-usage/sync.func",
   "api/internal/customers/index.func",
   "api/internal/customers/[customerId].func",
+]);
+const REQUIRED_INDEX_MARKERS = Object.freeze([
+  ["Resolve waitlist CTA", "data-resolve-waitlist-open"],
+  ["Resolve waitlist modal", 'id="resolve-waitlist-gate"'],
+  ["Resolve waitlist browser route", 'fetch("/api/resolve-waitlist"'],
 ]);
 
 export async function verifyVercelBuild(outputRoot = OUTPUT_ROOT) {
@@ -45,7 +51,23 @@ export async function verifyVercelBuild(outputRoot = OUTPUT_ROOT) {
       throw new Error(`Vercel build omitted ${manifest} from the function bundles`);
     }
   }
-  return { functions: REQUIRED_FUNCTIONS.length, manifests: 2 };
+
+  const indexPath = path.join(outputRoot, "static", "index.html");
+  const indexHtml = await readFile(indexPath, "utf8").catch(() => null);
+  if (indexHtml === null) {
+    throw new Error("Vercel build omitted static/index.html");
+  }
+  for (const [label, marker] of REQUIRED_INDEX_MARKERS) {
+    if (!indexHtml.includes(marker)) {
+      throw new Error(`Vercel build omitted ${label}`);
+    }
+  }
+
+  return {
+    functions: REQUIRED_FUNCTIONS.length,
+    manifests: 2,
+    indexMarkers: REQUIRED_INDEX_MARKERS.length,
+  };
 }
 
 async function listFiles(directory) {
@@ -66,7 +88,7 @@ async function main() {
   }
   const result = await verifyVercelBuild();
   console.log(
-    `PASS: human-built Vercel output contains ${result.functions} functions and ${result.manifests} release manifests.`,
+    `PASS: human-built Vercel output contains ${result.functions} functions, ${result.manifests} release manifests, and ${result.indexMarkers} required landing-page markers.`,
   );
 }
 

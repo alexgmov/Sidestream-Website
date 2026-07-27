@@ -31,14 +31,30 @@ test("customer list and detail are protected on-demand admin routes, never crons
   assert.equal(result.crons, 4);
 });
 
-test("the human-only bundle verifier requires both customer functions", async () => {
+test("the human-only bundle verifier requires customer, Resolve API, and Resolve UI surfaces", async () => {
   const source = await readFile(
     new URL("../scripts/verify-vercel-build.mjs", import.meta.url),
     "utf8",
   );
   assert.match(source, /api\/internal\/customers\/index\.func/);
   assert.match(source, /api\/internal\/customers\/\[customerId\]\.func/);
+  assert.match(source, /api\/resolve-waitlist\.func/);
+  assert.match(source, /data-resolve-waitlist-open/);
+  assert.match(source, /resolve-waitlist-gate/);
+  assert.match(source, /fetch\("\/api\/resolve-waitlist"/);
   assert.match(source, /A human must run `npx vercel build` first/);
+});
+
+test("the production source verifier pins the canonical release branch and Vercel project", async () => {
+  const source = await readFile(
+    new URL("../scripts/verify-production-source.mjs", import.meta.url),
+    "utf8",
+  );
+  assert.match(source, /codex\/release-1\.0\.14/);
+  assert.match(source, /prj_x9sRcnoAAfF6VPxseJYLBgxhhPyh/);
+  assert.match(source, /team_ZcKImJwvlcCrE15nTEOWT2NC/);
+  assert.match(source, /Production deployment requires a clean worktree/);
+  assert.match(source, /must exactly match/);
 });
 
 test("missing and incorrect CRON_SECRET authorization is rejected by every internal route", async () => {
