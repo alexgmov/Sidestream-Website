@@ -1767,6 +1767,25 @@
       };
     }
 
+    function recordReferralVisit() {
+      const source = new URLSearchParams(window.location.search)
+        .get("utm_source")
+        ?.trim()
+        .toLowerCase();
+      if (source !== "manychat") return;
+
+      fetch("/api/referral-visit", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ source }),
+        keepalive: true
+      }).catch(() => {
+        // Analytics must never interrupt the landing page.
+      });
+    }
+
+    recordReferralVisit();
+
     function focusMobileDownloadForm() {
       if (!mobileDownloadForm || !mobileDownloadInput) return;
       mobileDownloadForm.scrollIntoView({ behavior: reduceMotion ? "auto" : "smooth", block: "center" });
