@@ -116,6 +116,34 @@ value sanitizes to empty and returns `404`, as does every other final value.
 `/api/download` does not read this parameter. This permissive stripping behavior
 is current implementation truth, not a recommended new parser contract.
 
+## Paid `/mc` experiment boundary
+
+The paid-acquisition implementation is additive and default-off. `/m` and `/m/`
+remain unchanged Vercel redirects. Only exact top-level mobile `GET /mc` is
+eligible for middleware assignment; `/mc/`, `HEAD`, non-document requests,
+desktop/tablet/bot/prefetch traffic, and uncertain evidence use the unchanged
+ManyChat root fallback.
+
+`SIDESTREAM_PAID_ACQUISITION_ASSIGNMENT_SECRET` must be at least 32 UTF-8 bytes.
+Missing, short, or invalid configuration must return only that fallback, without
+a cohort cookie, paid database write, Checkout, email, artifact, activation, or
+entitlement. Paid provider delivery is separately off unless
+`SIDESTREAM_PAID_ACQUISITION_EMAIL_ENABLED` is exactly `1`.
+
+The namespaced surfaces are `GET /api/paid-acquisition/landing`,
+`POST /api/paid-acquisition/checkout`, `GET /api/paid-acquisition/artifact`,
+`GET /api/paid-acquisition/claim`, `GET|HEAD /api/paid-download`, and
+`GET|HEAD /api/releases/paid-latest`. The paid Checkout request accepts only a
+server-issued entry token and UUID idempotency key; Stripe retrieval and the
+existing fulfillment verifier own Product, Price, quantity, amount, currency,
+customer, and entitlement truth. The paid path additionally rejects zero-total
+or discounted completion and requires exact paid USD 999 facts.
+
+The detailed endpoint, record, receipt, claim, privacy, and Test-only release
+contracts live in `docs/paid-acquisition-contract.md` and
+`docs/paid-acquisition-runbook.md`. Their presence is not migration,
+configuration, artifact, provider, deployment, or Production authorization.
+
 ## Checkout, activation, and entitlement lifecycle
 
 ### Upgrade payment flow

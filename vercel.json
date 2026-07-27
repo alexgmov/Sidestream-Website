@@ -35,16 +35,6 @@
       "permanent": false
     },
     {
-      "source": "/mc",
-      "destination": "https://sidestream.tv/?utm_source=manychat",
-      "permanent": false
-    },
-    {
-      "source": "/mc/",
-      "destination": "https://sidestream.tv/?utm_source=manychat",
-      "permanent": false
-    },
-    {
       "source": "/index.html",
       "destination": "https://sidestream.tv/",
       "permanent": true
