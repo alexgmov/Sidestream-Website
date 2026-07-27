@@ -19,6 +19,9 @@ export type CheckoutSessionLike = {
   mode?: unknown;
   status?: unknown;
   payment_status?: unknown;
+  payment_intent?: unknown;
+  amount_total?: unknown;
+  currency?: unknown;
   metadata?: Record<string, unknown> | null;
   line_items?: {
     data?: Array<{
@@ -35,6 +38,19 @@ export type CheckoutSessionLike = {
 export type CheckoutVerification =
   | { ok: true }
   | { ok: false; reason: string };
+
+export function isZeroTotalCheckoutWithoutPaymentIntent(
+  session: CheckoutSessionLike,
+) {
+  const currency = stringId(session.currency).toLowerCase();
+  return (
+    !stringId(session.payment_intent) &&
+    (session.payment_status === "paid" ||
+      session.payment_status === "no_payment_required") &&
+    session.amount_total === 0 &&
+    /^[a-z]{3}$/.test(currency)
+  );
+}
 
 export const CANONICAL_PAID_PLAN_KEYS = [
   "sidestream_pro",

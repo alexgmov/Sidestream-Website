@@ -21,6 +21,7 @@ import {
   hasSameOrigin,
   isActivationClaimReplay,
   isCanonicalLicenseEntitlementUsable,
+  isZeroTotalCheckoutWithoutPaymentIntent,
   needsLegacyLicenseCompatibility,
   isActivationTokenReplayAllowed,
   parseStripeIdAllowlist,
@@ -3295,11 +3296,7 @@ async function retrieveCanonicalCheckoutPayment(
   const paymentIntentId = normalizeStripeId(checkoutSession.payment_intent);
   const currency = cleanString(checkoutSession.currency, 3).toLowerCase();
   if (!paymentIntentId) {
-    if (
-      checkoutSession.payment_status !== "no_payment_required" ||
-      checkoutSession.amount_total !== 0 ||
-      !/^[a-z]{3}$/.test(currency)
-    ) {
+    if (!isZeroTotalCheckoutWithoutPaymentIntent(checkoutSession)) {
       return { ok: false as const, reason: "missing_payment_intent" };
     }
     return {

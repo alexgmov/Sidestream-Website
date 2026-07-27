@@ -13,6 +13,7 @@ import {
   isLegacyVercelHost,
   isActivationClaimReplay,
   isActivationTokenReplayAllowed,
+  isZeroTotalCheckoutWithoutPaymentIntent,
   matchesDeviceHash,
   needsLegacyLicenseCompatibility,
   sanitizeAccountNextPath,
@@ -111,6 +112,33 @@ test("only the exact attached paid Session, Price, Product, and quantity verifie
   ];
   for (const [session, reason] of rejected) {
     assert.equal(verifyPaidCheckoutSession(session, checkoutExpectation).reason, reason);
+  }
+});
+
+test("zero-total Checkout accepts Stripe's current and legacy settled statuses", () => {
+  const zeroTotalCheckout = {
+    payment_intent: null,
+    payment_status: "paid",
+    amount_total: 0,
+    currency: "USD",
+  };
+  assert.equal(isZeroTotalCheckoutWithoutPaymentIntent(zeroTotalCheckout), true);
+  assert.equal(
+    isZeroTotalCheckoutWithoutPaymentIntent({
+      ...zeroTotalCheckout,
+      payment_status: "no_payment_required",
+    }),
+    true,
+  );
+
+  const rejected = [
+    { ...zeroTotalCheckout, payment_status: "unpaid" },
+    { ...zeroTotalCheckout, amount_total: 1 },
+    { ...zeroTotalCheckout, currency: "" },
+    { ...zeroTotalCheckout, payment_intent: "pi_unexpected" },
+  ];
+  for (const checkout of rejected) {
+    assert.equal(isZeroTotalCheckoutWithoutPaymentIntent(checkout), false);
   }
 });
 
