@@ -449,8 +449,20 @@ test("mobile download email builder sends both stable installers through Resend"
   assert.deepEqual(message.to, ["person@example.com"]);
   assert.match(message.html, /Download for Mac/);
   assert.match(message.html, /Download for Windows/);
+  assert.match(message.html, /Save 20% on Sidestream Pro with code/);
+  assert.match(message.html, /STREAM20/);
+  assert.equal((message.html.match(/border-radius:10px/g) || []).length, 2);
+  assert.match(message.html, /class="download-link-primary"/);
+  assert.match(message.html, /background:#111827;color:#ffffff/);
+  assert.match(message.html, /\.download-link-primary:hover \{ background:#374151 !important; \}/);
+  assert.match(message.html, /class="download-link-secondary"/);
+  assert.match(message.html, /background:#ffffff;color:#111827;border:1px solid #d4d4d8/);
+  assert.match(message.html, /\.download-link-secondary:hover \{ background:#f4f4f5 !important; border-color:#a1a1aa !important; \}/);
+  assert.doesNotMatch(message.html, /download-panel|windows-mark|border-radius:999px/);
+  assert.equal(message.attachments, undefined);
   assert.match(message.text, /platform=win32-x64/);
   assert.match(message.text, /utm_source=mobile_handoff/);
+  assert.match(message.text, /Save 20% on Sidestream Pro with code STREAM20\./);
 });
 
 test("mobile download route requires idempotency and fails closed without durable rate limiting", async () => {

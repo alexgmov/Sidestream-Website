@@ -2,6 +2,7 @@ const RESEND_SEND_ENDPOINT = "https://api.resend.com/emails";
 const DEFAULT_FROM = "Sidestream <downloads@alexg.mov>";
 const DEFAULT_REPLY_TO = "alex@alexg.mov";
 const EMAIL_SUBJECT = "Your Sidestream download links";
+const DISCOUNT_CODE = "STREAM20";
 
 export const MAC_DOWNLOAD_URL =
   "https://sidestream.tv/api/download?utm_source=mobile_handoff&utm_medium=email&utm_campaign=mobile_download_link&utm_content=mac";
@@ -134,17 +135,28 @@ function buildHtmlBody() {
   const windowsUrl = WINDOWS_DOWNLOAD_URL.replaceAll("&", "&amp;");
   return `<!doctype html>
 <html lang="en">
+  <head>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+      .download-link-primary:hover { background:#374151 !important; }
+      .download-link-secondary:hover { background:#f4f4f5 !important; border-color:#a1a1aa !important; }
+      @media screen and (max-width:520px) {
+        .email-card { padding:24px !important; }
+      }
+    </style>
+  </head>
   <body style="margin:0;background:#f4f4f5;color:#111827;font-family:Arial,Helvetica,sans-serif;">
     <div style="display:none;max-height:0;overflow:hidden;opacity:0;">Download Sidestream for Mac or Windows.</div>
     <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#f4f4f5;padding:32px 16px;">
       <tr>
         <td align="center">
-          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:560px;background:#ffffff;border:1px solid #e4e4e7;border-radius:18px;padding:36px;">
+          <table class="email-card" role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:560px;background:#ffffff;border:1px solid #e4e4e7;border-radius:18px;padding:36px;">
             <tr><td style="font-size:13px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#71717a;">Sidestream</td></tr>
             <tr><td style="padding-top:14px;font-size:28px;font-weight:700;line-height:1.15;">Your download links</td></tr>
             <tr><td style="padding-top:12px;font-size:16px;line-height:1.55;color:#52525b;">You asked us to send Sidestream to your computer. Choose the installer you need.</td></tr>
-            <tr><td style="padding-top:26px;"><a href="${macUrl}" style="display:block;padding:15px 20px;border-radius:10px;background:#111827;color:#ffffff;text-align:center;text-decoration:none;font-size:16px;font-weight:700;">Download for Mac</a></td></tr>
-            <tr><td style="padding-top:12px;"><a href="${windowsUrl}" style="display:block;padding:15px 20px;border-radius:10px;background:#ffffff;color:#111827;border:1px solid #d4d4d8;text-align:center;text-decoration:none;font-size:16px;font-weight:700;">Download for Windows</a></td></tr>
+            <tr><td style="padding-top:16px;font-size:15px;line-height:1.5;color:#27272a;">Save 20% on Sidestream Pro with code <strong style="font-family:Arial,Helvetica,sans-serif;letter-spacing:.05em;">${DISCOUNT_CODE}</strong>.</td></tr>
+            <tr><td style="padding-top:26px;"><a class="download-link-primary" href="${macUrl}" aria-label="Download Sidestream for Mac" style="display:block;padding:15px 20px;border-radius:10px;background:#111827;color:#ffffff;text-align:center;text-decoration:none;font-size:16px;font-weight:700;">Download for Mac</a></td></tr>
+            <tr><td style="padding-top:12px;"><a class="download-link-secondary" href="${windowsUrl}" aria-label="Download Sidestream for Windows" style="display:block;padding:15px 20px;border-radius:10px;background:#ffffff;color:#111827;border:1px solid #d4d4d8;text-align:center;text-decoration:none;font-size:16px;font-weight:700;">Download for Windows</a></td></tr>
             <tr><td style="padding-top:26px;font-size:13px;line-height:1.5;color:#71717a;">You received this one-time email because someone entered this address on sidestream.tv.</td></tr>
           </table>
         </td>
@@ -158,6 +170,8 @@ function buildTextBody() {
   return `Your Sidestream download links
 
 You asked us to send Sidestream to your computer. Choose the installer you need.
+
+Save 20% on Sidestream Pro with code ${DISCOUNT_CODE}.
 
 Download for Mac:
 ${MAC_DOWNLOAD_URL}
