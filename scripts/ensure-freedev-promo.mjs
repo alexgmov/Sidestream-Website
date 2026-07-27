@@ -10,7 +10,7 @@ const PROMO_CODE = normalizePromotionCode(
 );
 const COUPON_ID = process.env.SIDESTREAM_FREEDEV_COUPON_ID ||
   "sidestream_freedev_100";
-const PRICE_LOOKUP_KEY = "sidestream_pro_once_999";
+const PRICE_LOOKUP_KEY = "sidestream_pro_once_1499";
 const SIDESTREAM_PRO_DEFAULT_PRODUCT_ID = "prod_UpwXh6oO1OmPyQ";
 const allowLive = process.argv.includes("--allow-live");
 const replace = process.argv.includes("--replace");
