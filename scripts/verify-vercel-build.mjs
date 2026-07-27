@@ -25,6 +25,20 @@ const REQUIRED_INDEX_MARKERS = Object.freeze([
   ["After Effects waitlist modal", 'id="after-effects-waitlist-gate"'],
   ["After Effects waitlist browser route", 'fetch("/api/after-effects-waitlist"'],
 ]);
+const REQUIRED_REDIRECTS = Object.freeze([
+  {
+    label: "Instagram bio redirect",
+    src: "^/ig$",
+    status: 307,
+    location: "https://sidestream.tv/?utm_source=instagram&utm_medium=social&utm_campaign=bio",
+  },
+  {
+    label: "ManyChat redirect",
+    src: "^/m$",
+    status: 307,
+    location: "https://sidestream.tv/?utm_source=manychat",
+  },
+]);
 
 export async function verifyVercelBuild(outputRoot = OUTPUT_ROOT) {
   const configPath = path.join(outputRoot, "config.json");
@@ -39,6 +53,15 @@ export async function verifyVercelBuild(outputRoot = OUTPUT_ROOT) {
   }
   if (!config || typeof config !== "object") {
     throw new Error("Vercel build output config is invalid");
+  }
+  for (const required of REQUIRED_REDIRECTS) {
+    const route = config.routes?.find((candidate) => candidate?.src === required.src);
+    if (
+      route?.status !== required.status
+      || route?.headers?.Location !== required.location
+    ) {
+      throw new Error(`Vercel build omitted or changed ${required.label}`);
+    }
   }
 
   for (const relativeFunction of REQUIRED_FUNCTIONS) {
@@ -71,6 +94,7 @@ export async function verifyVercelBuild(outputRoot = OUTPUT_ROOT) {
     functions: REQUIRED_FUNCTIONS.length,
     manifests: 2,
     indexMarkers: REQUIRED_INDEX_MARKERS.length,
+    redirects: REQUIRED_REDIRECTS.length,
   };
 }
 
@@ -92,7 +116,7 @@ async function main() {
   }
   const result = await verifyVercelBuild();
   console.log(
-    `PASS: human-built Vercel output contains ${result.functions} functions, ${result.manifests} release manifests, and ${result.indexMarkers} required landing-page markers.`,
+    `PASS: human-built Vercel output contains ${result.functions} functions, ${result.manifests} release manifests, ${result.indexMarkers} required landing-page markers, and ${result.redirects} short-link redirects.`,
   );
 }
 

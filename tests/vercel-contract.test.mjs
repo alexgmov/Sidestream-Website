@@ -46,6 +46,10 @@ test("the human-only bundle verifier requires customer and both waitlist API/UI 
   assert.match(source, /data-after-effects-waitlist-open/);
   assert.match(source, /after-effects-waitlist-gate/);
   assert.match(source, /fetch\("\/api\/after-effects-waitlist"/);
+  assert.match(source, /Instagram bio redirect/);
+  assert.match(source, /\^\/ig\$/);
+  assert.match(source, /utm_source=instagram&utm_medium=social&utm_campaign=bio/);
+  assert.match(source, /ManyChat redirect/);
   assert.match(source, /A human must run `npx vercel build` first/);
 });
 
