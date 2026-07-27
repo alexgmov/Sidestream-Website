@@ -1,6 +1,7 @@
 import type { ServerResponse } from "node:http";
 import {
   cleanString,
+  createCheckoutIntentConfirmation,
   createOrReuseCheckoutSession,
   getBaseUrl,
   getClientIp,
@@ -55,17 +56,24 @@ export default async function handler(
     return sendJson(response, 400, { error: "Invalid Checkout request" });
   }
   const { payload, browserForm } = checkoutRequest;
-  const intentId = cleanString(payload.checkoutIntentId, 80);
-  const browserToken = cleanString(payload.checkoutIntent, 160);
+  let intentId = cleanString(payload.checkoutIntentId, 80);
+  let browserToken = cleanString(payload.checkoutIntent, 160);
   const signedToken = cleanString(payload.intentToken, 500);
   const legacyActivationKey = cleanString(payload.activationKey, 160);
+  const purchaseIntent = cleanString(payload.intent, 32);
+  const directAccountPurchase = browserForm &&
+    purchaseIntent === "account_purchase" &&
+    !legacyActivationKey &&
+    !intentId &&
+    !browserToken &&
+    !signedToken;
   if (
     browserForm &&
     legacyActivationKey &&
     !intentId &&
     !browserToken &&
     !signedToken &&
-    cleanString(payload.intent, 32) === "purchase"
+    purchaseIntent === "purchase"
   ) {
     // The pre-intent restore page can still submit its historical form, but
     // this branch performs no Stripe or account mutation. It only moves the
@@ -74,17 +82,17 @@ export default async function handler(
     confirmationUrl.searchParams.set("activation", legacyActivationKey);
     return redirect(response, confirmationUrl.toString());
   }
-  if (
+  if (!directAccountPurchase && (
     !/^[0-9a-f-]{36}$/i.test(intentId) ||
     !browserToken ||
     !signedToken ||
-    cleanString(payload.intent, 32) !== "purchase" ||
+    purchaseIntent !== "purchase" ||
     !validateCheckoutIntentConfirmation({
       intentId,
       browserToken,
       signedToken,
     })
-  ) {
+  )) {
     return sendJson(response, 403, {
       error: "Checkout confirmation expired or invalid",
       code: "csrf_rejected",
@@ -93,7 +101,17 @@ export default async function handler(
   }
 
   const session = await getSession(request);
+  if (directAccountPurchase && !session) {
+    const signInUrl = new URL("/api/auth/google/start", baseUrl);
+    signInUrl.searchParams.set("next", "/account.html");
+    return redirect(response, signInUrl.toString());
+  }
   if (session?.license.active) {
+    if (directAccountPurchase) {
+      const accountUrl = new URL("/account.html", baseUrl);
+      accountUrl.searchParams.set("checkout", "already_owned");
+      return redirect(response, accountUrl.toString());
+    }
     return sendJson(response, 409, {
       error: "Sidestream Pro is already active. Open your account or use Restore Purchase.",
       code: "active_license",
@@ -101,17 +119,30 @@ export default async function handler(
       restoreUrl: "/api/activation/claim",
     });
   }
-
   const rateLimit = await consumeRateLimit({
     scope: "checkout:create",
     dimensions: [
-      { name: "intent", value: intentId, limit: 8 },
+      directAccountPurchase && session
+        ? { name: "account", value: session.accountId, limit: 8 }
+        : { name: "intent", value: intentId, limit: 8 },
       { name: "ip", value: getClientIp(request) || "unknown-client", limit: 20 },
     ],
     windowSeconds: 15 * 60,
   });
   if (!rateLimit.allowed) return sendRateLimitExceeded(response, rateLimit);
   applyRateLimitHeaders(response, rateLimit);
+
+  if (directAccountPurchase && session) {
+    const confirmation = await createCheckoutIntentConfirmation({ session });
+    if (!confirmation) {
+      return sendJson(response, 409, {
+        error: "Checkout could not be started",
+        code: "intent_unavailable",
+      });
+    }
+    intentId = confirmation.intentId;
+    browserToken = confirmation.browserToken;
+  }
 
   // The locked intent worker owns attachCheckoutSessionToActivation and the
   // getActivationCheckoutIdempotencyKey namespace. No caller-controlled

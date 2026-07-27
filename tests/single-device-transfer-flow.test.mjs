@@ -123,7 +123,8 @@ test("activation purchase requires a signed intent POST before the locked worker
   assert.ok(legacyRedirect >= 0 && intentValidation > legacyRedirect);
   assert.ok(sessionRead > intentValidation && activeOwner > sessionRead);
   assert.ok(rateLimit > activeOwner && lockedWorker > rateLimit);
-  assert.match(create, /cleanString\(payload\.intent, 32\) !== "purchase"/);
+  assert.match(create, /const purchaseIntent = cleanString\(payload\.intent, 32\)/);
+  assert.match(create, /purchaseIntent !== "purchase"/);
   assert.match(create, /No caller-controlled[\s\S]+activation tuple reaches Stripe/);
   assert.doesNotMatch(create, /getStripe\(\)/);
   assert.doesNotMatch(create, /stripe\.checkout\.sessions\.create/);
@@ -169,7 +170,7 @@ test("decision reads and transfer counts remain account and namespace bound", as
   assert.match(source, /same_device/);
 });
 
-test("public and account copy states one production device with confirmed deactivation", async () => {
+test("public copy keeps the one-device policy while Account omits unfinished device controls", async () => {
   const [account, thankYou, upgrade, index, llms] = await Promise.all([
     readFile(files.account, "utf8"),
     readFile(files.thankYou, "utf8"),
@@ -181,14 +182,19 @@ test("public and account copy states one production device with confirmed deacti
   for (const page of [account, thankYou, upgrade]) {
     assert.match(page, /noindex, nofollow/);
   }
-  assert.match(account, /Active production device/);
-  assert.match(account, /No active production device/);
-  assert.match(account, /deactivate-device-button[^>]+disabled/);
-  assert.match(account, /fetch\("\/api\/account\/device"/);
-  assert.match(account, /window\.confirm\("Deactivate the active Sidestream device\?/);
-  assert.match(account, /apiPost\("\/api\/license\/deactivate", \{\s*intent: "deactivate_active_device"/);
+  assert.doesNotMatch(account, /Active production device/);
+  assert.doesNotMatch(account, /No active production device/);
+  assert.doesNotMatch(account, /deactivate-device-button/);
+  assert.doesNotMatch(account, /fetch\("\/api\/account\/device"/);
+  assert.doesNotMatch(account, /apiPost\("\/api\/license\/deactivate"/);
   assert.match(account, /receipt-button/);
   assert.match(account, /refund-button/);
+  assert.match(account, /id="refund-button"[^>]+target="_blank"[^>]+rel="noopener noreferrer"/);
+  assert.match(account, /new URL\("https:\/\/mail\.google\.com\/mail\/"\)/);
+  assert.match(account, /refundButton\.href = refundDraftUrl\(signedInEmail\)/);
+  assert.doesNotMatch(account, /mailto:/);
+  assert.match(account, /purchaseRow\.hidden = !session\.billing\.hasOneTimePurchase/);
+  assert.doesNotMatch(account, /purchaseRow\.hidden = !session\.billing\.hasCustomer/);
   assert.match(index, /href="\/api\/auth\/google\/start\?next=\/account\.html">Account<\/a>/);
   assert.match(account, /<main id="account-main" hidden>/);
   assert.match(account, /window\.location\.replace\(signInLink\.href\)/);

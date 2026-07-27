@@ -6,7 +6,9 @@ mockups/**
 !mockups/*.webm
 demos/*.mp4
 !demos/search demo.mp4
+!demos/search demo mobile.mp4
 !demos/preview demo.mp4
+!demos/preview demo mobile.mp4
 demos/*.wav
 demos/*.mov
 demos/*.aep

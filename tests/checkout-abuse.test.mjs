@@ -155,21 +155,34 @@ test("GET and crawler-visible checkout surfaces cannot write Stripe resources", 
   assert.doesNotMatch(index, /href="\/api\/checkout\/start"/);
   assert.doesNotMatch(index, /"url": "https:\/\/sidestream\.tv\/api\/checkout\/start"/);
   assert.doesNotMatch(account, /href="\/api\/checkout\/start"/);
+  assert.doesNotMatch(account, /href="\/upgrade\.html"/);
+  assert.match(account, /action="\/api\/checkout\/create"/);
+  assert.match(account, /name="intent" value="account_purchase"/);
   assert.doesNotMatch(llms, /Checkout endpoint:.*api\/checkout\/start/);
   assert.match(upgrade, /href="\/api\/checkout\/start"/);
   assert.doesNotMatch(stripComments(startSource), /\bgetStripe\s*\(/);
 });
 
-test("Checkout POST rejects CSRF, throttling, and active owners before Stripe work", async () => {
+test("Checkout POST sends authenticated account purchases straight to Stripe without weakening guards", async () => {
   let session = null;
   let coreCalls = 0;
+  let directIntentCalls = 0;
   let limiterCalls = 0;
+  let rateLimitDimensions = [];
   let allowed = true;
   const create = await loadInjectedHandler(
     new URL("../api/checkout/create.ts", import.meta.url),
     {
       "../_lib/account.js": {
         cleanString,
+        async createCheckoutIntentConfirmation(options) {
+          directIntentCalls += 1;
+          assert.equal(options.session, session);
+          return {
+            intentId: VALID_INTENT_ID,
+            browserToken: "browser-capability",
+          };
+        },
         async createOrReuseCheckoutSession() {
           coreCalls += 1;
           return { ok: true, url: "https://checkout.stripe.test/session", reused: false };
@@ -186,7 +199,8 @@ test("Checkout POST rejects CSRF, throttling, and active owners before Stripe wo
       "../_lib/entitlement.js": { validateCheckoutIntentPost },
       "../_lib/rate-limit.js": {
         applyRateLimitHeaders,
-        async consumeRateLimit() {
+        async consumeRateLimit(options) {
+          rateLimitDimensions = options.dimensions;
           limiterCalls += 1;
           return rateLimitResult(allowed);
         },
@@ -214,6 +228,15 @@ test("Checkout POST rejects CSRF, throttling, and active owners before Stripe wo
   assert.equal(missingToken.response.statusCode, 403);
   assert.equal(missingToken.response.json.code, "csrf_rejected");
   assert.equal(limiterCalls, 0);
+  assert.equal(coreCalls, 0);
+
+  const signedOutDirect = await invokeHandler(create, directAccountPost());
+  assert.equal(signedOutDirect.response.statusCode, 303);
+  assert.equal(
+    signedOutDirect.response.getHeader("location"),
+    `${BASE_URL}/api/auth/google/start?next=%2Faccount.html`,
+  );
+  assert.equal(directIntentCalls, 0);
   assert.equal(coreCalls, 0);
 
   const legacyClaimForm = await invokeHandler(create, {
@@ -245,11 +268,31 @@ test("Checkout POST rejects CSRF, throttling, and active owners before Stripe wo
   assert.equal(owner.response.json.accountUrl, "/account.html");
   assert.equal(coreCalls, 0);
 
+  const ownerDirect = await invokeHandler(create, directAccountPost());
+  assert.equal(ownerDirect.response.statusCode, 303);
+  assert.equal(
+    ownerDirect.response.getHeader("location"),
+    `${BASE_URL}/account.html?checkout=already_owned`,
+  );
+  assert.equal(directIntentCalls, 0);
+  assert.equal(coreCalls, 0);
+
   session = accountSession({ active: false });
   const accepted = await invokeHandler(create, validPost());
   assert.equal(accepted.response.statusCode, 303);
   assert.equal(accepted.response.getHeader("location"), "https://checkout.stripe.test/session");
   assert.equal(coreCalls, 1);
+
+  const direct = await invokeHandler(create, directAccountPost());
+  assert.equal(direct.response.statusCode, 303);
+  assert.equal(direct.response.getHeader("location"), "https://checkout.stripe.test/session");
+  assert.equal(directIntentCalls, 1);
+  assert.equal(coreCalls, 2);
+  assert.deepEqual(rateLimitDimensions[0], {
+    name: "account",
+    value: session.accountId,
+    limit: 8,
+  });
 });
 
 test("database-backed intents serialize retries, rotate deliberately, and fulfill once", {
@@ -302,6 +345,10 @@ test("database-backed intents serialize retries, rotate deliberately, and fulfil
     assert.equal(first.url, second.url);
     assert.equal(stripe.countWrites("customers.create"), 1);
     assert.equal(stripe.countWrites("checkout.sessions.create"), 1);
+    assert.equal(
+      stripe.sessionCreateWrites[0].params.cancel_url,
+      `${BASE_URL}/account.html?checkout=cancelled`,
+    );
 
     const persistedCustomer = await databasePool.query(
       "select stripe_customer_id from public.sidestream_accounts where id = $1",
@@ -647,6 +694,21 @@ function validPost(options = {}) {
       intentToken: token,
       intent: "purchase",
     }).toString(),
+  };
+}
+
+function directAccountPost() {
+  return {
+    method: "POST",
+    url: "/api/checkout/create",
+    headers: {
+      host: "sidestream.test",
+      "x-forwarded-proto": "https",
+      origin: BASE_URL,
+      "sec-fetch-site": "same-origin",
+      "content-type": "application/x-www-form-urlencoded",
+    },
+    body: new URLSearchParams({ intent: "account_purchase" }).toString(),
   };
 }
 

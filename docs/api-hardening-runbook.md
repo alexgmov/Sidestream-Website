@@ -23,9 +23,10 @@ history or tickets.
 - All runtime database users share the pool in `api/_lib/postgres.ts` and use a
   pooled URL in production. Migration and backfill tools use a reviewed direct
   URL.
-- `GET /api/checkout/start` is a read/confirmation boundary. Only a confirmed
-  same-origin `POST /api/checkout/create` may create or reuse a Stripe Checkout
-  Session.
+- `GET /api/checkout/start` is a read/confirmation boundary. Only a same-origin
+  `POST /api/checkout/create` may create or reuse a Stripe Checkout Session:
+  anonymous/activation requests require signed confirmation fields, while the
+  direct account form requires a valid authenticated Free-account session.
 - Stripe webhook requests durably record an event and acknowledge it. A claimed,
   leased queue reconciles entitlements; account and activation reads never drain
   webhook backlog.
@@ -60,7 +61,7 @@ and JSON responses are `no-store`.
 | `/api/auth/session` | `GET` | Always `200`: `{"authenticated":false}` or authenticated `user`, `license`, and `billing.hasCustomer` | Dependency failure is a server `500`; this read never processes Stripe events |
 | `/api/auth/logout` | `POST` | `200 {"ok":true}` after clearing the session | Dependency failure is a server `500` |
 | `/api/checkout/start` | `GET` | `200` no-store confirmation HTML; an active owner redirects to account/claim | `409` unavailable intent; legacy-host activation failures redirect to `activation_required`; no Stripe write occurs |
-| `/api/checkout/create` | `POST` | Form clients receive `303` to Stripe; JSON clients receive `200 {"url":"...","reused":boolean}` | `400` malformed; `401 authentication_required`; `403 csrf_rejected` or `intent_account_mismatch`; `409 active_license`, `intent_expired`, `activation_unavailable`, or `activation_window_too_short`; `429 rate_limited`; unhandled DB/Stripe failure is `500` |
+| `/api/checkout/create` | `POST` | Signed-in account forms and confirmed public forms receive `303` to Stripe; confirmed JSON clients receive `200 {"url":"...","reused":boolean}`; an expired account session redirects to sign-in | `400` malformed; `401 authentication_required`; `403 csrf_rejected` or `intent_account_mismatch`; `409 active_license`, `intent_unavailable`, `intent_expired`, `activation_unavailable`, or `activation_window_too_short`; `429 rate_limited`; unhandled DB/Stripe failure is `500` |
 | `/api/checkout/complete` | `GET` | Verifies the exact attached Session/Price/Product, reconciles payment, then `303` to thank-you | `400` missing session, `409` payment not ready or exact contract mismatch |
 | `/api/billing/portal` | `POST` | Authenticated `200 {"url":"..."}` for a Stripe Customer Portal Session | `401` unauthenticated, `400` no linked Stripe customer, Stripe failure is a server `500` |
 | `/api/billing/receipt` | `POST` | Authenticated `200 {"url":"..."}` for the latest owned charge receipt | `401` unauthenticated, `403` customer mismatch, `404` no purchase/receipt URL, Stripe failure is a server `500` |
@@ -121,15 +122,20 @@ is current implementation truth, not a recommended new parser contract.
 
 ### Confirmed Checkout flow
 
-1. `GET /api/checkout/start` creates or resumes a database Checkout intent and
-   renders a no-store confirmation page. It must not initialize Stripe, create a
-   Customer, resolve/create a Price, or create a Checkout Session.
-2. The form submits signed intent fields to same-origin
+1. Anonymous and activation entry points use `GET /api/checkout/start`, which
+   creates or resumes a database Checkout intent and renders a no-store
+   confirmation page. It must not initialize Stripe, create a Customer,
+   resolve/create a Price, or create a Checkout Session.
+2. Those forms submit signed intent fields to same-origin
    `POST /api/checkout/create`. The signed confirmation is valid for 10 minutes;
-   the database intent expires after 24 hours.
-3. The POST atomically consumes limits of 8 requests per intent and 20 per IP in
-   a 15-minute window. It locks the intent, creates or reuses one Stripe Session
-   with a stable idempotency key, and persists the exact Session/Price/Product.
+   the database intent expires after 24 hours. The signed-in account page skips
+   both confirmation pages by submitting `intent=account_purchase` directly to
+   the same POST; that branch requires the server session and creates an
+   account-bound intent internally.
+3. The POST atomically consumes limits of 8 requests per public intent or 8 per
+   direct account, plus 20 per IP, in a 15-minute window. It locks the intent,
+   creates or reuses one Stripe Session with a stable idempotency key, and
+   persists the exact Session/Price/Product.
 4. Checkout uses `mode=payment`, one card line item with quantity one, invoice
    creation, promotion codes, and the copy `One-time payment. No subscription.`
 5. The success URL keeps Stripe's literal `{CHECKOUT_SESSION_ID}` placeholder and
@@ -140,8 +146,9 @@ is current implementation truth, not a recommended new parser contract.
    watermark-protected reconciliation helper.
 
 Persisted intent state is constrained to `pending`, `open`, `completed`,
-`cancelled`, `expired`, or `failed`. A cancelled browser return remains a GET
-read; its next signed confirmation POST may explicitly request bounded Session
+`cancelled`, `expired`, or `failed`. A cancelled authenticated account Checkout
+returns to `account.html`; anonymous and activation cancellations remain GET
+reads whose next signed confirmation POST may explicitly request bounded Session
 rotation. A caller cannot supply its own Stripe or activation tuple.
 
 New one-time purchases select `SIDESTREAM_PRO_PRODUCT_ID` (default
@@ -477,7 +484,7 @@ tokens, device IDs, full Stripe payloads, or lead email addresses.
 | Crash/reclaim attempt overflow | Count `terminal_at is null and attempt_count >= 8`, including future retryable rows and unexpired processing leases | Critical on any row. The current claim path can reclaim indefinitely after repeated process termination; stop promotion and require the total-attempt implementation blocker to close. |
 | Oldest event age | Age of oldest due nonterminal event | Warning over 10 minutes, critical over 30 minutes; the processor runs every five minutes. |
 | Event failures | `retryable + deadLetter` divided by claimed, plus `processing_failed` route outcomes | Warning above 5% with at least 5 claims in 15 minutes; critical above 20% or any route-level failure for 5 minutes. |
-| Checkout volume | Confirmation GETs, confirmed POSTs, created/reused Sessions, `csrf_rejected`, dependency errors | Warning when create failures exceed 1% or 5 in 15 minutes. A GET without a matching confirmation POST is abandonment, not a Stripe failure. |
+| Checkout volume | Confirmation GETs, direct-account and confirmed POSTs, created/reused Sessions, `csrf_rejected`, dependency errors | Warning when create failures exceed 1% or 5 in 15 minutes. A GET without a matching confirmation POST is abandonment, not a Stripe failure. |
 | Rate limit | `429 code=rate_limited` by scope and total eligible requests | Warning when checkout or lead 429s exceed 5% with at least 10 requests in 15 minutes; investigate abuse before raising limits. |
 | Lead fallback backlog | Private Blob count and oldest age under the configured prefix | Warning if nonzero for 15 minutes after Postgres recovers or oldest exceeds 30 minutes; critical over 2 hours or growth across two replay intervals. |
 | Unmapped Blob records | Replay `summary.unmapped` and path sample without lead contents | Critical on any new unmapped record. Quarantine/preserve it; do not auto-delete. |

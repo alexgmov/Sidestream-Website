@@ -8,7 +8,7 @@
 <meta name="robots" content="index, follow, max-image-preview:large" />
 <meta name="application-name" content="Sidestream" />
 <meta name="apple-mobile-web-app-title" content="Sidestream" />
-<meta name="theme-color" content="#000000" />
+<meta name="theme-color" content="#1b1b1b" />
 <link rel="canonical" href="https://sidestream.tv/" />
 <link rel="sitemap" type="application/xml" href="https://sidestream.tv/sitemap.xml" />
 <meta property="og:type" content="website" />
@@ -178,8 +178,6 @@
     position: fixed;
     inset: 0;
     z-index: 0;
-    width: 100vw;
-    height: 100vh;
     overflow: hidden;
     pointer-events: none;
   }
@@ -532,6 +530,12 @@
     line-height: 1.2;
     letter-spacing: -0.02em;
   }
+  .mobile-download-handoff-subtext {
+    margin: 8px 0 0;
+    color: rgba(226, 232, 240, 0.68);
+    font-size: 14px;
+    line-height: 1.45;
+  }
   .mobile-download-handoff-fields {
     display: grid;
     gap: 10px;
@@ -811,6 +815,7 @@
     --demo-tilt-x: 0deg;
     --demo-tilt-y: 0deg;
     --demo-tilt-z: 0deg;
+    position: relative;
     border: 1px solid var(--line);
     border-radius: var(--radius);
     aspect-ratio: 5 / 3;
@@ -841,11 +846,28 @@
     transition-timing-function: cubic-bezier(0.45, 0, 0.55, 1), var(--ease),
       var(--ease);
   }
+  .demo-poster,
   .demo-video {
     display: block;
     width: 100%;
     height: 100%;
     object-fit: cover;
+  }
+  .demo-poster {
+    position: absolute;
+    inset: 0;
+    z-index: 2;
+    pointer-events: none;
+    opacity: 1;
+    transition: opacity 120ms var(--ease);
+  }
+  .shot.is-demo-playing .demo-poster {
+    visibility: hidden;
+    opacity: 0;
+  }
+  .demo-video {
+    position: relative;
+    z-index: 1;
     background: #050505;
   }
 
@@ -1098,7 +1120,7 @@
       left: 50%;
       top: 50%;
       display: block;
-      width: min(92vw, 360px);
+      width: min(79.488vw, 311.04px);
       max-width: none;
       height: auto;
       transform: translate(-50%, -50%);
@@ -1145,7 +1167,7 @@
   }
   @media (max-width: 900px) and (max-height: 720px) {
     .mobile-hero-logos-image {
-      width: min(82vw, 320px);
+      width: min(70.848vw, 276.48px);
     }
   }
   @media (prefers-reduced-motion: reduce) {
@@ -1238,7 +1260,7 @@
     <section class="hero-pad" id="hero">
       <div class="feature-corner-demo" aria-hidden="true">
         <video class="feature-corner-demo-video" autoplay muted loop playsinline preload="metadata">
-          <source src="demos/sidestream-panel-corner.webm" type="video/webm">
+          <source src="demos/sidestream-panel-corner.webm" type="video/webm" media="(min-width: 901px)">
         </video>
       </div>
       <div class="mobile-hero-logos" aria-hidden="true">
@@ -1271,11 +1293,12 @@
             </button>
           </div>
           <form class="mobile-download-handoff" id="mobile-download-handoff" novalidate>
-            <p class="mobile-download-handoff-title">Get Sidestream on your computer</p>
+            <p class="mobile-download-handoff-title">On your phone?</p>
+            <p class="mobile-download-handoff-subtext">We'll email you a link to your computer</p>
             <div class="mobile-download-handoff-fields">
               <label class="mobile-download-handoff-label" for="mobile-download-email">Email address</label>
               <input class="mobile-download-handoff-input" id="mobile-download-email" name="email" type="email" inputmode="email" autocomplete="email" enterkeyhint="send" placeholder="you@email.com" required>
-              <button class="btn btn-primary mobile-download-handoff-submit" id="mobile-download-submit" type="submit">Send me the links</button>
+              <button class="btn btn-primary mobile-download-handoff-submit" id="mobile-download-submit" type="submit">Email me the download link</button>
             </div>
             <p class="mobile-download-handoff-status" id="mobile-download-status" aria-live="polite"></p>
           </form>
@@ -1294,7 +1317,9 @@
             <h2>Search for YouTube videos.<span class="feature-subtext">Search using keywords or paste a link.</span></h2>
           </div>
           <div class="shot reveal" role="img" aria-label="Demo video: searching Tudor Place inside the Sidestream panel">
-            <video class="demo-video" muted loop playsinline preload="metadata">
+            <img class="demo-poster" src="demos/search%20demo%20poster.png" alt="" width="1200" height="720" decoding="async" aria-hidden="true">
+            <video class="demo-video" muted loop playsinline preload="none" poster="demos/search%20demo%20poster.png">
+              <source src="demos/search%20demo%20mobile.mp4" type="video/mp4" media="(max-width: 900px)">
               <source src="demos/search%20demo.mp4" type="video/mp4">
               Search demo for Tudor Place inside Sidestream.
             </video>
@@ -1309,7 +1334,9 @@
             <h2>Preview videos.<span class="feature-subtext">Watch just as you would in YouTube.</span></h2>
           </div>
           <div class="shot reveal" role="img" aria-label="Demo video: previewing Tudor Place inside the Sidestream panel">
-            <video class="demo-video" muted loop playsinline preload="metadata">
+            <img class="demo-poster" src="demos/preview%20demo%20poster.png" alt="" width="1200" height="720" decoding="async" aria-hidden="true">
+            <video class="demo-video" muted loop playsinline preload="none" poster="demos/preview%20demo%20poster.png">
+              <source src="demos/preview%20demo%20mobile.mp4" type="video/mp4" media="(max-width: 900px)">
               <source src="demos/preview%20demo.mp4" type="video/mp4">
               Preview demo for Tudor Place inside Sidestream.
             </video>
@@ -1357,7 +1384,7 @@
           </div>
         </div>
         <div class="pricing-mockup reveal" role="img" aria-label="Rotating MacBook Pro showing Sidestream in Premiere Pro">
-          <video class="macbook-mockup-video" autoplay muted loop playsinline preload="auto">
+          <video class="macbook-mockup-video" muted loop playsinline preload="none">
             <source src="mockups/mockup1_2.webm" type="video/webm">
             Rotating MacBook Pro preview.
           </video>
@@ -1425,14 +1452,42 @@
       }, 2000);
     });
 
-    // Feature demos should stay idle until their cards enter the viewport.
+    // Prewarm proof media shortly before it is needed, but only play visible video.
     const demoVideos = Array.from(document.querySelectorAll(".demo-video"));
-    demoVideos.forEach((video) => video.pause());
-    function playDemoVideo(video) {
-      const playAttempt = video.play();
-      if (playAttempt) playAttempt.catch(() => {});
+    function prewarmVideo(video) {
+      if (video.dataset.prewarmed === "true") return;
+      video.dataset.prewarmed = "true";
+      video.preload = "auto";
+      video.load();
     }
+    function playDemoVideo(video) {
+      prewarmVideo(video);
+      video.muted = true;
+      const playAttempt = video.play();
+      if (playAttempt) {
+        playAttempt.catch(() => {
+          video.closest(".shot")?.classList.remove("is-demo-playing");
+        });
+      }
+    }
+    demoVideos.forEach((video) => {
+      const card = video.closest(".shot");
+      video.pause();
+      video.addEventListener("playing", () => card?.classList.add("is-demo-playing"));
+      video.addEventListener("error", () => card?.classList.remove("is-demo-playing"));
+      video.addEventListener("emptied", () => card?.classList.remove("is-demo-playing"));
+    });
     if ("IntersectionObserver" in window) {
+      const demoVideoPrewarmObserver = new IntersectionObserver(
+        (entries, observer) => {
+          entries.forEach((entry) => {
+            if (!entry.isIntersecting) return;
+            prewarmVideo(entry.target);
+            observer.unobserve(entry.target);
+          });
+        },
+        { rootMargin: "500px 0px", threshold: 0 }
+      );
       const demoVideoObserver = new IntersectionObserver(
         (entries) => {
           entries.forEach((entry) => {
@@ -1448,17 +1503,23 @@
         { threshold: 0.1 }
       );
 
-      demoVideos.forEach((video) => demoVideoObserver.observe(video));
+      demoVideos.forEach((video) => {
+        demoVideoPrewarmObserver.observe(video);
+        demoVideoObserver.observe(video);
+      });
     } else {
-      demoVideos.forEach(playDemoVideo);
+      demoVideos.forEach((video) => {
+        prewarmVideo(video);
+        playDemoVideo(video);
+      });
     }
 
-    const macbookVideos = Array.from(document.querySelectorAll(".macbook-mockup-video, .feature-corner-demo-video"));
+    const loopingVideos = Array.from(document.querySelectorAll(".macbook-mockup-video, .feature-corner-demo-video"));
     function shouldPlayLoopingVideo(video) {
       const featureCorner = video.closest(".feature-corner-demo");
       return !featureCorner || window.getComputedStyle(featureCorner).display !== "none";
     }
-    function playMacbookVideo(video) {
+    function playLoopingVideo(video) {
       video.muted = true;
       if (!shouldPlayLoopingVideo(video)) {
         video.pause();
@@ -1468,20 +1529,65 @@
       const playAttempt = video.play();
       if (playAttempt) playAttempt.catch(() => {});
     }
-    macbookVideos.forEach((video) => {
-      if (video.readyState >= 2) {
-        playMacbookVideo(video);
+    loopingVideos.forEach((video) => video.pause());
+    if ("IntersectionObserver" in window) {
+      const loopingVideoPrewarmObserver = new IntersectionObserver(
+        (entries, observer) => {
+          entries.forEach((entry) => {
+            if (!entry.isIntersecting) return;
+            prewarmVideo(entry.target);
+            observer.unobserve(entry.target);
+          });
+        },
+        { rootMargin: "600px 0px", threshold: 0 }
+      );
+      const loopingVideoObserver = new IntersectionObserver(
+        (entries) => {
+          entries.forEach((entry) => {
+            const video = entry.target;
+            const isVisible = entry.isIntersecting && entry.intersectionRatio > 0;
+            video.dataset.loopVisible = isVisible ? "true" : "false";
+            if (isVisible) {
+              playLoopingVideo(video);
+              return;
+            }
+
+            video.pause();
+          });
+        },
+        { threshold: 0.1 }
+      );
+
+      loopingVideos.forEach((video) => {
+        loopingVideoPrewarmObserver.observe(video);
+        loopingVideoObserver.observe(video);
+      });
+    } else {
+      loopingVideos.forEach((video) => {
+        video.dataset.loopVisible = "true";
+        prewarmVideo(video);
+        playLoopingVideo(video);
+      });
+    }
+    document.addEventListener("visibilitychange", () => {
+      if (document.hidden) {
+        loopingVideos.forEach((video) => video.pause());
         return;
       }
 
-      video.addEventListener("canplay", () => playMacbookVideo(video), { once: true });
-    });
-    document.addEventListener("visibilitychange", () => {
-      if (document.hidden) return;
-      macbookVideos.forEach(playMacbookVideo);
+      loopingVideos
+        .filter((video) => video.dataset.loopVisible === "true")
+        .forEach(playLoopingVideo);
     });
     window.addEventListener("resize", () => {
-      macbookVideos.forEach(playMacbookVideo);
+      loopingVideos.forEach((video) => {
+        if (video.dataset.loopVisible === "true") {
+          playLoopingVideo(video);
+          return;
+        }
+
+        video.pause();
+      });
     });
 
     const demoTiltCards = demoVideos
@@ -1850,6 +1956,25 @@
       };
     }
 
+    function recordReferralVisit() {
+      const source = new URLSearchParams(window.location.search)
+        .get("utm_source")
+        ?.trim()
+        .toLowerCase();
+      if (source !== "manychat") return;
+
+      fetch("/api/referral-visit", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ source }),
+        keepalive: true
+      }).catch(() => {
+        // Analytics must never interrupt the landing page.
+      });
+    }
+
+    recordReferralVisit();
+
     function focusMobileDownloadForm() {
       if (!mobileDownloadForm || !mobileDownloadInput) return;
       mobileDownloadForm.scrollIntoView({ behavior: reduceMotion ? "auto" : "smooth", block: "center" });
@@ -1966,7 +2091,7 @@
             : "Could not send the email. Try again.";
           mobileDownloadStatus.classList.add("is-error");
           mobileDownloadSubmit.disabled = false;
-          mobileDownloadSubmit.textContent = "Send me the links";
+          mobileDownloadSubmit.textContent = "Email me the download link";
         } finally {
           window.clearTimeout(timeout);
         }

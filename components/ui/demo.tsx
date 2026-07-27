@@ -11,7 +11,7 @@ export default function DemoOne() {
   const [activeEffect] = useState("mesh")
 
   return (
-    <div className="w-full h-screen bg-black relative overflow-hidden">
+    <div className="w-full h-full bg-black relative overflow-hidden">
       {activeEffect === "mesh" && (
         <MeshGradient
           className="w-full h-full absolute inset-0"

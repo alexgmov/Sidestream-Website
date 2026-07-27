@@ -8,7 +8,11 @@ dist
 demos/**
 !demos/
 !demos/search demo.mp4
+!demos/search demo mobile.mp4
+!demos/search demo poster.png
 !demos/preview demo.mp4
+!demos/preview demo mobile.mp4
+!demos/preview demo poster.png
 !demos/sidestream-panel-corner.webm
 
 mockups/**

@@ -2,6 +2,7 @@ const RESEND_SEND_ENDPOINT = "https://api.resend.com/emails";
 const DEFAULT_FROM = "Sidestream <downloads@alexg.mov>";
 const DEFAULT_REPLY_TO = "alex@alexg.mov";
 const EMAIL_SUBJECT = "Your Sidestream download links";
+const DISCOUNT_CODE = "STREAM20";
 const WINDOWS_DOWNLOAD_MARK_CID = "sidestream-windows-mark";
 const WINDOWS_DOWNLOAD_MARK_PNG =
   "iVBORw0KGgoAAAANSUhEUgAAADAAAAAwCAYAAABXAvmHAAAAAXNSR0IArs4c6QAAAERlWElmTU0AKgAAAAgAAYdpAAQAAAABAAAAGgAAAAAAA6ABAAMAAAABAAEAAKACAAQAAAABAAAAMKADAAQAAAABAAAAMAAAAADbN2wMAAABk0lEQVRoBe1ZbUoEMQxdRVBcVBBFWfzh519B9AqeQO+y6B09gycRTcZ5bLqkQ7AN7WIGQpJO5vXlZVjK7GwWVygQCmy0Alsdsz8jbnfC3jWurRs4JVK3gqQkfLBGWOW6s1bkkR5nCDLZo9IN1a7+ALpNz1yQ3Qh7G3G+R1/qVK7qYmanXVq/JOORS6IcX5HxfXkB27WBqVdoSWwkWVaYle7qgkoaqVLlgF2KA27AQz747hRN2BmSaMAgkmtJTMBVXgN4TMAgkmtJTMBVXgN4TMAgkmvJ1GHuqdLOtXAq0ekMRj3hjRwfC7l+VMIBDeAhH/xUA6XHYGCX4oAw8JAPPn6FEjkaJDGBBqInW8YEEjkaJDGBBqInW8YEEjkaJBs/ganj9DMJKr+N4oPuvIHQ2S3VA1K2+vfGOTk0A49GT8SzwHY9zIn9qoSHhPJA9irQPin+IuNGSkxArkKotFrxifi/g2sy+RcSYv5sb+Gh1qiLPj1kUffoDr+CaEj6hXiqB66Cji3cp7J7shdbeVSFAv9PgR8iECaXQfGmRwAAAABJRU5ErkJggg==";
@@ -174,6 +175,7 @@ function buildHtmlBody() {
             <tr><td style="font-size:13px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#71717a;">Sidestream</td></tr>
             <tr><td style="padding-top:14px;font-size:28px;font-weight:700;line-height:1.15;">Your download links</td></tr>
             <tr><td style="padding-top:12px;font-size:16px;line-height:1.55;color:#52525b;">You asked us to send Sidestream to your computer. Choose the installer you need.</td></tr>
+            <tr><td style="padding-top:16px;font-size:15px;line-height:1.5;color:#27272a;">Save 20% on Sidestream Pro with code <strong style="font-family:Arial,Helvetica,sans-serif;letter-spacing:.05em;">${DISCOUNT_CODE}</strong>.</td></tr>
             <tr>
               <td style="padding-top:26px;">
                 <table role="presentation" width="100%" cellspacing="0" cellpadding="0" bgcolor="#171717" style="background:#171717;border-radius:20px;">
@@ -207,6 +209,8 @@ function buildTextBody() {
   return `Your Sidestream download links
 
 You asked us to send Sidestream to your computer. Choose the installer you need.
+
+Save 20% on Sidestream Pro with code ${DISCOUNT_CODE}.
 
 Download for Mac:
 ${MAC_DOWNLOAD_URL}

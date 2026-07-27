@@ -174,7 +174,10 @@
             <p class="value" id="account-plan">Checking...</p>
           </div>
           <div class="actions">
-            <a class="button primary" id="upgrade-link" href="/upgrade.html">Upgrade</a>
+            <form id="upgrade-form" method="post" action="/api/checkout/create">
+              <input type="hidden" name="intent" value="account_purchase">
+              <button class="primary" id="upgrade-button" type="submit">Upgrade</button>
+            </form>
             <button class="secondary" id="billing-button" type="button">Open Stripe portal</button>
           </div>
         </div>
@@ -186,17 +189,7 @@
           </div>
           <div class="actions">
             <button class="secondary" id="receipt-button" type="button">View receipt</button>
-            <button class="secondary" id="refund-button" type="button">Request refund</button>
-          </div>
-        </div>
-        <div class="row" id="device-row" hidden>
-          <div>
-            <p class="label">Active production device</p>
-            <p class="value" id="device-status">Checking device status...</p>
-            <p class="note">Sidestream does not collect a device name, so this page will not guess which computer is active. Deactivating signs this device out of Pro while keeping your purchase and device history.</p>
-          </div>
-          <div class="actions">
-            <button class="secondary" id="deactivate-device-button" type="button" disabled>Checking...</button>
+            <a class="button secondary" id="refund-button" target="_blank" rel="noopener noreferrer">Request refund</a>
           </div>
         </div>
         <div class="row">
@@ -217,12 +210,10 @@
     const signInLink = document.getElementById("sign-in-link");
     const accountEmail = document.getElementById("account-email");
     const accountPlan = document.getElementById("account-plan");
-    const upgradeLink = document.getElementById("upgrade-link");
+    const upgradeForm = document.getElementById("upgrade-form");
+    const upgradeButton = document.getElementById("upgrade-button");
     const billingButton = document.getElementById("billing-button");
     const purchaseRow = document.getElementById("purchase-row");
-    const deviceRow = document.getElementById("device-row");
-    const deviceStatus = document.getElementById("device-status");
-    const deactivateDeviceButton = document.getElementById("deactivate-device-button");
     const receiptButton = document.getElementById("receipt-button");
     const refundButton = document.getElementById("refund-button");
     const signOutButton = document.getElementById("sign-out-button");
@@ -239,6 +230,26 @@
         return "Pro - cancels " + new Date(license.currentPeriodEnd).toLocaleDateString();
       }
       return "Pro";
+    }
+
+    function refundDraftUrl(email) {
+      const subject = "Sidestream refund request";
+      const body = [
+        "Hi Sidestream,",
+        "",
+        "I'd like to request a refund for my Sidestream Pro purchase.",
+        "",
+        "Account email: " + (email || ""),
+        "",
+        "Thanks."
+      ].join("\n");
+      const draftUrl = new URL("https://mail.google.com/mail/");
+      draftUrl.searchParams.set("view", "cm");
+      draftUrl.searchParams.set("fs", "1");
+      draftUrl.searchParams.set("to", refundEmail);
+      draftUrl.searchParams.set("su", subject);
+      draftUrl.searchParams.set("body", body);
+      return draftUrl.toString();
     }
 
     async function apiPost(url, body = {}) {
@@ -268,48 +279,19 @@
       accountMain.hidden = false;
       signedInEmail = session.user.email || "";
       accountEmail.textContent = session.user.email;
+      refundButton.href = refundDraftUrl(signedInEmail);
       accountPlan.textContent = describePlan(session.license);
       const hasActiveLicense = Boolean(session.license && session.license.active);
       accountPlan.classList.toggle("status", hasActiveLicense);
-      upgradeLink.hidden = hasActiveLicense;
-      deviceRow.hidden = !hasActiveLicense;
+      upgradeForm.hidden = hasActiveLicense;
       billingButton.hidden = !session.billing.hasCustomer;
-      purchaseRow.hidden = !session.billing.hasCustomer;
-      if (hasActiveLicense) {
-        try {
-          await loadDeviceStatus();
-        } catch {
-          deviceStatus.textContent = "Device status unavailable";
-          deactivateDeviceButton.textContent = "Try again later";
-          deactivateDeviceButton.disabled = true;
-        }
-      }
+      purchaseRow.hidden = !session.billing.hasOneTimePurchase;
     }
 
-    async function loadDeviceStatus() {
-      const response = await fetch("/api/account/device", { cache: "no-store" });
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(payload.error || "Device status unavailable");
-      if (!payload.active || !payload.device) {
-        deviceStatus.textContent = "No active production device";
-        deactivateDeviceButton.textContent = "No active device";
-        deactivateDeviceButton.disabled = true;
-        return;
-      }
-
-      const platform = payload.device.platform === "macos"
-        ? "Mac"
-        : payload.device.platform === "windows"
-          ? "Windows"
-          : "Sidestream";
-      const activatedAt = new Date(payload.device.activatedAt);
-      const activated = Number.isFinite(activatedAt.getTime())
-        ? " since " + activatedAt.toLocaleDateString()
-        : "";
-      deviceStatus.textContent = platform + " device active" + activated;
-      deactivateDeviceButton.textContent = "Deactivate device";
-      deactivateDeviceButton.disabled = false;
-    }
+    upgradeForm.addEventListener("submit", () => {
+      upgradeButton.disabled = true;
+      upgradeButton.textContent = "Opening Stripe...";
+    });
 
     billingButton.addEventListener("click", async () => {
       billingButton.disabled = true;
@@ -334,39 +316,6 @@
         alert(error.message);
         receiptButton.disabled = false;
         receiptButton.textContent = "View receipt";
-      }
-    });
-
-    refundButton.addEventListener("click", () => {
-      const subject = "Sidestream refund request";
-      const body = [
-        "Hi Sidestream,",
-        "",
-        "I'd like to request a refund for my Sidestream Pro purchase.",
-        "",
-        "Account email: " + (signedInEmail || ""),
-        "",
-        "Thanks."
-      ].join("\n");
-      window.location.href = "mailto:" + refundEmail +
-        "?subject=" + encodeURIComponent(subject) +
-        "&body=" + encodeURIComponent(body);
-    });
-
-    deactivateDeviceButton.addEventListener("click", async () => {
-      if (!window.confirm("Deactivate the active Sidestream device? Pro downloads on that device will stop until you reconnect.")) return;
-      deactivateDeviceButton.disabled = true;
-      deactivateDeviceButton.textContent = "Deactivating...";
-      try {
-        await apiPost("/api/license/deactivate", {
-          intent: "deactivate_active_device"
-        });
-        deviceStatus.textContent = "No active production device";
-        deactivateDeviceButton.textContent = "No active device";
-      } catch (error) {
-        alert(error.message);
-        deactivateDeviceButton.disabled = false;
-        deactivateDeviceButton.textContent = "Deactivate device";
       }
     });
 

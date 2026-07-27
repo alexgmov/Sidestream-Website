@@ -1,0 +1,187 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="robots" content="noindex,nofollow">
+  <title>Sidestream mobile paid prototype</title>
+  <style>
+    html,
+    body {
+      min-height: 100%;
+      margin: 0;
+      background: #1b1b1b;
+      color: #e2e8f0;
+      font: 16px/1.5 Inter, ui-sans-serif, system-ui, sans-serif;
+    }
+
+    .prototype-loading {
+      min-height: 100svh;
+      display: grid;
+      place-items: center;
+      padding: 24px;
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+  <main class="prototype-loading" id="prototype-loading" aria-live="polite">
+    Loading the Sidestream mobile paid prototype…
+  </main>
+
+  <script>
+    (() => {
+      const CHECKOUT_PATH = "/api/checkout/start";
+
+      function addMeta(doc, name, content) {
+        let meta = doc.querySelector(`meta[name="${name}"]`);
+        if (!meta) {
+          meta = doc.createElement("meta");
+          meta.setAttribute("name", name);
+          doc.head.append(meta);
+        }
+        meta.setAttribute("content", content);
+      }
+
+      function createPurchaseCard(doc) {
+        const card = doc.createElement("div");
+        card.className = "mobile-download-handoff";
+        card.id = "mobile-paid-purchase";
+
+        const title = doc.createElement("p");
+        title.className = "mobile-download-handoff-title";
+        title.textContent = "Purchase Sidestream";
+
+        const supportingCopy = doc.createElement("p");
+        supportingCopy.className = "mobile-download-handoff-subtext";
+        supportingCopy.textContent = "We’ll email you the download link once your purchase is complete.";
+
+        const actionGroup = doc.createElement("div");
+        actionGroup.className = "mobile-download-handoff-fields";
+
+        const purchaseLink = doc.createElement("a");
+        purchaseLink.className = "btn btn-primary mobile-download-handoff-submit mobile-paid-purchase-link";
+        purchaseLink.href = CHECKOUT_PATH;
+        purchaseLink.setAttribute("aria-label", "Buy Sidestream Pro now for $9.99, one-time purchase");
+        purchaseLink.textContent = "Buy now — $9.99";
+
+        actionGroup.append(purchaseLink);
+        card.append(title, supportingCopy, actionGroup);
+        return card;
+      }
+
+      function applyPaidVariant(doc) {
+        doc.documentElement.setAttribute("data-mobile-paid-variant", "");
+        doc.documentElement.setAttribute("data-mobile-paid-variant-ready", "true");
+        doc.title = "Sidestream mobile paid prototype";
+        addMeta(doc, "robots", "noindex,nofollow");
+
+        doc.querySelector('link[rel="canonical"]')?.remove();
+        doc.querySelectorAll('script[type="application/ld+json"]').forEach((script) => script.remove());
+        doc.querySelectorAll("script:not([src])").forEach((script) => {
+          script.textContent = script.textContent.replaceAll(
+            "Email me the download link",
+            "Buy now — $9.99"
+          );
+        });
+
+        const variantStyle = doc.createElement("style");
+        variantStyle.textContent = `
+          html[data-mobile-paid-variant] #mobile-paid-purchase .mobile-paid-purchase-link {
+            display: inline-flex;
+            min-height: 52px;
+            width: 100%;
+          }
+
+          html[data-mobile-paid-variant] .btn:focus-visible {
+            outline: 3px solid #fff;
+            outline-offset: 3px;
+          }
+
+          @media (max-width: 900px) {
+            html[data-mobile-paid-variant] #pricing .plans {
+              max-width: 620px;
+            }
+
+            html[data-mobile-paid-variant] #pricing .pricing-mockup {
+              margin-top: 36px;
+            }
+          }
+        `;
+        doc.head.append(variantStyle);
+
+        const mobileHandoff = doc.getElementById("mobile-download-handoff");
+        mobileHandoff?.replaceWith(createPurchaseCard(doc));
+
+        const pricingHeading = doc.querySelector("#pricing .pricing-head h2");
+        if (pricingHeading) {
+          pricingHeading.replaceChildren("Get Sidestream Pro.");
+          const pricingLine = doc.createElement("span");
+          pricingLine.className = "pricing-line";
+          pricingLine.textContent = "One payment. Unlimited downloads.";
+          pricingHeading.append(pricingLine);
+        }
+
+        const freePlan = Array.from(doc.querySelectorAll("#pricing .plans > .plan")).find(
+          (plan) => plan.querySelector(".plan-name")?.textContent.trim() === "Free"
+        );
+        freePlan?.remove();
+
+        const proPlan = doc.querySelector("#pricing .plan.featured");
+        const proPlanName = proPlan?.querySelector(".plan-name");
+        if (proPlanName?.firstChild) {
+          proPlanName.firstChild.textContent = "Sidestream Pro ";
+        }
+
+        const proPurchaseLink = proPlan?.querySelector("a.btn");
+        if (proPurchaseLink) {
+          proPurchaseLink.setAttribute("href", CHECKOUT_PATH);
+          proPurchaseLink.setAttribute(
+            "aria-label",
+            "Upgrade to Sidestream Pro for $9.99, one-time purchase"
+          );
+          proPurchaseLink.textContent = "Upgrade to Pro";
+        }
+
+        doc.querySelector("#pricing .final")?.remove();
+
+        doc.querySelectorAll("a").forEach((link) => {
+          const href = link.getAttribute("href") || "";
+          if (href.includes("/api/download") || href === "/upgrade.html") {
+            link.setAttribute("href", CHECKOUT_PATH);
+            link.setAttribute("aria-label", "Buy Sidestream Pro for $9.99, one-time purchase");
+            link.removeAttribute("data-download");
+            link.removeAttribute("data-windows-download");
+          }
+        });
+
+        return "<!doctype html>\n" + doc.documentElement.outerHTML;
+      }
+
+      async function renderPrototype() {
+        const response = await fetch("/index.html", { cache: "no-store" });
+        if (!response.ok) {
+          throw new Error(`Unable to load the canonical page (${response.status}).`);
+        }
+
+        const source = await response.text();
+        const canonicalDocument = new DOMParser().parseFromString(source, "text/html");
+        const variantSource = applyPaidVariant(canonicalDocument);
+
+        document.open();
+        document.write(variantSource);
+        document.close();
+      }
+
+      renderPrototype().catch((error) => {
+        const loadingState = document.getElementById("prototype-loading");
+        if (loadingState) {
+          loadingState.textContent =
+            "The local paid prototype could not load. Start the documented Vite development server and try again.";
+        }
+        console.error(error);
+      });
+    })();
+  </script>
+</body>
+</html>

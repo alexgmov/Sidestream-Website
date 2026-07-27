@@ -150,3 +150,14 @@ test("all account GET surfaces remain free of device mutation calls", async () =
     assert.doesNotMatch(source, /authorizeLicenseDownload/);
   }
 });
+
+test("account sessions distinguish a completed one-time purchase from Stripe customer existence", async () => {
+  const source = await readFile(files.account, "utf8");
+
+  assert.match(
+    source,
+    /exists \(\s*select 1\s*from public\.sidestream_licenses purchase[\s\S]+purchase\.stripe_subscription_id is null[\s\S]+purchase\.stripe_payment_intent_id is not null[\s\S]+purchase\.stripe_checkout_session_id is not null[\s\S]+\) as has_one_time_purchase/,
+  );
+  assert.match(source, /hasOneTimePurchase: row\.has_one_time_purchase/);
+  assert.match(source, /hasOneTimePurchase: session\.hasOneTimePurchase/);
+});

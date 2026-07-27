@@ -142,6 +142,7 @@ export type AccountSession = {
   name: string;
   avatarUrl: string;
   stripeCustomerId: string;
+  hasOneTimePurchase: boolean;
   license: LicenseSummary;
 };
 
@@ -657,6 +658,7 @@ export async function getSession(
     display_name: string | null;
     avatar_url: string | null;
     stripe_customer_id: string | null;
+    has_one_time_purchase: boolean;
     license_status: string | null;
     plan_key: string | null;
     entitlement_status: string | null;
@@ -672,6 +674,17 @@ export async function getSession(
         a.display_name,
         a.avatar_url,
         a.stripe_customer_id,
+        exists (
+          select 1
+          from public.sidestream_licenses purchase
+          where purchase.account_id = a.id
+            and purchase.plan_key in ('sidestream_pro', 'sidestream_unlimited')
+            and purchase.stripe_subscription_id is null
+            and (
+              purchase.stripe_payment_intent_id is not null
+              or purchase.stripe_checkout_session_id is not null
+            )
+        ) as has_one_time_purchase,
         l.status as license_status,
         l.plan_key,
         license_state.entitlement_status,
@@ -709,6 +722,7 @@ export async function getSession(
     name: row.display_name || "",
     avatarUrl: row.avatar_url || "",
     stripeCustomerId: row.stripe_customer_id || "",
+    hasOneTimePurchase: row.has_one_time_purchase,
     license: buildLicenseSummary({
       status: row.license_status,
       planKey: row.plan_key,
@@ -748,6 +762,7 @@ export function publicSessionPayload(session: AccountSession | null) {
     license: session.license,
     billing: {
       hasCustomer: Boolean(session.stripeCustomerId),
+      hasOneTimePurchase: session.hasOneTimePurchase,
     },
   };
 }
@@ -1177,9 +1192,14 @@ export async function createOrReuseCheckoutSession(options: {
       const stripeCustomerId = row.intent_kind === "account" && options.session
         ? await findOrCreateStripeCustomer(options.session, client)
         : "";
-      const cancelUrl = new URL("/api/checkout/start", options.baseUrl);
+      const cancelUrl = new URL(
+        row.intent_kind === "account" ? "/account.html" : "/api/checkout/start",
+        options.baseUrl,
+      );
       cancelUrl.searchParams.set("checkout", "cancelled");
-      cancelUrl.searchParams.set("intent", options.browserToken);
+      if (row.intent_kind !== "account") {
+        cancelUrl.searchParams.set("intent", options.browserToken);
+      }
       const metadata: Record<string, string> = {
         sidestream_plan: SIDESTREAM_PRO_PLAN_KEY,
         sidestream_price_id: stripePriceId,
