@@ -24,6 +24,8 @@ const REQUIRED_INDEX_MARKERS = Object.freeze([
   ["After Effects waitlist CTA", "data-after-effects-waitlist-open"],
   ["After Effects waitlist modal", 'id="after-effects-waitlist-gate"'],
   ["After Effects waitlist browser route", 'fetch("/api/after-effects-waitlist"'],
+  ["Sidestream Instagram referral mapping", '"instagram-bio"'],
+  ["Alex Instagram referral mapping", '"instagram-alex"'],
 ]);
 const REQUIRED_REDIRECTS = Object.freeze([
   {
@@ -31,6 +33,24 @@ const REQUIRED_REDIRECTS = Object.freeze([
     src: "^/ig$",
     status: 307,
     location: "https://sidestream.tv/?utm_source=instagram&utm_medium=social&utm_campaign=bio",
+  },
+  {
+    label: "Instagram bio trailing-slash redirect",
+    src: "^/ig/$",
+    status: 307,
+    location: "https://sidestream.tv/?utm_source=instagram&utm_medium=social&utm_campaign=bio",
+  },
+  {
+    label: "Alex Instagram bio redirect",
+    src: "^/alex$",
+    status: 307,
+    location: "https://sidestream.tv/?utm_source=instagram&utm_medium=social&utm_campaign=alex-bio",
+  },
+  {
+    label: "Alex Instagram bio trailing-slash redirect",
+    src: "^/alex/$",
+    status: 307,
+    location: "https://sidestream.tv/?utm_source=instagram&utm_medium=social&utm_campaign=alex-bio",
   },
   {
     label: "ManyChat redirect",

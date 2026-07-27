@@ -2069,11 +2069,17 @@
     }
 
     function recordReferralVisit() {
-      const source = new URLSearchParams(window.location.search)
-        .get("utm_source")
-        ?.trim()
-        .toLowerCase();
-      if (source !== "manychat") return;
+      const params = new URLSearchParams(window.location.search);
+      const utmSource = params.get("utm_source")?.trim().toLowerCase();
+      const utmMedium = params.get("utm_medium")?.trim().toLowerCase();
+      const utmCampaign = params.get("utm_campaign")?.trim().toLowerCase();
+      let source = null;
+      if (utmSource === "manychat") source = "manychat";
+      if (utmSource === "instagram" && utmMedium === "social") {
+        if (utmCampaign === "bio") source = "instagram-bio";
+        if (utmCampaign === "alex-bio") source = "instagram-alex";
+      }
+      if (!source) return;
 
       fetch("/api/referral-visit", {
         method: "POST",

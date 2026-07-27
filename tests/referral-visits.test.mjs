@@ -54,31 +54,33 @@ after(() => {
   }
 });
 
-test("ManyChat POST schedules a privacy-limited visit write without delaying the response", async () => {
-  const recorded = [];
-  const backgroundTasks = [];
-  const handler = createReferralVisitHandler({
-    recordVisit: async (event) => recorded.push(event),
-    scheduleBackground: (operation) => backgroundTasks.push(operation),
-    logTrackingError: () => assert.fail("tracking should not fail"),
-  });
-  const result = await invoke(handler, {
-    body: { source: "ManyChat" },
-    headers: {
-      "user-agent": "Mozilla/5.0 Chrome/140.0",
-      "x-forwarded-for": "203.0.113.7",
-    },
-  });
+test("owned referral POSTs schedule privacy-limited writes without delaying the response", async () => {
+  for (const requestedSource of ["ManyChat", "instagram-bio", "instagram-alex"]) {
+    const recorded = [];
+    const backgroundTasks = [];
+    const handler = createReferralVisitHandler({
+      recordVisit: async (event) => recorded.push(event),
+      scheduleBackground: (operation) => backgroundTasks.push(operation),
+      logTrackingError: () => assert.fail("tracking should not fail"),
+    });
+    const result = await invoke(handler, {
+      body: { source: requestedSource },
+      headers: {
+        "user-agent": "Mozilla/5.0 Chrome/140.0",
+        "x-forwarded-for": "203.0.113.7",
+      },
+    });
 
-  assert.equal(result.response.status, 204);
-  await result.handlerDone;
-  await Promise.all(backgroundTasks);
-  assert.equal(recorded.length, 1);
-  assert.equal(recorded[0].source, "manychat");
-  assert.equal(recorded[0].likelyScanner, false);
-  assert.match(recorded[0].visitorHash, /^[0-9a-f]{64}$/);
-  assert.equal(JSON.stringify(recorded[0]).includes("203.0.113.7"), false);
-  assert.equal(JSON.stringify(recorded[0]).includes("Chrome/140.0"), false);
+    assert.equal(result.response.status, 204);
+    await result.handlerDone;
+    await Promise.all(backgroundTasks);
+    assert.equal(recorded.length, 1);
+    assert.equal(recorded[0].source, requestedSource.toLowerCase());
+    assert.equal(recorded[0].likelyScanner, false);
+    assert.match(recorded[0].visitorHash, /^[0-9a-f]{64}$/);
+    assert.equal(JSON.stringify(recorded[0]).includes("203.0.113.7"), false);
+    assert.equal(JSON.stringify(recorded[0]).includes("Chrome/140.0"), false);
+  }
 });
 
 test("unsupported sources, methods, content types, and oversized bodies fail closed", async () => {
@@ -120,6 +122,8 @@ test("daily visitor hashes are deterministic, source scoped, and rotate by day",
   assert.equal(first.visitorHash, repeat.visitorHash);
   assert.notEqual(first.visitorHash, nextDay.visitorHash);
   assert.equal(parseReferralVisitSource(" ManyChat "), "manychat");
+  assert.equal(parseReferralVisitSource(" instagram-bio "), "instagram-bio");
+  assert.equal(parseReferralVisitSource(" INSTAGRAM-ALEX "), "instagram-alex");
   assert.equal(parseReferralVisitSource("gmail"), null);
 });
 
@@ -152,7 +156,7 @@ test("referral report counts unique daily humans and scanners without exposing h
   });
 });
 
-test("landing page and Vercel config preserve the short ManyChat tracking route", () => {
+test("landing page and Vercel config preserve all owned referral routes", () => {
   const html = readFileSync(path.join(repoRoot, "index.html"), "utf8");
   const vercel = JSON.parse(readFileSync(path.join(repoRoot, "vercel.json"), "utf8"));
   assert.match(html, /fetch\("\/api\/referral-visit"/);
@@ -167,6 +171,23 @@ test("landing page and Vercel config preserve the short ManyChat tracking route"
     redirect.destination === "https://sidestream.tv/?utm_source=instagram&utm_medium=social&utm_campaign=bio" &&
     redirect.permanent === false
   ));
+  assert.ok(vercel.redirects.some((redirect) =>
+    redirect.source === "/ig/" &&
+    redirect.destination === "https://sidestream.tv/?utm_source=instagram&utm_medium=social&utm_campaign=bio" &&
+    redirect.permanent === false
+  ));
+  assert.ok(vercel.redirects.some((redirect) =>
+    redirect.source === "/alex" &&
+    redirect.destination === "https://sidestream.tv/?utm_source=instagram&utm_medium=social&utm_campaign=alex-bio" &&
+    redirect.permanent === false
+  ));
+  assert.ok(vercel.redirects.some((redirect) =>
+    redirect.source === "/alex/" &&
+    redirect.destination === "https://sidestream.tv/?utm_source=instagram&utm_medium=social&utm_campaign=alex-bio" &&
+    redirect.permanent === false
+  ));
+  assert.match(html, /instagram-bio/);
+  assert.match(html, /instagram-alex/);
 });
 
 function fakeRequest(headers = {}) {
