@@ -147,7 +147,7 @@ export async function createSignedPaidDownloadUrl(pathname: string) {
 function validateArtifactMetadata(
   metadata: PaidArtifactMetadata | null,
   manifest: PaidReleaseManifest,
-) {
+): asserts metadata is PaidArtifactMetadata {
   if (
     !metadata ||
     !Number.isSafeInteger(metadata.size) ||
