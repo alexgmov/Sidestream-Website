@@ -599,6 +599,9 @@ async function loadRuntimeModules() {
       "./customer-identity.js": pathToFileURL(
         join(repositoryRoot, "api", "_lib", "customer-identity.ts"),
       ).href,
+      "./paid-acquisition.js": pathToFileURL(
+        join(repositoryRoot, "api", "_lib", "paid-acquisition.ts"),
+      ).href,
       "./postgres.js": pathToFileURL(
         join(repositoryRoot, "api", "_lib", "postgres.ts"),
       ).href,

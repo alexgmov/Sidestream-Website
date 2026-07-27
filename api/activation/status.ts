@@ -8,6 +8,7 @@ import {
   sendJson,
   type AccountRequest,
 } from "../_lib/account.js";
+import { getPaidAcquisitionActivationOutcome } from "../_lib/paid-acquisition.js";
 
 type ActivationStatusPayload = {
   activationKey?: unknown;
@@ -50,12 +51,47 @@ export default async function handler(
     });
   }
 
+  try {
+    const paidOutcome = await getPaidAcquisitionActivationOutcome({
+      environment: environment.namespace,
+      activationKey,
+    });
+    if (
+      paidOutcome &&
+      !["pending", "claimed"].includes(paidOutcome)
+    ) {
+      return sendJson(
+        response,
+        paidOutcome === "refunded" || paidOutcome === "disputed" ? 403 : 200,
+        { status: paidOutcome },
+      );
+    }
+  } catch (error) {
+    if (!isPaidSchemaUnavailable(error)) {
+      return sendJson(response, 503, {
+        error: "Paid activation is temporarily unavailable",
+        code: "temporarily_unavailable",
+      });
+    }
+  }
+
   const status = await getActivationStatus(activationKey, deviceId, {
     environment,
     platform: payload.platform,
     identity,
   });
   return sendJson(response, 200, status);
+}
+
+function isPaidSchemaUnavailable(error: unknown) {
+  return Boolean(
+    error &&
+    typeof error === "object" &&
+    "code" in error &&
+    ["42P01", "42703"].includes(
+      String((error as { code?: unknown }).code || ""),
+    ),
+  );
 }
 
 function readCustomerIdentityFields(payload: ActivationStatusPayload) {

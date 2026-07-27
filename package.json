@@ -19,6 +19,7 @@
     "test:customer-360": "node scripts/run-customer-360-tests.mjs",
     "test:customer-360-postgres": "node scripts/run-customer-360-tests.mjs --postgres",
     "test:download-referral": "node --test tests/download-referral.test.mjs",
+    "test:paid-acquisition-e2e": "node --experimental-strip-types --test tests/paid-acquisition-e2e-fixtures.test.mjs",
     "test:referral-visits": "node --test tests/referral-visits.test.mjs",
     "test:entitlement": "node --experimental-strip-types --test tests/entitlement.test.mjs",
     "test:migrations": "node --experimental-strip-types --test tests/migrations.test.mjs",
