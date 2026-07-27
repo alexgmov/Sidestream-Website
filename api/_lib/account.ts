@@ -916,6 +916,8 @@ export async function createOrReuseCheckoutSession(options: {
       let activationExpiresAt = row.activation_expires_at
         ? new Date(row.activation_expires_at)
         : null;
+      const stripePriceId = await getSidestreamProPriceId();
+      const stripeProductId = getSidestreamProProductId();
 
       if (row.activation_session_id) {
         await client.query("select pg_advisory_xact_lock(hashtext($1))", [
@@ -991,8 +993,12 @@ export async function createOrReuseCheckoutSession(options: {
           const attachedExpiresAt = attached?.stripe_session_expires_at
             ? new Date(attached.stripe_session_expires_at).getTime()
             : 0;
+          const attachedUsesCurrentCatalog =
+            attached?.stripe_price_id === stripePriceId &&
+            attached?.stripe_product_id === stripeProductId;
           if (
             !options.rotateCancelledSession &&
+            attachedUsesCurrentCatalog &&
             attached?.stripe_checkout_url &&
             attachedExpiresAt > now.getTime()
           ) {
@@ -1032,7 +1038,15 @@ export async function createOrReuseCheckoutSession(options: {
             if (
               !options.rotateCancelledSession &&
               stripeSession.status === "open" &&
-              stripeSession.url
+              stripeSession.url &&
+              (
+                lockedActivation.stripe_checkout_price_id ||
+                cleanString(stripeSession.metadata?.sidestream_price_id, 160)
+              ) === stripePriceId &&
+              (
+                lockedActivation.stripe_checkout_product_id ||
+                getSidestreamProProductId()
+              ) === stripeProductId
             ) {
               await attachExistingSessionToCheckoutIntent(client, row.id, {
                 sessionId: stripeSession.id,
@@ -1054,7 +1068,7 @@ export async function createOrReuseCheckoutSession(options: {
             if (stripeSession.status === "open") {
               await expireCheckoutSession(stripeSession.id, row.id, attempt);
             }
-          } else if (options.rotateCancelledSession) {
+          } else if (options.rotateCancelledSession || !attachedUsesCurrentCatalog) {
             await expireCheckoutSession(attachedSessionId, row.id, attempt);
           }
           replacementSessionId = attachedSessionId;
@@ -1068,7 +1082,9 @@ export async function createOrReuseCheckoutSession(options: {
           row.state === "open" &&
           row.stripe_checkout_url &&
           sessionExpiresAt > now.getTime() &&
-          !options.rotateCancelledSession
+          !options.rotateCancelledSession &&
+          row.stripe_price_id === stripePriceId &&
+          row.stripe_product_id === stripeProductId
         ) {
           return commitCheckoutIntentResult(client, {
             ok: true,
@@ -1085,7 +1101,14 @@ export async function createOrReuseCheckoutSession(options: {
             reused: true,
           });
         }
-        if (sessionExpiresAt > now.getTime() && options.rotateCancelledSession) {
+        if (
+          sessionExpiresAt > now.getTime() &&
+          (
+            options.rotateCancelledSession ||
+            row.stripe_price_id !== stripePriceId ||
+            row.stripe_product_id !== stripeProductId
+          )
+        ) {
           await expireCheckoutSession(row.stripe_checkout_session_id, row.id, attempt);
         }
         replacementSessionId = row.stripe_checkout_session_id;
@@ -1100,8 +1123,6 @@ export async function createOrReuseCheckoutSession(options: {
         ));
       }
 
-      const stripePriceId = await getSidestreamProPriceId();
-      const stripeProductId = getSidestreamProProductId();
       const stripeCustomerId = row.intent_kind === "account" && options.session
         ? await findOrCreateStripeCustomer(options.session, client)
         : "";

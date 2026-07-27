@@ -231,6 +231,25 @@ test("database-backed intents serialize retries, rotate deliberately, and fulfil
     assert.equal(stripe.countWrites("customers.create"), 1);
     assert.equal(stripe.countWrites("checkout.sessions.create"), 1);
 
+    await databasePool.query(
+      `
+        update public.sidestream_checkout_intents
+        set stripe_price_id = 'price_previous_catalog'
+        where id = $1
+      `,
+      [intent.intentId],
+    );
+    const repriced = await account.createOrReuseCheckoutSession({
+      intentId: intent.intentId,
+      browserToken: intent.browserToken,
+      session: buyerSession,
+      baseUrl: BASE_URL,
+    });
+    assert.equal(repriced.ok, true);
+    assert.notEqual(repriced.url, first.url);
+    assert.equal(stripe.countWrites("checkout.sessions.expire"), 1);
+    assert.equal(stripe.countWrites("checkout.sessions.create"), 2);
+
     const persistedCustomer = await databasePool.query(
       "select stripe_customer_id from public.sidestream_accounts where id = $1",
       [buyer.accountId],
@@ -244,12 +263,12 @@ test("database-backed intents serialize retries, rotate deliberately, and fulfil
       rotateCancelledSession: true,
     });
     assert.equal(rotated.ok, true);
-    assert.notEqual(rotated.url, first.url);
-    assert.equal(stripe.countWrites("checkout.sessions.expire"), 1);
-    assert.equal(stripe.countWrites("checkout.sessions.create"), 2);
+    assert.notEqual(rotated.url, repriced.url);
+    assert.equal(stripe.countWrites("checkout.sessions.expire"), 2);
+    assert.equal(stripe.countWrites("checkout.sessions.create"), 3);
     assert.notEqual(
-      stripe.sessionCreateWrites[0].options.idempotencyKey,
       stripe.sessionCreateWrites[1].options.idempotencyKey,
+      stripe.sessionCreateWrites[2].options.idempotencyKey,
     );
 
     const activationKey = "activation-checkout-intent-exact";
@@ -266,7 +285,7 @@ test("database-backed intents serialize retries, rotate deliberately, and fulfil
       baseUrl: BASE_URL,
     });
     assert.equal(activationCheckout.ok, true);
-    const activationWrite = stripe.sessionCreateWrites.at(-1);
+    let activationWrite = stripe.sessionCreateWrites.at(-1);
     assert.equal(
       activationWrite.options.idempotencyKey,
       getActivationCheckoutIdempotencyKey(activationKey),
@@ -275,6 +294,24 @@ test("database-backed intents serialize retries, rotate deliberately, and fulfil
       activationWrite.params.metadata.sidestream_activation_key,
       activationKey,
     );
+    await databasePool.query(
+      `
+        update public.sidestream_checkout_intents
+        set stripe_price_id = 'price_previous_catalog'
+        where id = $1
+      `,
+      [activationIntent.intentId],
+    );
+    const repricedActivation = await account.createOrReuseCheckoutSession({
+      intentId: activationIntent.intentId,
+      browserToken: activationIntent.browserToken,
+      session: buyerSession,
+      baseUrl: BASE_URL,
+    });
+    assert.equal(repricedActivation.ok, true);
+    assert.notEqual(repricedActivation.url, activationCheckout.url);
+    assert.equal(stripe.countWrites("checkout.sessions.expire"), 3);
+    activationWrite = stripe.sessionCreateWrites.at(-1);
     const attached = await databasePool.query(
       `
         select stripe_checkout_session_id
