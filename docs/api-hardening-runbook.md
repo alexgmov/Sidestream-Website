@@ -23,9 +23,9 @@ history or tickets.
 - All runtime database users share the pool in `api/_lib/postgres.ts` and use a
   pooled URL in production. Migration and backfill tools use a reviewed direct
   URL.
-- `GET /api/checkout/start` is a read/confirmation boundary. Only a confirmed
-  same-origin `POST /api/checkout/create` may create or reuse a Stripe Checkout
-  Session.
+- Upgrade uses one server-owned sequence: Upgrade button, Google authentication,
+  Stripe payment. `GET /api/checkout/start` creates or reuses the Stripe Checkout
+  Session after authentication.
 - Stripe webhook requests durably record an event and acknowledge it. A claimed,
   leased queue reconciles entitlements; account and activation reads never drain
   webhook backlog.
@@ -59,15 +59,14 @@ and JSON responses are `no-store`.
 | `/api/auth/google/callback` | `GET` | Creates the server session and `303` redirects to the allowlisted next path | `400` invalid state/code, `500` exchange/account/session failure |
 | `/api/auth/session` | `GET` | Always `200`: `{"authenticated":false}` or authenticated `user`, `license`, and `billing.hasCustomer` | Dependency failure is a server `500`; this read never processes Stripe events |
 | `/api/auth/logout` | `POST` | `200 {"ok":true}` after clearing the session | Dependency failure is a server `500` |
-| `/api/checkout/start` | `GET` | `200` no-store confirmation HTML; an active owner redirects to account/claim | `409` unavailable intent; legacy-host activation failures redirect to `activation_required`; no Stripe write occurs |
-| `/api/checkout/create` | `POST` | Form clients receive `303` to Stripe; JSON clients receive `200 {"url":"...","reused":boolean}` | `400` malformed; `401 authentication_required`; `403 csrf_rejected` or `intent_account_mismatch`; `409 active_license`, `intent_expired`, `activation_unavailable`, or `activation_window_too_short`; `429 rate_limited`; unhandled DB/Stripe failure is `500` |
+| `/api/checkout/start` | `GET` | Signed-out users receive `302` to Google authentication; signed-in Free accounts receive `303` to Stripe Checkout; an active owner redirects to account/claim | `409 checkout_unavailable`, `intent_expired`, `activation_unavailable`, or `activation_window_too_short`; `429 rate_limited`; unhandled DB/Stripe failure is `500` |
 | `/api/checkout/complete` | `GET` | Verifies the exact attached Session/Price/Product, reconciles payment, then `303` to thank-you | `400` missing session, `409` payment not ready or exact contract mismatch |
 | `/api/billing/portal` | `POST` | Authenticated `200 {"url":"..."}` for a Stripe Customer Portal Session | `401` unauthenticated, `400` no linked Stripe customer, Stripe failure is a server `500` |
 | `/api/billing/receipt` | `POST` | Authenticated `200 {"url":"..."}` for the latest owned charge receipt | `401` unauthenticated, `403` customer mismatch, `404` no purchase/receipt URL, Stripe failure is a server `500` |
 | `/api/stripe/webhook` | `POST` | `200 {"received":true}` after durable insert; duplicate acknowledgment also includes `"duplicate":true` | `400` missing/invalid signature; an unhandled durable-storage failure is a server `500` and must be retried by Stripe |
 | `/api/activation/start` | `POST` | `200` with `activationKey`, 24-hour `expiresAt`, `upgradeUrl`, and `restoreUrl` | `400 invalid_request` for missing device; an unexpected dependency failure is a server `500` |
 | `/api/activation/status` | `POST` | `200` state payload: `pending`, `pending_payment`, `active`, `completed`, `not_found`, `device_mismatch`, `expired`, `transfer_required`, `transfer_limit_reached`, `device_replaced`, or `device_deactivated` | A parsed non-null JSON value missing valid `activationKey` or `deviceId` returns `400 invalid_request`; valid JSON `null`, malformed JSON, and body-read failures currently escape as an unshaped platform `5xx`, not `400`; `503` environment unavailable |
-| `/api/activation/claim` | `GET` / `POST` | GET is read-only sign-in/confirmation HTML; same-origin CSRF-valid POST restores/reconnects/transfers | `400` invalid/transfer intent; `401` sign-in required; `403` inactive or CSRF; `409` unavailable, binding changed, transfer limit, or claim conflict; `503` environment unavailable |
+| `/api/activation/claim` | `GET` / `POST` | GET authenticates and routes Free accounts to Checkout; active owners receive the restore/transfer decision; same-origin CSRF-valid POST restores/reconnects/transfers | `400` invalid/transfer intent; `401` sign-in required; `403` inactive or CSRF; `409` unavailable, binding changed, transfer limit, or claim conflict; `503` environment unavailable |
 | `/api/license/verify` | `POST` | `200` current credential result | `400 invalid_request`; `401 invalid_token`, `revoked`, `device_mismatch`, `device_replaced`, or `device_deactivated`; `403 license_inactive`; `503` retryable environment failure |
 | `/api/license/refresh` | `POST` | `200` atomically rotated access/refresh pair; predecessor replay is deterministic for two minutes | Same stable `400`/`401`/`403`/`503` classes as verify |
 | `/api/license/authorize-download` | `POST` | Exactly `200 {"active":true}` for the active device | `401` revoked/replaced/deactivated device; `403` inactive; `503 {"code":"authorization_unavailable"}` is retryable |
@@ -119,30 +118,30 @@ is current implementation truth, not a recommended new parser contract.
 
 ## Checkout, activation, and entitlement lifecycle
 
-### Confirmed Checkout flow
+### Upgrade payment flow
 
-1. `GET /api/checkout/start` creates or resumes a database Checkout intent and
-   renders a no-store confirmation page. It must not initialize Stripe, create a
-   Customer, resolve/create a Price, or create a Checkout Session.
-2. The form submits signed intent fields to same-origin
-   `POST /api/checkout/create`. The signed confirmation is valid for 10 minutes;
-   the database intent expires after 24 hours.
-3. The POST atomically consumes limits of 8 requests per intent and 20 per IP in
-   a 15-minute window. It locks the intent, creates or reuses one Stripe Session
-   with a stable idempotency key, and persists the exact Session/Price/Product.
-4. Checkout uses `mode=payment`, one card line item with quantity one, invoice
+1. The user clicks Upgrade.
+2. Google authentication establishes the Sidestream account session.
+3. The browser opens Stripe Checkout for payment.
+
+`GET /api/checkout/start` owns this sequence. It preserves an optional bounded
+activation key through the OAuth return, applies limits of 8 requests per account
+and 20 per IP in a 15-minute window, creates a 24-hour database intent, and invokes
+the locked worker. The worker creates or reuses one Stripe Session with a stable
+idempotency key and persists the exact Session/Price/Product.
+
+- Checkout uses `mode=payment`, one card line item with quantity one, invoice
    creation, promotion codes, and the copy `One-time payment. No subscription.`
-5. The success URL keeps Stripe's literal `{CHECKOUT_SESSION_ID}` placeholder and
+- The success URL keeps Stripe's literal `{CHECKOUT_SESSION_ID}` placeholder and
    returns through `/api/checkout/complete`. Completion re-fetches Stripe truth;
    the browser URL is never payment proof.
-6. The signed webhook remains the primary durable path. Completion and the
+- The signed webhook remains the primary durable path. Completion and the
    device-validated activation fallback converge on the same locked,
    watermark-protected reconciliation helper.
 
 Persisted intent state is constrained to `pending`, `open`, `completed`,
-`cancelled`, `expired`, or `failed`. A cancelled browser return remains a GET
-read; its next signed confirmation POST may explicitly request bounded Session
-rotation. A caller cannot supply its own Stripe or activation tuple.
+`cancelled`, `expired`, or `failed`. Stripe cancellation returns to the signed-in
+account page. A caller cannot supply its own Stripe or activation tuple.
 
 New one-time purchases select `SIDESTREAM_PRO_PRODUCT_ID` (default
 `prod_UpwXh6oO1OmPyQ`), then use this runtime-compatible Price precedence: exact
@@ -445,7 +444,7 @@ Never paste values into this document, tickets, chat, browser code, or CEP code.
 | Migration database | `SIDESTREAM_POSTGRES_URL_NON_POOLING` preferred; `POSTGRES_MIGRATION_STATEMENT_TIMEOUT_MS` defaults to 300000 and is bounded 1000-1800000; runner pool max is 1 |
 | Test database | `SIDESTREAM_TEST_POSTGRES_URL` is mandatory for integration tests, must be disposable, and must not normalize to any runtime host/port/database target |
 | Rate limiter | `SIDESTREAM_RATE_LIMIT_HASH_SECRET`, at least 32 characters and stable; no production fallback. Checkout is fixed at 8/intent and 20/IP per 15 minutes; lead capture is fixed at 5/email and 20/IP per 10 minutes |
-| Checkout intent | Signed confirmation TTL 10 minutes; database intent TTL 24 hours; fixed code constants. Product/Price variables are `SIDESTREAM_PRO_PRODUCT_ID`, `SIDESTREAM_PRO_PRICE_ID`, and legacy `SIDESTREAM_UNLIMITED_PRICE_ID` |
+| Checkout intent | Database intent TTL 24 hours; fixed code constant. Product/Price variables are `SIDESTREAM_PRO_PRODUCT_ID`, `SIDESTREAM_PRO_PRICE_ID`, and legacy `SIDESTREAM_UNLIMITED_PRICE_ID` |
 | Stripe retries | Batch/lease/backoff and caught-failure attempt-8 behavior are described above. Crash/lease-reclaim attempts are currently unbounded because the claim query has no total-attempt cap; that is a Production blocker. Legacy allowlists are `SIDESTREAM_LEGACY_SUBSCRIPTION_PRODUCT_IDS` and `SIDESTREAM_LEGACY_SUBSCRIPTION_PRICE_IDS` |
 | Lead fallback | `SIDESTREAM_LEAD_HASH_SECRET` at least 32 characters (may intentionally share the rate-limit secret), `SIDESTREAM_DOWNLOAD_LEADS_BLOB_PREFIX`, plus Vercel Blob auth variables |
 | License/device | If `SIDESTREAM_LICENSE_HASH_SECRET` is absent, the current device HMAC secret falls back to the first configured runtime value in this order: `SIDESTREAM_POSTGRES_URL`, `SIDESTREAM_POSTGRES_PRISMA_URL`, `POSTGRES_URL`, `POSTGRES_PRISMA_URL`. The runtime trims/selects and URL-normalizes that connection value before hashing; before any URL/pool change, securely capture the exact resulting bytes and duplicate them into `SIDESTREAM_LICENSE_HASH_SECRET` without logging or further parsing/re-encoding/normalization. Prove continuity with the same real device/token before and after promotion. `SIDESTREAM_DEVICE_POLICY_MODE` is `off`, `observe`, or `enforce`; `SIDESTREAM_TEST_API_HOSTS` strictly identifies Test hosts. |
@@ -477,7 +476,7 @@ tokens, device IDs, full Stripe payloads, or lead email addresses.
 | Crash/reclaim attempt overflow | Count `terminal_at is null and attempt_count >= 8`, including future retryable rows and unexpired processing leases | Critical on any row. The current claim path can reclaim indefinitely after repeated process termination; stop promotion and require the total-attempt implementation blocker to close. |
 | Oldest event age | Age of oldest due nonterminal event | Warning over 10 minutes, critical over 30 minutes; the processor runs every five minutes. |
 | Event failures | `retryable + deadLetter` divided by claimed, plus `processing_failed` route outcomes | Warning above 5% with at least 5 claims in 15 minutes; critical above 20% or any route-level failure for 5 minutes. |
-| Checkout volume | Confirmation GETs, confirmed POSTs, created/reused Sessions, `csrf_rejected`, dependency errors | Warning when create failures exceed 1% or 5 in 15 minutes. A GET without a matching confirmation POST is abandonment, not a Stripe failure. |
+| Checkout volume | Authentication redirects, created/reused Sessions, rate limits, and dependency errors | Warning when create failures exceed 1% or 5 in 15 minutes. |
 | Rate limit | `429 code=rate_limited` by scope and total eligible requests | Warning when checkout or lead 429s exceed 5% with at least 10 requests in 15 minutes; investigate abuse before raising limits. |
 | Lead fallback backlog | Private Blob count and oldest age under the configured prefix | Warning if nonzero for 15 minutes after Postgres recovers or oldest exceeds 30 minutes; critical over 2 hours or growth across two replay intervals. |
 | Unmapped Blob records | Replay `summary.unmapped` and path sample without lead contents | Critical on any new unmapped record. Quarantine/preserve it; do not auto-delete. |

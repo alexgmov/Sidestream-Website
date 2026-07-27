@@ -93,12 +93,6 @@
       "headers": [
         { "key": "X-Robots-Tag", "value": "noindex, nofollow" }
       ]
-    },
-    {
-      "source": "/upgrade.html",
-      "headers": [
-        { "key": "X-Robots-Tag", "value": "noindex, nofollow" }
-      ]
     }
   ]
 }

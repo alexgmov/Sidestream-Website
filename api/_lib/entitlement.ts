@@ -163,73 +163,6 @@ export function getStripePriceIdempotencyKey(productId: string) {
   return `sidestream_pro_price_${digest}`;
 }
 
-export function createCheckoutIntentToken(options: {
-  intentId: string;
-  browserToken: string;
-  expiresAtSeconds: number;
-  secret: string;
-}) {
-  const payload = [
-    "v1",
-    options.expiresAtSeconds,
-    options.intentId,
-    options.browserToken,
-  ].join(".");
-  const signature = createHmac("sha256", options.secret)
-    .update(`checkout-intent:${payload}`)
-    .digest("base64url");
-  return `v1.${options.expiresAtSeconds}.${signature}`;
-}
-
-export function validateCheckoutIntentToken(options: {
-  token: string;
-  intentId: string;
-  browserToken: string;
-  nowSeconds: number;
-  secret: string;
-}) {
-  const [version, rawExpiresAt, signature, ...rest] = options.token.split(".");
-  const expiresAtSeconds = Number(rawExpiresAt);
-  if (
-    version !== "v1" ||
-    rest.length ||
-    !signature ||
-    !Number.isSafeInteger(expiresAtSeconds) ||
-    expiresAtSeconds < options.nowSeconds ||
-    expiresAtSeconds > options.nowSeconds + 15 * 60
-  ) {
-    return false;
-  }
-
-  return safeEqual(options.token, createCheckoutIntentToken({
-    intentId: options.intentId,
-    browserToken: options.browserToken,
-    expiresAtSeconds,
-    secret: options.secret,
-  }));
-}
-
-export function validateCheckoutIntentPost(options: {
-  requestOrigin: string;
-  expectedOrigin: string;
-  fetchSite: string;
-  contentType: string;
-}) {
-  let requestOrigin = "";
-  let expectedOrigin = "";
-  try {
-    requestOrigin = new URL(options.requestOrigin).origin;
-    expectedOrigin = new URL(options.expectedOrigin).origin;
-  } catch {
-    return false;
-  }
-
-  const mediaType = options.contentType.split(";", 1)[0].trim().toLowerCase();
-  return requestOrigin === expectedOrigin &&
-    options.fetchSite.trim().toLowerCase() === "same-origin" &&
-    ["application/json", "application/x-www-form-urlencoded"].includes(mediaType);
-}
-
 export function getStripeCheckoutWindow(
   activationExpiresAtMs: number,
   claimGraceSeconds: number,
@@ -519,6 +452,13 @@ export function sanitizeAccountNextPath(value: unknown) {
     const parsed = new URL(raw, "https://sidestream.invalid");
     if (parsed.origin !== "https://sidestream.invalid") return "/account.html";
     if (parsed.pathname === "/account.html") return `${parsed.pathname}${parsed.search}`;
+    if (parsed.pathname === "/api/checkout/start") {
+      const activationKey = parsed.searchParams.get("activation");
+      if (parsed.search && !activationKey) return "/account.html";
+      return activationKey
+        ? `/api/checkout/start?activation=${encodeURIComponent(activationKey)}`
+        : "/api/checkout/start";
+    }
     if (
       parsed.pathname === "/api/activation/claim" &&
       parsed.searchParams.has("activation")

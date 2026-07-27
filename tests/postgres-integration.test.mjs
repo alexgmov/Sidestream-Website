@@ -156,21 +156,37 @@ test("cross-lane contracts hold in one isolated disposable Postgres schema", {
           },
         },
       });
-      const confirmation = await runtime.account.createCheckoutIntentConfirmation({
-        session: null,
+      const buyerSession = {
+        accountId: accountFixture.accountId,
+        email: "owner@example.com",
+        name: "Owner",
+        avatarUrl: "",
+        stripeCustomerId: "cus_integration",
+        license: {
+          active: false,
+          plan: "free",
+          status: "free",
+          currentPeriodEnd: "",
+          cancelAtPeriodEnd: false,
+          graceUntil: "",
+          features: {},
+        },
+      };
+      const intent = await runtime.account.createCheckoutIntent({
+        session: buyerSession,
       });
-      assert.ok(confirmation);
+      assert.ok(intent);
       const attempts = await Promise.all([
         runtime.account.createOrReuseCheckoutSession({
-          intentId: confirmation.intentId,
-          browserToken: confirmation.browserToken,
-          session: null,
+          intentId: intent.intentId,
+          browserToken: intent.browserToken,
+          session: buyerSession,
           baseUrl: "https://sidestream.tv",
         }),
         runtime.account.createOrReuseCheckoutSession({
-          intentId: confirmation.intentId,
-          browserToken: confirmation.browserToken,
-          session: null,
+          intentId: intent.intentId,
+          browserToken: intent.browserToken,
+          session: buyerSession,
           baseUrl: "https://sidestream.tv",
         }),
       ]);

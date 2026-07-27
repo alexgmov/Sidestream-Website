@@ -86,7 +86,7 @@
             "priceCurrency": "USD"
           },
           "availability": "https://schema.org/InStock",
-          "url": "https://sidestream.tv/upgrade.html"
+          "url": "https://sidestream.tv/api/checkout/start"
         }
       ],
       "publisher": {
@@ -123,7 +123,7 @@
             "priceCurrency": "USD"
           },
           "availability": "https://schema.org/InStock",
-          "url": "https://sidestream.tv/upgrade.html"
+          "url": "https://sidestream.tv/api/checkout/start"
         }
       ]
     }
@@ -681,6 +681,8 @@
     grid-area: 1 / 1;
     opacity: 0;
     color: var(--blue);
+    padding-bottom: 0.05em;
+    margin-bottom: -0.05em;
     transform: translate3d(0, 0.96em, 0);
     will-change: opacity, transform;
     backface-visibility: hidden;
@@ -1350,7 +1352,7 @@
                 <li>Maximum audio and video quality</li>
                 <li>One active production device at a time</li>
               </ul>
-              <a class="btn btn-primary" href="/upgrade.html">Upgrade to Pro</a>
+              <a class="btn btn-primary" href="/api/checkout/start">Upgrade to Pro</a>
             </div>
           </div>
         </div>
@@ -2080,7 +2082,7 @@
     document.querySelectorAll("[data-purchase]").forEach((el) =>
       el.addEventListener("click", (ev) => {
         ev.preventDefault();
-        window.location.assign("/upgrade.html");
+        window.location.assign("/api/checkout/start");
       })
     );
   </script>
