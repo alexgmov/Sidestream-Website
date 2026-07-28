@@ -840,6 +840,14 @@ export function __setActivationSecurityStripeClient(value: Stripe | null) {
       "../_lib/account.js": accountModuleUrl,
       "../_lib/device-policy.js": helperImports["./device-policy.js"],
       "../_lib/entitlement.js": helperImports["./entitlement.js"],
+      "../_lib/paid-onboarding-claim-page.js": pathToFileURL(
+        join(
+          repositoryRoot,
+          "api",
+          "_lib",
+          "paid-onboarding-claim-page.ts",
+        ),
+      ).href,
     },
   );
     const startModuleUrl = await writeRouteModule(

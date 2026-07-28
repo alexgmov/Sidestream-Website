@@ -1856,7 +1856,15 @@ export async function createActivationSession(
   const deviceId = cleanString(payload.deviceId, 240);
   if (!deviceId) throw new Error("Missing device ID");
 
-  let paidActivation = false;
+  const requestedSource = cleanString(payload.source, 120);
+  const paidOnboardingSource =
+    typeof payload.source === "string" &&
+    payload.source === PAID_ACQUISITION_SOURCE;
+  const activationSource = paidOnboardingSource
+    ? PAID_ACQUISITION_SOURCE
+    : requestedSource === PAID_ACQUISITION_SOURCE
+      ? "plugin"
+      : requestedSource || "plugin";
   await withPgClient(async (client) => {
     await client.query("begin");
     try {
@@ -1883,7 +1891,7 @@ export async function createActivationSession(
           hashPrivateIdentifier(deviceId),
           cleanString(payload.appVersion, 80) || null,
           cleanString(payload.buildChannel, 80) || null,
-          cleanString(payload.source, 120) || "plugin",
+          activationSource,
           getClientIp(request) || null,
           cleanString(request.headers["user-agent"], 500) || null,
           expiresAt.toISOString(),
@@ -1893,11 +1901,11 @@ export async function createActivationSession(
       if (!activationId) throw new Error("Activation insert did not return an ID");
 
       if (
-        cleanString(payload.source, 120) === PAID_ACQUISITION_SOURCE &&
+        paidOnboardingSource &&
         typeof payload.installerReceiptIdHash === "string" &&
         /^[0-9a-f]{64}$/.test(payload.installerReceiptIdHash)
       ) {
-        paidActivation = await associatePaidAcquisitionActivation(client, {
+        await associatePaidAcquisitionActivation(client, {
           environment: environment.namespace,
           activationRef: activationId,
           installerReceiptIdHash: payload.installerReceiptIdHash,
@@ -1923,8 +1931,8 @@ export async function createActivationSession(
     expiresAt: expiresAt.toISOString(),
     upgradeUrl: `${getBaseUrl(request)}/api/checkout/start?activation=${encodeURIComponent(activationKey)}`,
     restoreUrl: `${getBaseUrl(request)}${
-      paidActivation
-        ? "/api/paid-acquisition/claim"
+      paidOnboardingSource
+        ? "/api/activation/paid-claim"
         : "/api/activation/claim"
     }?activation=${encodeURIComponent(activationKey)}`,
   };

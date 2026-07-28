@@ -501,6 +501,7 @@ export function sanitizeAccountNextPath(value: unknown) {
     if (
       (
         parsed.pathname === "/api/activation/claim" ||
+        parsed.pathname === "/api/activation/paid-claim" ||
         parsed.pathname === "/api/paid-acquisition/claim"
       ) &&
       parsed.searchParams.size === 1 &&
