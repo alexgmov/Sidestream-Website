@@ -209,16 +209,15 @@ test("canonical promotion requires a Ready Production deployment with the expect
   const calls = [];
   const result = await promoteCanonicalProduction({
     expectedSha: gitSha,
-    fetchImpl: async () =>
-      new Response(JSON.stringify({ gitSha }), { status: 200 }),
     runVercel: async (args) => {
       calls.push(args);
       if (args[0] === "inspect") return JSON.stringify(deployment);
+      if (args[0] === "curl") return JSON.stringify({ gitSha });
       return "";
     },
   });
   assert.equal(result.deploymentId, "dpl_test");
-  assert.deepEqual(calls[1].slice(0, 4), [
+  assert.deepEqual(calls[2].slice(0, 4), [
     "alias",
     "set",
     deployment.url,

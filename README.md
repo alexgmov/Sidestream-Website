@@ -574,7 +574,8 @@ It then verifies the immutable checkout baselines and exact linked Vercel
 project, runs the focused entitlement suite, builds the Production artifact,
 checks its bundled Google/Stripe handlers, root-page allowlist, and embedded
 SHA, deploys that prebuilt artifact, verifies the default Vercel Production
-alias reports that SHA, promotes that exact deployment to `sidestream.tv`, and
+alias reports that SHA through an authenticated protected-deployment read,
+promotes that exact deployment to `sidestream.tv`, and
 then verifies that canonical Production reports the candidate SHA and redirects
 Checkout directly to Google or Stripe:
 

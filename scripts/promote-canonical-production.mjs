@@ -27,7 +27,6 @@ export function assertPromotionCandidate({ deployment, expectedSha, reportedSha 
 export async function promoteCanonicalProduction({
   expectedSha,
   root = process.cwd(),
-  fetchImpl = fetch,
   runVercel = async (args) => {
     const { stdout } = await execFileAsync("npx", ["vercel@latest", ...args], {
       cwd: root,
@@ -45,20 +44,14 @@ export async function promoteCanonicalProduction({
     "alex-3685s-projects",
   ]);
   const deployment = JSON.parse(inspectOutput);
-  const versionResponse = await fetchImpl(
-    `https://${deployment.url}/version.json`,
-    {
-      headers: { accept: "application/json" },
-      cache: "no-store",
-      signal: AbortSignal.timeout(10_000),
-    },
+  const version = JSON.parse(
+    await runVercel([
+      "curl",
+      "/version.json",
+      "--deployment",
+      deployment.url,
+    ]),
   );
-  if (!versionResponse.ok) {
-    throw new Error(
-      `Default Vercel deployment version check failed with ${versionResponse.status}`,
-    );
-  }
-  const version = await versionResponse.json();
   assertPromotionCandidate({
     deployment,
     expectedSha,
