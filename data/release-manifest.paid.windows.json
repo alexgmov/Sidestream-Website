@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
   "platform": "windows-x64",
-  "version": "0.0.0-paid-fixture",
-  "filename": "Sidestream-0.0.0-paid-fixture-Windows-Installer.exe",
-  "sizeBytes": 524288,
-  "sha256": "cedb222f699be23d93243e908fbbb089acdda18c362ca561e00cb6140b706367",
-  "artifactId": "fixture-paid-onboarding-windows-x64-v1"
+  "version": "1.0.13",
+  "filename": "Sidestream-1.0.13-Windows-Beta-Installer.exe",
+  "sizeBytes": 61653939,
+  "sha256": "9ab3a9e2fd84d41d9468be184c85081355fe93ab726a33ed62b9c47a32d443ad",
+  "artifactPathname": "sidestream/1.0.13/Sidestream-1.0.13-Windows-Beta-Installer.exe"
 }

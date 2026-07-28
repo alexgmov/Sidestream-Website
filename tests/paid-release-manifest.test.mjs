@@ -93,7 +93,7 @@ test("paid manifests expose exactly the bounded public contract", () => {
     const publicManifest = toPublicPaidReleaseManifest(manifest);
 
     assert.equal(manifest.platform, platform);
-    assert.match(manifest.artifactId, /^fixture-paid-onboarding-/);
+    assert.match(manifest.artifactPathname, /^sidestream\/[0-9.]+\//);
     assert.deepEqual(Object.keys(publicManifest), [
       "schemaVersion",
       "platform",
@@ -102,12 +102,15 @@ test("paid manifests expose exactly the bounded public contract", () => {
       "sizeBytes",
       "sha256",
     ]);
-    assert.equal(JSON.stringify(publicManifest).includes(manifest.artifactId), false);
+    assert.equal(
+      JSON.stringify(publicManifest).includes(manifest.artifactPathname),
+      false,
+    );
     assert.equal("pathname" in publicManifest, false);
-    assert.equal("artifactId" in publicManifest, false);
+    assert.equal("artifactPathname" in publicManifest, false);
     assert.match(
       getPaidArtifactPathname(manifest),
-      /^sidestream\/paid-onboarding\/v1\/fixture-paid-onboarding-/,
+      /^sidestream\/[0-9.]+\//,
     );
   }
 });
@@ -163,9 +166,11 @@ test("the parser rejects extra/private fields and every malformed public bound",
     ["checksum uppercase", (manifest) => {
       manifest.sha256 = manifest.sha256.toUpperCase();
     }],
-    ["artifact path", (manifest) => { manifest.artifactId = "private/path"; }],
-    ["extra pathname", (manifest) => {
-      manifest.pathname = "private/blob/path.exe";
+    ["artifact path", (manifest) => {
+      manifest.artifactPathname = "../private/path.exe";
+    }],
+    ["extra artifact identity", (manifest) => {
+      manifest.artifactId = "private-artifact";
     }],
   ];
 
@@ -199,7 +204,7 @@ test("paid latest GET and HEAD return no-store public metadata only", async () =
       "sizeBytes",
       "sha256",
     ]);
-    assert.equal(body.includes(fixtureSources[platform].artifactId), false);
+    assert.equal(body.includes(fixtureSources[platform].artifactPathname), false);
     assert.doesNotMatch(body, /pathname|BLOB_|signed.?token/i);
 
     const headResult = await invoke(releaseHandler(), {
@@ -321,7 +326,10 @@ test("absent, size-drifted, and invalid artifacts fail closed without signing", 
     assert.equal(result.response.status, 404);
     assert.equal(result.response.headers.get("cache-control"), "no-store");
     assert.deepEqual(JSON.parse(body), { error: "artifact_not_found" });
-    assert.equal(body.includes(fixtureSources["windows-x64"].artifactId), false);
+    assert.equal(
+      body.includes(fixtureSources["windows-x64"].artifactPathname),
+      false,
+    );
     assert.doesNotMatch(body, /pathname|sidestream\/paid-onboarding/i);
     assert.deepEqual(state.signedPathnames, []);
   }
@@ -338,7 +346,7 @@ test("absent, size-drifted, and invalid artifacts fail closed without signing", 
 
 test("invalid manifest source fails both routes before artifact access", async () => {
   const malformed = structuredClone(fixtureSources["windows-x64"]);
-  malformed.pathname = "private/blob/path.exe";
+  malformed.artifactPathname = "../private/blob/path.exe";
   const manifestPath = path.join(compiledDirectory, "invalid-paid-windows.json");
   writeFileSync(manifestPath, `${JSON.stringify(malformed)}\n`, "utf8");
   process.env.SIDESTREAM_PAID_WINDOWS_RELEASE_MANIFEST_PATH = manifestPath;
@@ -354,7 +362,7 @@ test("invalid manifest source fails both routes before artifact access", async (
     assert.equal(downloadResult.response.status, 404);
     assert.deepEqual(state.headPathnames, []);
     assert.deepEqual(state.signedPathnames, []);
-    assert.equal(downloadBody.includes(malformed.pathname), false);
+    assert.equal(downloadBody.includes(malformed.artifactPathname), false);
 
     const releaseResult = await invoke(releaseHandler(), {
       path: "/api/releases/paid-latest?platform=windows-x64",
@@ -363,7 +371,7 @@ test("invalid manifest source fails both routes before artifact access", async (
     const releaseBody = await releaseResult.response.text();
 
     assert.equal(releaseResult.response.status, 404);
-    assert.equal(releaseBody.includes(malformed.pathname), false);
+    assert.equal(releaseBody.includes(malformed.artifactPathname), false);
   } finally {
     restoreEnvironment(
       "SIDESTREAM_PAID_WINDOWS_RELEASE_MANIFEST_PATH",
@@ -405,8 +413,7 @@ function releaseHandler() {
 }
 
 function expectedPathname(platform) {
-  const fixture = fixtureSources[platform];
-  return `sidestream/paid-onboarding/v1/${fixture.artifactId}/${fixture.filename}`;
+  return fixtureSources[platform].artifactPathname;
 }
 
 function readFixture(platform) {

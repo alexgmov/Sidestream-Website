@@ -392,7 +392,7 @@ test("fixture purchase connects sticky paid entry to idempotent verified $14.99 
     assert.match(
       getPaidArtifactPathname(manifest),
       new RegExp(
-        `^sidestream/paid-onboarding/v1/.+\\.${
+        `^sidestream/.+\\.${
           platform === "windows-x64" ? "exe" : "dmg"
         }$`,
       ),

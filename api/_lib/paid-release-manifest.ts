@@ -18,7 +18,7 @@ export type PublicPaidReleaseManifest = {
 };
 
 export type PaidReleaseManifest = PublicPaidReleaseManifest & {
-  artifactId: string;
+  artifactPathname: string;
 };
 
 const DEFAULT_MANIFEST_PATHS: Record<PaidReleasePlatform, string> = {
@@ -35,7 +35,7 @@ const DEFAULT_MANIFEST_PATHS: Record<PaidReleasePlatform, string> = {
 };
 
 const MANIFEST_SOURCE_KEYS = new Set([
-  "artifactId",
+  "artifactPathname",
   "filename",
   "platform",
   "schemaVersion",
@@ -43,8 +43,6 @@ const MANIFEST_SOURCE_KEYS = new Set([
   "sizeBytes",
   "version",
 ]);
-const PAID_ARTIFACT_PREFIX = "sidestream/paid-onboarding/v1";
-
 export function resolvePaidReleasePlatform(
   value?: string | null,
 ): PaidReleasePlatform | null {
@@ -134,15 +132,19 @@ export function parsePaidReleaseManifest(
     throw new Error("invalid paid artifact sha256");
   }
 
-  const artifactId = requireExactString(
-    manifest.artifactId,
-    "invalid paid artifact identity",
+  const artifactPathname = requireExactString(
+    manifest.artifactPathname,
+    "invalid paid artifact pathname",
   );
   if (
-    artifactId.length > 80 ||
-    !/^[a-z0-9][a-z0-9._-]*$/.test(artifactId)
+    artifactPathname.length > 255 ||
+    !artifactPathname.startsWith("sidestream/") ||
+    !artifactPathname.endsWith(`/${filename}`) ||
+    !/^[0-9A-Za-z][0-9A-Za-z._+/-]*$/.test(artifactPathname) ||
+    artifactPathname.includes("//") ||
+    artifactPathname.split("/").some((segment) => segment === "." || segment === "..")
   ) {
-    throw new Error("invalid paid artifact identity");
+    throw new Error("invalid paid artifact pathname");
   }
 
   return {
@@ -152,7 +154,7 @@ export function parsePaidReleaseManifest(
     filename,
     sizeBytes: Number(manifest.sizeBytes),
     sha256,
-    artifactId,
+    artifactPathname,
   };
 }
 
@@ -170,7 +172,7 @@ export function toPublicPaidReleaseManifest(
 }
 
 export function getPaidArtifactPathname(manifest: PaidReleaseManifest) {
-  return `${PAID_ARTIFACT_PREFIX}/${manifest.artifactId}/${manifest.filename}`;
+  return manifest.artifactPathname;
 }
 
 function getManifestPath(platform: PaidReleasePlatform) {
