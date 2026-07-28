@@ -10,6 +10,7 @@ const ASSIGNMENT_SECRET_NAME =
 const COOKIE_NAME = "__Host-sidestream-mc-mobile-paid-v1";
 const COOKIE_VERSION = "1";
 const COOKIE_MAX_AGE_SECONDS = 2_592_000;
+const REVIEW_PATH = "/mc-preview";
 const PAID_LANDING_PATH = "/api/paid-acquisition/landing";
 const TEST_PAID_LANDING_PATH = "/mobile-paid-prototype.html";
 const CONTROL_DESTINATION = "https://sidestream.tv/";
@@ -53,7 +54,7 @@ const BASE64URL_VALUE = /^[A-Za-z0-9_-]+$/;
 const encoder = new TextEncoder();
 
 export const config = {
-  matcher: "/mc",
+  matcher: ["/mc", "/mc-preview"],
 };
 
 export default function paidAcquisitionMiddleware(request) {
@@ -86,7 +87,8 @@ export function cohortForBucket(bucket) {
 
 async function routePaidExperiment(request, runtime) {
   const url = new URL(request.url);
-  if (url.pathname !== "/mc") return next();
+  const isReview = url.pathname === REVIEW_PATH;
+  if (url.pathname !== "/mc" && !isReview) return next();
 
   if (request.method !== "GET" && request.method !== "HEAD") {
     return next();
@@ -94,7 +96,10 @@ async function routePaidExperiment(request, runtime) {
 
   const attribution = normalizeAttribution(url.search);
   const fallback = () => controlRedirect(attribution);
-  if (request.method === "HEAD" || !isEligibleMobileBrowser(request)) {
+  if (
+    request.method === "HEAD" ||
+    (!isReview && !isEligibleMobileBrowser(request))
+  ) {
     return fallback();
   }
 
@@ -118,7 +123,7 @@ async function routePaidExperiment(request, runtime) {
       ? await verifyAssignmentCookie(suppliedCookie, key, nowSeconds)
       : null;
 
-    if (existing) {
+    if (existing && (!isReview || existing.cohort === PAID_COHORT)) {
       return cohortResponse(existing.cohort, attribution, undefined, {
         ...runtime,
         key,
@@ -131,7 +136,9 @@ async function routePaidExperiment(request, runtime) {
       return fallback();
     }
     const nonce = bytesToBase64Url(nonceBytes);
-    const cohort = await assignCohort(key, nonce);
+    const cohort = isReview
+      ? PAID_COHORT
+      : await assignCohort(key, nonce);
     const cookie = await createAssignmentCookie(
       key,
       nonce,

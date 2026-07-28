@@ -97,7 +97,7 @@ const CONTROL_NONCE = nonceForCohort("mc-control-v1");
 const PAID_NONCE = nonceForCohort("mc-paid-v1");
 
 test("Vercel middleware and the existing /m redirect remain exactly scoped", () => {
-  assert.deepEqual(middleware.config, { matcher: "/mc" });
+  assert.deepEqual(middleware.config, { matcher: ["/mc", "/mc-preview"] });
   for (const source of ["/m", "/m/", "/mc/"]) {
     assert.deepEqual(
       vercel.redirects.find((redirect) => redirect.source === source),
@@ -119,7 +119,15 @@ test("Vercel middleware and the existing /m redirect remain exactly scoped", () 
 });
 
 test("only exact GET /mc can reach assignment", async () => {
-  for (const path of ["/", "/m", "/mc/", "/MC", "/m%63", "/api/download"]) {
+  for (const path of [
+    "/",
+    "/m",
+    "/mc/",
+    "/mc-preview/",
+    "/MC",
+    "/m%63",
+    "/api/download",
+  ]) {
     const response = await deterministicRoute(request(path));
     assert.equal(response.headers.get("x-test-next"), "1", path);
     assert.equal(response.headers.has("set-cookie"), false, path);
@@ -140,6 +148,36 @@ test("only exact GET /mc can reach assignment", async () => {
     "https://sidestream.tv/?utm_source=manychat",
   );
   assert.equal(head.headers.has("set-cookie"), false);
+});
+
+test("the unlinked review route deterministically renders the paid landing on desktop", async () => {
+  const review = await deterministicRoute(
+    request("/mc-preview", { userAgent: DESKTOP_UA }),
+    { nonceBytes: CONTROL_NONCE },
+  );
+  assert.equal(review.status, 200);
+  assert.equal(
+    review.headers.get("x-test-rewrite"),
+    "https://sidestream.tv/mobile-paid-prototype.html?utm_source=manychat",
+  );
+  assert.match(review.headers.get("set-cookie"), new RegExp(`^${COOKIE_NAME}=`));
+
+  const control = await deterministicRoute(request(), {
+    nonceBytes: CONTROL_NONCE,
+  });
+  const reviewedAgain = await deterministicRoute(
+    request("/mc-preview", {
+      userAgent: DESKTOP_UA,
+      cookie: cookiePair(control),
+    }),
+    { nonceBytes: CONTROL_NONCE },
+  );
+  assert.equal(reviewedAgain.status, 200);
+  assert.match(
+    reviewedAgain.headers.get("x-test-rewrite"),
+    /mobile-paid-prototype/,
+  );
+  assert.ok(reviewedAgain.headers.has("set-cookie"));
 });
 
 test("mobile eligibility is conservative across navigation, bots, tablets, and hints", async () => {
