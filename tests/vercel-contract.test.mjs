@@ -11,7 +11,10 @@ import {
   readLiveProductionVersion,
   verifyCheckoutContract,
 } from "../scripts/verify-production-source.mjs";
-import { resolveBuildGitSha } from "../scripts/generate-production-version.mjs";
+import {
+  resolveBuildGitSha,
+  resolveBuildGitShaFromSources,
+} from "../scripts/generate-production-version.mjs";
 import {
   verifyLiveProduction,
   verifyLiveProductionWithRetry,
@@ -169,6 +172,23 @@ test("the build version resolver rejects missing or abbreviated SHAs", () => {
     () => resolveBuildGitSha({ explicitSha: "", vercelSha: "", gitSha: "abc1234" }),
     /40-character Git SHA/u,
   );
+});
+
+test("Vercel commit metadata avoids the Git fallback when .git is unavailable", () => {
+  const vercelSha = "5".repeat(40);
+  let gitReads = 0;
+  assert.equal(
+    resolveBuildGitShaFromSources({
+      explicitSha: "",
+      vercelSha,
+      readGitSha: () => {
+        gitReads += 1;
+        throw new Error("git is unavailable");
+      },
+    }),
+    vercelSha,
+  );
+  assert.equal(gitReads, 0);
 });
 
 test("post-deploy verification requires the expected SHA and direct Checkout redirect", async () => {

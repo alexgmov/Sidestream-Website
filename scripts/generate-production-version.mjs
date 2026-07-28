@@ -17,15 +17,36 @@ export function resolveBuildGitSha({
   return candidate;
 }
 
-export async function generateProductionVersion(root = process.cwd()) {
-  const gitSha = execFileSync("git", ["rev-parse", "HEAD"], {
-    cwd: root,
-    encoding: "utf8",
-  }).trim();
-  const resolvedSha = resolveBuildGitSha({
+export function resolveBuildGitShaFromSources({
+  explicitSha,
+  vercelSha,
+  readGitSha,
+}) {
+  if (explicitSha || vercelSha) {
+    return resolveBuildGitSha({ explicitSha, vercelSha, gitSha: "" });
+  }
+  return resolveBuildGitSha({
+    explicitSha: "",
+    vercelSha: "",
+    gitSha: readGitSha(),
+  });
+}
+
+export async function generateProductionVersion(
+  root = process.cwd(),
+  dependencies = {},
+) {
+  const readGitSha =
+    dependencies.readGitSha ||
+    (() =>
+      execFileSync("git", ["rev-parse", "HEAD"], {
+        cwd: root,
+        encoding: "utf8",
+      }).trim());
+  const resolvedSha = resolveBuildGitShaFromSources({
     explicitSha: process.env.SIDESTREAM_BUILD_GIT_SHA,
     vercelSha: process.env.VERCEL_GIT_COMMIT_SHA,
-    gitSha,
+    readGitSha,
   });
   const outputDirectory = path.join(root, "dist");
   await mkdir(outputDirectory, { recursive: true });

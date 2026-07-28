@@ -155,7 +155,10 @@ GET /sidestream-social-card-v3.png
 
 Every build also writes `/version.json` with the exact full Git SHA used for
 that artifact. Vercel serves it with `Cache-Control: no-store`. It is deployment
-lineage metadata, not a release version or customer identifier.
+lineage metadata, not a release version or customer identifier. Git-linked
+Vercel builds use `VERCEL_GIT_COMMIT_SHA` directly because `.vercelignore`
+removes `.git`; local builds fall back to `git rev-parse HEAD` only when neither
+the explicit build SHA nor Vercel metadata exists.
 
 `robots.txt` allows normal search discovery plus OpenAI `OAI-SearchBot` and user-initiated `ChatGPT-User` access to public content, while disallowing all `/api/` routes so crawlers cannot create Checkout Sessions or trigger installer fulfillment. `GPTBot` is disallowed site-wide as a separate training choice; this does not opt the site out of ChatGPT search. OpenAI referrals can still be attributed through the `utm_source=chatgpt.com` query parameter they attach. The sitemap contains the canonical landing page only. `llms.txt` is an additive AI-readable summary for agents; do not use it as a place for claims that are absent from the landing page.
 
@@ -820,6 +823,7 @@ Use the narrowest relevant check after edits:
 - 2026-07-27: Added canonical `/version.json` Git identity, fail-closed live-Production ancestry enforcement, an exact one-time legacy-deployment bootstrap boundary, built-artifact SHA verification, and post-deploy canonical SHA plus direct-Checkout verification so a small change cannot redeploy an older full-site lineage.
 - 2026-07-27: Made the guarded release explicitly promote only the Ready default Vercel Production deployment whose `/version.json` matches `HEAD` to the custom `sidestream.tv` alias before final live verification; a successful default-alias deploy can no longer be mistaken for a canonical-domain release.
 - 2026-07-27: Added a bounded post-promotion retry for Vercel custom-domain propagation; canonical SHA or direct-Checkout mismatches still fail after six attempts instead of producing a false failure during the first stale edge read.
+- 2026-07-27: Fixed Production version generation to consume Vercel's commit metadata before attempting local Git discovery, so Git-linked builds still emit `/version.json` after `.vercelignore` removes `.git`.
 - 2026-07-26: Accepted Stripe's current completed no-cost order shape (`payment_status=paid`, zero total, and no PaymentIntent) under the existing exact Session/Price/Product/activation safeguards, while retaining the older `no_payment_required` shape and rejecting every nonzero or incomplete Checkout.
 - 2026-07-27: Bound Checkout Session idempotency to the complete canonical Stripe request so valid historical Upgrade paths cannot collide with stale request parameters after catalog or checkout-flow changes.
 - 2026-07-26: Removed the default "One email. No account required." mobile handoff note while preserving the hidden live region for validation and delivery feedback.
