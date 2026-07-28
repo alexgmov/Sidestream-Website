@@ -20,8 +20,14 @@ export type CheckoutSessionLike = {
   status?: unknown;
   payment_status?: unknown;
   payment_intent?: unknown;
+  amount_subtotal?: unknown;
   amount_total?: unknown;
   currency?: unknown;
+  total_details?: {
+    amount_discount?: unknown;
+    amount_shipping?: unknown;
+    amount_tax?: unknown;
+  } | null;
   metadata?: Record<string, unknown> | null;
   line_items?: {
     data?: Array<{
@@ -49,6 +55,35 @@ export function isZeroTotalCheckoutWithoutPaymentIntent(
       session.payment_status === "no_payment_required") &&
     session.amount_total === 0 &&
     /^[a-z]{3}$/.test(currency)
+  );
+}
+
+export function isValidDiscountedCheckoutPayment(
+  session: CheckoutSessionLike,
+  payment: { amountPaid: unknown; currency: unknown } | null,
+  expected: { amountSubtotal: number; currency: string },
+) {
+  const amountTotal = session.amount_total;
+  const amountDiscount = session.total_details?.amount_discount;
+  return Boolean(
+    session.payment_status === "paid" &&
+    payment &&
+    Number.isSafeInteger(expected.amountSubtotal) &&
+    expected.amountSubtotal > 0 &&
+    session.amount_subtotal === expected.amountSubtotal &&
+    Number.isSafeInteger(amountTotal) &&
+    typeof amountTotal === "number" &&
+    amountTotal > 0 &&
+    amountTotal <= expected.amountSubtotal &&
+    Number.isSafeInteger(amountDiscount) &&
+    typeof amountDiscount === "number" &&
+    amountDiscount >= 0 &&
+    amountDiscount === expected.amountSubtotal - amountTotal &&
+    session.total_details?.amount_shipping === 0 &&
+    session.total_details?.amount_tax === 0 &&
+    payment.amountPaid === amountTotal &&
+    stringId(session.currency).toLowerCase() === expected.currency &&
+    stringId(payment.currency).toLowerCase() === expected.currency
   );
 }
 

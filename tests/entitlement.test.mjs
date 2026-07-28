@@ -15,6 +15,7 @@ import {
   isLegacyVercelHost,
   isActivationClaimReplay,
   isActivationTokenReplayAllowed,
+  isValidDiscountedCheckoutPayment,
   isZeroTotalCheckoutWithoutPaymentIntent,
   matchesDeviceHash,
   needsLegacyLicenseCompatibility,
@@ -177,6 +178,60 @@ test("zero-total Checkout accepts Stripe's current and legacy settled statuses",
   ];
   for (const checkout of rejected) {
     assert.equal(isZeroTotalCheckoutWithoutPaymentIntent(checkout), false);
+  }
+});
+
+test("paid acquisition accepts Stripe-verified discount totals and rejects mismatches", () => {
+  const discountedCheckout = {
+    payment_status: "paid",
+    amount_subtotal: 1499,
+    amount_total: 1199,
+    currency: "usd",
+    total_details: {
+      amount_discount: 300,
+      amount_shipping: 0,
+      amount_tax: 0,
+    },
+  };
+  const expectation = { amountSubtotal: 1499, currency: "usd" };
+  assert.equal(
+    isValidDiscountedCheckoutPayment(
+      discountedCheckout,
+      { amountPaid: 1199, currency: "usd" },
+      expectation,
+    ),
+    true,
+  );
+  assert.equal(
+    isValidDiscountedCheckoutPayment(
+      {
+        ...discountedCheckout,
+        amount_total: 999,
+        total_details: {
+          ...discountedCheckout.total_details,
+          amount_discount: 500,
+        },
+      },
+      { amountPaid: 999, currency: "usd" },
+      expectation,
+    ),
+    true,
+  );
+
+  const rejected = [
+    [{ ...discountedCheckout, payment_status: "unpaid" }, { amountPaid: 1199, currency: "usd" }],
+    [{ ...discountedCheckout, amount_subtotal: 999 }, { amountPaid: 1199, currency: "usd" }],
+    [{ ...discountedCheckout, amount_total: 0, total_details: { ...discountedCheckout.total_details, amount_discount: 1499 } }, null],
+    [{ ...discountedCheckout, total_details: { ...discountedCheckout.total_details, amount_discount: 299 } }, { amountPaid: 1199, currency: "usd" }],
+    [{ ...discountedCheckout, total_details: { ...discountedCheckout.total_details, amount_tax: 1 } }, { amountPaid: 1199, currency: "usd" }],
+    [discountedCheckout, { amountPaid: 1200, currency: "usd" }],
+    [discountedCheckout, { amountPaid: 1199, currency: "eur" }],
+  ];
+  for (const [session, payment] of rejected) {
+    assert.equal(
+      isValidDiscountedCheckoutPayment(session, payment, expectation),
+      false,
+    );
   }
 });
 

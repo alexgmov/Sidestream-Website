@@ -344,7 +344,9 @@ test("fixture purchase connects sticky paid entry to idempotent verified $14.99 
       verifiedProductRef: "prod_test_sidestream_pro",
       verifiedPriceRef: "price_test_sidestream_pro_1499",
       verifiedQuantity: 1,
-      verifiedAmountMinor: 1499,
+      verifiedOriginalAmountMinor: 1499,
+      verifiedDiscountAmountMinor: 300,
+      verifiedAmountMinor: 1199,
       verifiedCurrency: "usd",
     });
   assert.equal(fulfilled.matched, true);
@@ -359,6 +361,8 @@ test("fixture purchase connects sticky paid entry to idempotent verified $14.99 
       verifiedProductRef: "prod_test_sidestream_pro",
       verifiedPriceRef: "price_test_sidestream_pro_1499",
       verifiedQuantity: 1,
+      verifiedOriginalAmountMinor: 1499,
+      verifiedDiscountAmountMinor: 500,
       verifiedAmountMinor: 998,
       verifiedCurrency: "usd",
     }),
@@ -936,8 +940,14 @@ function checkoutSessionFixture() {
     status: "complete",
     payment_status: "paid",
     payment_intent: PAYMENT_REF,
+    amount_subtotal: 1499,
     amount_total: 1499,
     currency: "usd",
+    total_details: {
+      amount_discount: 0,
+      amount_shipping: 0,
+      amount_tax: 0,
+    },
     customer_details: { email: " Buyer+MC@EXAMPLE.com " },
     metadata: {
       sidestream_plan: "sidestream_pro",

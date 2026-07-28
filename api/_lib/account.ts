@@ -22,6 +22,7 @@ import {
   hasSameOrigin,
   isActivationClaimReplay,
   isCanonicalLicenseEntitlementUsable,
+  isValidDiscountedCheckoutPayment,
   isZeroTotalCheckoutWithoutPaymentIntent,
   needsLegacyLicenseCompatibility,
   isActivationTokenReplayAllowed,
@@ -3287,13 +3288,13 @@ export async function fulfillCheckoutSession(
   }
   if (
     paidAcquisitionCheckout &&
-    (
-      checkoutSession.payment_status !== "paid" ||
-      checkoutSession.amount_total !== SIDESTREAM_PRO_PRICE.unitAmount ||
-      canonicalPayment.noPaymentRequired ||
-      !canonicalPayment.facts ||
-      canonicalPayment.facts.amountPaid !== SIDESTREAM_PRO_PRICE.unitAmount ||
-      canonicalPayment.currency !== SIDESTREAM_PRO_PRICE.currency
+    !isValidDiscountedCheckoutPayment(
+      checkoutSession,
+      canonicalPayment.facts,
+      {
+        amountSubtotal: SIDESTREAM_PRO_PRICE.unitAmount,
+        currency: SIDESTREAM_PRO_PRICE.currency,
+      },
     )
   ) {
     return {
@@ -3432,6 +3433,9 @@ export async function fulfillCheckoutSession(
       verifiedProductRef: expectedProductId,
       verifiedPriceRef: expectedPriceId,
       verifiedQuantity: 1,
+      verifiedOriginalAmountMinor: SIDESTREAM_PRO_PRICE.unitAmount,
+      verifiedDiscountAmountMinor:
+        checkoutSession.total_details?.amount_discount ?? 0,
       verifiedAmountMinor: canonicalPayment.facts.amountPaid,
       verifiedCurrency: canonicalPayment.currency,
       accountRef: accountId,

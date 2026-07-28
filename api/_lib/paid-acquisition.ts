@@ -1153,6 +1153,8 @@ export async function completePaidAcquisitionCheckout(options: {
   verifiedProductRef: string;
   verifiedPriceRef: string;
   verifiedQuantity: number;
+  verifiedOriginalAmountMinor: number;
+  verifiedDiscountAmountMinor: number;
   verifiedAmountMinor: number;
   verifiedCurrency: string;
   accountRef?: string | null;
@@ -1161,7 +1163,12 @@ export async function completePaidAcquisitionCheckout(options: {
 }) {
   if (
     options.verifiedQuantity !== 1 ||
-    options.verifiedAmountMinor !== 1499 ||
+    options.verifiedOriginalAmountMinor !== 1499 ||
+    !Number.isSafeInteger(options.verifiedDiscountAmountMinor) ||
+    options.verifiedDiscountAmountMinor < 0 ||
+    options.verifiedDiscountAmountMinor >= options.verifiedOriginalAmountMinor ||
+    options.verifiedAmountMinor !==
+      options.verifiedOriginalAmountMinor - options.verifiedDiscountAmountMinor ||
     options.verifiedCurrency !== "usd"
   ) {
     fail("checkout_conflict", "Paid Checkout product truth is invalid.");
