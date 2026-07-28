@@ -275,6 +275,25 @@ test("database-backed intents serialize retries, rotate deliberately, and fulfil
       stripe.sessionCreateWrites[2].options.idempotencyKey,
     );
 
+    stripe.expireExternally(stripe.sessionCreateWrites[2].session.id);
+    await databasePool.query(
+      `
+        update public.sidestream_checkout_intents
+        set stripe_price_id = 'price_previous_catalog'
+        where id = $1
+      `,
+      [intent.intentId],
+    );
+    const replacedExpired = await account.createOrReuseCheckoutSession({
+      intentId: intent.intentId,
+      browserToken: intent.browserToken,
+      session: buyerSession,
+      baseUrl: BASE_URL,
+    });
+    assert.equal(replacedExpired.ok, true);
+    assert.notEqual(replacedExpired.url, rotated.url);
+    assert.equal(stripe.countWrites("checkout.sessions.expire"), 2);
+
     const activationKey = "activation-checkout-intent-exact";
     await seedActivation(databasePool, activationKey);
     const activationIntent = await account.createCheckoutIntent({
@@ -556,6 +575,12 @@ class RecordingStripe {
     session.payment_status = "paid";
     session.customer_details = { email: profile.email, name: profile.name };
     session.customer_email = profile.email;
+  }
+
+  expireExternally(sessionId) {
+    const session = this.#sessions.get(sessionId);
+    if (!session) throw new Error(`Unknown Stripe test Session ${sessionId}`);
+    session.status = "expired";
   }
 
   countWrites(operation) {

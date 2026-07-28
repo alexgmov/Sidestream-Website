@@ -1121,7 +1121,22 @@ export async function createOrReuseCheckoutSession(options: {
               await expireCheckoutSession(stripeSession.id, row.id, attempt);
             }
           } else if (options.rotateCancelledSession || !attachedUsesCurrentCatalog) {
-            await expireCheckoutSession(attachedSessionId, row.id, attempt);
+            const replacementStatus = await prepareCheckoutSessionReplacement(
+              attachedSessionId,
+              row.id,
+              attempt,
+            );
+            if (replacementStatus === "complete") {
+              const completionUrl = buildCheckoutCompletionUrl(
+                options.baseUrl,
+                activationKey,
+              ).replace(CHECKOUT_SESSION_PLACEHOLDER, attachedSessionId);
+              return commitCheckoutIntentResult(client, {
+                ok: true,
+                url: completionUrl,
+                reused: true,
+              });
+            }
           }
           replacementSessionId = attachedSessionId;
           attempt += 1;
@@ -1161,7 +1176,20 @@ export async function createOrReuseCheckoutSession(options: {
             row.stripe_product_id !== stripeProductId
           )
         ) {
-          await expireCheckoutSession(row.stripe_checkout_session_id, row.id, attempt);
+          const replacementStatus = await prepareCheckoutSessionReplacement(
+            row.stripe_checkout_session_id,
+            row.id,
+            attempt,
+          );
+          if (replacementStatus === "complete") {
+            const completionUrl = buildCheckoutCompletionUrl(options.baseUrl)
+              .replace(CHECKOUT_SESSION_PLACEHOLDER, row.stripe_checkout_session_id);
+            return commitCheckoutIntentResult(client, {
+              ok: true,
+              url: completionUrl,
+              reused: true,
+            });
+          }
         }
         replacementSessionId = row.stripe_checkout_session_id;
         attempt += 1;
@@ -1368,6 +1396,22 @@ async function expireCheckoutSession(
         .digest("hex")}`,
     },
   );
+}
+
+async function prepareCheckoutSessionReplacement(
+  sessionId: string,
+  intentId: string,
+  attempt: number,
+) {
+  const session = await getStripe().checkout.sessions.retrieve(
+    sessionId,
+    {},
+    getStripeRequestOptions(),
+  );
+  if (session.status === "open") {
+    await expireCheckoutSession(session.id, intentId, attempt);
+  }
+  return session.status;
 }
 
 async function commitCheckoutIntentResult(
