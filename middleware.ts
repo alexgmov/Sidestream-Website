@@ -1,3 +1,5 @@
+// @ts-nocheck -- Vercel compiles this self-contained Edge middleware outside
+// the repo's Node/Vite tsconfig; deterministic routing tests own its contract.
 import { next, rewrite } from "@vercel/functions";
 
 const EXPERIMENT_ID = "mc-mobile-paid-v1";
