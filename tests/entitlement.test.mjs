@@ -473,6 +473,10 @@ test("Checkout attaches the activation only inside the locked intent worker", as
   assert.match(account, /getCheckoutSessionIdempotencyKey/);
   assert.match(account, /allow_promotion_codes:\s*true/);
   assert.doesNotMatch(account, /allow_promotion_codes:\s*!options\.paidAcquisition/);
+  assert.match(
+    account,
+    /We'll email your Sidestream download link to the address you enter above\./,
+  );
 });
 
 test("account implementation bounds status replay and uses locked refresh/fulfillment CAS", async () => {

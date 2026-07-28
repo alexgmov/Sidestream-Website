@@ -1226,7 +1226,10 @@ export async function createOrReuseCheckoutSession(options: {
         ...(checkoutWindow ? { expires_at: checkoutWindow.checkoutExpiresAt } : {}),
         client_reference_id: activationKey || options.session?.accountId || row.id,
         custom_text: {
-          submit: { message: "One-time payment. No subscription." },
+          submit: {
+            message:
+              "We'll email your Sidestream download link to the address you enter above. One-time payment. No subscription.",
+          },
         },
         invoice_creation: {
           enabled: true,
