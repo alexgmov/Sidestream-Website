@@ -165,13 +165,15 @@ Persisted intent state is constrained to `pending`, `open`, `completed`,
 account page. A caller cannot supply its own Stripe or activation tuple.
 
 New one-time purchases select `SIDESTREAM_PRO_PRODUCT_ID` (default
-`prod_UpwXh6oO1OmPyQ`), then use this runtime-compatible Price precedence: exact
-`SIDESTREAM_PRO_PRICE_ID`; the code default Price ID (currently empty); compatible
-`SIDESTREAM_UNLIMITED_PRICE_ID`; the expanded Product's active matching
-`default_price`; the exact `sidestream_pro_once_2499` lookup-key match; then any
-other active matching Product Price. Only after every discovery branch misses
-does runtime use its create fallback. Every compatible Price must belong to the
-selected Product and have the active one-time USD 2499-cent shape. Runtime
+`prod_UpwXh6oO1OmPyQ`), then use this runtime-compatible Price precedence:
+validated `SIDESTREAM_PRO_PRICE_ID`, code default Price ID (currently empty), and
+compatible `SIDESTREAM_UNLIMITED_PRICE_ID` hints; the expanded Product's active
+matching `default_price`; the exact `sidestream_pro_once_2499` lookup-key match;
+then any other active matching Product Price. A stale, deleted, or incompatible
+hint falls through, while provider/network failures still fail closed. Only
+after every discovery branch misses does runtime use its idempotent create
+fallback. Every compatible Price must belong to the selected Product and have
+the active one-time USD 2499-cent shape. Runtime
 discovery is not cutover approval. A future separately reviewed plan would need
 an approved exact Product/Price manifest and provider-attested proof that the
 actual deployed runtime selector resolves to those exact IDs before any mutation

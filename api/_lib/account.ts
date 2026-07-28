@@ -1482,16 +1482,16 @@ export function getSidestreamProProductId() {
 async function getConfiguredSidestreamProPriceId(productId: string) {
   const configuredPriceId = getValidEnvValue("SIDESTREAM_PRO_PRICE_ID");
   if (configuredPriceId) {
-    const price = await getStripe().prices.retrieve(
-      configuredPriceId,
-      {},
-      getStripeRequestOptions(),
-    );
-    if (isSidestreamProPriceShape(price, productId)) return price.id;
-
-    throw new Error(
-      `Configured SIDESTREAM_PRO_PRICE_ID ${configuredPriceId} is not the active $24.99 one-time Sidestream Pro price for product ${productId}`,
-    );
+    try {
+      const price = await getStripe().prices.retrieve(
+        configuredPriceId,
+        {},
+        getStripeRequestOptions(),
+      );
+      if (isSidestreamProPriceShape(price, productId)) return price.id;
+    } catch (error) {
+      if (!isStripeResourceMissing(error)) throw error;
+    }
   }
 
   const defaultPriceId = await getDefaultSidestreamProPriceId(productId);

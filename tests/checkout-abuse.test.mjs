@@ -567,6 +567,53 @@ class RecordingStripe {
   }
 }
 
+test("a stale configured Price falls through to the current exact lookup Price", async () => {
+  const environmentSnapshot = snapshotEnvironment(CONTROLLED_ENVIRONMENT);
+  let runtimeModules;
+  try {
+    configureRuntime("postgresql://unused.invalid/sidestream");
+    const stripe = new RecordingStripe();
+    stripe.prices.retrieve = async (priceId) => ({
+      id: priceId,
+      active: true,
+      product: "prod_checkout_test",
+      unit_amount: 1499,
+      currency: "usd",
+      recurring: null,
+      lookup_key: "sidestream_pro_once_1499",
+    });
+    stripe.prices.list = async (params) => ({
+      data: params.lookup_keys
+        ? [{
+            id: "price_checkout_current",
+            active: true,
+            product: "prod_checkout_test",
+            unit_amount: 2499,
+            currency: "usd",
+            recurring: null,
+            lookup_key: "sidestream_pro_once_2499",
+          }]
+        : [],
+    });
+    runtimeModules = await loadRuntimeModules();
+    runtimeModules.account.__setCheckoutAbuseStripeClient(stripe);
+
+    assert.equal(
+      await runtimeModules.account.getSidestreamProPriceId(),
+      "price_checkout_current",
+    );
+  } finally {
+    if (runtimeModules) {
+      runtimeModules.account.__setCheckoutAbuseStripeClient(null);
+      await rm(runtimeModules.temporaryModuleDirectory, {
+        recursive: true,
+        force: true,
+      });
+    }
+    restoreEnvironment(environmentSnapshot);
+  }
+});
+
 function rateLimitResult(allowed) {
   return {
     allowed,

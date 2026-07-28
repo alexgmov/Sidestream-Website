@@ -217,6 +217,24 @@ test("the paid acquisition price migration preserves provider bounds at USD 2499
   assert.match(sql, /verified_currency = 'usd'/);
 });
 
+test("the paid acquisition provider bounds permit future server-verified prices", async () => {
+  const sql = await readFile(
+    new URL(
+      "../db/migrations/20260728093000_make_paid_price_constraint_amount_agnostic.sql",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.match(
+    sql,
+    /drop constraint sidestream_paid_acquisition_checkouts_provider_bounds/,
+  );
+  assert.match(sql, /verified_amount_minor >= 0/);
+  assert.doesNotMatch(sql, /verified_amount_minor = 2499/);
+  assert.match(sql, /verified_quantity = 1/);
+  assert.match(sql, /verified_currency = 'usd'/);
+});
+
 test("public paid routes accept no browser-selected commerce truth", async () => {
   const [checkout, artifact, claim, landing] = await Promise.all([
     readFile(
