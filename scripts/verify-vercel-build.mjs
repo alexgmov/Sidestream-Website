@@ -84,6 +84,12 @@ export async function verifyVercelBuild(outputRoot = OUTPUT_ROOT) {
       `Vercel static output contains unexpected root HTML: ${unexpectedRootPages.join(", ")}`,
     );
   }
+  const version = JSON.parse(
+    await readFile(path.join(outputRoot, "static", "version.json"), "utf8"),
+  );
+  if (!/^[0-9a-f]{40}$/u.test(version?.gitSha || "")) {
+    throw new Error("Vercel static output contains no valid Production Git SHA");
+  }
 
   const bundledFiles = await listFiles(path.join(outputRoot, "functions"));
   for (const manifest of ["release-manifest.json", "release-manifest.windows.json"]) {
@@ -95,6 +101,7 @@ export async function verifyVercelBuild(outputRoot = OUTPUT_ROOT) {
     functions: REQUIRED_FUNCTIONS.length,
     manifests: 2,
     checkoutContract: true,
+    gitSha: version.gitSha,
   };
 }
 
@@ -129,7 +136,7 @@ async function main() {
   }
   const result = await verifyVercelBuild();
   console.log(
-    `PASS: human-built Vercel output contains ${result.functions} functions, ${result.manifests} release manifests, and the direct checkout contract.`,
+    `PASS: human-built Vercel output contains ${result.functions} functions, ${result.manifests} release manifests, the direct checkout contract, and version ${result.gitSha}.`,
   );
 }
 

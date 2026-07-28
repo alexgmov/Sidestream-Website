@@ -10,6 +10,8 @@ const execFileAsync = promisify(execFile);
 
 export const PRODUCTION_SOURCE = Object.freeze({
   branch: "main",
+  versionUrl: "https://sidestream.tv/version.json",
+  bootstrapDeploymentId: "dpl_EsXGMRYgnsq3Taty5WXjbQkEMuwV",
   projectId: "prj_x9sRcnoAAfF6VPxseJYLBgxhhPyh",
   orgId: "team_ZcKImJwvlcCrE15nTEOWT2NC",
   projectName: "sidestream",
@@ -110,10 +112,52 @@ export async function verifyCheckoutContract(root = process.cwd()) {
   };
 }
 
-export async function verifyProductionSource(root = process.cwd()) {
+export function assertProductionAncestry({
+  productionSha,
+  candidateSha,
+  isAncestor,
+}) {
+  if (!/^[0-9a-f]{40}$/u.test(productionSha)) {
+    throw new Error(`Production version returned an invalid Git SHA: ${productionSha || "missing"}`);
+  }
+  if (!/^[0-9a-f]{40}$/u.test(candidateSha)) {
+    throw new Error(`Candidate has an invalid Git SHA: ${candidateSha || "missing"}`);
+  }
+  if (!isAncestor) {
+    throw new Error(
+      `Production deploy blocked: candidate ${candidateSha} does not descend from live Production ${productionSha}`,
+    );
+  }
+}
+
+export async function readLiveProductionVersion(fetchImpl = fetch) {
+  const response = await fetchImpl(PRODUCTION_SOURCE.versionUrl, {
+    headers: { accept: "application/json" },
+    redirect: "error",
+    signal: AbortSignal.timeout(10_000),
+  });
+  if (response.status === 404) return null;
+  if (!response.ok) {
+    throw new Error(
+      `Could not read live Production version: ${response.status} ${response.statusText}`,
+    );
+  }
+  const payload = await response.json();
+  const gitSha = typeof payload?.gitSha === "string" ? payload.gitSha : "";
+  if (!/^[0-9a-f]{40}$/u.test(gitSha)) {
+    throw new Error("Live Production version response is missing a valid gitSha");
+  }
+  return { gitSha };
+}
+
+export async function verifyProductionSource(
+  root = process.cwd(),
+  dependencies = {},
+) {
   const checkout = await verifyCheckoutContract(root);
   const git = (args) =>
     execFileAsync("git", args, { cwd: root, encoding: "utf8" });
+  const fetchImpl = dependencies.fetchImpl || fetch;
 
   const { stdout: status } = await git(["status", "--porcelain"]);
   if (status.trim()) {
@@ -148,6 +192,42 @@ export async function verifyProductionSource(root = process.cwd()) {
     }
   }
 
+  const liveVersion = await readLiveProductionVersion(fetchImpl);
+  let productionSha = null;
+  let lineageMode = "live-version";
+  if (liveVersion) {
+    productionSha = liveVersion.gitSha;
+    let isAncestor = true;
+    try {
+      await git(["merge-base", "--is-ancestor", productionSha, head]);
+    } catch {
+      isAncestor = false;
+    }
+    assertProductionAncestry({
+      productionSha,
+      candidateSha: head,
+      isAncestor,
+    });
+  } else {
+    const inspectProduction =
+      dependencies.inspectProduction ||
+      (async () => {
+        const { stdout } = await execFileAsync(
+          "npx",
+          ["vercel@latest", "inspect", "sidestream.tv", "--format=json"],
+          { cwd: root, encoding: "utf8", maxBuffer: 10 * 1024 * 1024 },
+        );
+        return JSON.parse(stdout);
+      });
+    const deployment = await inspectProduction();
+    if (deployment?.id !== PRODUCTION_SOURCE.bootstrapDeploymentId) {
+      throw new Error(
+        "Live Production has no version marker and is not the one reviewed bootstrap deployment; refusing to deploy",
+      );
+    }
+    lineageMode = "reviewed-bootstrap";
+  }
+
   let project;
   try {
     project = JSON.parse(
@@ -171,6 +251,8 @@ export async function verifyProductionSource(root = process.cwd()) {
     head,
     project: PRODUCTION_SOURCE.projectName,
     checkout,
+    productionSha,
+    lineageMode,
   };
 }
 
@@ -192,7 +274,7 @@ async function main() {
 
   const result = await verifyProductionSource();
   console.log(
-    `PASS: clean ${result.head} equals origin/${result.branch}, targets Vercel project ${result.project}, and preserves the checkout contract.`,
+    `PASS: clean ${result.head} equals origin/${result.branch}, targets Vercel project ${result.project}, preserves the checkout contract, and passed ${result.lineageMode} lineage verification${result.productionSha ? ` from ${result.productionSha}` : ""}.`,
   );
 }
 

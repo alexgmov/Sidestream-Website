@@ -57,7 +57,7 @@ Sidestream is an HTML-first landing page for a Premiere Pro panel that lets edit
 - `tests/license-environment.test.mjs` and `tests/single-device-*.test.mjs` - Static and disposable-Postgres proof for the complete migration chain, including installer-referral RLS, namespace isolation, policy states, database races, transfers/revocation, support tooling, account pages, download authorization, legacy compatibility, and Checkout preservation. `npm run test:single-device` is the aggregate command and requires a safe `SIDESTREAM_TEST_POSTGRES_URL`.
 - `scripts/apply-postgres-migrations.mjs` - Checksummed, advisory-locked migration runner for all SQL files under `db/migrations/`, with database-backed `--status`/`--baseline`/apply, local-only `--validate`/`--dry-run`, and atomic migration-plus-ledger transactions. Its current remote TLS configuration is not Production-safe; the canonical runbook records the implementation blocker.
 - `scripts/verify-migration-baseline.mjs` - Read-only exact catalog/RLS verifier for recognized pre-20260713 profiles. Its current remote TLS path is not Production-safe, so Production use is blocked until the canonical runbook's authenticated-tooling prerequisite is implemented; never use it to bless unexplained drift.
-- `scripts/run-api-tests.mjs`, `scripts/run-postgres-integration.mjs`, `scripts/validate-vercel-contract.mjs`, `scripts/verify-production-source.mjs`, and `scripts/verify-vercel-build.mjs` - Aggregate handler/state-machine test discovery, disposable-Postgres concurrency proof with runtime-target rejection, static Vercel route/cron validation, clean remote-main/project/checkout deployment validation, and the post-`vercel build` bundle verifier.
+- `scripts/run-api-tests.mjs`, `scripts/run-postgres-integration.mjs`, `scripts/validate-vercel-contract.mjs`, `scripts/verify-production-source.mjs`, `scripts/generate-production-version.mjs`, `scripts/verify-production-live.mjs`, and `scripts/verify-vercel-build.mjs` - Aggregate handler/state-machine test discovery, disposable-Postgres concurrency proof with runtime-target rejection, static Vercel route/cron validation, clean remote-main/project/checkout/live-ancestry deployment validation, build-time `version.json` generation, canonical post-deploy verification, and the post-`vercel build` bundle verifier.
 - `scripts/audit-legacy-subscriptions.mjs` - Read-only-by-default Stripe/Product/Price inventory plus explicitly confirmed direct-database backfill/quarantine for exact allowlisted legacy subscriptions. Its current remote database connection is not Production-safe, so neither audit nor apply is authorized there.
 - `scripts/audit-license-devices.mjs` - Read-only-by-default pseudonymous fleet audit plus an explicitly confirmed direct-connection backfill mode. Its current environment selection and remote TLS path block every Production mode.
 - `scripts/manage-license-device.mjs` - Account/namespace-scoped support view, binding clear, and bounded expiring move-limit override. Its current environment selection and remote TLS path block every Production mode, including read-only view.
@@ -141,6 +141,10 @@ GET /sitemap.xml
 GET /llms.txt
 GET /sidestream-social-card-v3.png
 ```
+
+Every build also writes `/version.json` with the exact full Git SHA used for
+that artifact. Vercel serves it with `Cache-Control: no-store`. It is deployment
+lineage metadata, not a release version or customer identifier.
 
 `robots.txt` allows normal search discovery plus OpenAI `OAI-SearchBot` and user-initiated `ChatGPT-User` access to public content, while disallowing all `/api/` routes so crawlers cannot create Checkout Sessions or trigger installer fulfillment. `GPTBot` is disallowed site-wide as a separate training choice; this does not opt the site out of ChatGPT search. OpenAI referrals can still be attributed through the `utm_source=chatgpt.com` query parameter they attach. The sitemap contains the canonical landing page only. `llms.txt` is an additive AI-readable summary for agents; do not use it as a place for claims that are absent from the landing page.
 
@@ -564,17 +568,24 @@ npm run verify:checkout-contract
 ```
 
 The supported Production command requires a clean local commit equal to remote
-`origin/main`, verifies the immutable checkout baselines and exact linked Vercel
+`origin/main`, reads the Git SHA currently served by canonical Production
+`/version.json`, and requires that live SHA to be an ancestor of the candidate.
+It then verifies the immutable checkout baselines and exact linked Vercel
 project, runs the focused entitlement suite, builds the Production artifact,
-checks its bundled Google/Stripe handlers and root-page allowlist, and deploys
-that prebuilt artifact:
+checks its bundled Google/Stripe handlers, root-page allowlist, and embedded
+SHA, deploys that prebuilt artifact, and verifies that canonical Production
+reports the candidate SHA and redirects Checkout directly to Google or Stripe:
 
 ```bash
 npm run deploy:production
 ```
 
 Integrate an intended feature onto the current `origin/main` before running this
-command. Feature and release branches are not Production sources.
+command. Feature and release branches are not Production sources. A candidate
+that diverged before the live Production SHA fails before build. The one
+reviewed recovery from the pre-marker deployment is bound to its exact Vercel
+deployment ID; after the first marker-bearing deployment replaces it, that
+bootstrap condition cannot match again.
 
 The build copies the valid undated sitemap template, then `scripts/generate-sitemap.mjs` writes `dist/sitemap.xml` with an ISO `<lastmod>` derived from `index.html`. A clean Git checkout uses the latest commit that changed the page; a dirty local page uses its filesystem modification time. If Git history is unavailable, the build omits `<lastmod>` instead of inventing a build-time date. Do not put a manual `<lastmod>` back into `public/sitemap.xml`.
 
@@ -654,7 +665,7 @@ Use the narrowest relevant check after edits:
 
 ## Known Gotchas
 
-- A Vercel Production deployment can be Ready while originating from stale source. Production source is only a clean commit equal to remote `origin/main` and linked to `alex-3685s-projects/sidestream`; use `npm run deploy:production`, then verify the canonical `sidestream.tv` alias and live `/api/checkout/start` response.
+- A Vercel Production deployment can be Ready while originating from stale source. Production source is only a clean commit equal to remote `origin/main`, linked to `alex-3685s-projects/sidestream`, and descended from the exact Git SHA reported by canonical Production `/version.json`. Use `npm run deploy:production`; it verifies the live SHA and Checkout redirect after deployment.
 - Customer 360 captured money authority is the PaymentIntent `amount_received`, or `amount_captured` on a standalone Charge when no PaymentIntent exists. A paid Checkout or Invoice is a fallback only while its related settled instrument is absent, and refresh must replace rather than add that fallback when stronger truth arrives. Before instrument arrival, suppress a Checkout fallback only when a paid Invoice fact in the same namespace, profile, and currency has a paid InvoicePayment edge resolving to that Checkout payment key; prefer the Invoice and leave unrelated Checkout fallbacks countable. Checkout authorization must never re-inflate a partial capture. Invoice `amount_paid` is full gross customer money; `amount_paid_off_stripe` is a nonnegative subset of gross, not a deduction or an amount to add twice. Paid InvoicePayment rows are allocation edges keyed by `invoice_payment.id`; open/canceled rows do not attribute money, and an invoice/instrument many-to-many graph must not become alias equivalence.
 - Customer 360 identity safety is a payment-group invariant. If any retained alias, trusted identity evidence, or already-safe owner resolves one canonical payment group to different live profiles, the namespace advisory lock must clear `profile_id` and set `identity_conflict=true` on every materialization in that group before totals refresh. This whole-group quarantine is sticky across replay, later one-owner rows, and identity-link triggers; only an explicit group-wide recomputation after a deterministic profile merge may clear it. A Stripe customer link alone never scopes unrelated product money.
 - Customer 360 database `created_at` values reach TypeScript as fixed-width six-microsecond UTC timestamps without a timezone suffix. Compare two canonical values lexically before `Date.parse`; parsing first treats them as local time, can reverse order across a DST gap, and violates the database trigger's `(created_at, id)` total-order contract. ISO inputs from pure callers still use parsed instant ordering, and equal timestamps still use the UUID tie-breaker.
@@ -746,6 +757,7 @@ Use the narrowest relevant check after edits:
 - 2026-07-27: Checkout reuse now compares every open account or activation Session's persisted Product and Price with the currently selected catalog before redirecting. A stale pre-change Session is expired and replaced under the existing locked intent instead of preserving its former amount; completed purchases remain resumable.
 - 2026-07-27: Restored `/m` and `/m/` as temporary ManyChat aliases beside `/mc` and `/mc/`, all redirecting to the canonical landing page with `utm_source=manychat`, and expanded the route contract test so future deployments cannot silently drop either short-link family.
 - 2026-07-27: Locked Production deployment to clean remote `main` and the exact Sidestream Vercel project, added source and built-artifact checks for the Upgrade, Google authentication, and Stripe contract, retained both exact zero-total Stripe completion statuses, and documented `npm run deploy:production` as the supported release path.
+- 2026-07-27: Added canonical `/version.json` Git identity, fail-closed live-Production ancestry enforcement, an exact one-time legacy-deployment bootstrap boundary, built-artifact SHA verification, and post-deploy canonical SHA plus direct-Checkout verification so a small change cannot redeploy an older full-site lineage.
 - 2026-07-26: Accepted Stripe's current completed no-cost order shape (`payment_status=paid`, zero total, and no PaymentIntent) under the existing exact Session/Price/Product/activation safeguards, while retaining the older `no_payment_required` shape and rejecting every nonzero or incomplete Checkout.
 - 2026-07-27: Bound Checkout Session idempotency to the complete canonical Stripe request so valid historical Upgrade paths cannot collide with stale request parameters after catalog or checkout-flow changes.
 - 2026-07-26: Removed the default "One email. No account required." mobile handoff note while preserving the hidden live region for validation and delivery feedback.

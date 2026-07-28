@@ -5,10 +5,14 @@ import { loadInjectedModule } from "./helpers/handler-loader.mjs";
 import { invokeHandler } from "./helpers/http.mjs";
 import { validateVercelContract } from "../scripts/validate-vercel-contract.mjs";
 import {
+  assertProductionAncestry,
   assertCheckoutSourceContract,
   PRODUCTION_SOURCE,
+  readLiveProductionVersion,
   verifyCheckoutContract,
 } from "../scripts/verify-production-source.mjs";
+import { resolveBuildGitSha } from "../scripts/generate-production-version.mjs";
+import { verifyLiveProduction } from "../scripts/verify-production-live.mjs";
 
 const CRON_SECRET = "integration-cron-secret";
 const INTERNAL_CRON_PATHS = Object.freeze([
@@ -95,6 +99,7 @@ test("the checkout contract rejects browser UI and unexpected deployable root pa
 
 test("the Production source is remote main with immutable checkout baselines and project identity", () => {
   assert.equal(PRODUCTION_SOURCE.branch, "main");
+  assert.equal(PRODUCTION_SOURCE.versionUrl, "https://sidestream.tv/version.json");
   assert.deepEqual(PRODUCTION_SOURCE.requiredAncestors, [
     "81a3190f6fbabb684cde605a4e256d2fa6295fe5",
     "d3d1e82ebd640bf8d6e30df7d54628e4206300a0",
@@ -105,6 +110,75 @@ test("the Production source is remote main with immutable checkout baselines and
   );
   assert.equal(PRODUCTION_SOURCE.orgId, "team_ZcKImJwvlcCrE15nTEOWT2NC");
   assert.equal(PRODUCTION_SOURCE.projectName, "sidestream");
+});
+
+test("the Production ancestry gate rejects divergent candidates", () => {
+  const productionSha = "a".repeat(40);
+  const candidateSha = "b".repeat(40);
+  assert.doesNotThrow(() =>
+    assertProductionAncestry({ productionSha, candidateSha, isAncestor: true }),
+  );
+  assert.throws(
+    () =>
+      assertProductionAncestry({
+        productionSha,
+        candidateSha,
+        isAncestor: false,
+      }),
+    /does not descend from live Production/u,
+  );
+});
+
+test("the live version reader requires an exact Git SHA", async () => {
+  const gitSha = "c".repeat(40);
+  assert.deepEqual(
+    await readLiveProductionVersion(async () =>
+      new Response(JSON.stringify({ gitSha }), { status: 200 })
+    ),
+    { gitSha },
+  );
+  assert.equal(
+    await readLiveProductionVersion(async () => new Response("", { status: 404 })),
+    null,
+  );
+  await assert.rejects(
+    readLiveProductionVersion(async () =>
+      new Response(JSON.stringify({ gitSha: "short" }), { status: 200 })
+    ),
+    /valid gitSha/u,
+  );
+});
+
+test("the build version resolver rejects missing or abbreviated SHAs", () => {
+  assert.equal(
+    resolveBuildGitSha({
+      explicitSha: "d".repeat(40),
+      vercelSha: "",
+      gitSha: "e".repeat(40),
+    }),
+    "d".repeat(40),
+  );
+  assert.throws(
+    () => resolveBuildGitSha({ explicitSha: "", vercelSha: "", gitSha: "abc1234" }),
+    /40-character Git SHA/u,
+  );
+});
+
+test("post-deploy verification requires the expected SHA and direct Checkout redirect", async () => {
+  const gitSha = "f".repeat(40);
+  const responses = [
+    new Response(JSON.stringify({ gitSha }), { status: 200 }),
+    new Response("", {
+      status: 302,
+      headers: { location: "/api/auth/google/start?return_to=%2Fapi%2Fcheckout%2Fstart" },
+    }),
+  ];
+  const result = await verifyLiveProduction({
+    expectedSha: gitSha,
+    fetchImpl: async () => responses.shift(),
+  });
+  assert.equal(result.gitSha, gitSha);
+  assert.equal(result.checkoutStatus, 302);
 });
 
 test("the built checkout verifier checks authentication, Stripe creation, fulfillment, and root pages", async () => {
@@ -118,6 +192,7 @@ test("the built checkout verifier checks authentication, Stripe creation, fulfil
   assert.match(source, /createOrReuseCheckoutSession/u);
   assert.match(source, /no_payment_required/u);
   assert.match(source, /Unexpected root HTML|unexpected root HTML/u);
+  assert.match(source, /version\.json/u);
 });
 
 test("missing and incorrect CRON_SECRET authorization is rejected by every internal route", async () => {
