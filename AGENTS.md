@@ -42,8 +42,14 @@ from a detached/stale checkout. First integrate the intended change onto the
 current `origin/main`, then use the guarded command. The guard must continue to
 verify the exact Vercel project, the direct checkout baseline, the zero-total
 fulfillment baseline, the source checkout contract, and equality between local
-HEAD and remote `main`.
+HEAD and remote `main`. It must also read the exact Git SHA from canonical
+Production `/version.json` and require that SHA to be an ancestor of the
+candidate. A divergent candidate is a full-site rollback and must fail before
+the build.
 
 After deployment, verify the canonical `https://sidestream.tv` alias and the
-actual `/api/checkout/start` response. A Ready build alone is not Production
-proof.
+actual `/api/checkout/start` response. The guarded command does this
+automatically: it first verifies the Ready default Production deployment's SHA,
+promotes that exact deployment to the custom domain, and then requires canonical
+`/version.json` to report the deployed `HEAD`. A Ready build alone is not
+Production proof.

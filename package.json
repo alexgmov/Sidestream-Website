@@ -7,7 +7,7 @@
     "analytics:installer": "node scripts/report-installer-referrals.mjs",
     "analytics:referrals": "node scripts/report-referral-visits.mjs",
     "dev": "vite",
-    "build": "tsc -b && vite build && node scripts/generate-sitemap.mjs",
+    "build": "tsc -b && vite build && node scripts/generate-sitemap.mjs && node scripts/generate-production-version.mjs",
     "billing:ensure-freedev": "node scripts/ensure-freedev-promo.mjs",
     "account:reset:alex": "node scripts/reset-alex-upgrade-state.mjs",
     "db:migrate": "node scripts/apply-postgres-migrations.mjs",
@@ -31,10 +31,12 @@
     "test:single-device-postgres": "node --experimental-strip-types --test --test-concurrency=1 tests/single-device-postgres.test.mjs",
     "typecheck": "tsc --noEmit",
     "verify:checkout-contract": "node scripts/verify-production-source.mjs --checkout-only",
+    "promote:production-canonical": "node scripts/promote-canonical-production.mjs",
     "verify:production-source": "node scripts/verify-production-source.mjs",
+    "verify:production-live": "node scripts/verify-production-live.mjs",
     "verify:vercel-build": "node scripts/verify-vercel-build.mjs",
     "verify:vercel-contract": "node scripts/validate-vercel-contract.mjs",
-    "deploy:production": "npm run verify:production-source && npm run test:entitlement && npx vercel@latest build --prod --yes --scope alex-3685s-projects && npm run verify:vercel-build && npx vercel@latest deploy --prebuilt --prod --yes --scope alex-3685s-projects",
+    "deploy:production": "npm run verify:production-source && npm run test:entitlement && npx vercel@latest build --prod --yes --scope alex-3685s-projects && npm run verify:vercel-build && npx vercel@latest deploy --prebuilt --prod --yes --scope alex-3685s-projects && npm run promote:production-canonical && npm run verify:production-live",
     "preview": "vite preview"
   },
   "dependencies": {
