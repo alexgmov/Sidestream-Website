@@ -79,7 +79,7 @@ export function isValidDiscountedCheckoutPayment(
     typeof amountDiscount === "number" &&
     amountDiscount >= 0 &&
     amountDiscount === expected.amountSubtotal - amountTotal &&
-    session.total_details?.amount_shipping === 0 &&
+    (session.total_details?.amount_shipping ?? 0) === 0 &&
     session.total_details?.amount_tax === 0 &&
     payment.amountPaid === amountTotal &&
     stringId(session.currency).toLowerCase() === expected.currency &&

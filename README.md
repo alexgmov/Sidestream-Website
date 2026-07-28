@@ -821,7 +821,7 @@ Use the narrowest relevant check after edits:
 
 ## Recent Change Log
 
-- 2026-07-27: Made paid-acquisition fulfillment promotion-aware: different Stripe-managed discount amounts now reconcile from the immutable $14.99 subtotal through Stripe's aggregate discount to the exact captured total, while unpaid, zero-total, tax/shipping, currency, subtotal, and payment mismatches continue to fail closed.
+- 2026-07-27: Made paid-acquisition fulfillment promotion-aware: different Stripe-managed discount amounts now reconcile from the immutable $14.99 subtotal through Stripe's aggregate discount to the exact captured total, treating Stripe's nullable shipping amount as zero when absent while unpaid, zero-total, nonzero tax/shipping, currency, subtotal, and payment mismatches continue to fail closed.
 - 2026-07-27: Enabled Stripe's promotion-code field for the pay-first paid-acquisition Checkout Session; ordinary Checkout already exposed the same field, and the complete request fingerprint continues to rotate idempotency when Checkout parameters change.
 - 2026-07-27: Closed the stale-branch deployment bypass by making agent publishing Git-linked and `main`-only, reserving the guarded Vercel CLI release for deliberate owner reauthentication, and removing shared local Vercel CLI authentication after restoring canonical Production.
 - 2026-07-27: Removed the Pricing link from the top-right desktop header while retaining the in-page pricing section, Features and Account glass pills, and the current direct Checkout flow.

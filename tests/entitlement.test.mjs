@@ -210,6 +210,7 @@ test("paid acquisition accepts Stripe-verified discount totals and rejects misma
         total_details: {
           ...discountedCheckout.total_details,
           amount_discount: 500,
+          amount_shipping: null,
         },
       },
       { amountPaid: 999, currency: "usd" },
