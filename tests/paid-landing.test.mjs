@@ -15,13 +15,19 @@ const repositoryRoot = path.resolve(path.dirname(testPath), "..");
 const canonicalPath = path.join(repositoryRoot, "index.html");
 const publishedPaidLandingPath = path.join(
   repositoryRoot,
-  "public",
+  "generated",
+  "mobile-paid-prototype.html"
+);
+const runtimePaidLandingPath = path.join(
+  repositoryRoot,
+  "runtime",
   "mobile-paid-prototype.html"
 );
 
-const [canonicalHtml, paidLandingHtml] = await Promise.all([
+const [canonicalHtml, paidLandingHtml, runtimePaidLandingHtml] = await Promise.all([
   readFile(canonicalPath, "utf8"),
-  readFile(publishedPaidLandingPath, "utf8")
+  readFile(publishedPaidLandingPath, "utf8"),
+  readFile(runtimePaidLandingPath, "utf8")
 ]);
 
 function renderedText(html) {
@@ -108,6 +114,24 @@ test("rendering is immediate and never fetches the canonical page at runtime", (
   assert.match(paidLandingHtml, /<script type="module" src="\/src\/main\.tsx"><\/script>/);
   assert.match(paidLandingHtml, /const demoVideoPrewarmObserver/);
   assert.match(paidLandingHtml, /const loopingVideoPrewarmObserver/);
+});
+
+test("runtime paid landing uses compiled shader and media assets", () => {
+  assert.match(
+    runtimePaidLandingHtml,
+    /<script type="module" crossorigin src="\/assets\/main-[A-Za-z0-9_-]+\.js">/
+  );
+  assert.match(runtimePaidLandingHtml, /src="\/assets\/mockup1_2-[A-Za-z0-9_-]+\.webm"/);
+  assert.doesNotMatch(
+    runtimePaidLandingHtml,
+    /\/src\/main\.tsx|(?:src|poster)="(?:\.\.\/)?(?:demos|mockups)\//
+  );
+  assert.equal(
+    runtimePaidLandingHtml.match(
+      new RegExp(PAID_LANDING_ENTRY_TOKEN_PLACEHOLDER, "g")
+    )?.length,
+    1
+  );
 });
 
 test("mobile source carries the accessibility and no-overflow contract", () => {

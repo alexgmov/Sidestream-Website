@@ -18,7 +18,7 @@ const PROOF_HEADER = "x-sidestream-paid-acquisition-proof";
 const ENTRY_PLACEHOLDER = "__SIDESTREAM_PAID_ENTRY_TOKEN__";
 const LANDING_PATH = path.join(
   process.cwd(),
-  "public",
+  "runtime",
   "mobile-paid-prototype.html",
 );
 

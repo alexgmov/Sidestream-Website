@@ -1,5 +1,4 @@
 import path from "node:path"
-import { rmSync } from "node:fs"
 import { fileURLToPath } from "node:url"
 
 import tailwindcss from "@tailwindcss/vite"
@@ -7,17 +6,9 @@ import react from "@vitejs/plugin-react"
 import { defineConfig } from "vite"
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
-const stripLocalOnlyPaidPrototype = {
-  name: "strip-local-only-paid-prototype",
-  closeBundle() {
-    rmSync(path.resolve(__dirname, "dist/mobile-paid-prototype.html"), {
-      force: true,
-    })
-  },
-}
 
 export default defineConfig({
-  plugins: [react(), tailwindcss(), stripLocalOnlyPaidPrototype],
+  plugins: [react(), tailwindcss()],
   resolve: {
     alias: {
       "@": __dirname,
@@ -27,6 +18,10 @@ export default defineConfig({
     rollupOptions: {
       input: {
         index: path.resolve(__dirname, "index.html"),
+        mobilePaidPrototype: path.resolve(
+          __dirname,
+          "generated/mobile-paid-prototype.html",
+        ),
         account: path.resolve(__dirname, "account.html"),
         thankYou: path.resolve(__dirname, "thank-you.html"),
         sidestream: path.resolve(

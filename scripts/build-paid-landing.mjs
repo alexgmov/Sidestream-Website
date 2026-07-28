@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { createHash } from "node:crypto";
-import { readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import path from "node:path";
 
@@ -14,7 +14,7 @@ const repositoryRoot = path.resolve(path.dirname(scriptPath), "..");
 const canonicalPath = path.join(repositoryRoot, "index.html");
 const publishedPaidLandingPath = path.join(
   repositoryRoot,
-  "public",
+  "generated",
   "mobile-paid-prototype.html",
 );
 
@@ -220,6 +220,14 @@ export function buildPaidLanding(canonicalHtml) {
     variantStyles + "\n</style>",
     "primary style block"
   );
+  for (const [source, compiledSource] of [
+    ['src="demos/', 'src="../demos/'],
+    ['poster="demos/', 'poster="../demos/'],
+    ['src="mockups/', 'src="../mockups/'],
+    ['src="pryt.png"', 'src="../pryt.png"'],
+  ]) {
+    output = output.replaceAll(source, compiledSource);
+  }
   output = replaceRange(
     output,
     '  <div class="email-gate" id="download-email-gate" hidden>',
@@ -238,7 +246,7 @@ export function buildPaidLanding(canonicalHtml) {
     output,
     '          <form class="mobile-download-handoff" id="mobile-download-handoff" novalidate>',
     "        </div>\n      </div>\n    </section>",
-    mobilePurchaseCard + "        </div>\n      </div>\n    </section>",
+    mobilePurchaseCard,
     "mobile handoff"
   );
   output = replaceOnce(
@@ -251,7 +259,7 @@ export function buildPaidLanding(canonicalHtml) {
     output,
     '          <div class="plan reveal">',
     '          <div class="plan featured reveal"',
-    '          <div class="plan featured reveal"',
+    "",
     "free plan"
   );
   output = replaceOnce(
@@ -270,7 +278,7 @@ export function buildPaidLanding(canonicalHtml) {
     output,
     '        <div class="final reveal">',
     '        <div class="pricing-mockup reveal"',
-    '        <div class="pricing-mockup reveal"',
+    "",
     "final free CTA"
   );
   output = replaceOnce(
@@ -283,7 +291,7 @@ export function buildPaidLanding(canonicalHtml) {
     output,
     "    // Download / purchase actions",
     "  </script>\n</body>",
-    paidCheckoutScript + "  </script>\n</body>",
+    paidCheckoutScript,
     "download action script"
   );
 
@@ -320,6 +328,7 @@ async function run() {
     return;
   }
 
+  await mkdir(path.dirname(publishedPaidLandingPath), { recursive: true });
   await writeFile(publishedPaidLandingPath, expected);
   console.log(`Wrote ${path.relative(repositoryRoot, publishedPaidLandingPath)}.`);
 }

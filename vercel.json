@@ -5,6 +5,11 @@
   "buildCommand": "npm run build",
   "devCommand": "npm run dev -- --host 127.0.0.1 --port $PORT",
   "outputDirectory": "dist",
+  "functions": {
+    "api/paid-acquisition/landing.ts": {
+      "includeFiles": "runtime/mobile-paid-prototype.html"
+    }
+  },
   "crons": [
     {
       "path": "/api/internal/stripe-events/process",
