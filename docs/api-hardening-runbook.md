@@ -82,6 +82,26 @@ Browser/account behavior and device support facts are expanded in
 removed, and the API runbook records blockers rather than an executable
 replacement. None of those reads processes the Stripe event queue.
 
+### Dedicated paid onboarding claim boundary
+
+Activation source changes only the browser recovery UX:
+
+- raw source exactly `paid-acquisition-mc-v1` selects
+  `/api/activation/paid-claim`, which rechecks the stored source;
+- an active owner receives the existing reconnect or explicit
+  device-transfer decision under the same CSRF and transfer-limit checks;
+- an inactive owner receives the noindex support-only page, never Checkout; and
+- every omitted, whitespace/case variant, or other source stays on ordinary
+  `/api/activation/claim`, where a Free account continues to the server-owned
+  `/api/checkout/start` and then directly to Stripe.
+
+Source is not payment, entitlement, environment, or device authority. This
+server-support route does not enable the unlinked, default-off `/mc` experiment
+and requires no new migration. The future canonical-surface smoke procedure is
+in `docs/paid-acquisition-runbook.md`; it explicitly forbids visiting `/mc`,
+changing environment values, sending email, publishing artifacts, or completing
+payment. No live smoke was performed by this documentation gate.
+
 ### Platform matrix
 
 The release and download routes call the same manifest selector. A mismatch

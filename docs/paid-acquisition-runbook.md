@@ -1,7 +1,7 @@
 # Paid-acquisition website runbook
 
-> **Status:** documentation and Test planning only. This runbook authorizes no
-> Production action. The implementation contract remains
+> **Status:** documentation and verification planning only. This runbook
+> authorizes no Production action. The implementation contract remains
 > `docs/paid-acquisition-contract.md`.
 
 ## Scope and preserved behavior
@@ -77,6 +77,19 @@ branching with in-memory fixture providers and database state. The stricter
 verifier scrubs Stripe, Resend, Blob, Neon/Postgres, Vercel, and Google/OAuth
 selectors before rerunning the harness.
 
+Run the focused dedicated-claim proof as well:
+
+```bash
+node --experimental-strip-types --test tests/paid-onboarding-claim.test.mjs
+```
+
+It proves that only the exact raw `paid-acquisition-mc-v1` source selects
+`/api/activation/paid-claim`, the route rechecks the stored source, the inactive
+branch is noindex and support-only, and active owners stay on the existing
+same-origin CSRF and device reconnect/transfer policy. The ordinary route keeps
+its original default: after authentication, a Free account continues through
+`/api/checkout/start` directly to Stripe.
+
 For a website acceptance pass, also run:
 
 ```bash
@@ -98,10 +111,58 @@ prove a deployed Test or Production surface, a Stripe payment, Resend delivery,
 Google OAuth, a migrated database, a published artifact, an installation, or a
 loaded Premiere panel.
 
+## Manual Production smoke after a separately authorized deployment
+
+This is a post-deployment verification checklist, not deployment or testing
+authorization. Run it only after the intended commit is integrated onto current
+`origin/main`, a human separately authorizes `npm run deploy:production`, and
+the canonical `https://sidestream.tv` alias is proven to serve that exact
+commit. Do not use a Ready build or feature URL as Production evidence.
+
+Keep `/mc` unlinked and default-off throughout this server-support smoke. Do not
+request `/mc`; do not add or change
+`SIDESTREAM_PAID_ACQUISITION_ASSIGNMENT_SECRET`; do not enable paid email; and
+do not apply a migration, publish an artifact, or complete a payment.
+
+1. From the canonical root HTML, confirm there is no anchor whose `href` targets
+   `/mc`. Inspect source or the rendered root; do not navigate to `/mc`.
+2. Without following the redirect, request canonical
+   `/api/checkout/start` while signed out. Confirm the actual response is a
+   Google-authentication redirect, proving the canonical alias executes the
+   server route.
+3. With an approved disposable Free account and an ordinary activation whose
+   source is omitted or not exact, complete Google authentication. Confirm the
+   browser sequence is `/api/activation/claim` →
+   `/api/checkout/start?activation=...` → Stripe Checkout. Stop on the Stripe
+   page without paying. The support-only page must not appear.
+4. With an approved disposable Free account and an activation created by the
+   server from exact source `paid-acquisition-mc-v1`, complete Google
+   authentication through the returned `/api/activation/paid-claim` URL.
+   Confirm the noindex page title is “We’re not seeing your purchase.”, the
+   signed-in email is escaped, the instruction says “If you already upgraded,
+   contact Sidestream support.”, and the only action is
+   `mailto:alex@alexg.mov`. Confirm there is no Upgrade, Buy, Checkout, form, or
+   purchase link and no redirect to Stripe.
+5. With a separately approved already-active Pro account and exact paid source,
+   confirm GET shows the existing same-device reconnect or different-device
+   confirmed-transfer decision. GET must not bind or move a device. Submit the
+   CSRF-protected POST only if device mutation is separately authorized; if
+   submitted, verify the existing transfer limit and final loaded-panel state.
+6. Record the exact Production commit, canonical response evidence, account
+   class used for each branch, and whether any state-changing POST was
+   authorized. Redact activation keys, cookies, email addresses, account IDs,
+   device identifiers, and provider values.
+
+If any exact-source request reaches Checkout, any ordinary Free-account request
+reaches the support-only page, the root links to `/mc`, or the canonical alias
+does not serve the intended commit, stop. Do not compensate with an environment
+change, migration, alternate deployment URL, or manual data edit.
+
 ## Exact Test-only release procedure
 
-The following sequence is the only allowed live validation path. It is a
-human-gated checklist, not authorization from this document.
+The following sequence is the only allowed pre-Production live validation path
+for the paid experiment. It is a human-gated checklist, not authorization from
+this document.
 
 1. Run the deterministic fixture and build commands above from a clean
    integration commit. Record the commit and passing output.

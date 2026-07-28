@@ -13,6 +13,10 @@ ManyChat mobile paid-acquisition experiment. Normative terms such as **must**,
 
 - `/mc` is the only experiment entry path. Only an eligible mobile top-level
   document request whose decoded pathname is exactly `/mc` may be assigned.
+- No canonical page or public HTML links to `/mc`. Assignment remains
+  default-off when
+  `SIDESTREAM_PAID_ACQUISITION_ASSIGNMENT_SECRET` is missing or invalid; adding
+  server support for paid onboarding does not enable or promote the route.
 - `/m` is not edited, wrapped, intercepted, or reimplemented. It keeps its
   current temporary redirect to
   `https://sidestream.tv/?utm_source=manychat`.
@@ -214,6 +218,28 @@ quantity, success URL, cancel URL, environment, or cohort field. Those values
 are server configuration or verified routing context. All endpoint responses
 are `Cache-Control: no-store`; unsupported methods return `405` with an exact
 `Allow` header and create no state.
+
+### Dedicated activation-claim split
+
+The dedicated paid claim is a UX branch inside the existing activation engine,
+not another purchase or entitlement authority:
+
+```text
+activation source
+├─ exact paid-acquisition-mc-v1 → /api/activation/paid-claim
+│  ├─ active entitlement → existing reconnect or confirmed-transfer decision
+│  └─ inactive entitlement → support-only page; no Checkout or purchase action
+└─ omitted or any other exact value → /api/activation/claim
+   ├─ active entitlement → existing reconnect or confirmed-transfer decision
+   └─ Free account → /api/checkout/start → Stripe Checkout
+```
+
+The lower ordinary branch is unchanged. After Google authentication, a Free
+account still reaches the server-owned `/api/checkout/start` route and is
+redirected directly to Stripe using the current Product/Price and locked intent.
+It must not receive the paid support-only page. Conversely, the exact paid
+branch must never fall through to Checkout when the signed-in account has no
+active entitlement.
 
 ### Verified email and normalization
 

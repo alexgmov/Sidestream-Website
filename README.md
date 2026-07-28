@@ -595,6 +595,7 @@ Resend, Vercel Blob, or Postgres:
 ```bash
 npm run test:paid-acquisition-e2e
 node scripts/verify-paid-acquisition-e2e-fixtures.mjs
+node --experimental-strip-types --test tests/paid-onboarding-claim.test.mjs
 ```
 
 These checks prove only the local contract. They do not enable `/mc`, apply the
@@ -613,6 +614,16 @@ npm run deploy:production
 
 Integrate an intended feature onto the current `origin/main` before running this
 command. Feature and release branches are not Production sources.
+
+After a separately authorized Production deployment, use the manual paid-claim
+smoke checklist in `docs/paid-acquisition-runbook.md`. That checklist verifies
+the canonical alias, an ordinary Free account's unchanged
+`/api/activation/claim` → `/api/checkout/start` → Stripe boundary, the exact
+paid source's support-only inactive-entitlement page, and an already-active
+account's existing reconnect/transfer decision. It deliberately does not visit
+`/mc`, change either paid-acquisition switch, apply a migration, send email,
+publish an artifact, or complete a payment. A successful build or Vercel Ready
+deployment is not a substitute for those canonical-surface checks.
 
 The build copies the valid undated sitemap template, then `scripts/generate-sitemap.mjs` writes `dist/sitemap.xml` with an ISO `<lastmod>` derived from `index.html`. A clean Git checkout uses the latest commit that changed the page; a dirty local page uses its filesystem modification time. If Git history is unavailable, the build omits `<lastmod>` instead of inventing a build-time date. Do not put a manual `<lastmod>` back into `public/sitemap.xml`.
 
@@ -645,7 +656,7 @@ Use the narrowest relevant check after edits:
 - Run `npm run build` after shader, TypeScript, Tailwind, HTML mount, Vite config, or package changes.
 - Run `npm run test:download-referral` after changing installer attribution or `/api/download`. It verifies that tagged `GET`s are recorded only after a successful redirect, while `HEAD`, `304`, bad platforms, fulfillment errors, database errors, and database timeouts cannot create a false successful event or block delivery.
 - Run `npm run test:referral-visits` after changing `/m`, `/mc`, `/api/referral-visit`, the ManyChat browser hook, private-Blob referral storage, or its report. It verifies all four short-route forms, the allowlisted source, bounded request body, response-before-storage behavior, daily anonymous dedupe inputs, scanner separation, and hash-free aggregate output.
-- After changing paid `/mc` routing, the generated paid landing, paid Checkout/email/artifact/claim handlers, the entitlement bridge, or the paid schema, run `node --experimental-strip-types --test tests/paid*.test.mjs`, `npm run test:paid-acquisition-e2e`, `node scripts/verify-paid-acquisition-e2e-fixtures.mjs`, `npm run test:entitlement`, and `npm run typecheck`. Recheck that ordinary signed-in Free-account Checkout still redirects directly to Stripe, uses the current `$14.99` Product/Price and full request fingerprint, and that `/m`, root, free download, account, activation, and all non-exact `/mc` redirects are unchanged.
+- After changing paid `/mc` routing, the generated paid landing, paid Checkout/email/artifact/claim handlers, the entitlement bridge, or the paid schema, run `node --experimental-strip-types --test tests/paid*.test.mjs`, `npm run test:paid-acquisition-e2e`, `node scripts/verify-paid-acquisition-e2e-fixtures.mjs`, `npm run test:entitlement`, and `npm run typecheck`. The paid-onboarding suite must prove exact raw-source selection, server-side stored-source revalidation, support-only no-entitlement HTML, and reuse of the existing CSRF/device policy. Recheck that ordinary signed-in Free-account Checkout still redirects directly to Stripe, uses the current `$14.99` Product/Price and full request fingerprint, and that `/m`, root, free download, account, activation, and all non-exact `/mc` redirects are unchanged.
 - After SEO/GEO metadata changes, run `npm run build`, confirm `dist/robots.txt`, `dist/sitemap.xml`, `dist/llms.txt`, and the current versioned social-card asset exist, validate both source and built sitemap XML, confirm the built sitemap contains a generated ISO `<lastmod>` while the source contains only the generator marker, and spot-check the built HTML for the absolute canonical URL, meta description, Open Graph/Twitter image tags, and valid JSON-LD. When replacing a social card, publish it under a new filename and use a new share-query value because X may cache both the fetched page metadata and image URL.
 - Run `npx vercel@latest build` after routing/header changes, then `npm run verify:vercel-build`. Inspect `.vercel/output/config.json`, then verify a deployed response: `www`, the old-host root/non-API paths, `/index.html`, and `/Sidestream%20front%20end%202/Sidestream.html` must return `308` with `Location: https://sidestream.tv/`; old-host `/api/activation/start` must execute instead of redirecting; `/api/auth/session`, `HEAD /api/download`, `/account.html`, and `/thank-you.html` must return `X-Robots-Tag: noindex, nofollow`. Do not issue `GET /api/download` just to test headers.
 - After publishing analytics changes, visit the deployed site without a content blocker and allow roughly 30 seconds before checking the Vercel Analytics dashboard for page-view data.
@@ -783,6 +794,7 @@ Use the narrowest relevant check after edits:
 
 ## Recent Change Log
 
+- 2026-07-27: Consolidated paid-onboarding release documentation and local regression evidence. Added the future manual Production smoke boundary for the exact paid claim, support-only inactive branch, unchanged ordinary Free-account direct Checkout, and existing active-account reconnect/transfer behavior while keeping `/mc` unlinked and default-off. This gate performed no deployment, Google login, environment change, migration, email, payment, artifact publication, or `/mc` visit.
 - 2026-07-27: Added the exact-source `/api/activation/paid-claim` onboarding surface. It preserves Google OAuth, same-origin CSRF, activation replay/expiry, device-bound reconnect, and confirmed transfer behavior while replacing inactive-account Checkout with a polished noindex support-only page. Ordinary `/api/activation/claim` behavior is unchanged; no migration, provider write, `/mc` switch, or deployment occurred.
 - 2026-07-27: Reconciled the audited default-off paid `/mc` acquisition foundation onto current Production `main` while retaining the signed-in Free-account direct Stripe path, full Checkout request fingerprint, current `$14.99` Product/Price, `/m` family redirects, root/free/account/ordinary activation behavior, zero-total fulfillment support, and guarded Production deployment. Paid email remains disabled by default; no environment, database-apply, external provider, or deployment action occurred.
 - 2026-07-27: Increased the worldwide USD Sidestream Pro one-time price from `$9.99` to `$14.99` across the immutable Stripe Price resolver, visible landing-page offer, structured data, crawler copy, sandbox promotion tooling, verification fixtures, and operator documentation. Existing completed one-time entitlements remain unchanged; new Checkout Sessions resolve `sidestream_pro_once_1499`.
