@@ -3,6 +3,39 @@
 Read `README.md` before changing this repository. Keep it current after every
 behavior, API, deployment, or workflow change.
 
+## Repository scope and canonical branch
+
+This repository owns the complete Sidestream web service:
+
+- public website and account/checkout pages
+- Vercel middleware and server API routes
+- website-owned database migrations, manifests, tests, and deployment scripts
+
+The Premiere Pro extension/app is owned by the separate FlowState repository at
+`/Users/alexgarrett/alexg.mov/nle-plugins/FlowState`. Do not move app code into
+this repository or website/server code into FlowState unless Alex explicitly
+requests a repository-boundary change.
+
+`origin/main` is the only canonical branch. Existing `codex/*`, `orch/*`,
+release, detached, and worktree branches are historical/non-canonical and must
+be ignored unless Alex explicitly names one. Do not inspect them for missing
+work, use them as a starting point, merge them, push them, deploy them, or
+create another branch/worktree by default.
+
+At the start of every task:
+
+```sh
+git fetch origin main --prune
+git checkout main
+git pull --ff-only origin main
+git status --short --branch
+```
+
+Work directly on local `main`, commit to `main`, and push only
+`main:main`. If local `main` cannot fast-forward cleanly, or the working tree
+contains changes that are not part of the current task, stop and ask Alex
+instead of switching branches or recovering code from another checkout.
+
 ## Checkout contract
 
 The paid Sidestream sequence is exactly:
@@ -31,9 +64,10 @@ Production source is the clean, pushed commit at `origin/main`. Feature,
 release, and local branches are not Production sources, even if Vercel labels a
 deployment Ready.
 
-Agent sessions must publish only by fast-forwarding the intended commit onto
-`origin/main`. The Vercel Git integration tracks only `main` for Production;
-all other pushed branches are Preview deployments. Before pushing, run:
+Agent sessions must publish only by committing on the current, synchronized
+local `main` and pushing `main:main`. The Vercel Git integration tracks only
+`main` for Production; all other pushed branches are Preview deployments and
+must be ignored unless Alex explicitly requests one. Before pushing, run:
 
 ```sh
 npm run verify:production-source

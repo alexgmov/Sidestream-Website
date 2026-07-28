@@ -4,6 +4,8 @@
 
 Sidestream is an HTML-first landing page for a Premiere Pro panel that lets editors search, preview, and download YouTube videos, songs, overlays, b-roll, references, tutorials, or audio without leaving Premiere. The main page remains a single canonical HTML document with embedded layout CSS and vanilla JavaScript, plus a small React/Tailwind layer mounted only for the full-page Paper shader background.
 
+This repository owns the whole Sidestream web service: the public/account frontend, Vercel middleware and APIs, website database migrations, release manifests, tests, and deployment scripts. Keeping the frontend and server together preserves one deployable web contract. The Premiere extension/app remains separately owned by `/Users/alexgarrett/alexg.mov/nle-plugins/FlowState` because it has a different runtime, build, signing, installation, and release lifecycle.
+
 ## File Map
 
 - `AGENTS.md` - Durable repository instructions for the exact Upgrade, Google authentication, and Stripe sequence plus the only supported Production deployment command.
@@ -657,6 +659,8 @@ The build copies the valid undated sitemap template, then `scripts/generate-site
 
 This folder is a git repository for `git@github.com:alexgmov/Sidestream-Website.git`.
 
+`origin/main` is the only canonical branch and the default source for all work. Existing `codex/*`, `orch/*`, release, detached, and worktree branches are historical/non-canonical: ignore them unless Alex explicitly names one. Agents must not search those branches for newer code, start from them, merge them, create another branch/worktree, push them, or deploy them by default. Start every task by fetching `origin/main`, checking out local `main`, fast-forwarding it with `git pull --ff-only origin main`, and reporting `git status --short --branch`. Work directly on synchronized local `main`, commit there, and push only `main:main`. If `main` cannot fast-forward or unrelated local changes are present, stop and ask Alex rather than switching branches.
+
 Relevant tracked files are the canonical root HTML page, legacy static redirect, React shader entry/component files, Vite/Tailwind/shadcn config, README, `.thumbnail`, generated WebM/MP4 demo assets, and reference screenshots. Finder `.DS_Store`, `node_modules/`, `dist/`, raw demo source renders, Premiere/After Effects project files, and local auto-save/download folders are ignored.
 
 The generated MacBook mockup video in `mockups/mockup1_2.webm` is tracked. Raw mockup production files in `mockups/` are intentionally ignored because they can be hundreds of megabytes.
@@ -821,6 +825,7 @@ Use the narrowest relevant check after edits:
 
 ## Recent Change Log
 
+- 2026-07-28: Declared `origin/main` the only canonical branch, instructed agents to ignore all historical feature/Orchestra/worktree branches unless Alex explicitly names one, made synchronized local `main` the default work/push target, and documented the repository boundary: website frontend, Vercel server/API, and website migrations stay together here while the Premiere extension remains in FlowState.
 - 2026-07-27: Replaced the paid-email download route's dormant fixture manifests with the current Production Mac 1.0.14 and Windows 1.0.13 installer metadata and private Blob pathnames, restoring receipt-gated downloads without exposing those pathnames through the public paid manifest response.
 - 2026-07-27: Enabled `SIDESTREAM_PAID_ACQUISITION_EMAIL_ENABLED=1` in Vercel Production. Confirmed paid-acquisition fulfillment now claims its unique outbox row and submits the paid installer email to Resend with a Checkout-session-derived provider idempotency key; Test/Preview remain disabled and no historical outbox row was manually replayed.
 - 2026-07-27: Removed the decorative gradients from the Checkout thank-you page so its page background is solid black; content and panel styling are unchanged.
