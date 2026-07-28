@@ -47,11 +47,31 @@ export async function verifyLiveProduction({
   };
 }
 
+export async function verifyLiveProductionWithRetry({
+  expectedSha,
+  fetchImpl = fetch,
+  attempts = 6,
+  delayMs = 2_000,
+  wait = (milliseconds) =>
+    new Promise((resolve) => setTimeout(resolve, milliseconds)),
+}) {
+  let lastError;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      return await verifyLiveProduction({ expectedSha, fetchImpl });
+    } catch (error) {
+      lastError = error;
+      if (attempt < attempts) await wait(delayMs);
+    }
+  }
+  throw lastError;
+}
+
 async function main() {
   const expectedSha = execFileSync("git", ["rev-parse", "HEAD"], {
     encoding: "utf8",
   }).trim();
-  const result = await verifyLiveProduction({ expectedSha });
+  const result = await verifyLiveProductionWithRetry({ expectedSha });
   console.log(
     `PASS: sidestream.tv reports ${result.gitSha} and Checkout redirects with ${result.checkoutStatus}.`,
   );

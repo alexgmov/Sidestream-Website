@@ -577,7 +577,8 @@ SHA, deploys that prebuilt artifact, verifies the default Vercel Production
 alias reports that SHA through an authenticated protected-deployment read,
 promotes that exact deployment to `sidestream.tv`, and
 then verifies that canonical Production reports the candidate SHA and redirects
-Checkout directly to Google or Stripe:
+Checkout directly to Google or Stripe. The final readback retries a bounded six
+times at two-second intervals for alias propagation, then fails closed:
 
 ```bash
 npm run deploy:production
@@ -762,6 +763,7 @@ Use the narrowest relevant check after edits:
 - 2026-07-27: Locked Production deployment to clean remote `main` and the exact Sidestream Vercel project, added source and built-artifact checks for the Upgrade, Google authentication, and Stripe contract, retained both exact zero-total Stripe completion statuses, and documented `npm run deploy:production` as the supported release path.
 - 2026-07-27: Added canonical `/version.json` Git identity, fail-closed live-Production ancestry enforcement, an exact one-time legacy-deployment bootstrap boundary, built-artifact SHA verification, and post-deploy canonical SHA plus direct-Checkout verification so a small change cannot redeploy an older full-site lineage.
 - 2026-07-27: Made the guarded release explicitly promote only the Ready default Vercel Production deployment whose `/version.json` matches `HEAD` to the custom `sidestream.tv` alias before final live verification; a successful default-alias deploy can no longer be mistaken for a canonical-domain release.
+- 2026-07-27: Added a bounded post-promotion retry for Vercel custom-domain propagation; canonical SHA or direct-Checkout mismatches still fail after six attempts instead of producing a false failure during the first stale edge read.
 - 2026-07-26: Accepted Stripe's current completed no-cost order shape (`payment_status=paid`, zero total, and no PaymentIntent) under the existing exact Session/Price/Product/activation safeguards, while retaining the older `no_payment_required` shape and rejecting every nonzero or incomplete Checkout.
 - 2026-07-27: Bound Checkout Session idempotency to the complete canonical Stripe request so valid historical Upgrade paths cannot collide with stale request parameters after catalog or checkout-flow changes.
 - 2026-07-26: Removed the default "One email. No account required." mobile handoff note while preserving the hidden live region for validation and delivery feedback.

@@ -12,7 +12,10 @@ import {
   verifyCheckoutContract,
 } from "../scripts/verify-production-source.mjs";
 import { resolveBuildGitSha } from "../scripts/generate-production-version.mjs";
-import { verifyLiveProduction } from "../scripts/verify-production-live.mjs";
+import {
+  verifyLiveProduction,
+  verifyLiveProductionWithRetry,
+} from "../scripts/verify-production-live.mjs";
 import {
   assertPromotionCandidate,
   promoteCanonicalProduction,
@@ -183,6 +186,38 @@ test("post-deploy verification requires the expected SHA and direct Checkout red
   });
   assert.equal(result.gitSha, gitSha);
   assert.equal(result.checkoutStatus, 302);
+});
+
+test("post-deploy verification retries bounded alias propagation", async () => {
+  const gitSha = "3".repeat(40);
+  let versionReads = 0;
+  let waits = 0;
+  const result = await verifyLiveProductionWithRetry({
+    expectedSha: gitSha,
+    attempts: 3,
+    delayMs: 1,
+    wait: async () => {
+      waits += 1;
+    },
+    fetchImpl: async (url) => {
+      if (url.endsWith("/version.json")) {
+        versionReads += 1;
+        return new Response(
+          JSON.stringify({
+            gitSha: versionReads === 1 ? "4".repeat(40) : gitSha,
+          }),
+          { status: 200 },
+        );
+      }
+      return new Response("", {
+        status: 302,
+        headers: { location: "/api/auth/google/start?next=%2Fapi%2Fcheckout%2Fstart" },
+      });
+    },
+  });
+  assert.equal(result.gitSha, gitSha);
+  assert.equal(versionReads, 2);
+  assert.equal(waits, 1);
 });
 
 test("canonical promotion requires a Ready Production deployment with the expected SHA", async () => {
