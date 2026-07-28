@@ -31,25 +31,24 @@ Production source is the clean, pushed commit at `origin/main`. Feature,
 release, and local branches are not Production sources, even if Vercel labels a
 deployment Ready.
 
-Use only:
+Agent sessions must publish only by fast-forwarding the intended commit onto
+`origin/main`. The Vercel Git integration tracks only `main` for Production;
+all other pushed branches are Preview deployments. Before pushing, run:
 
 ```sh
-npm run deploy:production
+npm run verify:production-source
+npm run test:entitlement
+npm run build
 ```
 
-Do not run a raw `vercel deploy --prod`, promote a feature deployment, or deploy
-from a detached/stale checkout. First integrate the intended change onto the
-current `origin/main`, then use the guarded command. The guard must continue to
-verify the exact Vercel project, the direct checkout baseline, the zero-total
-fulfillment baseline, the source checkout contract, and equality between local
-HEAD and remote `main`. It must also read the exact Git SHA from canonical
-Production `/version.json` and require that SHA to be an ancestor of the
-candidate. A divergent candidate is a full-site rollback and must fail before
-the build.
+Do not run `vercel deploy --prod`, `npm run deploy:production`, assign the
+canonical alias, promote a feature deployment, or deploy from a detached/stale
+checkout in an agent session. Local Vercel CLI authentication is intentionally
+absent so a stale checkout cannot bypass current repository guards. The guarded
+CLI command remains an owner-only emergency tool after deliberate human
+reauthentication; it must not become the routine agent release path.
 
-After deployment, verify the canonical `https://sidestream.tv` alias and the
-actual `/api/checkout/start` response. The guarded command does this
-automatically: it first verifies the Ready default Production deployment's SHA,
-promotes that exact deployment to the custom domain, and then requires canonical
-`/version.json` to report the deployed `HEAD`. A Ready build alone is not
-Production proof.
+After pushing `main`, wait for the Git-linked Production deployment and verify
+that canonical `https://sidestream.tv/version.json` reports the pushed SHA and
+that `/api/checkout/start` still returns the expected direct redirect. A Ready
+build or Preview deployment alone is not Production proof.

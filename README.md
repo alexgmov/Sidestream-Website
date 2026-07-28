@@ -609,7 +609,7 @@ These checks prove only the local contract. They do not enable `/mc`, apply the
 namespaced migration, send paid email, publish artifacts, make a payment, or
 prove a deployed surface.
 
-The supported Production command requires a clean local commit equal to remote
+The owner-only emergency Production command requires a clean local commit equal to remote
 `origin/main`, reads the Git SHA currently served by canonical Production
 `/version.json`, and requires that live SHA to be an ancestor of the candidate.
 It then verifies the immutable checkout baselines and exact linked Vercel
@@ -626,8 +626,15 @@ times at two-second intervals for alias propagation, then fails closed:
 npm run deploy:production
 ```
 
-Integrate an intended feature onto the current `origin/main` before running this
-command. Feature and release branches are not Production sources. A candidate
+Agent sessions must not run that CLI command. They publish by fast-forwarding
+the verified change to `origin/main`; the Vercel Git integration tracks only
+`main` for Production and treats every other branch as Preview. Local Vercel CLI
+authentication is intentionally absent from the shared agent machine so an old
+checkout cannot bypass the current repository guard with `vercel deploy --prod`.
+The emergency command requires deliberate owner reauthentication.
+
+Integrate an intended feature onto the current `origin/main` before any
+Production release. Feature and release branches are not Production sources. A candidate
 that diverged before the live Production SHA fails before build. The one
 reviewed recovery from the pre-marker deployment is bound to its exact Vercel
 deployment ID; after the first marker-bearing deployment replaces it, that
@@ -653,7 +660,7 @@ Relevant tracked files are the canonical root HTML page, legacy static redirect,
 
 The generated MacBook mockup video in `mockups/mockup1_2.webm` is tracked. Raw mockup production files in `mockups/` are intentionally ignored because they can be hundreds of megabytes.
 
-The project is linked to Vercel project `alex-3685s-projects/sidestream`. `.vercel/`, `.env.local`, and other `.env*` files are ignored. Publish Mac metadata with `npm run release:publish-manifest -- --platform macos --version <x.y.z> --artifact <local dmg> --pathname sidestream/<x.y.z>/Sidestream-<x.y.z>-Mac-Installer.dmg --signed --verified --uploaded --smoke-tested`. Publish an intentionally unsigned Windows beta with `--platform win32-x64`, an EXE/pathname, and `--unsigned-beta-approved --verified --uploaded --smoke-tested`; never lie by passing `--signed` for an unsigned build. Deploy after publication only through `npm run deploy:production`. Keep bare `/api/download` on the native/base Mac DMG and keep `.vercelignore` aligned with tracked publishable media so Vercel CLI deploys do not upload raw local `demos/` and `mockups/` production assets.
+The project is linked to Vercel project `alex-3685s-projects/sidestream`. `.vercel/`, `.env.local`, and other `.env*` files are ignored. Publish Mac metadata with `npm run release:publish-manifest -- --platform macos --version <x.y.z> --artifact <local dmg> --pathname sidestream/<x.y.z>/Sidestream-<x.y.z>-Mac-Installer.dmg --signed --verified --uploaded --smoke-tested`. Publish an intentionally unsigned Windows beta with `--platform win32-x64`, an EXE/pathname, and `--unsigned-beta-approved --verified --uploaded --smoke-tested`; never lie by passing `--signed` for an unsigned build. Agent releases fast-forward verified commits onto `origin/main` and rely on the Git-linked Production deployment; `npm run deploy:production` is owner-only emergency recovery after deliberate human reauthentication. Keep bare `/api/download` on the native/base Mac DMG and keep `.vercelignore` aligned with tracked publishable media so Vercel CLI deploys do not upload raw local `demos/` and `mockups/` production assets.
 
 `vercel.json` deliberately pins `installCommand`, `buildCommand`, and `devCommand` to npm. The dev command must pass Vercel's `$PORT` into Vite; otherwise `vercel dev` can accept connections on its proxy port and hang. If the Vercel dashboard still has an old package-manager preference, the repo config should win. Vercel's host-based `has` matching works after deployment but not in `vercel dev`, so use a preview/production deployment plus `curl -I` to prove the `www` redirects and the non-API `sidestream-xi.vercel.app` redirects. The old host intentionally continues to serve `/api/*` in place because installed Sidestream 1.0.12 panels POST to that origin and do not follow Vercel's `308` response.
 
@@ -722,7 +729,7 @@ Use the narrowest relevant check after edits:
 
 ## Known Gotchas
 
-- A Vercel Production deployment can be Ready while originating from stale source. Production source is only a clean commit equal to remote `origin/main`, linked to `alex-3685s-projects/sidestream`, and descended from the exact Git SHA reported by canonical Production `/version.json`. Use `npm run deploy:production`; it verifies the live SHA and Checkout redirect after deployment.
+- A Vercel Production deployment can be Ready while originating from stale source. Production source is only the fast-forwarded `origin/main` lineage linked to `alex-3685s-projects/sidestream`. Agent sessions must not retain Vercel CLI authentication or run direct Production deployments; push verified `main`, then require canonical `/version.json` to report that exact SHA and verify the live Checkout redirect. `npm run deploy:production` is owner-only emergency recovery after deliberate human reauthentication.
 - The paid `/mc` foundation is default-off, unlinked, and additive. Missing `SIDESTREAM_PAID_ACQUISITION_ASSIGNMENT_SECRET` must continue to fall back to the canonical ManyChat destination, and paid provider delivery must remain off unless `SIDESTREAM_PAID_ACQUISITION_EMAIL_ENABLED=1`. Do not configure either setting, apply the paid migration, publish paid artifacts, or deploy from this documentation alone. Paid Checkout must resolve the same current `$14.99` Product/Price as ordinary Checkout; never restore the audited branch's older hard-coded USD 999 assumption.
 - Paid activation `source` is only a strict UX selector. Exact `paid-acquisition-mc-v1` returns `/api/activation/paid-claim`; whitespace, casing, or any other source remains on `/api/activation/claim`. The dedicated handler also requires that exact stored source, but only the authenticated account's active Pro entitlement and existing device policy can authorize connection.
 - Customer 360 captured money authority is the PaymentIntent `amount_received`, or `amount_captured` on a standalone Charge when no PaymentIntent exists. A paid Checkout or Invoice is a fallback only while its related settled instrument is absent, and refresh must replace rather than add that fallback when stronger truth arrives. Before instrument arrival, suppress a Checkout fallback only when a paid Invoice fact in the same namespace, profile, and currency has a paid InvoicePayment edge resolving to that Checkout payment key; prefer the Invoice and leave unrelated Checkout fallbacks countable. Checkout authorization must never re-inflate a partial capture. Invoice `amount_paid` is full gross customer money; `amount_paid_off_stripe` is a nonnegative subset of gross, not a deduction or an amount to add twice. Paid InvoicePayment rows are allocation edges keyed by `invoice_payment.id`; open/canceled rows do not attribute money, and an invoice/instrument many-to-many graph must not become alias equivalence.
@@ -812,6 +819,7 @@ Use the narrowest relevant check after edits:
 
 ## Recent Change Log
 
+- 2026-07-27: Closed the stale-branch deployment bypass by making agent publishing Git-linked and `main`-only, reserving the guarded Vercel CLI release for deliberate owner reauthentication, and removing shared local Vercel CLI authentication after restoring canonical Production.
 - 2026-07-27: Removed the Pricing link from the top-right desktop header while retaining the in-page pricing section, Features and Account glass pills, and the current direct Checkout flow.
 - 2026-07-27: Updated the transitive PostCSS dependency to `8.5.23` (and its Nano ID dependency to `3.3.16`) to remove the high-severity `GHSA-r28c-9q8g-f849` advisory without forcing a Vite major upgrade. `npm audit` still reports the separate low-severity esbuild development-server advisory, which requires a controlled Vite upgrade.
 - 2026-07-27: Kept the deterministic paid landing fixture available to tests while stripping it from deployable Vite output, and documented the standalone Edge middleware's test-owned TypeScript boundary so guarded Vercel builds contain no unexpected root HTML.
