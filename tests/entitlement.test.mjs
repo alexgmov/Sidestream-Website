@@ -206,6 +206,24 @@ test("paid acquisition accepts Stripe-verified discount totals and rejects misma
     isValidDiscountedCheckoutPayment(
       {
         ...discountedCheckout,
+        payment_status: "no_payment_required",
+        payment_intent: null,
+        amount_total: 0,
+        total_details: {
+          ...discountedCheckout.total_details,
+          amount_discount: 1499,
+          amount_shipping: null,
+        },
+      },
+      null,
+      expectation,
+    ),
+    true,
+  );
+  assert.equal(
+    isValidDiscountedCheckoutPayment(
+      {
+        ...discountedCheckout,
         amount_total: 999,
         total_details: {
           ...discountedCheckout.total_details,
@@ -222,7 +240,7 @@ test("paid acquisition accepts Stripe-verified discount totals and rejects misma
   const rejected = [
     [{ ...discountedCheckout, payment_status: "unpaid" }, { amountPaid: 1199, currency: "usd" }],
     [{ ...discountedCheckout, amount_subtotal: 999 }, { amountPaid: 1199, currency: "usd" }],
-    [{ ...discountedCheckout, amount_total: 0, total_details: { ...discountedCheckout.total_details, amount_discount: 1499 } }, null],
+    [{ ...discountedCheckout, amount_total: 0, total_details: { ...discountedCheckout.total_details, amount_discount: 1499 } }, { amountPaid: 0, currency: "usd" }],
     [{ ...discountedCheckout, total_details: { ...discountedCheckout.total_details, amount_discount: 299 } }, { amountPaid: 1199, currency: "usd" }],
     [{ ...discountedCheckout, total_details: { ...discountedCheckout.total_details, amount_tax: 1 } }, { amountPaid: 1199, currency: "usd" }],
     [discountedCheckout, { amountPaid: 1200, currency: "usd" }],

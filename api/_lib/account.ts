@@ -3421,11 +3421,12 @@ export async function fulfillCheckoutSession(
     }
   });
   if (!fulfillment.fulfilled) return fulfillment;
-  if (paidAcquisitionCheckout && canonicalPayment.facts) {
+  if (paidAcquisitionCheckout) {
     await completePaidAcquisitionCheckout({
       environment: requireMatchingLicenseEnvironment().namespace,
       verifiedCheckoutSessionRef: checkoutSessionId,
-      canonicalPaymentRef: canonicalPayment.facts.paymentIntentId,
+      canonicalPaymentRef:
+        canonicalPayment.facts?.paymentIntentId || checkoutSessionId,
       verifiedCheckoutEmail:
         checkoutSession.customer_details?.email ||
         checkoutSession.customer_email ||
@@ -3436,7 +3437,7 @@ export async function fulfillCheckoutSession(
       verifiedOriginalAmountMinor: SIDESTREAM_PRO_PRICE.unitAmount,
       verifiedDiscountAmountMinor:
         checkoutSession.total_details?.amount_discount ?? 0,
-      verifiedAmountMinor: canonicalPayment.facts.amountPaid,
+      verifiedAmountMinor: canonicalPayment.facts?.amountPaid ?? 0,
       verifiedCurrency: canonicalPayment.currency,
       accountRef: accountId,
       entitlementRef: fulfillment.licenseId,

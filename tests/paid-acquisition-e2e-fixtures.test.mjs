@@ -345,8 +345,8 @@ test("fixture purchase connects sticky paid entry to idempotent verified $14.99 
       verifiedPriceRef: "price_test_sidestream_pro_1499",
       verifiedQuantity: 1,
       verifiedOriginalAmountMinor: 1499,
-      verifiedDiscountAmountMinor: 300,
-      verifiedAmountMinor: 1199,
+      verifiedDiscountAmountMinor: 1499,
+      verifiedAmountMinor: 0,
       verifiedCurrency: "usd",
     });
   assert.equal(fulfilled.matched, true);

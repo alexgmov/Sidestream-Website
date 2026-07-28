@@ -73,8 +73,6 @@ export function getDiscountedCheckoutPaymentMismatch(
 ) {
   const amountTotal = session.amount_total;
   const amountDiscount = session.total_details?.amount_discount;
-  if (session.payment_status !== "paid") return "payment_status";
-  if (!payment) return "missing_payment";
   if (!Number.isSafeInteger(expected.amountSubtotal) || expected.amountSubtotal <= 0) {
     return "invalid_expected_subtotal";
   }
@@ -82,7 +80,7 @@ export function getDiscountedCheckoutPaymentMismatch(
   if (
     !Number.isSafeInteger(amountTotal) ||
     typeof amountTotal !== "number" ||
-    amountTotal <= 0 ||
+    amountTotal < 0 ||
     amountTotal > expected.amountSubtotal
   ) return "total";
   if (
@@ -93,6 +91,13 @@ export function getDiscountedCheckoutPaymentMismatch(
   ) return "discount";
   if ((session.total_details?.amount_shipping ?? 0) !== 0) return "shipping";
   if (session.total_details?.amount_tax !== 0) return "tax";
+  if (amountTotal === 0) {
+    return !payment && isZeroTotalCheckoutWithoutPaymentIntent(session)
+      ? ""
+      : "zero_total";
+  }
+  if (session.payment_status !== "paid") return "payment_status";
+  if (!payment) return "missing_payment";
   if (payment.amountPaid !== amountTotal) return "captured_total";
   if (stringId(session.currency).toLowerCase() !== expected.currency) {
     return "session_currency";

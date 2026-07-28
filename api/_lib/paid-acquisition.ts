@@ -1166,7 +1166,7 @@ export async function completePaidAcquisitionCheckout(options: {
     options.verifiedOriginalAmountMinor !== 1499 ||
     !Number.isSafeInteger(options.verifiedDiscountAmountMinor) ||
     options.verifiedDiscountAmountMinor < 0 ||
-    options.verifiedDiscountAmountMinor >= options.verifiedOriginalAmountMinor ||
+    options.verifiedDiscountAmountMinor > options.verifiedOriginalAmountMinor ||
     options.verifiedAmountMinor !==
       options.verifiedOriginalAmountMinor - options.verifiedDiscountAmountMinor ||
     options.verifiedCurrency !== "usd"
@@ -1257,7 +1257,7 @@ export async function completePaidAcquisitionCheckout(options: {
         options.verifiedProductRef,
         options.verifiedPriceRef,
         options.verifiedQuantity,
-        options.verifiedAmountMinor,
+        options.verifiedOriginalAmountMinor,
         options.verifiedCurrency,
         receiptHash,
       ],
@@ -1441,6 +1441,11 @@ export async function getPaidAcquisitionReceiptState(options: {
       from public.sidestream_paid_acquisition_checkouts paid
       left join public.sidestream_licenses license
         on license.stripe_payment_intent_id = paid.canonical_payment_ref
+        or (
+          license.stripe_payment_intent_id is null
+          and license.stripe_checkout_session_id =
+            paid.verified_checkout_session_ref
+        )
       where paid.environment = $1
         and paid.installer_receipt_hash = $2
       limit 2
