@@ -28,6 +28,9 @@ import {
   canBindActivationAccount,
   isActivationClaimReplay,
 } from "../_lib/entitlement.js";
+import {
+  renderMissingPaidEntitlementPage,
+} from "../_lib/paid-onboarding-claim-page.js";
 
 type ActivationDecisionContext = {
   accountId: string | null;
@@ -51,10 +54,26 @@ type CustomerIdentityFields = {
   installerReceiptIdHash?: string;
 };
 
+export type ActivationClaimHandlerOptions = {
+  claimPath?: "/api/activation/claim" | "/api/activation/paid-claim";
+  requiredActivationSource?: string;
+  inactiveEntitlementMode?: "checkout" | "support_only";
+};
+
 export default async function handler(
   request: AccountRequest,
   response: ServerResponse,
 ) {
+  return handleActivationClaim(request, response);
+}
+
+export async function handleActivationClaim(
+  request: AccountRequest,
+  response: ServerResponse,
+  options: ActivationClaimHandlerOptions = {},
+) {
+  const claimPath = options.claimPath || "/api/activation/claim";
+  const inactiveEntitlementMode = options.inactiveEntitlementMode || "checkout";
   const method = (request.method || "GET").toUpperCase();
   if (method !== "GET" && method !== "POST") {
     return methodNotAllowed(response, "GET, POST");
@@ -62,7 +81,7 @@ export default async function handler(
 
   const baseUrl = getBaseUrl(request);
   if (method === "GET") {
-    const requestUrl = new URL(request.url || "/api/activation/claim", baseUrl);
+    const requestUrl = new URL(request.url || claimPath, baseUrl);
     const activationKey = cleanString(requestUrl.searchParams.get("activation"), 160);
     if (!activationKey) return sendJson(response, 400, { error: "Missing activation key" });
     const identity = readCustomerIdentityFields({
@@ -79,7 +98,7 @@ export default async function handler(
 
     const session = await getSession(request);
     if (!session) {
-      const nextPath = activationClaimPath(activationKey, identity);
+      const nextPath = activationClaimPath(activationKey, identity, claimPath);
       const signIn = new URL("/api/auth/google/start", baseUrl);
       signIn.searchParams.set("next", nextPath);
       return redirect(response, signIn.toString(), 302);
@@ -93,12 +112,20 @@ export default async function handler(
       activationKey,
       session.accountId,
       environment.namespace,
+      options.requiredActivationSource,
     );
     if (!activation) {
       return sendConfirmationPage(response, 409, unavailablePage());
     }
 
     if (!session.license.active) {
+      if (inactiveEntitlementMode === "support_only") {
+        return sendConfirmationPage(
+          response,
+          200,
+          renderMissingPaidEntitlementPage(session.email),
+        );
+      }
       if (!activation.canPurchase) {
         return sendConfirmationPage(response, 409, unavailablePage());
       }
@@ -138,6 +165,7 @@ export default async function handler(
         transferLimit: transferLimit.limit,
         remainingTransfers: transferLimit.remainingTransfers,
         identity,
+        claimPath,
       }));
     }
 
@@ -148,6 +176,7 @@ export default async function handler(
       appVersion: activation.appVersion,
       sameDevice: decision.decision === "same_device",
       identity,
+      claimPath,
     }));
   }
 
@@ -196,6 +225,7 @@ export default async function handler(
     activationKey,
     session.accountId,
     environment.namespace,
+    options.requiredActivationSource,
   );
   if (!activation) {
     return sendJson(response, 409, {
@@ -298,6 +328,7 @@ async function getActivationDecisionContext(
   activationKey: string,
   accountId: string,
   namespace: DeviceNamespace,
+  requiredActivationSource?: string,
 ): Promise<ActivationDecisionContext | null> {
   const result = await query<{
     activation_account_id: string | null;
@@ -347,9 +378,10 @@ async function getActivationDecisionContext(
       ) h on true
       where a.activation_key = $1
         and a.device_id_hash is not null
+        and ($4::text is null or a.source = $4)
       limit 1
     `,
-    [activationKey, accountId, namespace],
+    [activationKey, accountId, namespace, requiredActivationSource || null],
   );
 
   const row = result.rows[0];
@@ -510,6 +542,7 @@ function reconnectPage(options: {
   appVersion: string;
   sameDevice: boolean;
   identity: CustomerIdentityFields;
+  claimPath: string;
 }) {
   return decisionPage({
     title: options.sameDevice
@@ -527,6 +560,7 @@ function reconnectPage(options: {
       intent: "restore",
       label: options.sameDevice ? "Reconnect this device" : "Connect this device",
       identity: options.identity,
+      claimPath: options.claimPath,
     }),
   });
 }
@@ -540,6 +574,7 @@ function transferPage(options: {
   transferLimit: number;
   remainingTransfers: number;
   identity: CustomerIdentityFields;
+  claimPath: string;
 }) {
   const device = formatActiveDevice(options.activeDevice);
   return decisionPage({
@@ -548,7 +583,7 @@ function transferPage(options: {
     email: options.email,
     appVersion: options.appVersion,
     detail: `${device}. ${options.remainingTransfers} of ${options.transferLimit} device moves remain in the current rolling 30-day window.`,
-    action: `<form method="post" action="/api/activation/claim"><input type="hidden" name="activation" value="${escapeHtml(options.activationKey)}"><input type="hidden" name="csrf" value="${escapeHtml(options.csrfToken)}"><input type="hidden" name="intent" value="transfer">${customerIdentityHiddenInputs(options.identity)}<label class="confirm"><input type="checkbox" name="transfer_confirmation" value="deactivate_previous_device" required><span>I understand the previous device will be deactivated.</span></label><button type="submit">Move Sidestream Pro here</button></form>`,
+    action: `<form method="post" action="${escapeHtml(options.claimPath)}"><input type="hidden" name="activation" value="${escapeHtml(options.activationKey)}"><input type="hidden" name="csrf" value="${escapeHtml(options.csrfToken)}"><input type="hidden" name="intent" value="transfer">${customerIdentityHiddenInputs(options.identity)}<label class="confirm"><input type="checkbox" name="transfer_confirmation" value="deactivate_previous_device" required><span>I understand the previous device will be deactivated.</span></label><button type="submit">Move Sidestream Pro here</button></form>`,
   });
 }
 
@@ -568,19 +603,21 @@ function claimForm(options: {
   intent: "restore";
   label: string;
   identity: CustomerIdentityFields;
+  claimPath: string;
 }) {
-  return `<form method="post" action="/api/activation/claim"><input type="hidden" name="activation" value="${escapeHtml(options.activationKey)}"><input type="hidden" name="csrf" value="${escapeHtml(options.csrfToken)}"><input type="hidden" name="intent" value="${options.intent}">${customerIdentityHiddenInputs(options.identity)}<button type="submit">${escapeHtml(options.label)}</button></form>`;
+  return `<form method="post" action="${escapeHtml(options.claimPath)}"><input type="hidden" name="activation" value="${escapeHtml(options.activationKey)}"><input type="hidden" name="csrf" value="${escapeHtml(options.csrfToken)}"><input type="hidden" name="intent" value="${options.intent}">${customerIdentityHiddenInputs(options.identity)}<button type="submit">${escapeHtml(options.label)}</button></form>`;
 }
 
 function activationClaimPath(
   activationKey: string,
   identity: CustomerIdentityFields,
+  claimPath = "/api/activation/claim",
 ) {
   const params = new URLSearchParams({ activation: activationKey });
   for (const [key, value] of Object.entries(identity)) {
     if (value) params.set(key, value);
   }
-  return `/api/activation/claim?${params.toString()}`;
+  return `${claimPath}?${params.toString()}`;
 }
 
 function customerIdentityHiddenInputs(identity: CustomerIdentityFields) {

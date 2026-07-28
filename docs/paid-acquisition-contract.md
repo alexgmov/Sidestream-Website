@@ -199,6 +199,7 @@ API request.
 | `POST /api/paid-acquisition/checkout` | JSON at most 4096 bytes: `{"schemaVersion":1,"entryToken":"...","idempotencyKey":"..."}`; token 1-256 base64url/signature characters, key UUID 36 characters | `200 {"url":"<https URL>","reused":boolean}`; URL at most 2048 characters | `400 invalid_request`, `403 ineligible_entry`, `409 checkout_conflict`, `429 rate_limited`, `503 temporarily_unavailable` |
 | `GET /api/paid-acquisition/artifact` | Exactly one `receipt` of 43 base64url characters and one `platform` enum | `302` to a signed artifact URL expiring within 5 minutes | `400 invalid_request`, `403 payment_inactive`, `403 refunded`, `403 disputed`, `404 artifact_not_found`, `410 receipt_expired`, `429 rate_limited`, `503 temporarily_unavailable` |
 | `GET /api/paid-acquisition/claim` | Opaque receipt in an HTTP-only signed flow cookie; Google OAuth is server-owned | no-store HTML/redirect into Google or a committed claim | claim outcomes in the table below |
+| `GET, POST /api/activation/paid-claim` | Existing activation key plus server session; activation row source must be exact `paid-acquisition-mc-v1` | no-store Google redirect, support-only inactive page, or existing CSRF-bound reconnect/confirmed transfer | existing activation claim failures; no Checkout fallback |
 
 The paid landing receives a server-rendered entry token only after a valid
 `mc-paid-v1` routing decision. The token expires after 10 minutes, is bound to
@@ -329,6 +330,23 @@ existing fields with these exact bounds:
 authorization credential or payment proof. Existing `installIdHash` and
 `supportCode` fields retain their documented meanings. Existing clients omit
 the paid source/receipt and observe no behavior change.
+
+Only a raw `source` value exactly equal to `paid-acquisition-mc-v1` selects the
+dedicated `/api/activation/paid-claim` `restoreUrl`; whitespace, case variants,
+and every other value retain the ordinary `/api/activation/claim` URL. The
+dedicated route rechecks the stored source on GET and POST. Source selects UX
+only: it cannot activate a license, prove payment, bypass account ownership, or
+weaken the existing one-active-device policy.
+
+After the existing safe Google OAuth flow, an active Pro account with no active
+device or the same device receives the existing one-time same-origin,
+CSRF-bound reconnect POST. A different active device receives the existing
+explicit deactivation/transfer confirmation and transfer-limit checks. A
+signed-in account without an active entitlement receives a noindex page titled
+“We’re not seeing your purchase.” with its signed-in email, the existing
+Sidestream support destination, and the exact instruction “If you already
+upgraded, contact Sidestream support.” It contains no Checkout, Upgrade, or
+purchase action. GET is read-only in every state.
 
 The start response remains the existing shape:
 
