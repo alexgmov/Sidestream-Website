@@ -16,13 +16,13 @@ import {
   deriveRefreshRotationTokens,
   getCheckoutSessionIdempotencyKey,
   getCheckoutParametersFingerprint,
+  getDiscountedCheckoutPaymentMismatch,
   getStripeCustomerIdempotencyKey,
   getStripeCheckoutWindow,
   getStripePriceIdempotencyKey,
   hasSameOrigin,
   isActivationClaimReplay,
   isCanonicalLicenseEntitlementUsable,
-  isValidDiscountedCheckoutPayment,
   isZeroTotalCheckoutWithoutPaymentIntent,
   needsLegacyLicenseCompatibility,
   isActivationTokenReplayAllowed,
@@ -3286,20 +3286,20 @@ export async function fulfillCheckoutSession(
   if (!canonicalPayment.ok) {
     return { fulfilled: false as const, reason: canonicalPayment.reason };
   }
-  if (
-    paidAcquisitionCheckout &&
-    !isValidDiscountedCheckoutPayment(
-      checkoutSession,
-      canonicalPayment.facts,
-      {
-        amountSubtotal: SIDESTREAM_PRO_PRICE.unitAmount,
-        currency: SIDESTREAM_PRO_PRICE.currency,
-      },
-    )
-  ) {
+  const paidAcquisitionAmountMismatch = paidAcquisitionCheckout
+    ? getDiscountedCheckoutPaymentMismatch(
+        checkoutSession,
+        canonicalPayment.facts,
+        {
+          amountSubtotal: SIDESTREAM_PRO_PRICE.unitAmount,
+          currency: SIDESTREAM_PRO_PRICE.currency,
+        },
+      )
+    : "";
+  if (paidAcquisitionAmountMismatch) {
     return {
       fulfilled: false as const,
-      reason: "paid_acquisition_amount_mismatch",
+      reason: `paid_acquisition_amount_${paidAcquisitionAmountMismatch}`,
     };
   }
 

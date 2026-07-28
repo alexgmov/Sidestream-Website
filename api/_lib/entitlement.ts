@@ -63,28 +63,44 @@ export function isValidDiscountedCheckoutPayment(
   payment: { amountPaid: unknown; currency: unknown } | null,
   expected: { amountSubtotal: number; currency: string },
 ) {
+  return getDiscountedCheckoutPaymentMismatch(session, payment, expected) === "";
+}
+
+export function getDiscountedCheckoutPaymentMismatch(
+  session: CheckoutSessionLike,
+  payment: { amountPaid: unknown; currency: unknown } | null,
+  expected: { amountSubtotal: number; currency: string },
+) {
   const amountTotal = session.amount_total;
   const amountDiscount = session.total_details?.amount_discount;
-  return Boolean(
-    session.payment_status === "paid" &&
-    payment &&
-    Number.isSafeInteger(expected.amountSubtotal) &&
-    expected.amountSubtotal > 0 &&
-    session.amount_subtotal === expected.amountSubtotal &&
-    Number.isSafeInteger(amountTotal) &&
-    typeof amountTotal === "number" &&
-    amountTotal > 0 &&
-    amountTotal <= expected.amountSubtotal &&
-    Number.isSafeInteger(amountDiscount) &&
-    typeof amountDiscount === "number" &&
-    amountDiscount >= 0 &&
-    amountDiscount === expected.amountSubtotal - amountTotal &&
-    (session.total_details?.amount_shipping ?? 0) === 0 &&
-    session.total_details?.amount_tax === 0 &&
-    payment.amountPaid === amountTotal &&
-    stringId(session.currency).toLowerCase() === expected.currency &&
-    stringId(payment.currency).toLowerCase() === expected.currency
-  );
+  if (session.payment_status !== "paid") return "payment_status";
+  if (!payment) return "missing_payment";
+  if (!Number.isSafeInteger(expected.amountSubtotal) || expected.amountSubtotal <= 0) {
+    return "invalid_expected_subtotal";
+  }
+  if (session.amount_subtotal !== expected.amountSubtotal) return "subtotal";
+  if (
+    !Number.isSafeInteger(amountTotal) ||
+    typeof amountTotal !== "number" ||
+    amountTotal <= 0 ||
+    amountTotal > expected.amountSubtotal
+  ) return "total";
+  if (
+    !Number.isSafeInteger(amountDiscount) ||
+    typeof amountDiscount !== "number" ||
+    amountDiscount < 0 ||
+    amountDiscount !== expected.amountSubtotal - amountTotal
+  ) return "discount";
+  if ((session.total_details?.amount_shipping ?? 0) !== 0) return "shipping";
+  if (session.total_details?.amount_tax !== 0) return "tax";
+  if (payment.amountPaid !== amountTotal) return "captured_total";
+  if (stringId(session.currency).toLowerCase() !== expected.currency) {
+    return "session_currency";
+  }
+  if (stringId(payment.currency).toLowerCase() !== expected.currency) {
+    return "payment_currency";
+  }
+  return "";
 }
 
 export const CANONICAL_PAID_PLAN_KEYS = [
