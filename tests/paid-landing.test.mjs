@@ -69,7 +69,7 @@ test("rendered paid page contains no prohibited free or pre-purchase email offer
   const prohibited = [
     /\bStart free\b/i,
     /\bFree Download\b/i,
-    /\b5 free downloads\b/i,
+    /\b3 free downloads\b/i,
     /\$0\s*forever/i,
     /Email me the download link/i,
     /We'll email you a link to your computer/i,
