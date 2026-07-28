@@ -13,6 +13,10 @@ import {
 } from "../scripts/verify-production-source.mjs";
 import { resolveBuildGitSha } from "../scripts/generate-production-version.mjs";
 import { verifyLiveProduction } from "../scripts/verify-production-live.mjs";
+import {
+  assertPromotionCandidate,
+  promoteCanonicalProduction,
+} from "../scripts/promote-canonical-production.mjs";
 
 const CRON_SECRET = "integration-cron-secret";
 const INTERNAL_CRON_PATHS = Object.freeze([
@@ -179,6 +183,47 @@ test("post-deploy verification requires the expected SHA and direct Checkout red
   });
   assert.equal(result.gitSha, gitSha);
   assert.equal(result.checkoutStatus, 302);
+});
+
+test("canonical promotion requires a Ready Production deployment with the expected SHA", async () => {
+  const gitSha = "1".repeat(40);
+  const deployment = {
+    id: "dpl_test",
+    target: "production",
+    readyState: "READY",
+    url: "sidestream-test123-alex-3685s-projects.vercel.app",
+  };
+  assert.doesNotThrow(() =>
+    assertPromotionCandidate({ deployment, expectedSha: gitSha, reportedSha: gitSha }),
+  );
+  assert.throws(
+    () =>
+      assertPromotionCandidate({
+        deployment,
+        expectedSha: gitSha,
+        reportedSha: "2".repeat(40),
+      }),
+    /expected/u,
+  );
+
+  const calls = [];
+  const result = await promoteCanonicalProduction({
+    expectedSha: gitSha,
+    fetchImpl: async () =>
+      new Response(JSON.stringify({ gitSha }), { status: 200 }),
+    runVercel: async (args) => {
+      calls.push(args);
+      if (args[0] === "inspect") return JSON.stringify(deployment);
+      return "";
+    },
+  });
+  assert.equal(result.deploymentId, "dpl_test");
+  assert.deepEqual(calls[1].slice(0, 4), [
+    "alias",
+    "set",
+    deployment.url,
+    "sidestream.tv",
+  ]);
 });
 
 test("the built checkout verifier checks authentication, Stripe creation, fulfillment, and root pages", async () => {

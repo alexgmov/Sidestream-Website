@@ -49,5 +49,7 @@ the build.
 
 After deployment, verify the canonical `https://sidestream.tv` alias and the
 actual `/api/checkout/start` response. The guarded command does this
-automatically and requires `/version.json` to report the deployed `HEAD`. A
-Ready build alone is not Production proof.
+automatically: it first verifies the Ready default Production deployment's SHA,
+promotes that exact deployment to the custom domain, and then requires canonical
+`/version.json` to report the deployed `HEAD`. A Ready build alone is not
+Production proof.
