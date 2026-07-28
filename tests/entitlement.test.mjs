@@ -397,6 +397,8 @@ test("Checkout attaches the activation only inside the locked intent worker", as
   assert.match(route, /\/api\/activation\/claim/);
   assert.match(account, /attachCheckoutSessionToActivation/);
   assert.match(account, /getCheckoutSessionIdempotencyKey/);
+  assert.match(account, /allow_promotion_codes:\s*true/);
+  assert.doesNotMatch(account, /allow_promotion_codes:\s*!options\.paidAcquisition/);
 });
 
 test("account implementation bounds status replay and uses locked refresh/fulfillment CAS", async () => {

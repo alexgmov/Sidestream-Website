@@ -1218,7 +1218,7 @@ export async function createOrReuseCheckoutSession(options: {
         ...(!stripeCustomerId ? { customer_creation: "always" as const } : {}),
         line_items: [{ price: stripePriceId, quantity: 1 }],
         payment_method_types: ["card"],
-        allow_promotion_codes: !options.paidAcquisition,
+        allow_promotion_codes: true,
         billing_address_collection: "auto",
         success_url: buildCheckoutCompletionUrl(options.baseUrl, activationKey),
         cancel_url: cancelUrl.toString(),
