@@ -200,6 +200,23 @@ test("the namespaced migration is private, additive, and hash-only", async () =>
   );
 });
 
+test("the paid acquisition price migration preserves provider bounds at USD 2499", async () => {
+  const sql = await readFile(
+    new URL(
+      "../db/migrations/20260728090000_update_paid_acquisition_price.sql",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.match(
+    sql,
+    /drop constraint sidestream_paid_acquisition_checkouts_provider_bounds/,
+  );
+  assert.match(sql, /verified_amount_minor = 2499/);
+  assert.match(sql, /verified_quantity = 1/);
+  assert.match(sql, /verified_currency = 'usd'/);
+});
+
 test("public paid routes accept no browser-selected commerce truth", async () => {
   const [checkout, artifact, claim, landing] = await Promise.all([
     readFile(

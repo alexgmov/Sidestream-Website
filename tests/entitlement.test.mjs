@@ -184,8 +184,8 @@ test("zero-total Checkout accepts Stripe's current and legacy settled statuses",
 test("paid acquisition accepts Stripe-verified discount totals and rejects mismatches", () => {
   const discountedCheckout = {
     payment_status: "paid",
-    amount_subtotal: 1499,
-    amount_total: 1199,
+    amount_subtotal: 2499,
+    amount_total: 2199,
     currency: "usd",
     total_details: {
       amount_discount: 300,
@@ -193,11 +193,11 @@ test("paid acquisition accepts Stripe-verified discount totals and rejects misma
       amount_tax: 0,
     },
   };
-  const expectation = { amountSubtotal: 1499, currency: "usd" };
+  const expectation = { amountSubtotal: 2499, currency: "usd" };
   assert.equal(
     isValidDiscountedCheckoutPayment(
       discountedCheckout,
-      { amountPaid: 1199, currency: "usd" },
+      { amountPaid: 2199, currency: "usd" },
       expectation,
     ),
     true,
@@ -211,7 +211,7 @@ test("paid acquisition accepts Stripe-verified discount totals and rejects misma
         amount_total: 0,
         total_details: {
           ...discountedCheckout.total_details,
-          amount_discount: 1499,
+          amount_discount: 2499,
           amount_shipping: null,
         },
       },
@@ -224,27 +224,27 @@ test("paid acquisition accepts Stripe-verified discount totals and rejects misma
     isValidDiscountedCheckoutPayment(
       {
         ...discountedCheckout,
-        amount_total: 999,
+        amount_total: 1999,
         total_details: {
           ...discountedCheckout.total_details,
           amount_discount: 500,
           amount_shipping: null,
         },
       },
-      { amountPaid: 999, currency: "usd" },
+      { amountPaid: 1999, currency: "usd" },
       expectation,
     ),
     true,
   );
 
   const rejected = [
-    [{ ...discountedCheckout, payment_status: "unpaid" }, { amountPaid: 1199, currency: "usd" }],
-    [{ ...discountedCheckout, amount_subtotal: 999 }, { amountPaid: 1199, currency: "usd" }],
-    [{ ...discountedCheckout, amount_total: 0, total_details: { ...discountedCheckout.total_details, amount_discount: 1499 } }, { amountPaid: 0, currency: "usd" }],
-    [{ ...discountedCheckout, total_details: { ...discountedCheckout.total_details, amount_discount: 299 } }, { amountPaid: 1199, currency: "usd" }],
-    [{ ...discountedCheckout, total_details: { ...discountedCheckout.total_details, amount_tax: 1 } }, { amountPaid: 1199, currency: "usd" }],
-    [discountedCheckout, { amountPaid: 1200, currency: "usd" }],
-    [discountedCheckout, { amountPaid: 1199, currency: "eur" }],
+    [{ ...discountedCheckout, payment_status: "unpaid" }, { amountPaid: 2199, currency: "usd" }],
+    [{ ...discountedCheckout, amount_subtotal: 999 }, { amountPaid: 2199, currency: "usd" }],
+    [{ ...discountedCheckout, amount_total: 0, total_details: { ...discountedCheckout.total_details, amount_discount: 2499 } }, { amountPaid: 0, currency: "usd" }],
+    [{ ...discountedCheckout, total_details: { ...discountedCheckout.total_details, amount_discount: 299 } }, { amountPaid: 2199, currency: "usd" }],
+    [{ ...discountedCheckout, total_details: { ...discountedCheckout.total_details, amount_tax: 1 } }, { amountPaid: 2199, currency: "usd" }],
+    [discountedCheckout, { amountPaid: 2200, currency: "usd" }],
+    [discountedCheckout, { amountPaid: 2199, currency: "eur" }],
   ];
   for (const [session, payment] of rejected) {
     assert.equal(

@@ -37,7 +37,7 @@ for (const marker of [
   "activation_expired",
   "macos-universal",
   "windows-x64",
-  "verifiedAmountMinor: 1499",
+  "verifiedOriginalAmountMinor: 2499",
   'redirect.source === "/m"',
 ]) {
   assert.ok(source.includes(marker), `missing fixture coverage marker: ${marker}`);

@@ -104,14 +104,14 @@ const LEGACY_SUBSCRIPTION_PRODUCT_IDS_ENV =
 const LEGACY_SUBSCRIPTION_PRICE_IDS_ENV =
   "SIDESTREAM_LEGACY_SUBSCRIPTION_PRICE_IDS";
 const SIDESTREAM_PRO_DEFAULT_PRODUCT_ID = "prod_UpwXh6oO1OmPyQ";
-// Stripe Prices are immutable. Resolve the active $14.99 one-time Price by
+// Stripe Prices are immutable. Resolve the active $24.99 one-time Price by
 // lookup key, creating it once if this deployment is the first to use it.
 const SIDESTREAM_PRO_DEFAULT_PRICE_ID = "";
 const SIDESTREAM_PRO_PRICE = {
-  lookupKey: "sidestream_pro_once_1499",
+  lookupKey: "sidestream_pro_once_2499",
   name: "Sidestream Pro",
   description: "Lifetime Sidestream Pro access for one Mac editor.",
-  unitAmount: 1499,
+  unitAmount: 2499,
   currency: "usd",
 };
 // Production can still use the pre-lifecycle license schema. JSON extraction
@@ -1490,7 +1490,7 @@ async function getConfiguredSidestreamProPriceId(productId: string) {
     if (isSidestreamProPriceShape(price, productId)) return price.id;
 
     throw new Error(
-      `Configured SIDESTREAM_PRO_PRICE_ID ${configuredPriceId} is not the active $14.99 one-time Sidestream Pro price for product ${productId}`,
+      `Configured SIDESTREAM_PRO_PRICE_ID ${configuredPriceId} is not the active $24.99 one-time Sidestream Pro price for product ${productId}`,
     );
   }
 
@@ -1593,7 +1593,7 @@ async function findSidestreamProLookupPriceId(productId: string) {
   const conflictingPrice = prices.data[0];
   if (conflictingPrice) {
     throw new Error(
-      `Stripe lookup key ${SIDESTREAM_PRO_PRICE.lookupKey} points to a price that is not the active $14.99 one-time Sidestream Pro price for product ${productId}`,
+      `Stripe lookup key ${SIDESTREAM_PRO_PRICE.lookupKey} points to a price that is not the active $24.99 one-time Sidestream Pro price for product ${productId}`,
     );
   }
 

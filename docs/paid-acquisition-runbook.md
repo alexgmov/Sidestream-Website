@@ -52,7 +52,7 @@ of these bindings to agree:
 | Namespace | `SIDESTREAM_LICENSE_NAMESPACE=test` |
 | Host | exact hostname in `SIDESTREAM_TEST_API_HOSTS`, with no Production host overlap |
 | Database | dedicated `SIDESTREAM_TEST_POSTGRES_URL`, different from every Production runtime target |
-| Stripe | `STRIPE_SECRET_KEY` in test mode plus reviewed Test `SIDESTREAM_PRO_PRODUCT_ID` and `SIDESTREAM_PRO_PRICE_ID` for USD 1499 |
+| Stripe | `STRIPE_SECRET_KEY` in test mode plus reviewed Test `SIDESTREAM_PRO_PRODUCT_ID` and `SIDESTREAM_PRO_PRICE_ID` for USD 2499 |
 | Google OAuth | Test client and exact Test-origin `GOOGLE_REDIRECT_URI` |
 | Email | `SIDESTREAM_PAID_ACQUISITION_EMAIL_ENABLED=0` until an allowlisted Test recipient and Resend gate are approved |
 | Artifacts | Test-only `SIDESTREAM_PAID_RELEASE_MANIFEST_PATH` and `SIDESTREAM_PAID_WINDOWS_RELEASE_MANIFEST_PATH` after reviewed artifacts are published |
@@ -193,7 +193,7 @@ this document.
    activation, restore, installer, release, and legacy-client surfaces. Stop
    on any behavioral drift.
 9. After separate payment approval, complete a real Stripe **test-mode**
-   payment and verify server-retrieved USD 1499 Product/Price/quantity/currency
+   payment and verify server-retrieved USD 2499 Product/Price/quantity/currency
    truth, idempotent completion, pending/delayed/replayed fulfillment, and
    refund/dispute/expiration/already-claimed outcomes.
 10. After separate email approval, restrict Resend to an allowlisted Test

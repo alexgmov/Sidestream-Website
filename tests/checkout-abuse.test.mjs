@@ -426,10 +426,10 @@ class RecordingStripe {
           id: priceId,
           active: true,
           product: "prod_checkout_test",
-          unit_amount: 1499,
+          unit_amount: 2499,
           currency: "usd",
           recurring: null,
-          lookup_key: "sidestream_pro_once_1499",
+          lookup_key: "sidestream_pro_once_2499",
         };
       },
       list: async () => ({ data: [] }),

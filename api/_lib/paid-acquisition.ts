@@ -1163,7 +1163,7 @@ export async function completePaidAcquisitionCheckout(options: {
 }) {
   if (
     options.verifiedQuantity !== 1 ||
-    options.verifiedOriginalAmountMinor !== 1499 ||
+    options.verifiedOriginalAmountMinor !== 2499 ||
     !Number.isSafeInteger(options.verifiedDiscountAmountMinor) ||
     options.verifiedDiscountAmountMinor < 0 ||
     options.verifiedDiscountAmountMinor > options.verifiedOriginalAmountMinor ||

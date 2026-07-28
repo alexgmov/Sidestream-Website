@@ -78,8 +78,8 @@ test("rendered paid page contains no prohibited free or pre-purchase email offer
   ];
 
   prohibited.forEach((pattern) => assert.doesNotMatch(text, pattern));
-  assert.match(text, /Buy Now \$14\.99/);
-  assert.match(text, /\$14\.99 once/);
+  assert.match(text, /Buy Now \$24\.99/);
+  assert.match(text, /\$24\.99 once/);
   assert.match(text, /We’ll email your download link after purchase\./);
 });
 
@@ -148,6 +148,6 @@ test("mobile source carries the accessibility and no-overflow contract", () => {
   assert.match(paidLandingHtml, /role="status" aria-live="polite"/);
   assert.match(
     paidLandingHtml,
-    /aria-label="Buy Sidestream Pro now for \$14\.99, one-time purchase"/
+    /aria-label="Buy Sidestream Pro now for \$24\.99, one-time purchase"/
   );
 });
