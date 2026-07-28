@@ -504,6 +504,17 @@ test("account implementation bounds status replay and uses locked refresh/fulfil
   assert.match(source, /code: "license_inactive"/);
 });
 
+test("replacing an activation Checkout clears reconciliation state from the prior Session", async () => {
+  const source = await readFile(
+    new URL("../api/_lib/account.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    source,
+    /reconciliation_last_attempt_at = case\s+when stripe_checkout_session_id = \$2 then reconciliation_last_attempt_at\s+else null\s+end/,
+  );
+});
+
 test("legacy 1.0.12 account API POSTs are not caught by the old-host redirect", async () => {
   const config = JSON.parse(
     await readFile(new URL("../vercel.json", import.meta.url), "utf8"),

@@ -2029,6 +2029,10 @@ export async function attachCheckoutSessionToActivation(options: {
             when stripe_checkout_session_id = $2 then coalesce(checkout_attached_at, now())
             else now()
           end,
+          reconciliation_last_attempt_at = case
+            when stripe_checkout_session_id = $2 then reconciliation_last_attempt_at
+            else null
+          end,
           stripe_checkout_expires_at = to_timestamp($5),
           checkout_claim_grace_until = $6::timestamptz,
           updated_at = now()
