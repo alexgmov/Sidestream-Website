@@ -362,12 +362,13 @@ dedicated `/api/activation/paid-claim` `restoreUrl`; whitespace, case variants,
 and every other value retain the ordinary `/api/activation/claim` URL. The
 dedicated route rechecks the stored source on GET and POST. Source selects UX
 only: it cannot activate a license, prove payment, bypass account ownership, or
-weaken the existing one-active-device policy.
+weaken the existing two-active-device policy.
 
 After the existing safe Google OAuth flow, an active Pro account with no active
 device or the same device receives the existing one-time same-origin,
-CSRF-bound reconnect POST. A different active device receives the existing
-explicit deactivation/transfer confirmation and transfer-limit checks. A
+CSRF-bound reconnect POST. A different device fills the second available slot;
+when both slots are occupied, it receives the existing explicit
+deactivation/transfer confirmation. A
 signed-in account without an active entitlement receives a noindex page titled
 “We’re not seeing your purchase.” with its signed-in email, the existing
 Sidestream support destination, and the exact instruction “If you already
@@ -428,7 +429,7 @@ duplicate callback returns the previously committed result.
 The experiment may reference the existing account, license, activation, and
 canonical payment IDs in namespaced join rows. It must not rewrite historical
 rows, change plan keys, create a second license for one payment, bypass
-single-device decisions, or mark an activation complete before credentials are
+device-seat decisions, or mark an activation complete before credentials are
 successfully issued.
 
 Same verified email plus same account/device is an idempotent success. Same

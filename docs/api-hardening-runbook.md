@@ -66,7 +66,7 @@ and JSON responses are `no-store`.
 | `/api/stripe/webhook` | `POST` | `200 {"received":true}` after durable insert; duplicate acknowledgment also includes `"duplicate":true` | `400` missing/invalid signature; an unhandled durable-storage failure is a server `500` and must be retried by Stripe |
 | `/api/activation/start` | `POST` | `200` with `activationKey`, 24-hour `expiresAt`, `upgradeUrl`, and `restoreUrl` | `400 invalid_request` for missing device; an unexpected dependency failure is a server `500` |
 | `/api/activation/status` | `POST` | `200` state payload: `pending`, `pending_payment`, `active`, `completed`, `not_found`, `device_mismatch`, `expired`, `transfer_required`, `transfer_limit_reached`, `device_replaced`, or `device_deactivated` | A parsed non-null JSON value missing valid `activationKey` or `deviceId` returns `400 invalid_request`; valid JSON `null`, malformed JSON, and body-read failures currently escape as an unshaped platform `5xx`, not `400`; `503` environment unavailable |
-| `/api/activation/claim` | `GET` / `POST` | GET authenticates and routes Free accounts to Checkout; active owners receive the restore/transfer decision; same-origin CSRF-valid POST restores/reconnects/transfers | `400` invalid/transfer intent; `401` sign-in required; `403` inactive or CSRF; `409` unavailable, binding changed, transfer limit, or claim conflict; `503` environment unavailable |
+| `/api/activation/claim` | `GET` / `POST` | GET authenticates and routes Free accounts to Checkout; active owners receive the restore/transfer decision; same-origin CSRF-valid POST restores/reconnects/transfers | `400` invalid/transfer intent; `401` sign-in required; `403` inactive or CSRF; `409` unavailable, binding changed, or claim conflict; `503` environment unavailable |
 | `/api/activation/paid-claim` | `GET` / `POST` | Exact `paid-acquisition-mc-v1` activation source authenticates through Google; active owners use the same CSRF-bound reconnect/confirmed-transfer engine; inactive owners receive support-only noindex HTML | No Checkout fallback; nonmatching/expired/conflicting activation is unavailable; existing claim CSRF, device, transfer-limit, and environment failures remain unchanged |
 | `/api/license/verify` | `POST` | `200` current credential result | `400 invalid_request`; `401 invalid_token`, `revoked`, `device_mismatch`, `device_replaced`, or `device_deactivated`; `403 license_inactive`; `503` retryable environment failure |
 | `/api/license/refresh` | `POST` | `200` atomically rotated access/refresh pair; predecessor replay is deterministic for two minutes | Same stable `400`/`401`/`403`/`503` classes as verify |
@@ -190,10 +190,10 @@ cannot persist refresh credentials, so they receive a rolling 365-day access
 token and status remains `active` for the activation's 24-hour life. Compatibility
 uses the persisted activation version, never a request user agent.
 
-Production permits one active device per account. Test is a separate restricted
+Production permits up to two active devices per account. Test is a separate restricted
 namespace and not a second seat. A same-device reconnect is free; a confirmed
-move revokes the previous device and is bounded to three moves in a rolling 30
-days. See `docs/single-device-entitlements.md` for support actions and privacy
+move revokes only the reviewed previous device, with no rolling or lifetime
+move limit. See `docs/single-device-entitlements.md` for support actions and privacy
 rules.
 
 ### Current entitlement transitions and unresolved blockers

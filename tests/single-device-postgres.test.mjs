@@ -130,20 +130,24 @@ test("single-device entitlement transactions hold in disposable Postgres", {
       }
     });
 
-    await t.test("partial indexes win a concurrent two-device database race", async () => {
+    await t.test("active slots permit two devices and reject a third concurrent seat", async () => {
       const fixture = await seedAccount(databasePool, schema);
-      const hashes = [privateIdentifierHash("db-race-a"), privateIdentifierHash("db-race-b")];
-      const inserts = await Promise.allSettled(hashes.map((deviceHash) =>
+      const devices = [
+        { hash: privateIdentifierHash("db-race-a"), slot: 1 },
+        { hash: privateIdentifierHash("db-race-b"), slot: 2 },
+        { hash: privateIdentifierHash("db-race-c"), slot: 2 },
+      ];
+      const inserts = await Promise.allSettled(devices.map((device) =>
         databasePool.query(
           `
             insert into ${quotedSchema}.sidestream_account_devices (
-              account_id, license_namespace, device_id_hash, platform
-            ) values ($1, 'production', $2, 'unknown')
+              account_id, license_namespace, device_id_hash, platform, active_slot
+            ) values ($1, 'production', $2, 'unknown', $3)
           `,
-          [fixture.accountId, deviceHash],
+          [fixture.accountId, device.hash, device.slot],
         )
       ));
-      assert.equal(inserts.filter((result) => result.status === "fulfilled").length, 1);
+      assert.equal(inserts.filter((result) => result.status === "fulfilled").length, 2);
       const rejected = inserts.find((result) => result.status === "rejected");
       assert.equal(rejected?.reason?.code, "23505");
 
@@ -166,7 +170,7 @@ test("single-device entitlement transactions hold in disposable Postgres", {
         [fixture.accountId],
       );
       assert.deepEqual(active.rows, [
-        { license_namespace: "production", count: 1 },
+        { license_namespace: "production", count: 2 },
         { license_namespace: "test", count: 1 },
       ]);
     });
@@ -508,7 +512,7 @@ test("single-device entitlement transactions hold in disposable Postgres", {
       primaryFixture.activation = activation;
     });
 
-    await t.test("observe records a second device while enforce requires transfer", async () => {
+    await t.test("second device is active while a third in enforce mode requires transfer", async () => {
       const fixture = await seedAccount(databasePool, schema);
       const first = await seedActivation(databasePool, schema, fixture, {
         deviceId: "observe-a",
@@ -540,17 +544,30 @@ test("single-device entitlement transactions hold in disposable Postgres", {
         process.env.SIDESTREAM_DEVICE_POLICY_MODE = "enforce";
       }
       assert.equal(observed.status, "active");
-      assert.equal(warnings.some((entry) => entry[0] === "sidestream_device_policy_observation"), true);
+      assert.equal(warnings.length, 0);
 
-      const active = await activeDevice(databasePool, schema, fixture.accountId, "production");
-      assert.equal(active.device_id_hash, privateIdentifierHash("observe-a"));
+      const active = await databasePool.query(
+        `
+          select device_id_hash
+          from ${quotedSchema}.sidestream_account_devices
+          where account_id = $1
+            and license_namespace = 'production'
+            and revoked_at is null
+          order by active_slot
+        `,
+        [fixture.accountId],
+      );
+      assert.deepEqual(
+        active.rows.map((row) => row.device_id_hash),
+        [privateIdentifierHash("observe-a"), privateIdentifierHash("observe-b")],
+      );
       assert.deepEqual(
         await accountModule.authorizeLicenseDownload({
           licenseToken: observed.licenseToken,
           deviceId: "observe-b",
           environment: production,
         }),
-        { active: false, code: "device_replaced" },
+        { active: true },
       );
 
       const enforcedActivation = await seedActivation(databasePool, schema, fixture, {
@@ -729,8 +746,8 @@ test("single-device entitlement transactions hold in disposable Postgres", {
       )).code, "device_deactivated");
     });
 
-    await t.test("deactivate-then-activate counts moves and honors a scoped override", async () => {
-      for (const deviceId of ["primary-c", "primary-d"]) {
+    await t.test("deactivate-then-activate permits unlimited moves without an override", async () => {
+      for (const deviceId of ["primary-c", "primary-d", "primary-e", "primary-f"]) {
         const activation = await seedActivation(databasePool, schema, primaryFixture, {
           deviceId,
           appVersion: "1.0.14",
@@ -747,62 +764,8 @@ test("single-device entitlement transactions hold in disposable Postgres", {
         });
       }
 
-      const blockedActivation = await seedActivation(databasePool, schema, primaryFixture, {
-        deviceId: "primary-e",
-        appVersion: "1.0.14",
-      });
-      const blocked = await accountModule.getActivationStatus(
-        blockedActivation.activationKey,
-        "primary-e",
-        { skipReconciliation: true, environment: production },
-      );
-      assert.equal(blocked.status, "transfer_limit_reached");
-      assert.equal(blocked.licenseToken, undefined);
-
       const history = await deviceHistory(databasePool, schema, primaryFixture.accountId);
-      assert.equal(getConfirmedDeviceMoveTimestamps(history).length, 3);
-
-      const override = {
-        transferLimitOverrides: {
-          production: {
-            limit: 4,
-            expiresAt: new Date(Date.now() + DAY_MS).toISOString(),
-          },
-        },
-        supportAudit: [{ action: "override", reason: "support_recovery" }],
-      };
-      await databasePool.query(
-        `
-          update ${quotedSchema}.sidestream_licenses
-          set features = jsonb_set(features, '{singleDevicePolicy}', $2::jsonb, true),
-              updated_at = now()
-          where id = $1
-        `,
-        [primaryFixture.licenseId, JSON.stringify(override)],
-      );
-      assert.equal(
-        getDeviceTransferLimitOverride(
-          { singleDevicePolicy: override },
-          "production",
-          Date.now(),
-        ),
-        4,
-      );
-      assert.equal(
-        getDeviceTransferLimitOverride(
-          { singleDevicePolicy: override },
-          "test",
-          Date.now(),
-        ),
-        undefined,
-      );
-
-      const allowed = await accountModule.getActivationStatus(
-        blockedActivation.activationKey,
-        "primary-e",
-        { skipReconciliation: true, environment: production },
-      );
-      assert.equal(allowed.status, "active");
+      assert.ok(getConfirmedDeviceMoveTimestamps(history).length >= 4);
 
       const testActivation = await seedActivation(databasePool, schema, primaryFixture, {
         deviceId: "primary-test",
@@ -814,12 +777,19 @@ test("single-device entitlement transactions hold in disposable Postgres", {
         { skipReconciliation: true, environment: testNamespace },
       );
       assert.equal(testResult.status, "active");
-      assert.equal((await activeDevice(
-        databasePool,
-        schema,
-        primaryFixture.accountId,
-        "production",
-      )).device_id_hash, privateIdentifierHash("primary-e"));
+      assert.equal(
+        (await databasePool.query(
+          `
+            select count(*)::int as count
+            from ${quotedSchema}.sidestream_account_devices
+            where account_id = $1
+              and license_namespace = 'production'
+              and revoked_at is null
+          `,
+          [primaryFixture.accountId],
+        )).rows[0].count,
+        0,
+      );
       assert.equal((await activeDevice(
         databasePool,
         schema,
@@ -1262,6 +1232,9 @@ async function loadAccountModuleForSchema(schema) {
     "./license-environment.js": pathToFileURL(join(repositoryRoot, "api", "_lib", "license-environment.ts")).href,
     "./customer-identity.js": pathToFileURL(customerIdentityPath).href,
     "./maintenance.js": pathToFileURL(maintenancePath).href,
+    "./paid-acquisition.js": pathToFileURL(
+      join(repositoryRoot, "api", "_lib", "paid-acquisition.ts"),
+    ).href,
     "./postgres.js": postgresUrl,
   };
   // Runtime SQL deliberately qualifies `public`; rewrite only a disposable

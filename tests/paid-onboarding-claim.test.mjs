@@ -216,6 +216,20 @@ test("the shared device policy preserves connect, reconnect, and explicit transf
         deviceIdHash: "device-old",
         revokedAt: null,
       },
+      activeDeviceCount: 1,
+    }).decision,
+    "activate",
+  );
+  assert.equal(
+    decideDeviceActivation({
+      namespace: "production",
+      requestedDeviceIdHash: "device-new",
+      activeDevice: {
+        namespace: "production",
+        deviceIdHash: "device-old",
+        revokedAt: null,
+      },
+      activeDeviceCount: 2,
     }).decision,
     "transfer_required",
   );

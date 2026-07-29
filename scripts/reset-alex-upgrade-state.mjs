@@ -52,6 +52,12 @@ const CORE_TABLES = Object.freeze([
   "sidestream_stripe_events",
 ]);
 
+const PAID_ACQUISITION_RESET_TABLES = Object.freeze([
+  "sidestream_paid_acquisition_checkouts",
+  "sidestream_paid_acquisition_email_outbox",
+  "sidestream_paid_acquisition_claims",
+]);
+
 const NEON_CLI_PACKAGE = "neonctl@2.37.1";
 const RESET_SECRET_ENVIRONMENT_VARIABLES = Object.freeze(
   RESET_TARGETS.map((target) => target.stripeKeyEnvironmentVariable),
@@ -324,7 +330,7 @@ export async function inventoryDatabase(
     hints = {},
   } = {},
 ) {
-  await assertExpectedSchema(client, target);
+  const schema = await assertExpectedSchema(client, target);
   const lockClause = forUpdate ? " for update" : "";
   const emails = [...TARGET_IDENTITY.emails];
   const displayName = normalizeIdentityValue(TARGET_IDENTITY.displayName);
@@ -338,6 +344,15 @@ export async function inventoryDatabase(
   const knownIdentityLinkIds = uniqueStrings(hints.identityLinkIds);
   const knownTelemetryIdentityLinkIds = uniqueStrings(
     hints.telemetryIdentityLinkIds,
+  );
+  const knownPaidAcquisitionCheckoutIds = uniqueStrings(
+    hints.paidAcquisitionCheckoutIds,
+  );
+  const knownPaidAcquisitionEmailOutboxIds = uniqueStrings(
+    hints.paidAcquisitionEmailOutboxIds,
+  );
+  const knownPaidAcquisitionClaimIds = uniqueStrings(
+    hints.paidAcquisitionClaimIds,
   );
   const knownEventIds = uniqueStrings(hints.eventIds);
 
@@ -487,9 +502,107 @@ export async function inventoryDatabase(
       expandedCheckoutSessionIds,
     ],
   )).rows;
-  const checkoutIntentIds = uniqueStrings([
+  let checkoutIntentIds = uniqueStrings([
     ...knownCheckoutIntentIds,
     ...checkoutIntents.map((row) => row.id),
+  ]);
+
+  let paidAcquisitionCheckouts = [];
+  let paidAcquisitionEmailOutbox = [];
+  let paidAcquisitionClaims = [];
+  if (schema.hasPaidAcquisition) {
+    paidAcquisitionCheckouts = (await client.query(
+      `
+        select id, checkout_intent_ref
+        from public.sidestream_paid_acquisition_checkouts
+        where id = any($1::uuid[])
+          or checkout_intent_ref = any($2::uuid[])
+        order by id
+        ${lockClause}
+      `,
+      [knownPaidAcquisitionCheckoutIds, checkoutIntentIds],
+    )).rows;
+    let paidAcquisitionCheckoutIds = uniqueStrings([
+      ...knownPaidAcquisitionCheckoutIds,
+      ...paidAcquisitionCheckouts.map((row) => row.id),
+    ]);
+
+    paidAcquisitionClaims = (await client.query(
+      `
+        select id, checkout_id
+        from public.sidestream_paid_acquisition_claims
+        where id = any($1::uuid[])
+          or checkout_id = any($2::uuid[])
+          or account_ref = any($3::uuid[])
+          or activation_ref = any($4::uuid[])
+          or entitlement_ref = any($5::uuid[])
+          or lower(btrim(coalesce(google_email_normalized, ''))) =
+            any($6::text[])
+        order by id
+        ${lockClause}
+      `,
+      [
+        knownPaidAcquisitionClaimIds,
+        paidAcquisitionCheckoutIds,
+        accountIds,
+        activationIds,
+        licenseIds,
+        emails,
+      ],
+    )).rows;
+    paidAcquisitionCheckoutIds = uniqueStrings([
+      ...paidAcquisitionCheckoutIds,
+      ...paidAcquisitionClaims.map((row) => row.checkout_id),
+    ]);
+
+    paidAcquisitionCheckouts = (await client.query(
+      `
+        select id, checkout_intent_ref
+        from public.sidestream_paid_acquisition_checkouts
+        where id = any($1::uuid[])
+          or checkout_intent_ref = any($2::uuid[])
+        order by id
+        ${lockClause}
+      `,
+      [paidAcquisitionCheckoutIds, checkoutIntentIds],
+    )).rows;
+    paidAcquisitionCheckoutIds = uniqueStrings([
+      ...paidAcquisitionCheckoutIds,
+      ...paidAcquisitionCheckouts.map((row) => row.id),
+    ]);
+    checkoutIntentIds = uniqueStrings([
+      ...checkoutIntentIds,
+      ...paidAcquisitionCheckouts.map((row) => row.checkout_intent_ref),
+    ]);
+
+    paidAcquisitionEmailOutbox = (await client.query(
+      `
+        select id, checkout_id
+        from public.sidestream_paid_acquisition_email_outbox
+        where id = any($1::uuid[])
+          or checkout_id = any($2::uuid[])
+        order by id
+        ${lockClause}
+      `,
+      [
+        knownPaidAcquisitionEmailOutboxIds,
+        paidAcquisitionCheckoutIds,
+      ],
+    )).rows;
+  }
+  const paidAcquisitionCheckoutIds = uniqueStrings([
+    ...knownPaidAcquisitionCheckoutIds,
+    ...paidAcquisitionCheckouts.map((row) => row.id),
+    ...paidAcquisitionClaims.map((row) => row.checkout_id),
+    ...paidAcquisitionEmailOutbox.map((row) => row.checkout_id),
+  ]);
+  const paidAcquisitionEmailOutboxIds = uniqueStrings([
+    ...knownPaidAcquisitionEmailOutboxIds,
+    ...paidAcquisitionEmailOutbox.map((row) => row.id),
+  ]);
+  const paidAcquisitionClaimIds = uniqueStrings([
+    ...knownPaidAcquisitionClaimIds,
+    ...paidAcquisitionClaims.map((row) => row.id),
   ]);
 
   const licenseTokens = (await client.query(
@@ -660,6 +773,9 @@ export async function inventoryDatabase(
     licenseTokens: licenseTokens.length,
     activationSessions: activationSessions.length,
     checkoutIntents: checkoutIntents.length,
+    paidAcquisitionCheckouts: paidAcquisitionCheckouts.length,
+    paidAcquisitionEmailOutbox: paidAcquisitionEmailOutbox.length,
+    paidAcquisitionClaims: paidAcquisitionClaims.length,
     accountDevices: devices.length,
     deviceTransfers: transfers.length,
     stripeEvents: stripeEvents.length,
@@ -674,6 +790,9 @@ export async function inventoryDatabase(
       licenseIds,
       activationIds,
       checkoutIntentIds,
+      paidAcquisitionCheckoutIds,
+      paidAcquisitionEmailOutboxIds,
+      paidAcquisitionClaimIds,
       tokenIds,
       deviceIds,
       transferIds,
@@ -728,6 +847,21 @@ export async function applyDatabaseReset(
       client,
       "sidestream_license_tokens",
       ids.tokenIds,
+    );
+    deleted.paidAcquisitionEmailOutbox = await deleteUuidRows(
+      client,
+      "sidestream_paid_acquisition_email_outbox",
+      ids.paidAcquisitionEmailOutboxIds,
+    );
+    deleted.paidAcquisitionClaims = await deleteUuidRows(
+      client,
+      "sidestream_paid_acquisition_claims",
+      ids.paidAcquisitionClaimIds,
+    );
+    deleted.paidAcquisitionCheckouts = await deleteUuidRows(
+      client,
+      "sidestream_paid_acquisition_checkouts",
+      ids.paidAcquisitionCheckoutIds,
     );
     deleted.checkoutIntents = await deleteUuidRows(
       client,
@@ -796,6 +930,9 @@ export function mergeInventoryHints(...inventories) {
     "licenseIds",
     "activationIds",
     "checkoutIntentIds",
+    "paidAcquisitionCheckoutIds",
+    "paidAcquisitionEmailOutboxIds",
+    "paidAcquisitionClaimIds",
     "tokenIds",
     "deviceIds",
     "transferIds",
@@ -1078,7 +1215,11 @@ async function deleteStripeCustomers(stripe, customerIds, databaseLinkedIds) {
 }
 
 async function assertExpectedSchema(client, target) {
-  const expectedTables = [...CORE_TABLES, target.requiredIdentityTable];
+  const requiredTables = [...CORE_TABLES, target.requiredIdentityTable];
+  const expectedTables = [
+    ...requiredTables,
+    ...PAID_ACQUISITION_RESET_TABLES,
+  ];
   const result = await client.query(
     `
       select table_name
@@ -1088,12 +1229,30 @@ async function assertExpectedSchema(client, target) {
     [expectedTables],
   );
   const found = new Set(result.rows.map((row) => row.table_name));
-  const missing = expectedTables.filter((table) => !found.has(table));
+  const missing = requiredTables.filter((table) => !found.has(table));
   if (missing.length > 0) {
     throw new ResetCliError(
       `${target.environment} schema is missing required tables: ${missing.join(", ")}.`,
     );
   }
+  const paidAcquisitionTablesFound = PAID_ACQUISITION_RESET_TABLES.filter(
+    (table) => found.has(table),
+  );
+  if (
+    paidAcquisitionTablesFound.length > 0 &&
+    paidAcquisitionTablesFound.length !== PAID_ACQUISITION_RESET_TABLES.length
+  ) {
+    const missingPaidAcquisitionTables =
+      PAID_ACQUISITION_RESET_TABLES.filter((table) => !found.has(table));
+    throw new ResetCliError(
+      `${target.environment} schema has a partial paid-acquisition table set; ` +
+      `missing: ${missingPaidAcquisitionTables.join(", ")}.`,
+    );
+  }
+  return {
+    hasPaidAcquisition:
+      paidAcquisitionTablesFound.length === PAID_ACQUISITION_RESET_TABLES.length,
+  };
 }
 
 async function withReadOnlyTransaction(pool, callback) {

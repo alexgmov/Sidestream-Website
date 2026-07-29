@@ -37,28 +37,17 @@ test("account activation distinguishes empty, same-device, and transfer decision
     namespace: "production",
     requestedDeviceIdHash: "b".repeat(64),
     activeDevice,
+    activeDeviceCount: 1,
+  }), { decision: "activate", errorCode: null });
+  assert.deepEqual(decideDeviceActivation({
+    namespace: "production",
+    requestedDeviceIdHash: "b".repeat(64),
+    activeDevice,
+    activeDeviceCount: 2,
   }), {
     decision: "transfer_required",
     errorCode: DEVICE_POLICY_ERROR_CODES.TRANSFER_REQUIRED,
   });
-});
-
-test("rolling device-transfer limit blocks before a fourth default move", () => {
-  const nowMs = Date.UTC(2026, 6, 14, 20);
-  const allowed = evaluateDeviceTransferLimit({
-    transferTimestampsMs: [nowMs - 3, nowMs - 2],
-    nowMs,
-  });
-  assert.equal(allowed.allowed, true);
-  assert.equal(allowed.remainingTransfers, 1);
-
-  const blocked = evaluateDeviceTransferLimit({
-    transferTimestampsMs: [nowMs - 3, nowMs - 2, nowMs - 1],
-    nowMs,
-  });
-  assert.equal(blocked.allowed, false);
-  assert.equal(blocked.errorCode, DEVICE_POLICY_ERROR_CODES.TRANSFER_LIMIT_REACHED);
-  assert.equal(blocked.remainingTransfers, 0);
 });
 
 test("Checkout authenticates first and then invokes the locked Stripe worker", async () => {
@@ -116,26 +105,24 @@ test("a signed-in Free activation continues directly to Checkout", async () => {
   assert.doesNotMatch(claim, /\/api\/checkout\/create/);
 });
 
-test("transfer POST requires CSRF plus explicit intent and limits before mutation", async () => {
+test("transfer POST requires CSRF plus explicit intent before mutation", async () => {
   const source = await readFile(files.claim, "utf8");
   const getDecision = source.indexOf("getActivationDecisionContext(");
   const postStart = source.indexOf("\n  const session = await getSession(request);", getDecision);
   const post = source.slice(postStart, source.indexOf("\nasync function getActivationDecisionContext", postStart));
   const csrf = post.indexOf("validateActivationPost(");
   const decision = post.indexOf("getDeviceDecision(");
-  const emptySlotLimit = post.indexOf("getTransferLimitState(", decision);
   const explicitIntent = post.indexOf('intent !== "transfer"');
-  const limit = post.indexOf("getTransferLimitState(", explicitIntent);
   const claim = post.indexOf("claimActivationToAccount(");
   const transfer = post.indexOf("confirmAccountDeviceTransfer(");
 
   assert.ok(postStart >= 0);
   assert.ok(csrf >= 0 && decision > csrf);
-  assert.ok(emptySlotLimit > decision && explicitIntent > emptySlotLimit && limit > explicitIntent);
-  assert.ok(claim > limit && transfer > claim);
+  assert.ok(explicitIntent > decision);
+  assert.ok(claim > explicitIntent && transfer > claim);
   assert.match(post, /transfer_confirmation/);
   assert.match(post, /deactivate_previous_device/);
-  assert.match(post, /TRANSFER_LIMIT_REACHED/);
+  assert.doesNotMatch(post, /TRANSFER_LIMIT_REACHED|getTransferLimitState/);
   assert.match(post, /expectedPriorDeviceId:/);
   assert.match(post, /expectedPriorDeviceIdHash:/);
   assert.match(post, /newDeviceIdHash:/);
@@ -143,20 +130,20 @@ test("transfer POST requires CSRF plus explicit intent and limits before mutatio
   assert.match(post, /transferReason: "device_change"/);
 });
 
-test("decision reads and transfer counts remain account and namespace bound", async () => {
+test("decision reads and active-seat counts remain account and namespace bound", async () => {
   const source = await readFile(files.claim, "utf8");
 
   assert.match(source, /canBindActivationAccount\(/);
   assert.match(source, /isActivationClaimReplay\(/);
   assert.match(source, /where account_id = \$2\s+and license_namespace = \$3\s+and revoked_at is null/);
-  assert.match(source, /from public\.sidestream_device_transfers\s+where account_id = \$1\s+and license_namespace = \$2/);
+  assert.match(source, /select count\(\*\)::int[\s\S]+where account_id = \$2\s+and license_namespace = \$3\s+and revoked_at is null/);
   assert.match(source, /resolveRequestLicenseEnvironment\(request\)/);
   assert.match(source, /environment,/);
   assert.match(source, /Moving Sidestream Pro here will deactivate the previous device/);
   assert.match(source, /same_device/);
 });
 
-test("public and account copy states one production device with confirmed deactivation", async () => {
+test("public and account copy states two production devices with confirmed replacement", async () => {
   const [account, thankYou, index, llms] = await Promise.all([
     readFile(files.account, "utf8"),
     readFile(files.thankYou, "utf8"),
@@ -167,11 +154,10 @@ test("public and account copy states one production device with confirmed deacti
   for (const page of [account, thankYou]) {
     assert.match(page, /noindex, nofollow/);
   }
-  assert.match(account, /Active production device/);
-  assert.match(account, /No active production device/);
+  assert.match(account, /No active production devices/);
   assert.match(account, /deactivate-device-button[^>]+disabled/);
   assert.match(account, /fetch\("\/api\/account\/device"/);
-  assert.match(account, /window\.confirm\("Deactivate the active Sidestream device\?/);
+  assert.match(account, /window\.confirm\("Deactivate all active Sidestream devices\?/);
   assert.match(account, /apiPost\("\/api\/license\/deactivate", \{\s*intent: "deactivate_active_device"/);
   assert.match(account, /receipt-button/);
   assert.match(account, /refund-button/);
@@ -182,10 +168,11 @@ test("public and account copy states one production device with confirmed deacti
   assert.match(account, /background: var\(--bg\)/);
   assert.doesNotMatch(account, /radial-gradient/);
   assert.doesNotMatch(account, /id="signed-out"/);
-  assert.match(thankYou, /one active production device at a time/i);
+  assert.match(thankYou, /up to two active production devices/i);
   assert.match(thankYou, /instead of charging you again/);
   assert.match(account, /href="\/api\/checkout\/start">Upgrade<\/a>/);
   assert.match(index, /href="\/api\/checkout\/start">Upgrade to Pro<\/a>/);
-  assert.match(index, /One active production device at a time/);
-  assert.match(llms, /one active production device at a time/);
+  assert.match(index, /Use Pro on up to two devices/);
+  assert.match(llms, /up to two active production devices/);
+  assert.match(llms, /no limit on device moves/);
 });

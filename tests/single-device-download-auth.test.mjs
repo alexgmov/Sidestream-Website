@@ -99,7 +99,7 @@ test("deactivation requires a signed-in explicit same-origin JSON POST", async (
   assert.doesNotMatch(route, /Stripe|billingPortal|portal/i);
 });
 
-test("deactivation revokes the slot and every live token in one transaction", async () => {
+test("deactivation revokes both slots and every live token in one transaction", async () => {
   const source = await accountFunction(
     "export async function deactivateAccountDevice",
     "async function checkActivationDeviceBinding",
@@ -114,12 +114,13 @@ test("deactivation revokes the slot and every live token in one transaction", as
   assert.ok(begin >= 0 && lock > begin && rowLock > lock);
   assert.ok(revokeDevice > rowLock && revokeTokens > revokeDevice && commit > revokeTokens);
   assert.match(source, /where account_id = \$1\s+and revoked_at is null/i);
-  assert.match(source, /license_namespace = \$3/);
+  assert.match(source, /license_namespace = \$2/);
+  assert.match(source, /activeDeviceIds\.length/);
   assert.doesNotMatch(source, /\bdelete\s+from\b/i);
   assert.doesNotMatch(source, /insert into public\.sidestream_device_transfers/i);
 });
 
-test("retained device lifecycle rows still count after deactivate then reactivate", async () => {
+test("retained device lifecycle rows never impose a move limit", async () => {
   const [deactivation, claim] = await Promise.all([
     accountFunction(
       "export async function deactivateAccountDevice",
@@ -129,12 +130,9 @@ test("retained device lifecycle rows still count after deactivate then reactivat
   ]);
 
   assert.doesNotMatch(deactivation, /delete from public\.sidestream_account_devices/i);
-  assert.match(
-    claim,
-    /select id, device_id_hash, activated_at\s+from public\.sidestream_account_devices\s+where account_id = \$1\s+and license_namespace = \$2\s+order by activated_at asc/is,
-  );
-  assert.match(claim, /getConfirmedDeviceMoveTimestamps\(/);
-  assert.match(claim, /deviceIdHash: device\.device_id_hash/);
+  assert.match(claim, /select count\(\*\)::int[\s\S]+and revoked_at is null/);
+  assert.match(claim, /activeDeviceCount: row\.active_device_count/);
+  assert.doesNotMatch(claim, /getTransferLimitState|evaluateDeviceTransferLimit/);
 });
 
 test("all account GET surfaces remain free of device mutation calls", async () => {

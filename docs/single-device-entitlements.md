@@ -1,4 +1,4 @@
-# Single-device entitlement device-domain and support reference
+# Two-device entitlement device-domain and support reference
 
 > **Reference status: device-domain/support only. No Production action is
 > authorized here.** No executable Production procedure exists. The former
@@ -10,23 +10,23 @@
 
 ## Contract
 
-- Production permits one active device per Sidestream account at a time.
+- Production permits up to two active devices per Sidestream account at a time.
 - Preview, development, and test deployments use the restricted `test` license namespace, exact test API hosts, and a dedicated Test database. Test is not a second production seat and must never share a production host or database target.
 - A reconnect from the same device is idempotent and free: it does not consume a device move.
-- A confirmed move to a different device deactivates the previous device, revokes its live access and refresh credentials, and counts toward the default limit of three confirmed moves in a rolling 30-day window.
+- A second device fills the available seat without disturbing the first. When both seats are occupied, a confirmed move deactivates the reviewed previous device and revokes only its live access and refresh credentials. Device moves have no rolling or lifetime limit.
 - First activation does not count as a move. Deactivating and later activating the same device does not count; activating a different device after deactivation does count. A namespace-scoped support override can raise the absolute limit to at most 10 and can last at most 30 days.
 - Download authorization is checked before a Pro media download starts. A download already accepted and in progress is not cancelled mid-transfer when a device is moved or deactivated. The next authorization, verify, or refresh request observes the new device state.
 - Raw hardware fingerprints, serial numbers, device names, and raw client device identifiers are prohibited from storage, logs, operator output, analytics, and support notes. Only a server-secret HMAC-SHA-256 device digest and coarse metadata may cross the persistence boundary.
 - OS-backed non-exportable device keys are a separate future hardening project. This contract does **not** deliver hardware-backed identity, anti-cloning protection, or a non-exportable key guarantee.
 
-The database is the concurrency backstop. `public.sidestream_account_devices` keeps immutable lifecycle rows plus revocation state, while `public.sidestream_device_transfers` records confirmed replacements. Partial unique indexes allow at most one unrevoked row per account in `production` and one in `test`, even under a two-device race.
+The database is the concurrency backstop. `public.sidestream_account_devices` keeps immutable lifecycle rows plus revocation state, while `public.sidestream_device_transfers` records confirmed replacements. The additive two-seat migration assigns active slots 1 and 2 and uniquely constrains each account/namespace/slot, so two devices can remain active while a third concurrent seat cannot be created.
 
 ## Routing map
 
 | Concern | Source of truth |
 | --- | --- |
-| Additive schema, constraints, RLS, and unique indexes | `db/migrations/20260714190000_add_single_active_account_devices.sql` |
-| Pure decisions, move limits, policy modes, and public device codes | `api/_lib/device-policy.ts` |
+| Additive schema, constraints, RLS, and unique indexes | `db/migrations/20260714190000_add_single_active_account_devices.sql` and `db/migrations/20260729010000_allow_two_active_account_devices.sql` |
+| Pure decisions, two-seat limit, policy modes, and public device codes | `api/_lib/device-policy.ts` |
 | Trusted deployment, host, database, and credential namespaces | `api/_lib/license-environment.ts` |
 | Transaction locking, activation, transfer, verify, refresh, download authorization, status, and deactivation | `api/_lib/account.ts` |
 | Account decision and confirmed transfer page | `api/activation/claim.ts` |
@@ -40,7 +40,7 @@ The database is the concurrency backstop. `public.sidestream_account_devices` ke
 
 ### `public.sidestream_account_devices`
 
-Each row belongs to one `account_id` and one `license_namespace` (`production` or `test`). It stores the lowercase 64-character device HMAC, coarse `platform` (`macos`, `windows`, or `unknown`), bounded `app_version` and `build_channel` diagnostics, activation/last-seen timestamps, and optional revocation state.
+Each row belongs to one `account_id` and one `license_namespace` (`production` or `test`). It stores active slot 1 or 2, the lowercase 64-character device HMAC, coarse `platform` (`macos`, `windows`, or `unknown`), bounded `app_version` and `build_channel` diagnostics, activation/last-seen timestamps, and optional revocation state.
 
 Lifecycle rows are retained rather than rewritten or deleted. A revoked row has both `revoked_at` and a database reason of `deactivated` or `replaced`. Public credential failures use the stable codes `device_deactivated` and `device_replaced`.
 
@@ -91,10 +91,9 @@ The paid sequence is exactly:
 
 For an active owner, `GET /api/activation/claim` authenticates first, is no-store/read-only, and shows exactly one device decision:
 
-- No active production device: connect/restore this device.
+- Fewer than two active production devices: connect/restore this device into the available slot.
 - Same active device: reconnect without consuming a move.
-- Different active device: show coarse prior-device context, remaining moves, and an explicit checkbox confirming that the previous device will be deactivated.
-- Limit reached: show `transfer_limit_reached`; no device is changed.
+- Two different active devices: show coarse context for the reviewed replacement seat and an explicit checkbox confirming that device will be deactivated.
 
 The mutation is a same-origin, account-bound, CSRF-protected POST. Transfer uses compare-and-swap against the reviewed prior binding; a concurrent change returns `binding_changed` rather than replacing an unreviewed device. Success redirects to `thank-you.html` with `connection=restored` or `connection=transferred`.
 
@@ -111,7 +110,7 @@ The mutation is a same-origin, account-bound, CSRF-protected POST. Transfer uses
 | `GET /api/account/device` | `{ active, device }`, where device is null or coarse platform/date data | `401 authentication_required`; retryable `503 device_status_unavailable`. The route is read-only. |
 | `POST /api/license/deactivate` | `{ active: false, deactivated }` | Requires an authenticated same-origin JSON request with `intent=deactivate_active_device`; otherwise `400 invalid_intent`, `401 authentication_required`, `403 same_origin_required`, or retryable `503 deactivation_unavailable`. |
 
-Deactivation keeps the purchase and lifecycle history, revokes the active row and all live account token families in the selected deployment database, and leaves no active slot. Reconnecting the same device remains free; connecting a different device is evaluated against retained move history.
+Account-page deactivation keeps the purchase and lifecycle history, revokes both active rows and all live account token families in the selected deployment database, and leaves both slots open. A confirmed replacement from the claim flow revokes only the selected seat and its token family. Reconnecting the same device remains free, and retained move history never blocks a future device.
 
 ### Download boundary
 
@@ -155,10 +154,9 @@ record a permitted reason and a lowercase non-email operator ID.
 
 Allowed reasons are `customer_request`, `lost_device`, `repair_replacement`, `support_recovery`, and `fraud_review_resolved`. Clear deactivates the current binding, revokes that device's live tokens, retains history, and writes an idempotent support audit entry.
 
-If the rolling limit blocks a legitimate recovery, a separately authorized
-override sets the namespace's absolute move limit, not “extra moves.” The limit
-remains 1-10 and the expiry remains within 30 days. This reference intentionally
-does not reproduce the mutation command.
+Historical move-limit override data may remain in license features for audit
+compatibility, but runtime activation and replacement no longer consult it.
+Support does not need to grant extra moves.
 
 `features.singleDevicePolicy` is the reserved operator-owned support/audit key. Checkout and webhook fulfillment must preserve it for the same account. Do not hand-edit bindings, token rows, transfers, or this feature key with ad hoc SQL.
 
@@ -172,7 +170,7 @@ npm run typecheck
 npm run build
 ```
 
-The harness rejects a target matching any configured runtime database URL, creates a random isolated schema, applies the complete migration chain there, blocks Stripe/Vercel network access, and drops the schema in cleanup. It proves migration/RLS state, database races, observe/enforce behavior, refresh replay, one-winner transfer and token revocation, deactivation, move limits and overrides, namespace isolation, legacy compatibility, and exact Checkout fulfillment. Do not aim it at production or a deployed Test database.
+The harness rejects a target matching any configured runtime database URL, creates a random isolated schema, applies the complete migration chain there, blocks Stripe/Vercel network access, and drops the schema in cleanup. It proves migration/RLS state, two-seat database races, observe/enforce behavior, refresh replay, one-winner replacement and per-device token revocation, deactivation, unlimited moves, namespace isolation, legacy compatibility, and exact Checkout fulfillment. Do not aim it at production or a deployed Test database.
 
 Useful narrower commands are `npm run test:single-device-postgres`, `npm run test:single-device-ops`, and `npm run test:entitlement`.
 

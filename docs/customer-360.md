@@ -89,9 +89,9 @@ account, Checkout, license, verify, and refresh evidence follows that activation
 record so it attaches to the same profile UUID. FlowState must not copy the
 identity values across the browser boundary to preserve that continuity.
 
-### Customer identity is not single-device enforcement
+### Customer identity is not device-seat enforcement
 
-Customer 360 install membership and the single-device license policy are
+Customer 360 install membership and the two-device license policy are
 deliberately separate. `installIdHash` is a pseudonymous CRM association key; it
 is not the active device binding, credential, transfer counter, or authorization
 proof. Customer 360 attachment, merge, commerce, usage, and query code does not
@@ -451,7 +451,7 @@ npm run build
 once-daily usage sync and rolling decay, list/detail privacy/cursors, dry-run and
 test-only backfill recovery, and the end-to-end merge/replay pipeline. The
 complete pipeline proves Stripe/Vercel/network isolation and verifies that
-Customer 360 leaves entitlement and single-device state unchanged.
+Customer 360 leaves entitlement and device-seat state unchanged.
 
 ## Dry-run backfill contract
 
@@ -520,7 +520,7 @@ This is the only rollout sequence:
 7. Verify both protected Customer APIs, no-store headers, namespace isolation,
    null-heavy and multi-currency responses, cursor tamper/filter binding, merged
    tombstone hiding, quality flags, daily sync summaries, source lag, rolling
-   decay, and unchanged entitlement/single-device rows. Then either approve the
+   decay, and unchanged entitlement/device-seat rows. Then either approve the
    protected manual/separate scheduler path for usage sync, or separately review
    and approve project-wide scheduling for all four jobs; never claim that only
    the usage cron was enabled.

@@ -210,7 +210,7 @@ test("account core serializes every credential path on the account namespace", a
   assert.ok(bindingCheck >= 0 && replayCutoff > bindingCheck);
 });
 
-test("confirmed transfer is one transaction with CAS, total family revocation, and one audit", async () => {
+test("confirmed transfer is one transaction with CAS, replaced-device family revocation, and one audit", async () => {
   const source = await readFile(new URL("../api/_lib/account.ts", import.meta.url), "utf8");
   const start = source.indexOf("export async function confirmAccountDeviceTransfer");
   const end = source.indexOf("async function findAccountIdByStripeCustomer", start);
@@ -233,9 +233,10 @@ test("confirmed transfer is one transaction with CAS, total family revocation, a
   assert.match(transfer, /and device_id_hash = \$4[\s\S]+and revoked_at is null/);
   assert.match(
     transfer,
-    /where account_id = \$1\s+and revoked_at is null/,
-    "the namespace-selected database must revoke every live family for the account",
+    /where account_id = \$1\s+and device_id_hash = \$2\s+and revoked_at is null/,
+    "moving one seat must preserve the other active device's credential family",
   );
+  assert.match(transfer, /priorDevice\.active_slot/);
   assert.equal((transfer.match(/insert into public\.sidestream_device_transfers/g) || []).length, 1);
 });
 

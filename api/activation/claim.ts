@@ -14,14 +14,9 @@ import {
   sendJson,
   validateActivationClaimRequest,
   type AccountRequest,
-  type AccountSession,
 } from "../_lib/account.js";
 import {
-  DEVICE_POLICY_ERROR_CODES,
   decideDeviceActivation,
-  evaluateDeviceTransferLimit,
-  getConfirmedDeviceMoveTimestamps,
-  getDeviceTransferLimitOverride,
   type DeviceNamespace,
 } from "../_lib/device-policy.js";
 import {
@@ -45,7 +40,7 @@ type ActivationDecisionContext = {
     platform: string;
     activatedAt: Date | string;
   } | null;
-  latestDeviceIdHash: string;
+  activeDeviceCount: number;
 };
 
 type CustomerIdentityFields = {
@@ -135,35 +130,14 @@ export async function handleActivationClaim(
     }
 
     const decision = getDeviceDecision(activation, environment.namespace);
-    if (isEmptySlotDeviceMove(activation, decision.decision)) {
-      const transferLimit = await getTransferLimitState(session, environment.namespace);
-      if (!transferLimit.allowed) {
-        return sendConfirmationPage(response, 409, transferLimitPage({
-          limit: transferLimit.limit,
-          email: session.email,
-        }));
-      }
-    }
     const csrfToken = createActivationClaimCsrf(activationKey, session.accountId);
     if (decision.decision === "transfer_required" && activation.activeDevice) {
-      const transferLimit = await getTransferLimitState(
-        session,
-        environment.namespace,
-      );
-      if (!transferLimit.allowed) {
-        return sendConfirmationPage(response, 409, transferLimitPage({
-          limit: transferLimit.limit,
-          email: session.email,
-        }));
-      }
       return sendConfirmationPage(response, 200, transferPage({
         activationKey,
         csrfToken,
         email: session.email,
         appVersion: activation.appVersion,
         activeDevice: activation.activeDevice,
-        transferLimit: transferLimit.limit,
-        remainingTransfers: transferLimit.remainingTransfers,
         identity,
         claimPath,
       }));
@@ -235,17 +209,6 @@ export async function handleActivationClaim(
   }
 
   const decision = getDeviceDecision(activation, environment.namespace);
-  if (isEmptySlotDeviceMove(activation, decision.decision)) {
-    const transferLimit = await getTransferLimitState(session, environment.namespace);
-    if (!transferLimit.allowed) {
-      return sendJson(response, 409, {
-        error: "Device transfer limit reached",
-        code: DEVICE_POLICY_ERROR_CODES.TRANSFER_LIMIT_REACHED,
-        limit: transferLimit.limit,
-        remainingTransfers: transferLimit.remainingTransfers,
-      });
-    }
-  }
   if (decision.decision === "transfer_required") {
     if (
       intent !== "transfer" ||
@@ -260,16 +223,6 @@ export async function handleActivationClaim(
       return sendJson(response, 409, {
         error: "Active device changed; review the connection again",
         code: "binding_changed",
-      });
-    }
-
-    const transferLimit = await getTransferLimitState(session, environment.namespace);
-    if (!transferLimit.allowed) {
-      return sendJson(response, 409, {
-        error: "Device transfer limit reached",
-        code: DEVICE_POLICY_ERROR_CODES.TRANSFER_LIMIT_REACHED,
-        limit: transferLimit.limit,
-        remainingTransfers: transferLimit.remainingTransfers,
       });
     }
 
@@ -342,7 +295,7 @@ async function getActivationDecisionContext(
     active_device_id_hash: string | null;
     active_device_platform: string | null;
     active_device_activated_at: Date | string | null;
-    latest_device_id_hash: string | null;
+    active_device_count: number;
   }>(
     `
       select
@@ -357,7 +310,13 @@ async function getActivationDecisionContext(
         d.device_id_hash as active_device_id_hash,
         d.platform as active_device_platform,
         d.activated_at as active_device_activated_at,
-        h.device_id_hash as latest_device_id_hash
+        (
+          select count(*)::int
+          from public.sidestream_account_devices
+          where account_id = $2
+            and license_namespace = $3
+            and revoked_at is null
+        ) as active_device_count
       from public.sidestream_activation_sessions a
       left join lateral (
         select id, device_id_hash, platform, activated_at
@@ -365,17 +324,9 @@ async function getActivationDecisionContext(
         where account_id = $2
           and license_namespace = $3
           and revoked_at is null
-        order by activated_at desc, id desc
+        order by (device_id_hash = a.device_id_hash) desc, activated_at desc, id desc
         limit 1
       ) d on true
-      left join lateral (
-        select device_id_hash
-        from public.sidestream_account_devices
-        where account_id = $2
-          and license_namespace = $3
-        order by activated_at desc, id desc
-        limit 1
-      ) h on true
       where a.activation_key = $1
         and a.device_id_hash is not null
         and ($4::text is null or a.source = $4)
@@ -413,17 +364,8 @@ async function getActivationDecisionContext(
           activatedAt: row.active_device_activated_at,
         }
       : null,
-    latestDeviceIdHash: row.latest_device_id_hash || "",
+    activeDeviceCount: row.active_device_count,
   };
-}
-
-function isEmptySlotDeviceMove(
-  activation: ActivationDecisionContext,
-  decision: "activate" | "same_device" | "transfer_required",
-) {
-  return decision === "activate" &&
-    Boolean(activation.latestDeviceIdHash) &&
-    activation.latestDeviceIdHash !== activation.deviceIdHash;
 }
 
 function getDeviceDecision(
@@ -440,63 +382,7 @@ function getDeviceDecision(
           revokedAt: null,
         }
       : null,
-  });
-}
-
-async function getTransferLimitState(
-  session: AccountSession,
-  namespace: DeviceNamespace,
-) {
-  const nowMs = Date.now();
-  const [devices, transfers] = await Promise.all([
-    query<{
-      id: string;
-      device_id_hash: string;
-      activated_at: Date | string;
-    }>(
-      `
-        select id, device_id_hash, activated_at
-        from public.sidestream_account_devices
-        where account_id = $1
-          and license_namespace = $2
-        order by activated_at asc, id asc
-      `,
-      [session.accountId, namespace],
-    ),
-    query<{
-      from_device_id: string;
-      to_device_id: string;
-      transferred_at: Date | string;
-    }>(
-      `
-        select from_device_id, to_device_id, transferred_at
-        from public.sidestream_device_transfers
-        where account_id = $1
-          and license_namespace = $2
-        order by transferred_at asc, id asc
-      `,
-      [session.accountId, namespace],
-    ),
-  ]);
-  return evaluateDeviceTransferLimit({
-    transferTimestampsMs: getConfirmedDeviceMoveTimestamps({
-      devices: devices.rows.map((device) => ({
-        id: device.id,
-        deviceIdHash: device.device_id_hash,
-        activatedAt: device.activated_at,
-      })),
-      transfers: transfers.rows.map((transfer) => ({
-        fromDeviceId: transfer.from_device_id,
-        toDeviceId: transfer.to_device_id,
-        transferredAt: transfer.transferred_at,
-      })),
-    }),
-    nowMs,
-    configuredLimit: getDeviceTransferLimitOverride(
-      session.license.features,
-      namespace,
-      nowMs,
-    ),
+    activeDeviceCount: activation.activeDeviceCount,
   });
 }
 
@@ -549,8 +435,8 @@ function reconnectPage(options: {
       ? "Reconnect Sidestream Pro on this device?"
       : "Connect Sidestream Pro to this device?",
     description: options.sameDevice
-      ? "This is already your active production device. Reconnecting is safe and will not use a device transfer."
-      : "No active production device is registered for this account. Connect this device to restore Sidestream Pro.",
+      ? "This device is already connected to Sidestream Pro. Reconnecting is safe."
+      : "This account has an available device slot. Connect this device to restore Sidestream Pro.",
     email: options.email,
     appVersion: options.appVersion,
     detail: "Only continue if you started Upgrade or Restore Purchase from Sidestream on this computer.",
@@ -571,8 +457,6 @@ function transferPage(options: {
   email: string;
   appVersion: string;
   activeDevice: NonNullable<ActivationDecisionContext["activeDevice"]>;
-  transferLimit: number;
-  remainingTransfers: number;
   identity: CustomerIdentityFields;
   claimPath: string;
 }) {
@@ -582,18 +466,8 @@ function transferPage(options: {
     description: "Moving Sidestream Pro here will deactivate the previous device and revoke its Pro access.",
     email: options.email,
     appVersion: options.appVersion,
-    detail: `${device}. ${options.remainingTransfers} of ${options.transferLimit} device moves remain in the current rolling 30-day window.`,
+    detail: `${device}. You can move Sidestream Pro again whenever you need to.`,
     action: `<form method="post" action="${escapeHtml(options.claimPath)}"><input type="hidden" name="activation" value="${escapeHtml(options.activationKey)}"><input type="hidden" name="csrf" value="${escapeHtml(options.csrfToken)}"><input type="hidden" name="intent" value="transfer">${customerIdentityHiddenInputs(options.identity)}<label class="confirm"><input type="checkbox" name="transfer_confirmation" value="deactivate_previous_device" required><span>I understand the previous device will be deactivated.</span></label><button type="submit">Move Sidestream Pro here</button></form>`,
-  });
-}
-
-function transferLimitPage(options: { limit: number; email: string }) {
-  return decisionPage({
-    title: "Device move limit reached",
-    description: `This account has used its ${options.limit} device moves for the current rolling 30-day window. No device was changed.`,
-    email: options.email,
-    detail: "Contact Sidestream support if a lost or repaired computer is blocking access.",
-    action: "",
   });
 }
 

@@ -5,6 +5,7 @@ export const DEVICE_POLICY_MODES = ["off", "observe", "enforce"] as const;
 export type DevicePolicyMode = (typeof DEVICE_POLICY_MODES)[number];
 
 export const DEFAULT_DEVICE_POLICY_MODE: DevicePolicyMode = "observe";
+export const MAX_ACTIVE_DEVICES = 2;
 
 export const DEVICE_POLICY_ERROR_CODES = {
   TRANSFER_REQUIRED: "transfer_required",
@@ -96,6 +97,7 @@ export function decideDeviceActivation(options: {
   namespace: DeviceNamespace;
   requestedDeviceIdHash: string;
   activeDevice: AccountDevicePolicyRecord | null;
+  activeDeviceCount?: number;
 }): DeviceActivationDecision {
   if (
     options.activeDevice === null ||
@@ -107,6 +109,10 @@ export function decideDeviceActivation(options: {
 
   if (isSameAccountDevice(options)) {
     return { decision: "same_device", errorCode: null };
+  }
+
+  if ((options.activeDeviceCount ?? (options.activeDevice ? 1 : 0)) < MAX_ACTIVE_DEVICES) {
+    return { decision: "activate", errorCode: null };
   }
 
   return {

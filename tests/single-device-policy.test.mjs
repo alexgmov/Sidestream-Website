@@ -86,6 +86,13 @@ test("activation distinguishes new, same-device, and transfer-required cases", (
     namespace: "production",
     requestedDeviceIdHash: "b".repeat(64),
     activeDevice: productionDevice,
+    activeDeviceCount: 1,
+  }), { decision: "activate", errorCode: null });
+  assert.deepEqual(decideDeviceActivation({
+    namespace: "production",
+    requestedDeviceIdHash: "b".repeat(64),
+    activeDevice: productionDevice,
+    activeDeviceCount: 2,
   }), {
     decision: "transfer_required",
     errorCode: "transfer_required",
@@ -255,4 +262,20 @@ test("migration is additive, private, HMAC-only, and database-enforces active se
   ]) {
     assert.doesNotMatch(migration, new RegExp(`\\b${forbiddenColumn}\\b`, "i"));
   }
+});
+
+test("two-seat migration replaces one-device indexes with slots 1 and 2", async () => {
+  const migration = await readFile(new URL(
+    "../db/migrations/20260729010000_allow_two_active_account_devices.sql",
+    import.meta.url,
+  ), "utf8");
+
+  assert.match(migration, /add column if not exists active_slot smallint/i);
+  assert.match(migration, /check \(active_slot in \(1, 2\)\)/i);
+  assert.match(migration, /drop index if exists public\.sidestream_account_devices_one_active_production/i);
+  assert.match(migration, /drop index if exists public\.sidestream_account_devices_one_active_test/i);
+  assert.match(
+    migration,
+    /create unique index[^;]+account_id, license_namespace, active_slot[^;]+where revoked_at is null/is,
+  );
 });

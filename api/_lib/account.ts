@@ -39,13 +39,11 @@ import {
 } from "./entitlement.js";
 import {
   DEVICE_POLICY_ERROR_CODES,
+  MAX_ACTIVE_DEVICES,
   applyDevicePolicyMode,
   decideDeviceActivation,
   evaluateDeviceCredentialBinding,
-  evaluateDeviceTransferLimit,
-  getConfirmedDeviceMoveTimestamps,
   getDeviceRevocationErrorCode,
-  getDeviceTransferLimitOverride,
   normalizeDevicePlatform,
   resolveDevicePolicyMode,
   type DeviceNamespace,
@@ -4222,6 +4220,7 @@ function isSidestreamPaidPlanKey(planKey: string) {
 type AccountDeviceRow = {
   id: string;
   device_id_hash: string;
+  active_slot: number;
   activated_at: Date | string;
   revoked_at: Date | string | null;
   revocation_reason: DeviceRevocationReason | null;
@@ -4265,22 +4264,22 @@ async function lockAccountDeviceBinding(
 
   let activeResult = await client.query<AccountDeviceRow>(
     `
-      select id, device_id_hash, activated_at, revoked_at, revocation_reason
+      select id, device_id_hash, active_slot, activated_at, revoked_at, revocation_reason
       from public.sidestream_account_devices
       where account_id = $1
         and license_namespace = $2
         and revoked_at is null
-      order by activated_at desc, id desc
-      limit 1
+      order by (device_id_hash = $3) desc, activated_at desc, id desc
       for update
     `,
-    [options.accountId, options.namespace],
+    [options.accountId, options.namespace, options.requestedDeviceIdHash],
   );
-  let activeDevice = activeResult.rows[0] || null;
+  let activeDevices = activeResult.rows;
+  let activeDevice = activeDevices[0] || null;
 
   let latestRequestedResult = await client.query<AccountDeviceRow>(
     `
-      select id, device_id_hash, activated_at, revoked_at, revocation_reason
+      select id, device_id_hash, active_slot, activated_at, revoked_at, revocation_reason
       from public.sidestream_account_devices
       where account_id = $1
         and license_namespace = $2
@@ -4294,24 +4293,10 @@ async function lockAccountDeviceBinding(
   let latestRequestedDevice = latestRequestedResult.rows[0] || null;
 
   if (
-    !activeDevice &&
+    activeDevices.length < MAX_ACTIVE_DEVICES &&
     options.claimEmpty !== false &&
     !(options.purpose === "credential" && latestRequestedDevice?.revoked_at)
   ) {
-    if (options.purpose === "activation") {
-      const transferLimit = await getEmptySlotTransferLimitState(client, {
-        accountId: options.accountId,
-        namespace: options.namespace,
-        requestedDeviceIdHash: options.requestedDeviceIdHash,
-        licenseFeatures: options.licenseFeatures,
-      });
-      if (!transferLimit.allowed) {
-        return {
-          allowed: false,
-          code: DEVICE_POLICY_ERROR_CODES.TRANSFER_LIMIT_REACHED,
-        };
-      }
-    }
     const platform = normalizeDevicePlatform(options.platform);
     const appVersion = normalizeRegistryAppVersion(options.appVersion);
     const buildChannel = getLicenseDiagnosticMetadata({
@@ -4329,17 +4314,35 @@ async function lockAccountDeviceBinding(
           platform,
           app_version,
           build_channel,
+          active_slot,
           activated_at,
           last_seen_at
         )
-        select $1, $2, $3, $4, $5, $6, coalesce($7::timestamptz, now()), now()
+        select $1, $2, $3, $4, $5, $6,
+          case
+            when not exists (
+              select 1 from public.sidestream_account_devices
+              where account_id = $1 and license_namespace = $2
+                and active_slot = 1 and revoked_at is null
+            ) then 1
+            else 2
+          end,
+          coalesce($7::timestamptz, now()), now()
         where not exists (
           select 1
           from public.sidestream_account_devices
           where account_id = $1
             and license_namespace = $2
+            and device_id_hash = $3
             and revoked_at is null
         )
+          and (
+            select count(*)
+            from public.sidestream_account_devices
+            where account_id = $1
+              and license_namespace = $2
+              and revoked_at is null
+          ) < 2
         on conflict do nothing
       `,
       [
@@ -4354,21 +4357,21 @@ async function lockAccountDeviceBinding(
     );
     activeResult = await client.query<AccountDeviceRow>(
       `
-        select id, device_id_hash, activated_at, revoked_at, revocation_reason
+        select id, device_id_hash, active_slot, activated_at, revoked_at, revocation_reason
         from public.sidestream_account_devices
         where account_id = $1
           and license_namespace = $2
           and revoked_at is null
-        order by activated_at desc, id desc
-        limit 1
+        order by (device_id_hash = $3) desc, activated_at desc, id desc
         for update
       `,
-      [options.accountId, options.namespace],
+      [options.accountId, options.namespace, options.requestedDeviceIdHash],
     );
-    activeDevice = activeResult.rows[0] || null;
+    activeDevices = activeResult.rows;
+    activeDevice = activeDevices[0] || null;
     latestRequestedResult = await client.query<AccountDeviceRow>(
       `
-        select id, device_id_hash, activated_at, revoked_at, revocation_reason
+        select id, device_id_hash, active_slot, activated_at, revoked_at, revocation_reason
         from public.sidestream_account_devices
         where account_id = $1
           and license_namespace = $2
@@ -4407,23 +4410,11 @@ async function lockAccountDeviceBinding(
   let observedErrorCode: DevicePolicyErrorCode | null = null;
 
   if (options.purpose === "activation") {
-    if (
-      latestRequestedDevice?.revoked_at &&
-      !safeEqual(activeDevice.device_id_hash, options.requestedDeviceIdHash)
-    ) {
-      return {
-        allowed: false,
-        code: getDeviceRevocationErrorCode(
-          latestRequestedDevice.revocation_reason === "deactivated"
-            ? "deactivated"
-            : "replaced",
-        ),
-      };
-    }
     const activationDecision = decideDeviceActivation({
       namespace: options.namespace,
       requestedDeviceIdHash: options.requestedDeviceIdHash,
       activeDevice: activePolicyRecord,
+      activeDeviceCount: activeDevices.length,
     });
     bindingMatches = activationDecision.decision !== "transfer_required";
     const policy = applyDevicePolicyMode({
@@ -4494,11 +4485,16 @@ async function lockAccountDeviceBinding(
   const generation = await client.query<{ device_generation: string }>(
     `
       select count(*)::text as device_generation
-      from public.sidestream_account_devices
-      where account_id = $1
-        and license_namespace = $2
+      from public.sidestream_account_devices d
+      where d.account_id = $1
+        and d.license_namespace = $2
+        and (d.activated_at, d.id) <= (
+          select activated_at, id
+          from public.sidestream_account_devices
+          where id = $3
+        )
     `,
-    [options.accountId, options.namespace],
+    [options.accountId, options.namespace, activeDevice.id],
   );
   const deviceGeneration = generation.rows[0]?.device_generation || "";
   if (!/^[1-9][0-9]*$/.test(deviceGeneration)) {
@@ -4513,74 +4509,6 @@ async function lockAccountDeviceBinding(
     bindingMatches,
     observedErrorCode,
   };
-}
-
-async function getEmptySlotTransferLimitState(
-  client: PoolClient,
-  options: {
-    accountId: string;
-    namespace: DeviceNamespace;
-    requestedDeviceIdHash: string;
-    licenseFeatures?: Record<string, unknown> | null;
-  },
-) {
-  const devices = await client.query<{
-    id: string;
-    device_id_hash: string;
-    activated_at: Date | string;
-  }>(
-    `
-      select id, device_id_hash, activated_at
-      from public.sidestream_account_devices
-      where account_id = $1
-        and license_namespace = $2
-      order by activated_at asc, id asc
-    `,
-    [options.accountId, options.namespace],
-  );
-  const latestDevice = devices.rows.at(-1);
-  if (
-    !latestDevice ||
-    safeEqual(latestDevice.device_id_hash, options.requestedDeviceIdHash)
-  ) {
-    return { allowed: true as const };
-  }
-
-  const transfers = await client.query<{
-    from_device_id: string;
-    to_device_id: string;
-    transferred_at: Date | string;
-  }>(
-    `
-      select from_device_id, to_device_id, transferred_at
-      from public.sidestream_device_transfers
-      where account_id = $1
-        and license_namespace = $2
-      order by transferred_at asc, id asc
-    `,
-    [options.accountId, options.namespace],
-  );
-  const nowMs = Date.now();
-  return evaluateDeviceTransferLimit({
-    transferTimestampsMs: getConfirmedDeviceMoveTimestamps({
-      devices: devices.rows.map((device) => ({
-        id: device.id,
-        deviceIdHash: device.device_id_hash,
-        activatedAt: device.activated_at,
-      })),
-      transfers: transfers.rows.map((transfer) => ({
-        fromDeviceId: transfer.from_device_id,
-        toDeviceId: transfer.to_device_id,
-        transferredAt: transfer.transferred_at,
-      })),
-    }),
-    nowMs,
-    configuredLimit: getDeviceTransferLimitOverride(
-      options.licenseFeatures,
-      options.namespace,
-      nowMs,
-    ),
-  });
 }
 
 function mapAccountDevicePolicyRecord(
@@ -4863,20 +4791,21 @@ export async function getAccountDeviceStatus(
         and license_namespace = $2
         and revoked_at is null
       order by activated_at desc, id desc
-      limit 1
     `,
     [accountId, environment.namespace],
   );
-  const device = result.rows[0];
-  if (!device) return { active: false as const, device: null };
+  const devices = result.rows.map((row) => ({
+    platform: normalizeDevicePlatform(row.platform),
+    activatedAt: toIsoString(row.activated_at),
+    lastSeenAt: toIsoString(row.last_seen_at),
+  }));
+  const device = devices[0];
+  if (!device) return { active: false as const, device: null, devices: [] };
 
   return {
     active: true as const,
-    device: {
-      platform: normalizeDevicePlatform(device.platform),
-      activatedAt: toIsoString(device.activated_at),
-      lastSeenAt: toIsoString(device.last_seen_at),
-    },
+    device,
+    devices,
   };
 }
 
@@ -4900,26 +4829,23 @@ export async function deactivateAccountDevice(options: {
           where account_id = $1
             and license_namespace = $2
             and revoked_at is null
-          order by activated_at desc, id desc
-          limit 1
           for update
         `,
         [options.accountId, environment.namespace],
       );
-      const activeDeviceId = selected.rows[0]?.id || "";
-      if (activeDeviceId) {
+      const activeDeviceIds = selected.rows.map((row) => row.id);
+      if (activeDeviceIds.length) {
         const revokedDevice = await client.query(
           `
             update public.sidestream_account_devices
             set revoked_at = now(), revocation_reason = 'deactivated'
-            where id = $1
-              and account_id = $2
-              and license_namespace = $3
+            where account_id = $1
+              and license_namespace = $2
               and revoked_at is null
           `,
-          [activeDeviceId, options.accountId, environment.namespace],
+          [options.accountId, environment.namespace],
         );
-        if (revokedDevice.rowCount !== 1) {
+        if (revokedDevice.rowCount !== activeDeviceIds.length) {
           throw new Error("Account device deactivation compare-and-swap failed");
         }
       }
@@ -4936,7 +4862,7 @@ export async function deactivateAccountDevice(options: {
       await client.query("commit");
       return {
         active: false as const,
-        deactivated: Boolean(activeDeviceId),
+        deactivated: activeDeviceIds.length > 0,
       };
     } catch (error) {
       await client.query("rollback");
@@ -5512,16 +5438,15 @@ export async function confirmAccountDeviceTransfer(
       ]);
       const selected = await client.query<AccountDeviceRow>(
         `
-          select id, device_id_hash, activated_at, revoked_at, revocation_reason
+          select id, device_id_hash, active_slot, activated_at, revoked_at, revocation_reason
           from public.sidestream_account_devices
           where account_id = $1
             and license_namespace = $2
+            and id = $3
             and revoked_at is null
-          order by activated_at desc, id desc
-          limit 1
           for update
         `,
-        [options.accountId, environment.namespace],
+        [options.accountId, environment.namespace, options.expectedPriorDeviceId],
       );
       const priorDevice = selected.rows[0];
       if (
@@ -5564,9 +5489,10 @@ export async function confirmAccountDeviceTransfer(
           update public.sidestream_license_tokens
           set revoked_at = now(), updated_at = now()
           where account_id = $1
+            and device_id_hash = $2
             and revoked_at is null
         `,
-        [options.accountId],
+        [options.accountId, options.expectedPriorDeviceIdHash],
       );
       const inserted = await client.query<{ id: string }>(
         `
@@ -5577,10 +5503,11 @@ export async function confirmAccountDeviceTransfer(
             platform,
             app_version,
             build_channel,
+            active_slot,
             activated_at,
             last_seen_at
           )
-          values ($1, $2, $3, $4, $5, $6, now(), now())
+          values ($1, $2, $3, $4, $5, $6, $7, now(), now())
           returning id
         `,
         [
@@ -5590,6 +5517,7 @@ export async function confirmAccountDeviceTransfer(
           normalizeDevicePlatform(options.platform),
           normalizeRegistryAppVersion(options.appVersion),
           getLicenseDiagnosticMetadata({ buildChannel: options.buildChannel }).buildChannel,
+          priorDevice.active_slot,
         ],
       );
       const newDeviceId = inserted.rows[0]?.id;
@@ -5620,11 +5548,16 @@ export async function confirmAccountDeviceTransfer(
       const generation = await client.query<{ device_generation: string }>(
         `
           select count(*)::text as device_generation
-          from public.sidestream_account_devices
-          where account_id = $1
-            and license_namespace = $2
+          from public.sidestream_account_devices d
+          where d.account_id = $1
+            and d.license_namespace = $2
+            and (d.activated_at, d.id) <= (
+              select activated_at, id
+              from public.sidestream_account_devices
+              where id = $3
+            )
         `,
-        [options.accountId, environment.namespace],
+        [options.accountId, environment.namespace, newDeviceId],
       );
       const deviceGeneration = generation.rows[0]?.device_generation || "";
       if (!/^[1-9][0-9]*$/.test(deviceGeneration)) {

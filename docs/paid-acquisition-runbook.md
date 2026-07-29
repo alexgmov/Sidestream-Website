@@ -147,7 +147,7 @@ do not apply a migration, publish an artifact, or complete a payment.
    confirm GET shows the existing same-device reconnect or different-device
    confirmed-transfer decision. GET must not bind or move a device. Submit the
    CSRF-protected POST only if device mutation is separately authorized; if
-   submitted, verify the existing transfer limit and final loaded-panel state.
+   submitted, verify the two-seat replacement decision and final loaded-panel state.
 6. Record the exact Production commit, canonical response evidence, account
    class used for each branch, and whether any state-changing POST was
    authorized. Redact activation keys, cookies, email addresses, account IDs,

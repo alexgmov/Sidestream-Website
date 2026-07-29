@@ -5,6 +5,7 @@ import {
   APPLY_CONFIRMATION,
   RESET_TARGETS,
   allCountsZero,
+  applyDatabaseReset,
   buildNeonCliEnvironment,
   buildResetReport,
   extractNeonConnectionString,
@@ -229,6 +230,116 @@ test("inventory hints merge deterministically and zero checks cover every table"
   assert.deepEqual(merged.seeds, ["alex@alexg.mov", "cus_1"]);
   assert.equal(allCountsZero({ accounts: 0, stripeEvents: 0 }), true);
   assert.equal(allCountsZero({ accounts: 0, stripeEvents: 1 }), false);
+});
+
+test("database reset deletes paid-acquisition dependents before the core checkout intent", async () => {
+  const checkoutIntentId = "11111111-1111-4111-8111-111111111111";
+  const paidCheckoutId = "22222222-2222-4222-8222-222222222222";
+  const paidClaimId = "33333333-3333-4333-8333-333333333333";
+  const paidOutboxId = "44444444-4444-4444-8444-444444444444";
+  const deletedTables = [];
+  let released = false;
+
+  const client = {
+    async query(sql, params = []) {
+      const normalizedSql = sql.replace(/\s+/g, " ").trim();
+      if (normalizedSql.includes("from information_schema.tables")) {
+        return {
+          rows: params[0].map((table_name) => ({ table_name })),
+        };
+      }
+      const deleteMatch = normalizedSql.match(
+        /^delete from public\.([a-z0-9_]+)/,
+      );
+      if (deleteMatch) {
+        deletedTables.push(deleteMatch[1]);
+        return { rowCount: 1, rows: [] };
+      }
+      if (
+        normalizedSql.includes(
+          "from public.sidestream_paid_acquisition_email_outbox",
+        )
+      ) {
+        return {
+          rows: [{ id: paidOutboxId, checkout_id: paidCheckoutId }],
+        };
+      }
+      if (
+        normalizedSql.includes(
+          "from public.sidestream_paid_acquisition_claims",
+        )
+      ) {
+        return {
+          rows: [{ id: paidClaimId, checkout_id: paidCheckoutId }],
+        };
+      }
+      if (
+        normalizedSql.includes(
+          "from public.sidestream_paid_acquisition_checkouts",
+        )
+      ) {
+        return {
+          rows: [{
+            id: paidCheckoutId,
+            checkout_intent_ref: checkoutIntentId,
+          }],
+        };
+      }
+      if (
+        normalizedSql.includes("from public.sidestream_checkout_intents")
+      ) {
+        return {
+          rows: [{
+            id: checkoutIntentId,
+            account_id: null,
+            activation_session_id: null,
+            stripe_customer_id: null,
+            stripe_checkout_session_id: null,
+          }],
+        };
+      }
+      return { rows: [], rowCount: 0 };
+    },
+    release() {
+      released = true;
+    },
+  };
+  const pool = {
+    async connect() {
+      return client;
+    },
+  };
+
+  const result = await applyDatabaseReset(
+    pool,
+    RESET_TARGETS[0],
+    [],
+    { checkoutIntentIds: [checkoutIntentId] },
+  );
+
+  assert.deepEqual(deletedTables, [
+    "sidestream_paid_acquisition_email_outbox",
+    "sidestream_paid_acquisition_claims",
+    "sidestream_paid_acquisition_checkouts",
+    "sidestream_checkout_intents",
+  ]);
+  assert.deepEqual(result.deleted, {
+    deviceTransfers: 0,
+    licenseTokens: 0,
+    paidAcquisitionEmailOutbox: 1,
+    paidAcquisitionClaims: 1,
+    paidAcquisitionCheckouts: 1,
+    checkoutIntents: 1,
+    accountDevices: 0,
+    activationSessions: 0,
+    telemetryIdentityLinks: 0,
+    licenses: 0,
+    accountSessions: 0,
+    accounts: 0,
+    customerIdentityLinks: 0,
+    stripeEvents: 0,
+  });
+  assert.equal(released, true);
 });
 
 test("report names exact providers and documents intentionally preserved history", () => {
