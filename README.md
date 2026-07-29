@@ -825,6 +825,7 @@ Use the narrowest relevant check after edits:
 
 ## Recent Change Log
 
+- 2026-07-28: Published the canonical Mac release pointer for Sidestream `1.0.15` at `sidestream/1.0.15/Sidestream-1.0.15-Mac-Installer.dmg`; `/api/download` and `/api/releases/latest` continue to share this one manifest so installer fulfillment and in-panel update notifications cannot drift.
 - 2026-07-28: Made Checkout Session replacement provider-idempotent after the `$24.99` rollover exposed an already-expired Stripe Session: replacement now retrieves Stripe truth first, expires only `open` Sessions, treats `expired` Sessions as already terminal, and routes `complete` Sessions to fulfillment instead of creating a second charge opportunity.
 - 2026-07-28: Fixed activation Checkout replacement after the `$24.99` Price rollover: when a new Stripe Session replaces an older Session, `attachCheckoutSessionToActivation()` now clears the prior Session's reconciliation-attempt timestamp in the same update. This preserves `sidestream_activation_reconciliation_requires_checkout`, prevents a timestamp-order `23514` from surfacing as an Upgrade `500`, and leaves exact Session/Product/Price attachment checks unchanged.
 - 2026-07-28: Removed the Mac `Free Download` button and its leftover paragraph-to-CTA gap from the closing "Stop using sketchy websites to download music" panel while preserving its headline, supporting copy, and the download controls in the hero and Free pricing card.
