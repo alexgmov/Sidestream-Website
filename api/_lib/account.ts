@@ -107,8 +107,8 @@ const SIDESTREAM_PRO_DEFAULT_PRODUCT_ID = "prod_UpwXh6oO1OmPyQ";
 const SIDESTREAM_PRO_DEFAULT_PRICE_ID = "";
 const SIDESTREAM_PRO_PRICE = {
   lookupKey: "sidestream_pro_once_2499",
-  name: "Sidestream Pro",
-  description: "Lifetime Sidestream Pro access for one Mac editor.",
+  name: "Sidestream Unlimited",
+  description: "Lifetime Sidestream Unlimited access for one editor.",
   unitAmount: 2499,
   currency: "usd",
 };
@@ -955,7 +955,7 @@ export async function createOrReuseCheckoutSession(options: {
       if (options.session?.license.active) {
         return commitCheckoutIntentResult(client, checkoutIntentError(
           409,
-          "Sidestream Pro is already active. Open your account or use Restore Purchase.",
+          "Sidestream Unlimited is already active. Open your account or use Restore Purchase.",
           "active_license",
         ));
       }
@@ -1582,11 +1582,11 @@ async function retrieveSidestreamProProduct(productId: string) {
   );
 
   if ("deleted" in product) {
-    throw new Error(`Configured Sidestream Pro product ${productId} was deleted in Stripe`);
+    throw new Error(`Configured Sidestream Unlimited product ${productId} was deleted in Stripe`);
   }
 
   if (!product.active) {
-    throw new Error(`Configured Sidestream Pro product ${productId} is not active in Stripe`);
+    throw new Error(`Configured Sidestream Unlimited product ${productId} is not active in Stripe`);
   }
 
   return product;
@@ -1635,7 +1635,7 @@ async function findSidestreamProLookupPriceId(productId: string) {
   const conflictingPrice = prices.data[0];
   if (conflictingPrice) {
     throw new Error(
-      `Stripe lookup key ${SIDESTREAM_PRO_PRICE.lookupKey} points to a price that is not the active $24.99 one-time Sidestream Pro price for product ${productId}`,
+      `Stripe lookup key ${SIDESTREAM_PRO_PRICE.lookupKey} points to a price that is not the active $24.99 one-time Sidestream Unlimited price for product ${productId}`,
     );
   }
 

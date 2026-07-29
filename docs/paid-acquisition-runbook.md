@@ -143,7 +143,7 @@ do not apply a migration, publish an artifact, or complete a payment.
    contact Sidestream support.”, and the only action is
    `mailto:alex@alexg.mov`. Confirm there is no Upgrade, Buy, Checkout, form, or
    purchase link and no redirect to Stripe.
-5. With a separately approved already-active Pro account and exact paid source,
+5. With a separately approved already-active Unlimited account and exact paid source,
    confirm GET shows the existing same-device reconnect or different-device
    confirmed-transfer decision. GET must not bind or move a device. Submit the
    CSRF-protected POST only if device mutation is separately authorized; if

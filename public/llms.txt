@@ -12,8 +12,8 @@
 - Category: Adobe Premiere Pro panel / Mac editing workflow utility.
 - Platform: macOS with Adobe Premiere Pro.
 - Core workflow: search YouTube by keyword or pasted link, preview results, then download video or audio assets for editing.
-- Current offer: free access with 3 downloads every day, plus Sidestream Pro as a $24.99 one-time paid upgrade for unlimited downloads.
-- Sidestream Pro device policy: up to two active production devices, with no limit on device moves; when both slots are occupied, a confirmed move deactivates one previous device.
+- Current offer: free access with 3 downloads every day, plus Sidestream Unlimited as a $24.99 one-time paid upgrade for unlimited downloads.
+- Sidestream Unlimited device policy: up to two active production devices, with no limit on device moves; when both slots are occupied, a confirmed move deactivates one previous device.
 - Download endpoint: https://sidestream.tv/api/download.
 - Update endpoint: https://sidestream.tv/api/releases/latest.
 - Paid sequence: Upgrade button, Google authentication, Stripe payment.

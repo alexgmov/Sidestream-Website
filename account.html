@@ -236,9 +236,9 @@
     function describePlan(license) {
       if (!license || !license.active) return "Free";
       if (license.cancelAtPeriodEnd && license.currentPeriodEnd) {
-        return "Pro - cancels " + new Date(license.currentPeriodEnd).toLocaleDateString();
+        return "Unlimited - cancels " + new Date(license.currentPeriodEnd).toLocaleDateString();
       }
-      return "Pro";
+      return "Unlimited";
     }
 
     async function apiPost(url, body = {}) {
@@ -345,7 +345,7 @@
       const body = [
         "Hi Sidestream,",
         "",
-        "I'd like to request a refund for my Sidestream Pro purchase.",
+        "I'd like to request a refund for my Sidestream Unlimited purchase.",
         "",
         "Account email: " + (signedInEmail || ""),
         "",
@@ -357,7 +357,7 @@
     });
 
     deactivateDeviceButton.addEventListener("click", async () => {
-      if (!window.confirm("Deactivate all active Sidestream devices? Pro downloads on those devices will stop until you reconnect.")) return;
+      if (!window.confirm("Deactivate all active Sidestream devices? Unlimited downloads on those devices will stop until you reconnect.")) return;
       deactivateDeviceButton.disabled = true;
       deactivateDeviceButton.textContent = "Deactivating...";
       try {

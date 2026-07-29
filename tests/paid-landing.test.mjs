@@ -148,6 +148,6 @@ test("mobile source carries the accessibility and no-overflow contract", () => {
   assert.match(paidLandingHtml, /role="status" aria-live="polite"/);
   assert.match(
     paidLandingHtml,
-    /aria-label="Buy Sidestream Pro now for \$24\.99, one-time purchase"/
+    /aria-label="Buy Sidestream Unlimited now for \$24\.99, one-time purchase"/
   );
 });

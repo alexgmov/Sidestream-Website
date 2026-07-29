@@ -139,7 +139,7 @@ test("decision reads and active-seat counts remain account and namespace bound",
   assert.match(source, /select count\(\*\)::int[\s\S]+where account_id = \$2\s+and license_namespace = \$3\s+and revoked_at is null/);
   assert.match(source, /resolveRequestLicenseEnvironment\(request\)/);
   assert.match(source, /environment,/);
-  assert.match(source, /Moving Sidestream Pro here will deactivate the previous device/);
+  assert.match(source, /Moving Sidestream Unlimited here will deactivate the previous device/);
   assert.match(source, /same_device/);
 });
 
@@ -171,8 +171,8 @@ test("public and account copy states two production devices with confirmed repla
   assert.match(thankYou, /up to two active production devices/i);
   assert.match(thankYou, /instead of charging you again/);
   assert.match(account, /href="\/api\/checkout\/start">Upgrade<\/a>/);
-  assert.match(index, /href="\/api\/checkout\/start">Upgrade to Pro<\/a>/);
-  assert.match(index, /Use Pro on up to two devices/);
+  assert.match(index, /href="\/api\/checkout\/start">Upgrade to Unlimited<\/a>/);
+  assert.match(index, /Use Unlimited on up to two devices/);
   assert.match(llms, /up to two active production devices/);
   assert.match(llms, /no limit on device moves/);
 });

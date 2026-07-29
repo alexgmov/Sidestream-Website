@@ -157,7 +157,7 @@ export async function handleActivationClaim(
   const session = await getSession(request);
   if (!session) return sendJson(response, 401, { error: "Authentication required" });
   if (!session.license.active) {
-    return sendJson(response, 403, { error: "An active Sidestream Pro license is required" });
+    return sendJson(response, 403, { error: "An active Sidestream Unlimited license is required" });
   }
 
   const form = new URLSearchParams(await readRequestBody(request));
@@ -432,11 +432,11 @@ function reconnectPage(options: {
 }) {
   return decisionPage({
     title: options.sameDevice
-      ? "Reconnect Sidestream Pro on this device?"
-      : "Connect Sidestream Pro to this device?",
+      ? "Reconnect Sidestream Unlimited on this device?"
+      : "Connect Sidestream Unlimited to this device?",
     description: options.sameDevice
-      ? "This device is already connected to Sidestream Pro. Reconnecting is safe."
-      : "This account has an available device slot. Connect this device to restore Sidestream Pro.",
+      ? "This device is already connected to Sidestream Unlimited. Reconnecting is safe."
+      : "This account has an available device slot. Connect this device to restore Sidestream Unlimited.",
     email: options.email,
     appVersion: options.appVersion,
     detail: "Only continue if you started Upgrade or Restore Purchase from Sidestream on this computer.",
@@ -462,12 +462,12 @@ function transferPage(options: {
 }) {
   const device = formatActiveDevice(options.activeDevice);
   return decisionPage({
-    title: "Move Sidestream Pro to this device?",
-    description: "Moving Sidestream Pro here will deactivate the previous device and revoke its Pro access.",
+    title: "Move Sidestream Unlimited to this device?",
+    description: "Moving Sidestream Unlimited here will deactivate the previous device and revoke its Unlimited access.",
     email: options.email,
     appVersion: options.appVersion,
-    detail: `${device}. You can move Sidestream Pro again whenever you need to.`,
-    action: `<form method="post" action="${escapeHtml(options.claimPath)}"><input type="hidden" name="activation" value="${escapeHtml(options.activationKey)}"><input type="hidden" name="csrf" value="${escapeHtml(options.csrfToken)}"><input type="hidden" name="intent" value="transfer">${customerIdentityHiddenInputs(options.identity)}<label class="confirm"><input type="checkbox" name="transfer_confirmation" value="deactivate_previous_device" required><span>I understand the previous device will be deactivated.</span></label><button type="submit">Move Sidestream Pro here</button></form>`,
+    detail: `${device}. You can move Sidestream Unlimited again whenever you need to.`,
+    action: `<form method="post" action="${escapeHtml(options.claimPath)}"><input type="hidden" name="activation" value="${escapeHtml(options.activationKey)}"><input type="hidden" name="csrf" value="${escapeHtml(options.csrfToken)}"><input type="hidden" name="intent" value="transfer">${customerIdentityHiddenInputs(options.identity)}<label class="confirm"><input type="checkbox" name="transfer_confirmation" value="deactivate_previous_device" required><span>I understand the previous device will be deactivated.</span></label><button type="submit">Move Sidestream Unlimited here</button></form>`,
   });
 }
 

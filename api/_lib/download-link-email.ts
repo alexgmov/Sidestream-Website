@@ -175,7 +175,7 @@ function buildHtmlBody() {
             <tr><td style="font-size:13px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#71717a;">Sidestream</td></tr>
             <tr><td style="padding-top:14px;font-size:28px;font-weight:700;line-height:1.15;">Your download links</td></tr>
             <tr><td style="padding-top:12px;font-size:16px;line-height:1.55;color:#52525b;">You asked us to send Sidestream to your computer. Choose the installer you need.</td></tr>
-            <tr><td style="padding-top:16px;font-size:15px;line-height:1.5;color:#27272a;">Save 20% on Sidestream Pro with code <strong style="font-family:Arial,Helvetica,sans-serif;letter-spacing:.05em;">${DISCOUNT_CODE}</strong>.</td></tr>
+            <tr><td style="padding-top:16px;font-size:15px;line-height:1.5;color:#27272a;">Save 20% on Sidestream Unlimited with code <strong style="font-family:Arial,Helvetica,sans-serif;letter-spacing:.05em;">${DISCOUNT_CODE}</strong>.</td></tr>
             <tr>
               <td style="padding-top:26px;">
                 <table role="presentation" width="100%" cellspacing="0" cellpadding="0" bgcolor="#171717" style="background:#171717;border-radius:20px;">
@@ -210,7 +210,7 @@ function buildTextBody() {
 
 You asked us to send Sidestream to your computer. Choose the installer you need.
 
-Save 20% on Sidestream Pro with code ${DISCOUNT_CODE}.
+Save 20% on Sidestream Unlimited with code ${DISCOUNT_CODE}.
 
 Download for Mac:
 ${MAC_DOWNLOAD_URL}

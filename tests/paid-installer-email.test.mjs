@@ -51,7 +51,7 @@ test("builds paid-only Mac and Windows onboarding email with recovery copy", () 
   assert.match(job.message.html, /Set up on Windows/);
   assert.match(job.message.html, /same Google email used at Checkout/i);
   assert.match(job.message.html, /reply to this message for support recovery/i);
-  assert.match(job.message.html, /installer does not grant Pro access/i);
+  assert.match(job.message.html, /installer does not grant Unlimited access/i);
   assert.match(job.message.html, /refund or dispute may remove paid access/i);
   assert.match(job.message.text, /platform=macos-universal/);
   assert.match(job.message.text, /platform=windows-x64/);

@@ -37,7 +37,7 @@ test("the runtime-DDL guard recognizes schema mutations without flagging product
     violations.map((violation) => violation.rule),
     ["schema-object DDL", "schema-object DDL"],
   );
-  assert.deepEqual(findRuntimeDdl("This action will revoke its Pro access."), []);
+  assert.deepEqual(findRuntimeDdl("This action will revoke its Unlimited access."), []);
 });
 
 test("start, status, verify, and refresh handlers require a device ID", async () => {

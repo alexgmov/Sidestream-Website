@@ -154,7 +154,7 @@ test("activation, claim, Checkout, and credential invariants execute against Pos
       });
       assert.equal(signedIn.statusCode, 200);
       assert.equal(signedIn.headers["cache-control"], "no-store");
-      assert.match(signedIn.body, /Connect Sidestream Pro to this device/);
+      assert.match(signedIn.body, /Connect Sidestream Unlimited to this device/);
       assert.match(signedIn.body, /name="csrf"/);
 
       const afterGets = await activationState(databasePool, activation.activationKey);

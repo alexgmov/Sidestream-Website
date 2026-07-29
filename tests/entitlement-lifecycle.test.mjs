@@ -213,7 +213,7 @@ test("legacy subscriptions require exact Product, Price, one item, and quantity 
     metadata: {
       sidestream_plan: "sidestream_pro",
       lookup_key: "sidestream_pro",
-      nickname: "Sidestream Pro",
+      nickname: "Sidestream Unlimited",
     },
     items: { data: [{ quantity: 1, price: "price_allowed" }], has_more: false },
   };
@@ -302,7 +302,7 @@ test("legacy subscriptions require exact Product, Price, one item, and quantity 
   assert.deepEqual(parseAllowlist(undefined, "prod"), []);
 });
 
-test("unknown active rows are denied and cannot shadow an older valid Pro row", () => {
+test("unknown active rows are denied and cannot shadow an older valid Unlimited row", () => {
   assert.equal(isCanonicalLicenseEntitlementUsable({
     planKey: "attacker_plan",
     entitlementStatus: "active",

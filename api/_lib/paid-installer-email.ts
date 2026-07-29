@@ -4,7 +4,7 @@ import { domainToASCII } from "node:url";
 const RESEND_SEND_ENDPOINT = "https://api.resend.com/emails";
 const DEFAULT_FROM = "Sidestream <downloads@alexg.mov>";
 const DEFAULT_REPLY_TO = "alex@alexg.mov";
-const EMAIL_SUBJECT = "Set up your Sidestream Pro purchase";
+const EMAIL_SUBJECT = "Set up your Sidestream Unlimited purchase";
 const REQUEST_TIMEOUT_MS = 8_000;
 const RECEIPT_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 const SESSION_ID_PATTERN = /^[A-Za-z0-9_]{1,255}$/;
@@ -295,7 +295,7 @@ function buildHtmlBody(options: {
             <tr><td style="padding-top:24px;font-size:16px;font-weight:700;line-height:1.45;color:#27272a;">Sign in with the same Google email used at Checkout</td></tr>
             <tr><td style="padding-top:8px;font-size:15px;line-height:1.55;color:#52525b;">After installation, open Sidestream and choose Sign in with Google. Use <strong>${recipient}</strong>, the email used for this Checkout.</td></tr>
             <tr><td style="padding-top:12px;font-size:15px;line-height:1.55;color:#52525b;">If Google opens a different account, sign out and retry with the Checkout email. If you cannot access that address or the emails still do not match, reply to this message for support recovery. Do not purchase again.</td></tr>
-            <tr><td style="padding-top:16px;font-size:13px;line-height:1.55;color:#71717a;">The installer does not grant Pro access. Sidestream enables Pro only after the server verifies the payment and the matching Google sign-in. A later refund or dispute may remove paid access.</td></tr>
+            <tr><td style="padding-top:16px;font-size:13px;line-height:1.55;color:#71717a;">The installer does not grant Unlimited access. Sidestream enables Unlimited only after the server verifies the payment and the matching Google sign-in. A later refund or dispute may remove paid access.</td></tr>
           </table>
         </td>
       </tr>
@@ -325,7 +325,7 @@ After installation, open Sidestream and choose Sign in with Google. Use ${option
 
 If Google opens a different account, sign out and retry with the Checkout email. If you cannot access that address or the emails still do not match, reply to this message for support recovery. Do not purchase again.
 
-The installer does not grant Pro access. Sidestream enables Pro only after the server verifies the payment and the matching Google sign-in. A later refund or dispute may remove paid access.`;
+The installer does not grant Unlimited access. Sidestream enables Unlimited only after the server verifies the payment and the matching Google sign-in. A later refund or dispute may remove paid access.`;
 }
 
 function assertVerifiedPaidCheckout(checkout: VerifiedPaidCheckout) {

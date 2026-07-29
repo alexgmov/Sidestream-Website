@@ -15,7 +15,7 @@
 - A reconnect from the same device is idempotent and free: it does not consume a device move.
 - A second device fills the available seat without disturbing the first. When both seats are occupied, a confirmed move deactivates the reviewed previous device and revokes only its live access and refresh credentials. Device moves have no rolling or lifetime limit.
 - First activation does not count as a move. Deactivating and later activating the same device does not count; activating a different device after deactivation does count. A namespace-scoped support override can raise the absolute limit to at most 10 and can last at most 30 days.
-- Download authorization is checked before a Pro media download starts. A download already accepted and in progress is not cancelled mid-transfer when a device is moved or deactivated. The next authorization, verify, or refresh request observes the new device state.
+- Download authorization is checked before an Unlimited media download starts. A download already accepted and in progress is not cancelled mid-transfer when a device is moved or deactivated. The next authorization, verify, or refresh request observes the new device state.
 - Raw hardware fingerprints, serial numbers, device names, and raw client device identifiers are prohibited from storage, logs, operator output, analytics, and support notes. Only a server-secret HMAC-SHA-256 device digest and coarse metadata may cross the persistence boundary.
 - OS-backed non-exportable device keys are a separate future hardening project. This contract does **not** deliver hardware-backed identity, anti-cloning protection, or a non-exportable key guarantee.
 
@@ -114,9 +114,9 @@ Account-page deactivation keeps the purchase and lifecycle history, revokes both
 
 ### Download boundary
 
-The CEP client calls `POST /api/license/authorize-download` immediately before starting each Pro media transfer. A `200` accepts that attempt. Deactivation or a confirmed transfer affects subsequent authorization, verify, and refresh calls but does not reach into the downloader to abort bytes already in flight. Do not add a mid-transfer kill switch as an undocumented side effect; it would be a separate product and protocol change.
+The CEP client calls `POST /api/license/authorize-download` immediately before starting each Unlimited media transfer. A `200` accepts that attempt. Deactivation or a confirmed transfer affects subsequent authorization, verify, and refresh calls but does not reach into the downloader to abort bytes already in flight. Do not add a mid-transfer kill switch as an undocumented side effect; it would be a separate product and protocol change.
 
-A retryable `503` is not an authorization success and should prevent a new transfer from starting, but it must not clear stored credentials or cancel a transfer that was already accepted. The public website installer route at `/api/download` is separate from this Pro media-download authorization contract.
+A retryable `503` is not an authorization success and should prevent a new transfer from starting, but it must not clear stored credentials or cancel a transfer that was already accepted. The public website installer route at `/api/download` is separate from this Unlimited media-download authorization contract.
 
 ## Operator and support workflow
 

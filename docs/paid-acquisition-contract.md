@@ -170,7 +170,7 @@ must not read or retain the unvalidated original query.
    entry token. Merely rendering or prefetching cannot create Checkout.
 3. The website creates or idempotently resumes one server-owned Stripe Checkout
    Session in `mode=payment`, quantity `1`, for the exact configured Sidestream
-   Pro Product and Price. The displayed current offer is USD 2499 minor units;
+   Unlimited Product and Price. The displayed current offer is USD 2499 minor units;
    the server must fail closed if Stripe line-item truth differs.
 4. Completion and webhooks re-fetch Stripe objects server-side. Fulfillment
    requires the exact environment, Session, Product, Price, quantity, currency,
@@ -364,7 +364,7 @@ dedicated route rechecks the stored source on GET and POST. Source selects UX
 only: it cannot activate a license, prove payment, bypass account ownership, or
 weaken the existing two-active-device policy.
 
-After the existing safe Google OAuth flow, an active Pro account with no active
+After the existing safe Google OAuth flow, an active Unlimited account with no active
 device or the same device receives the existing one-time same-origin,
 CSRF-bound reconnect POST. A different device fills the second available slot;
 when both slots are occupied, it receives the existing explicit
@@ -458,7 +458,7 @@ watermark. Stale events cannot resurrect a newer terminal state.
   `suspended` plus operator alerting; they are not mapped optimistically.
 
 Downloaded installers remain usable as free installers after revocation but
-cannot authorize Pro. FlowState observes revocation through existing
+cannot authorize Unlimited. FlowState observes revocation through existing
 verify/refresh behavior, clears unusable paid credentials, preserves ordinary
 free behavior, and offers support. Refund or dispute handling must not delete
 the account, purchase ledger, audit evidence, or unrelated entitlements.

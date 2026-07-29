@@ -196,7 +196,7 @@ function sendOutcome(
   code: string,
 ) {
   const title = code === "claimed"
-    ? "Sidestream Pro is ready"
+    ? "Sidestream Unlimited is ready"
     : "Sidestream needs your attention";
   const message = outcomeMessage(code);
   const body = `<!doctype html>
