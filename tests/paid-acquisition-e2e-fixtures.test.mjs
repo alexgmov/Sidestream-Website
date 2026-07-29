@@ -352,6 +352,25 @@ test("fixture purchase connects sticky paid entry to idempotent verified $24.99 
   assert.equal(fulfilled.matched, true);
   assert.match(fulfilled.receipt, /^[A-Za-z0-9_-]{43}$/);
 
+  databaseStub.reset({
+    checkoutRows: [checkoutDatabaseRow(intent)],
+  });
+  const indiaFulfilled = await databasePaidAcquisition
+    .completePaidAcquisitionCheckout({
+      environment: "test",
+      verifiedCheckoutSessionRef: "cs_test_india",
+      canonicalPaymentRef: "pi_test_india",
+      verifiedCheckoutEmail: CHECKOUT_EMAIL,
+      verifiedProductRef: "prod_test_sidestream_pro",
+      verifiedPriceRef: "price_test_sidestream_pro_india",
+      verifiedQuantity: 1,
+      verifiedOriginalAmountMinor: 129900,
+      verifiedDiscountAmountMinor: 0,
+      verifiedAmountMinor: 129900,
+      verifiedCurrency: "inr",
+    });
+  assert.equal(indiaFulfilled.matched, true);
+
   await assert.rejects(
     databasePaidAcquisition.completePaidAcquisitionCheckout({
       environment: "test",
@@ -704,6 +723,7 @@ function checkoutAccountStubSource() {
     }
     export function getBaseUrl() { return "https://sidestream.tv"; }
     export function getClientIp() { return "fixture-client"; }
+    export function getTrustedCheckoutCountry() { return "ZZ"; }
     export function methodNotAllowed(response, allow) {
       response.statusCode = 405;
       response.setHeader("Allow", allow);

@@ -411,9 +411,22 @@ test("activation, claim, Checkout, and credential invariants execute against Pos
       });
       const liveAttachment = checkoutAttachment("grace-live", liveActivation.activationKey);
       assert.equal(await account.attachCheckoutSessionToActivation(liveAttachment), true);
+      const liveIntentId = await seedCheckoutOfferIntent(databasePool, {
+        label: "grace-live",
+        accountId: buyer.accountId,
+        activationId: liveActivation.activationId,
+        checkoutSessionId: liveAttachment.checkoutSessionId,
+        priceId: liveAttachment.priceId,
+        productId: liveAttachment.productId,
+      });
       checkoutSessions.set(
         liveAttachment.checkoutSessionId,
-        checkoutSession("grace-live", liveActivation.activationKey, buyer),
+        checkoutSession(
+          "grace-live",
+          liveActivation.activationKey,
+          buyer,
+          liveIntentId,
+        ),
       );
       assert.deepEqual(
         await account.fulfillCheckoutSession(
@@ -432,9 +445,22 @@ test("activation, claim, Checkout, and credential invariants execute against Pos
         deviceId: "checkout-grace-expired-device",
       });
       const expiredBuyer = await seedAccount(databasePool, "checkout-grace-expired-buyer");
+      const expiredIntentId = await seedCheckoutOfferIntent(databasePool, {
+        label: "checkout-grace-expired",
+        accountId: expiredBuyer.accountId,
+        activationId: expiredActivation.activationId,
+        checkoutSessionId: expiredActivation.checkoutSessionId,
+        priceId: "price_checkout-grace-expired",
+        productId: "prod_checkout-grace-expired",
+      });
       checkoutSessions.set(
         expiredActivation.checkoutSessionId,
-        checkoutSession("checkout-grace-expired", expiredActivation.activationKey, expiredBuyer),
+        checkoutSession(
+          "checkout-grace-expired",
+          expiredActivation.activationKey,
+          expiredBuyer,
+          expiredIntentId,
+        ),
       );
       assert.deepEqual(
         await account.fulfillCheckoutSession(
@@ -796,6 +822,9 @@ async function loadRuntimeModules() {
       "./entitlement.js": pathToFileURL(
         join(repositoryRoot, "api", "_lib", "entitlement.ts"),
       ).href,
+      "./checkout-offers.js": pathToFileURL(
+        join(repositoryRoot, "api", "_lib", "checkout-offers.ts"),
+      ).href,
       "./device-policy.js": pathToFileURL(
         join(repositoryRoot, "api", "_lib", "device-policy.ts"),
       ).href,
@@ -1015,7 +1044,7 @@ function checkoutAttachment(label, activationKey) {
   };
 }
 
-function checkoutSession(label, activationKey, buyer = null) {
+function checkoutSession(label, activationKey, buyer = null, checkoutIntentId = "") {
   return {
     id: `cs_${label}`,
     mode: "payment",
@@ -1027,12 +1056,25 @@ function checkoutSession(label, activationKey, buyer = null) {
       name: label,
     },
     payment_intent: `pi_${label}`,
+    amount_subtotal: 999,
     amount_total: 999,
     currency: "usd",
+    total_details: {
+      amount_discount: 0,
+      amount_shipping: 0,
+      amount_tax: 0,
+    },
     subscription: null,
     metadata: {
       sidestream_plan: "sidestream_pro",
       sidestream_price_id: `price_${label}`,
+      sidestream_product_id: `prod_${label}`,
+      sidestream_checkout_intent_id: checkoutIntentId,
+      sidestream_account_id: buyer?.accountId || "",
+      sidestream_offer_id: "sidestream-unlimited-global",
+      sidestream_offer_country: "US",
+      sidestream_offer_currency: "usd",
+      sidestream_offer_amount_minor: "999",
       sidestream_activation_key: activationKey,
     },
     line_items: {
@@ -1043,6 +1085,38 @@ function checkoutSession(label, activationKey, buyer = null) {
       has_more: false,
     },
   };
+}
+
+async function seedCheckoutOfferIntent(pool, options) {
+  const result = await pool.query(
+    `
+      insert into public.sidestream_checkout_intents (
+        intent_kind, browser_token_hash, account_id, activation_session_id,
+        state, attempt, stripe_customer_id, stripe_checkout_session_id,
+        stripe_checkout_url, stripe_price_id, stripe_product_id,
+        stripe_session_expires_at, offer_id, offer_country, offer_currency,
+        offer_amount_minor, offer_stripe_product_id, offer_stripe_price_id,
+        expires_at
+      ) values (
+        'activation', $1, $2::uuid, $3::uuid, 'open', 0, $4, $5,
+        $6, $7, $8, now() + interval '1 hour',
+        'sidestream-unlimited-global', 'US', 'usd', 999, $8, $7,
+        now() + interval '1 day'
+      )
+      returning id
+    `,
+    [
+      privateIdentifierHash(`checkout-intent-${options.label}`),
+      options.accountId,
+      options.activationId,
+      `cus_${options.label}`,
+      options.checkoutSessionId,
+      `https://checkout.stripe.test/${options.checkoutSessionId}`,
+      options.priceId,
+      options.productId,
+    ],
+  );
+  return result.rows[0].id;
 }
 
 async function activationState(pool, activationKey) {

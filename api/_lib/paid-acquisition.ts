@@ -1163,13 +1163,16 @@ export async function completePaidAcquisitionCheckout(options: {
 }) {
   if (
     options.verifiedQuantity !== 1 ||
-    options.verifiedOriginalAmountMinor !== 2499 ||
+    !Number.isSafeInteger(options.verifiedOriginalAmountMinor) ||
+    options.verifiedOriginalAmountMinor <= 0 ||
     !Number.isSafeInteger(options.verifiedDiscountAmountMinor) ||
     options.verifiedDiscountAmountMinor < 0 ||
     options.verifiedDiscountAmountMinor > options.verifiedOriginalAmountMinor ||
+    !Number.isSafeInteger(options.verifiedAmountMinor) ||
+    options.verifiedAmountMinor < 0 ||
     options.verifiedAmountMinor !==
       options.verifiedOriginalAmountMinor - options.verifiedDiscountAmountMinor ||
-    options.verifiedCurrency !== "usd"
+    !/^[a-z]{3}$/.test(options.verifiedCurrency)
   ) {
     fail("checkout_conflict", "Paid Checkout product truth is invalid.");
   }

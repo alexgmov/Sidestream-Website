@@ -878,6 +878,7 @@ test("single-device entitlement transactions hold in disposable Postgres", {
       );
 
       const fulfillmentFixture = await seedAccount(databasePool, schema);
+      const fulfillmentIntentId = "55555555-5555-4555-8555-555555555555";
       const fulfillmentSession = {
         id: "cs_exact_fulfillment",
         mode: "payment",
@@ -885,8 +886,14 @@ test("single-device entitlement transactions hold in disposable Postgres", {
         payment_status: "paid",
         customer: "cus_exact_fulfillment",
         payment_intent: "pi_exact_fulfillment",
+        amount_subtotal: 999,
         amount_total: 999,
         currency: "usd",
+        total_details: {
+          amount_discount: 0,
+          amount_shipping: 0,
+          amount_tax: 0,
+        },
         subscription: null,
         customer_details: {
           email: fulfillmentFixture.email,
@@ -895,6 +902,13 @@ test("single-device entitlement transactions hold in disposable Postgres", {
         metadata: {
           sidestream_plan: "sidestream_pro",
           sidestream_price_id: "price_exact_fulfillment",
+          sidestream_product_id: "prod_UpwXh6oO1OmPyQ",
+          sidestream_checkout_intent_id: fulfillmentIntentId,
+          sidestream_account_id: fulfillmentFixture.accountId,
+          sidestream_offer_id: "sidestream-unlimited-global",
+          sidestream_offer_country: "US",
+          sidestream_offer_currency: "usd",
+          sidestream_offer_amount_minor: "999",
           sidestream_activation_key: "activation_exact_fulfillment",
         },
         line_items: {
@@ -908,7 +922,7 @@ test("single-device entitlement transactions hold in disposable Postgres", {
           has_more: false,
         },
       };
-      await databasePool.query(
+      const fulfillmentActivation = await databasePool.query(
         `
           insert into ${quotedSchema}.sidestream_activation_sessions (
             activation_key,
@@ -930,8 +944,35 @@ test("single-device entitlement transactions hold in disposable Postgres", {
             'price_exact_fulfillment', 'prod_UpwXh6oO1OmPyQ', now() + interval '1 hour',
             now(), now() + interval '70 minutes'
           )
+          returning id
         `,
         [privateIdentifierHash("exact-checkout-device")],
+      );
+      await databasePool.query(
+        `
+          insert into ${quotedSchema}.sidestream_checkout_intents (
+            id, intent_kind, browser_token_hash, account_id,
+            activation_session_id, state, attempt, stripe_customer_id,
+            stripe_checkout_session_id, stripe_checkout_url, stripe_price_id,
+            stripe_product_id, stripe_session_expires_at, offer_id,
+            offer_country, offer_currency, offer_amount_minor,
+            offer_stripe_product_id, offer_stripe_price_id, expires_at
+          ) values (
+            $1::uuid, 'activation', $2, $3::uuid, $4::uuid, 'open', 0,
+            'cus_exact_fulfillment', 'cs_exact_fulfillment',
+            'https://checkout.stripe.test/cs_exact_fulfillment',
+            'price_exact_fulfillment', 'prod_UpwXh6oO1OmPyQ',
+            now() + interval '1 hour', 'sidestream-unlimited-global',
+            'US', 'usd', 999, 'prod_UpwXh6oO1OmPyQ',
+            'price_exact_fulfillment', now() + interval '1 day'
+          )
+        `,
+        [
+          fulfillmentIntentId,
+          "f".repeat(64),
+          fulfillmentFixture.accountId,
+          fulfillmentActivation.rows[0].id,
+        ],
       );
       accountModule.__setIntegrationStripeClient({
         checkout: {
@@ -1228,6 +1269,7 @@ async function loadAccountModuleForSchema(schema) {
   );
   const sourceImports = {
     "./entitlement.js": pathToFileURL(join(repositoryRoot, "api", "_lib", "entitlement.ts")).href,
+    "./checkout-offers.js": pathToFileURL(join(repositoryRoot, "api", "_lib", "checkout-offers.ts")).href,
     "./device-policy.js": pathToFileURL(join(repositoryRoot, "api", "_lib", "device-policy.ts")).href,
     "./license-environment.js": pathToFileURL(join(repositoryRoot, "api", "_lib", "license-environment.ts")).href,
     "./customer-identity.js": pathToFileURL(customerIdentityPath).href,

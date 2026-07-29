@@ -16,7 +16,6 @@ import {
   deriveRefreshRotationTokens,
   getCheckoutSessionIdempotencyKey,
   getCheckoutParametersFingerprint,
-  getDiscountedCheckoutPaymentMismatch,
   getStripeCustomerIdempotencyKey,
   getStripeCheckoutWindow,
   getStripePriceIdempotencyKey,
@@ -34,9 +33,13 @@ import {
   sanitizeAccountNextPath,
   validateActivationClaimPost,
   validateClaimCsrfToken,
-  verifyPaidCheckoutSession,
+  verifyApprovedCheckoutPurchase,
   verifyLegacySubscriptionEntitlement,
 } from "./entitlement.js";
+import {
+  getTrustedCheckoutCountry,
+  selectCheckoutOffer,
+} from "./checkout-offers.js";
 import {
   DEVICE_POLICY_ERROR_CODES,
   MAX_ACTIVE_DEVICES,
@@ -140,6 +143,8 @@ let stripeClient: Stripe | null = null;
 export type AccountRequest = IncomingMessage & {
   method?: string;
 };
+
+export { getTrustedCheckoutCountry };
 
 export type AccountSession = {
   accountId: string;
@@ -765,6 +770,12 @@ type CheckoutIntentRow = {
   stripe_checkout_url: string | null;
   stripe_price_id: string | null;
   stripe_product_id: string | null;
+  offer_id: string | null;
+  offer_country: string | null;
+  offer_currency: string | null;
+  offer_amount_minor: number | null;
+  offer_stripe_product_id: string | null;
+  offer_stripe_price_id: string | null;
   stripe_session_expires_at: Date | string | null;
   expires_at: Date | string;
   activation_key: string | null;
@@ -772,14 +783,55 @@ type CheckoutIntentRow = {
   activation_checkout_session_id: string | null;
 };
 
+type CheckoutOfferSnapshot = Readonly<{
+  offerId: string;
+  country: string;
+  currency: string;
+  amountMinor: number;
+  productId: string;
+  priceId: string;
+}>;
+
+function readCheckoutOfferSnapshot(
+  row: {
+    offer_id?: unknown;
+    offer_country?: unknown;
+    offer_currency?: unknown;
+    offer_amount_minor?: unknown;
+    offer_stripe_product_id?: unknown;
+    offer_stripe_price_id?: unknown;
+  },
+): CheckoutOfferSnapshot | null {
+  const offerId = cleanString(row.offer_id, 120);
+  const country = cleanString(row.offer_country, 2).toUpperCase();
+  const currency = cleanString(row.offer_currency, 3).toLowerCase();
+  const amountMinor = Number(row.offer_amount_minor);
+  const productId = cleanString(row.offer_stripe_product_id, 160);
+  const priceId = cleanString(row.offer_stripe_price_id, 160);
+  if (
+    !offerId ||
+    !/^[A-Z]{2}$/.test(country) ||
+    !/^[a-z]{3}$/.test(currency) ||
+    !Number.isSafeInteger(amountMinor) ||
+    amountMinor <= 0 ||
+    !productId ||
+    !priceId
+  ) {
+    return null;
+  }
+  return { offerId, country, currency, amountMinor, productId, priceId };
+}
+
 export async function createCheckoutIntent(options: {
   activationKey?: string;
+  buyerCountry?: string;
   session: AccountSession;
   now?: Date;
 }): Promise<CheckoutIntent | null> {
   if (options.session.license.active) return null;
 
   const now = options.now || new Date();
+  const offer = await resolveCheckoutOfferSnapshot(options.buyerCountry);
   const activationKey = cleanString(options.activationKey, 160);
   const kind: CheckoutIntentKind = activationKey
     ? "activation"
@@ -794,10 +846,14 @@ export async function createCheckoutIntent(options: {
           insert into public.sidestream_checkout_intents (
             id, intent_kind, browser_token_hash, account_id,
             activation_session_id, state, attempt, expires_at,
+            offer_id, offer_country, offer_currency, offer_amount_minor,
+            offer_stripe_product_id, offer_stripe_price_id,
             created_at, updated_at
           )
           select $1::uuid, 'activation', $2, $3::uuid, a.id,
-            'pending', 0, $4::timestamptz, $5::timestamptz, $5::timestamptz
+            'pending', 0, $4::timestamptz,
+            $7, $8, $9, $10, $11, $12,
+            $5::timestamptz, $5::timestamptz
           from public.sidestream_activation_sessions a
           where a.activation_key = $6
             and a.expires_at > $5::timestamptz
@@ -814,6 +870,12 @@ export async function createCheckoutIntent(options: {
           expiresAt.toISOString(),
           now.toISOString(),
           activationKey,
+          offer.offerId,
+          offer.country,
+          offer.currency,
+          offer.amountMinor,
+          offer.productId,
+          offer.priceId,
         ],
       )
     : await query<{ id: string }>(
@@ -821,10 +883,13 @@ export async function createCheckoutIntent(options: {
           insert into public.sidestream_checkout_intents (
             id, intent_kind, browser_token_hash, account_id,
             activation_session_id, state, attempt, expires_at,
+            offer_id, offer_country, offer_currency, offer_amount_minor,
+            offer_stripe_product_id, offer_stripe_price_id,
             created_at, updated_at
           ) values (
             $1::uuid, $2, $3, $4::uuid, null, 'pending', 0,
-            $5::timestamptz, $6::timestamptz, $6::timestamptz
+            $5::timestamptz, $7, $8, $9, $10, $11, $12,
+            $6::timestamptz, $6::timestamptz
           )
           returning id
         `,
@@ -835,6 +900,12 @@ export async function createCheckoutIntent(options: {
           accountId,
           expiresAt.toISOString(),
           now.toISOString(),
+          offer.offerId,
+          offer.country,
+          offer.currency,
+          offer.amountMinor,
+          offer.productId,
+          offer.priceId,
         ],
       );
   if (!result.rows[0]) return null;
@@ -854,9 +925,11 @@ export async function createCheckoutIntent(options: {
  * session through createCheckoutIntent().
  */
 export async function createCheckoutIntentConfirmation(options: {
+  buyerCountry?: string;
   now?: Date;
 }): Promise<CheckoutIntent | null> {
   const now = options.now || new Date();
+  const offer = await resolveCheckoutOfferSnapshot(options.buyerCountry);
   const intentId = randomUUID();
   const browserToken = randomToken(32);
   const expiresAt = addHours(now, CHECKOUT_INTENT_TTL_HOURS);
@@ -865,10 +938,13 @@ export async function createCheckoutIntentConfirmation(options: {
       insert into public.sidestream_checkout_intents (
         id, intent_kind, browser_token_hash, account_id,
         activation_session_id, state, attempt, expires_at,
+        offer_id, offer_country, offer_currency, offer_amount_minor,
+        offer_stripe_product_id, offer_stripe_price_id,
         created_at, updated_at
       ) values (
         $1::uuid, 'anonymous', $2, null, null, 'pending', 0,
-        $3::timestamptz, $4::timestamptz, $4::timestamptz
+        $3::timestamptz, $5, $6, $7, $8, $9, $10,
+        $4::timestamptz, $4::timestamptz
       )
       returning id
     `,
@@ -877,6 +953,12 @@ export async function createCheckoutIntentConfirmation(options: {
       hashToken(browserToken),
       expiresAt.toISOString(),
       now.toISOString(),
+      offer.offerId,
+      offer.country,
+      offer.currency,
+      offer.amountMinor,
+      offer.productId,
+      offer.priceId,
     ],
   );
   if (!result.rows[0]) return null;
@@ -909,7 +991,10 @@ export async function createOrReuseCheckoutSession(options: {
             ci.activation_session_id, ci.state, ci.attempt,
             ci.stripe_customer_id, ci.stripe_checkout_session_id,
             ci.stripe_checkout_url, ci.stripe_price_id,
-            ci.stripe_product_id, ci.stripe_session_expires_at,
+            ci.stripe_product_id, ci.offer_id, ci.offer_country,
+            ci.offer_currency, ci.offer_amount_minor,
+            ci.offer_stripe_product_id, ci.offer_stripe_price_id,
+            ci.stripe_session_expires_at,
             ci.expires_at, a.activation_key,
             a.expires_at as activation_expires_at,
             a.stripe_checkout_session_id as activation_checkout_session_id
@@ -966,8 +1051,16 @@ export async function createOrReuseCheckoutSession(options: {
       let activationExpiresAt = row.activation_expires_at
         ? new Date(row.activation_expires_at)
         : null;
-      const stripePriceId = await getSidestreamProPriceId();
-      const stripeProductId = getSidestreamProProductId();
+      let checkoutOffer = readCheckoutOfferSnapshot(row);
+      if (!checkoutOffer) {
+        return commitCheckoutIntentResult(client, checkoutIntentError(
+          409,
+          "Checkout offer snapshot is unavailable",
+          "offer_snapshot_missing",
+        ));
+      }
+      let stripePriceId = checkoutOffer.priceId;
+      let stripeProductId = checkoutOffer.productId;
 
       if (row.activation_session_id) {
         await client.query("select pg_advisory_xact_lock(hashtext($1))", [
@@ -1014,11 +1107,19 @@ export async function createOrReuseCheckoutSession(options: {
             stripe_checkout_url: string | null;
             stripe_price_id: string | null;
             stripe_product_id: string | null;
+            offer_id: string | null;
+            offer_country: string | null;
+            offer_currency: string | null;
+            offer_amount_minor: number | null;
+            offer_stripe_product_id: string | null;
+            offer_stripe_price_id: string | null;
             stripe_session_expires_at: Date | string | null;
           }>(
             `
               select state, attempt, stripe_customer_id, stripe_checkout_url,
-                stripe_price_id, stripe_product_id, stripe_session_expires_at
+                stripe_price_id, stripe_product_id, offer_id, offer_country,
+                offer_currency, offer_amount_minor, offer_stripe_product_id,
+                offer_stripe_price_id, stripe_session_expires_at
               from public.sidestream_checkout_intents
               where stripe_checkout_session_id = $1
               order by updated_at desc
@@ -1043,15 +1144,23 @@ export async function createOrReuseCheckoutSession(options: {
           const attachedExpiresAt = attached?.stripe_session_expires_at
             ? new Date(attached.stripe_session_expires_at).getTime()
             : 0;
-          const attachedUsesCurrentCatalog =
-            attached?.stripe_price_id === stripePriceId &&
-            attached?.stripe_product_id === stripeProductId;
+          const attachedOffer = attached
+            ? readCheckoutOfferSnapshot(attached)
+            : null;
+          const attachedUsesStoredOffer = Boolean(
+            attachedOffer &&
+            attached?.stripe_price_id === attachedOffer.priceId &&
+            attached?.stripe_product_id === attachedOffer.productId,
+          );
           if (
             !options.rotateCancelledSession &&
-            attachedUsesCurrentCatalog &&
+            attachedUsesStoredOffer &&
             attached?.stripe_checkout_url &&
             attachedExpiresAt > now.getTime()
           ) {
+            checkoutOffer = attachedOffer!;
+            stripePriceId = checkoutOffer.priceId;
+            stripeProductId = checkoutOffer.productId;
             await attachExistingSessionToCheckoutIntent(client, row.id, {
               sessionId: attachedSessionId,
               url: attached.stripe_checkout_url,
@@ -1060,6 +1169,7 @@ export async function createOrReuseCheckoutSession(options: {
               productId: attached.stripe_product_id || "",
               expiresAt: new Date(attachedExpiresAt),
               attempt,
+              offer: checkoutOffer,
             });
             return commitCheckoutIntentResult(client, {
               ok: true,
@@ -1089,25 +1199,28 @@ export async function createOrReuseCheckoutSession(options: {
               !options.rotateCancelledSession &&
               stripeSession.status === "open" &&
               stripeSession.url &&
+              attachedOffer &&
               (
                 lockedActivation.stripe_checkout_price_id ||
                 cleanString(stripeSession.metadata?.sidestream_price_id, 160)
-              ) === stripePriceId &&
+              ) === attachedOffer.priceId &&
               (
                 lockedActivation.stripe_checkout_product_id ||
-                getSidestreamProProductId()
-              ) === stripeProductId
+                attachedOffer.productId
+              ) === attachedOffer.productId
             ) {
+              checkoutOffer = attachedOffer;
+              stripePriceId = checkoutOffer.priceId;
+              stripeProductId = checkoutOffer.productId;
               await attachExistingSessionToCheckoutIntent(client, row.id, {
                 sessionId: stripeSession.id,
                 url: stripeSession.url,
                 customerId: normalizeStripeId(stripeSession.customer),
-                priceId: lockedActivation.stripe_checkout_price_id ||
-                  cleanString(stripeSession.metadata?.sidestream_price_id, 160),
-                productId: lockedActivation.stripe_checkout_product_id ||
-                  getSidestreamProProductId(),
+                priceId: attachedOffer.priceId,
+                productId: attachedOffer.productId,
                 expiresAt: new Date(stripeSession.expires_at * 1_000),
                 attempt,
+                offer: checkoutOffer,
               });
               return commitCheckoutIntentResult(client, {
                 ok: true,
@@ -1118,7 +1231,7 @@ export async function createOrReuseCheckoutSession(options: {
             if (stripeSession.status === "open") {
               await expireCheckoutSession(stripeSession.id, row.id, attempt);
             }
-          } else if (options.rotateCancelledSession || !attachedUsesCurrentCatalog) {
+          } else if (options.rotateCancelledSession || !attachedUsesStoredOffer) {
             const replacementStatus = await prepareCheckoutSessionReplacement(
               attachedSessionId,
               row.id,
@@ -1201,7 +1314,7 @@ export async function createOrReuseCheckoutSession(options: {
         ));
       }
 
-      const stripeCustomerId = row.intent_kind === "account" && options.session
+      const stripeCustomerId = row.account_id && options.session
         ? await findOrCreateStripeCustomer(options.session, client)
         : "";
       const cancelUrl = new URL(
@@ -1212,13 +1325,18 @@ export async function createOrReuseCheckoutSession(options: {
       const metadata: Record<string, string> = {
         sidestream_plan: SIDESTREAM_PRO_PLAN_KEY,
         sidestream_price_id: stripePriceId,
+        sidestream_product_id: stripeProductId,
         sidestream_checkout_intent_id: row.id,
+        sidestream_offer_id: checkoutOffer.offerId,
+        sidestream_offer_country: checkoutOffer.country,
+        sidestream_offer_currency: checkoutOffer.currency,
+        sidestream_offer_amount_minor: String(checkoutOffer.amountMinor),
       };
       if (options.paidAcquisition) {
         metadata.sidestream_paid_acquisition =
           PAID_ACQUISITION_EXPERIMENT_ID;
       }
-      if (row.intent_kind === "account" && options.session) {
+      if (row.account_id && options.session) {
         metadata.sidestream_account_id = options.session.accountId;
       }
       if (activationKey) metadata.sidestream_activation_key = activationKey;
@@ -1354,6 +1472,7 @@ async function attachExistingSessionToCheckoutIntent(
     productId: string;
     expiresAt: Date;
     attempt: number;
+    offer: CheckoutOfferSnapshot;
   },
 ) {
   await client.query(
@@ -1363,6 +1482,9 @@ async function attachExistingSessionToCheckoutIntent(
         stripe_checkout_session_id = $4, stripe_checkout_url = $5,
         stripe_price_id = $6, stripe_product_id = $7,
         stripe_session_expires_at = $8::timestamptz,
+        offer_id = $9, offer_country = $10, offer_currency = $11,
+        offer_amount_minor = $12, offer_stripe_product_id = $13,
+        offer_stripe_price_id = $14,
         updated_at = now()
       where id = $1
     `,
@@ -1375,6 +1497,12 @@ async function attachExistingSessionToCheckoutIntent(
       session.priceId,
       session.productId,
       session.expiresAt.toISOString(),
+      session.offer.offerId,
+      session.offer.country,
+      session.offer.currency,
+      session.offer.amountMinor,
+      session.offer.productId,
+      session.offer.priceId,
     ],
   );
 }
@@ -1492,6 +1620,49 @@ export function getStripeRequestOptions(): Stripe.RequestOptions {
   return {
     apiVersion: Stripe.API_VERSION,
   } as Stripe.RequestOptions;
+}
+
+async function resolveCheckoutOfferSnapshot(
+  buyerCountry: unknown,
+): Promise<CheckoutOfferSnapshot> {
+  const selection = selectCheckoutOffer(buyerCountry);
+  const productId = getSidestreamProProductId();
+  const priceId = selection.entry.priceSource.kind === "default"
+    ? await getSidestreamProPriceId()
+    : selection.configuredPriceId;
+  if (!priceId) {
+    throw new Error(
+      `Approved Checkout offer ${selection.entry.offerId} has no Stripe Price ID`,
+    );
+  }
+
+  const price = await getStripe().prices.retrieve(
+    priceId,
+    {},
+    getStripeRequestOptions(),
+  );
+  if (
+    price.id !== priceId ||
+    !price.active ||
+    normalizeStripeId(price.product) !== productId ||
+    price.currency !== selection.entry.currency ||
+    !Number.isSafeInteger(price.unit_amount) ||
+    (price.unit_amount || 0) <= 0 ||
+    price.recurring
+  ) {
+    throw new Error(
+      `Stripe Price ${priceId} does not match approved Checkout offer ${selection.entry.offerId}`,
+    );
+  }
+
+  return {
+    offerId: selection.entry.offerId,
+    country: selection.country,
+    currency: selection.entry.currency,
+    amountMinor: price.unit_amount!,
+    productId,
+    priceId: price.id,
+  };
 }
 
 export async function getSidestreamProPriceId() {
@@ -3241,6 +3412,27 @@ export async function fulfillCheckoutSession(
   expectedActivationKey = "",
   stripeEvent?: { eventId: string; created: number },
 ) {
+  const intentCandidates = await query<{
+    id: string;
+    account_id: string | null;
+    activation_session_id: string | null;
+    offer_id: string | null;
+    offer_country: string | null;
+    offer_currency: string | null;
+    offer_amount_minor: number | null;
+    offer_stripe_product_id: string | null;
+    offer_stripe_price_id: string | null;
+  }>(
+    `
+      select id, account_id, activation_session_id, offer_id, offer_country,
+        offer_currency, offer_amount_minor, offer_stripe_product_id,
+        offer_stripe_price_id
+      from public.sidestream_checkout_intents
+      where stripe_checkout_session_id = $1
+      order by updated_at desc, id desc
+    `,
+    [checkoutSessionId],
+  );
   const checkoutSession = await getStripe().checkout.sessions.retrieve(
     checkoutSessionId,
     { expand: ["line_items.data.price.product"] },
@@ -3281,13 +3473,23 @@ export async function fulfillCheckoutSession(
     return { fulfilled: true as const, activationBound: false };
   }
 
-  let expectedPriceId = paidAcquisitionCheckout
-    ? await getSidestreamProPriceId()
-    : cleanString(
-        checkoutSession.metadata?.sidestream_price_id,
-        160,
-      );
-  let expectedProductId = getSidestreamProProductId();
+  const checkoutIntentId = cleanString(
+    checkoutSession.metadata?.sidestream_checkout_intent_id,
+    80,
+  );
+  const checkoutIntent = intentCandidates.rows.find(
+    (candidate) => candidate.id === checkoutIntentId,
+  );
+  if (!checkoutIntent) {
+    return { fulfilled: false as const, reason: "checkout_intent_mismatch" };
+  }
+  const checkoutOffer = readCheckoutOfferSnapshot(checkoutIntent);
+  if (!checkoutOffer) {
+    return { fulfilled: false as const, reason: "offer_snapshot_missing" };
+  }
+
+  const expectedPriceId = checkoutOffer.priceId;
+  const expectedProductId = checkoutOffer.productId;
   let activationId = "";
 
   if (activationKey) {
@@ -3310,20 +3512,16 @@ export async function fulfillCheckoutSession(
     );
     const row = attachment.rows[0];
     if (!row) return { fulfilled: false as const, reason: "unattached_session" };
+    if (
+      row.stripe_checkout_price_id !== checkoutOffer.priceId ||
+      row.stripe_checkout_product_id !== checkoutOffer.productId
+    ) {
+      return {
+        fulfilled: false as const,
+        reason: "activation_offer_mismatch",
+      };
+    }
     activationId = row.id;
-    expectedPriceId = row.stripe_checkout_price_id;
-    expectedProductId = row.stripe_checkout_product_id;
-  }
-
-  const verification = verifyPaidCheckoutSession(checkoutSession, {
-    sessionId: checkoutSessionId,
-    activationKey: activationKey || undefined,
-    priceId: expectedPriceId,
-    productId: expectedProductId,
-    paidPlanKeys: SIDESTREAM_PAID_PLAN_KEYS,
-  });
-  if (verification.ok === false) {
-    return { fulfilled: false as const, reason: verification.reason };
   }
 
   const customerId = normalizeStripeId(checkoutSession.customer);
@@ -3335,32 +3533,44 @@ export async function fulfillCheckoutSession(
   if (!canonicalPayment.ok) {
     return { fulfilled: false as const, reason: canonicalPayment.reason };
   }
-  const paidAcquisitionAmountMismatch = paidAcquisitionCheckout
-    ? getDiscountedCheckoutPaymentMismatch(
-        checkoutSession,
-        canonicalPayment.facts,
-        {
-          amountSubtotal: SIDESTREAM_PRO_PRICE.unitAmount,
-          currency: SIDESTREAM_PRO_PRICE.currency,
-        },
-      )
-    : "";
-  if (paidAcquisitionAmountMismatch) {
+  const purchaseVerification = verifyApprovedCheckoutPurchase(
+    checkoutSession,
+    canonicalPayment.facts,
+    {
+      sessionId: checkoutSessionId,
+      activationKey: activationKey || undefined,
+      intentId: checkoutIntent.id,
+      accountId: checkoutIntent.account_id || "",
+      offerId: checkoutOffer.offerId,
+      country: checkoutOffer.country,
+      currency: checkoutOffer.currency,
+      amountMinor: checkoutOffer.amountMinor,
+      priceId: checkoutOffer.priceId,
+      productId: checkoutOffer.productId,
+      paidPlanKeys: SIDESTREAM_PAID_PLAN_KEYS,
+    },
+  );
+  if (!purchaseVerification.isApprovedPurchase) {
     return {
       fulfilled: false as const,
-      reason: `paid_acquisition_amount_${paidAcquisitionAmountMismatch}`,
+      reason: purchaseVerification.reason,
     };
   }
 
-  const stripeAccountId = await findOrCreateAccountForStripeCustomer(customerId, {
-    email: checkoutSession.customer_details?.email || checkoutSession.customer_email,
-    name: checkoutSession.customer_details?.name,
-  });
-  const metadataAccountId = cleanString(
-    checkoutSession.metadata?.sidestream_account_id,
-    80,
-  );
-  const accountId = stripeAccountId || metadataAccountId;
+  let accountId = checkoutIntent.account_id || "";
+  if (accountId) {
+    const customerOwnerId = await findAccountIdByStripeCustomer(customerId);
+    if (customerOwnerId && customerOwnerId !== accountId) {
+      return { fulfilled: false as const, reason: "stripe_account_mismatch" };
+    }
+  } else {
+    accountId = await findOrCreateAccountForStripeCustomer(customerId, {
+      email:
+        checkoutSession.customer_details?.email ||
+        checkoutSession.customer_email,
+      name: checkoutSession.customer_details?.name,
+    });
+  }
   if (!accountId) return { fulfilled: false as const, reason: "missing_account" };
 
   const fulfillment = await withPgClient(async (client) => {
@@ -3483,11 +3693,11 @@ export async function fulfillCheckoutSession(
       verifiedProductRef: expectedProductId,
       verifiedPriceRef: expectedPriceId,
       verifiedQuantity: 1,
-      verifiedOriginalAmountMinor: SIDESTREAM_PRO_PRICE.unitAmount,
+      verifiedOriginalAmountMinor: checkoutOffer.amountMinor,
       verifiedDiscountAmountMinor:
         checkoutSession.total_details?.amount_discount ?? 0,
       verifiedAmountMinor: canonicalPayment.facts?.amountPaid ?? 0,
-      verifiedCurrency: canonicalPayment.currency,
+      verifiedCurrency: checkoutOffer.currency,
       accountRef: accountId,
       entitlementRef: fulfillment.licenseId,
     });

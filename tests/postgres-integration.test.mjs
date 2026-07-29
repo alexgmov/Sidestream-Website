@@ -137,7 +137,7 @@ test("cross-lane contracts hold in one isolated disposable Postgres schema", {
               id,
               active: true,
               product: "prod_integration",
-              unit_amount: 999,
+              unit_amount: 2499,
               currency: "usd",
               recurring: null,
             };
@@ -526,6 +526,10 @@ export async function query() { throw new Error("Inject a Postgres query into qu
     source: "api/_lib/account.ts",
     replacements: {
       "./entitlement.js": new URL("../api/_lib/entitlement.ts", import.meta.url).href,
+      "./checkout-offers.js": new URL(
+        "../api/_lib/checkout-offers.ts",
+        import.meta.url,
+      ).href,
       "./device-policy.js": new URL("../api/_lib/device-policy.ts", import.meta.url).href,
       "./license-environment.js": new URL(
         "../api/_lib/license-environment.ts",

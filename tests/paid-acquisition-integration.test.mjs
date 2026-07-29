@@ -235,6 +235,23 @@ test("the paid acquisition provider bounds permit future server-verified prices"
   assert.match(sql, /verified_currency = 'usd'/);
 });
 
+test("the regional offer migration permits bounded server-verified currencies", async () => {
+  const sql = await readFile(
+    new URL(
+      "../db/migrations/20260729120000_add_regional_checkout_offer_snapshots.sql",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.match(
+    sql,
+    /drop constraint if exists sidestream_paid_acquisition_checkouts_provider_bounds/,
+  );
+  assert.match(sql, /verified_amount_minor >= 0/);
+  assert.match(sql, /verified_currency ~ '\^\[a-z\]\{3\}\$'/);
+  assert.doesNotMatch(sql, /verified_currency = 'usd'/);
+});
+
 test("public paid routes accept no browser-selected commerce truth", async () => {
   const [checkout, artifact, claim, landing] = await Promise.all([
     readFile(

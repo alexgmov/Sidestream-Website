@@ -6,6 +6,7 @@ import {
   getBaseUrl,
   getClientIp,
   getSession,
+  getTrustedCheckoutCountry,
   methodNotAllowed,
   redirect,
   sendJson,
@@ -68,7 +69,11 @@ export default async function handler(
   if (!rateLimit.allowed) return sendRateLimitExceeded(response, rateLimit);
   applyRateLimitHeaders(response, rateLimit);
 
-  const intent = await createCheckoutIntent({ activationKey, session });
+  const intent = await createCheckoutIntent({
+    activationKey,
+    buyerCountry: getTrustedCheckoutCountry(request.headers),
+    session,
+  });
   if (!intent) {
     return sendJson(response, 409, {
       error: "Checkout unavailable",

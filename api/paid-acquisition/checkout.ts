@@ -5,6 +5,7 @@ import {
   createOrReuseCheckoutSession,
   getBaseUrl,
   getClientIp,
+  getTrustedCheckoutCountry,
   methodNotAllowed,
   readRequestBody,
   resolveRequestLicenseEnvironment,
@@ -120,7 +121,9 @@ export default async function handler(
       return sendSuccess(response, replay.url, true);
     }
 
-    const confirmation = await createCheckoutIntentConfirmation({});
+    const confirmation = await createCheckoutIntentConfirmation({
+      buyerCountry: getTrustedCheckoutCountry(request.headers),
+    });
     if (!confirmation) {
       return sendError(response, 503, "temporarily_unavailable");
     }

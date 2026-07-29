@@ -40,6 +40,7 @@ const CONTROLLED_ENVIRONMENT = [
   "SIDESTREAM_RATE_LIMIT_HASH_SECRET",
   "SIDESTREAM_PRO_PRODUCT_ID",
   "SIDESTREAM_PRO_PRICE_ID",
+  "SIDESTREAM_PRO_INDIA_PRICE_ID",
   "SIDESTREAM_BASE_URL",
   "PUBLIC_BASE_URL",
   "STRIPE_SECRET_KEY",
@@ -55,6 +56,7 @@ test("Upgrade authenticates and then redirects the signed-in buyer to Stripe", a
   let checkoutCalls = 0;
   let limiterCalls = 0;
   let allowed = true;
+  let selectedCountry = "";
   const start = await loadInjectedHandler(
     new URL("../api/checkout/start.ts", import.meta.url),
     {
@@ -62,6 +64,7 @@ test("Upgrade authenticates and then redirects the signed-in buyer to Stripe", a
         cleanString,
         async createCheckoutIntent(options) {
           intentCalls += 1;
+          selectedCountry = options.buyerCountry;
           return {
             intentId: VALID_INTENT_ID,
             browserToken: "browser-capability",
@@ -81,6 +84,12 @@ test("Upgrade authenticates and then redirects the signed-in buyer to Stripe", a
         getBaseUrl: () => BASE_URL,
         getClientIp: () => "127.0.0.1",
         getSession: async () => session,
+        getTrustedCheckoutCountry(headers) {
+          const country = headers["x-vercel-ip-country"];
+          return typeof country === "string" && /^[A-Za-z]{2}$/.test(country)
+            ? country.toUpperCase()
+            : "ZZ";
+        },
         methodNotAllowed,
         redirect,
         sendJson,
@@ -150,6 +159,21 @@ test("Upgrade authenticates and then redirects the signed-in buyer to Stripe", a
   assert.equal(intentCalls, 1);
   assert.equal(checkoutCalls, 1);
   assert.equal(limiterCalls, 1);
+  assert.equal(selectedCountry, "ZZ");
+
+  const trustedIndia = await invokeHandler(start, {
+    method: "GET",
+    url: "/api/checkout/start?country=US&currency=USD&amount=1&offer=forged",
+    headers: {
+      host: "sidestream.test",
+      "x-forwarded-proto": "https",
+      "x-vercel-ip-country": "in",
+    },
+  });
+  assert.equal(trustedIndia.response.statusCode, 303);
+  assert.equal(selectedCountry, "IN");
+  assert.equal(intentCalls, 2);
+  assert.equal(checkoutCalls, 2);
 
   allowed = false;
   const throttled = await invokeHandler(start, {
@@ -159,7 +183,7 @@ test("Upgrade authenticates and then redirects the signed-in buyer to Stripe", a
   });
   assert.equal(throttled.response.statusCode, 429);
   assert.equal(throttled.response.getHeader("retry-after"), "47");
-  assert.equal(checkoutCalls, 1);
+  assert.equal(checkoutCalls, 2);
 
   allowed = true;
   session = accountSession({ active: true });
@@ -170,8 +194,8 @@ test("Upgrade authenticates and then redirects the signed-in buyer to Stripe", a
   });
   assert.equal(owner.response.statusCode, 302);
   assert.match(owner.response.getHeader("location"), /checkout=already_owned/);
-  assert.equal(intentCalls, 1);
-  assert.equal(checkoutCalls, 1);
+  assert.equal(intentCalls, 2);
+  assert.equal(checkoutCalls, 2);
 
   const [index, account, startSource] = await Promise.all([
     readFile(join(repositoryRoot, "index.html"), "utf8"),
@@ -233,6 +257,17 @@ test("database-backed intents serialize retries, rotate deliberately, and fulfil
     assert.equal(second.ok, true);
     assert.equal(first.url, second.url);
     assert.equal(stripe.countWrites("customers.create"), 1);
+    assert.equal(stripe.countWrites("checkout.sessions.create"), 1);
+
+    process.env.SIDESTREAM_PRO_PRICE_ID = "price_checkout_changed_after_open";
+    const stillOpen = await account.createOrReuseCheckoutSession({
+      intentId: intent.intentId,
+      browserToken: intent.browserToken,
+      session: buyerSession,
+      baseUrl: BASE_URL,
+    });
+    assert.equal(stillOpen.ok, true);
+    assert.equal(stillOpen.url, first.url);
     assert.equal(stripe.countWrites("checkout.sessions.create"), 1);
 
     await databasePool.query(
@@ -358,14 +393,17 @@ test("database-backed intents serialize retries, rotate deliberately, and fulfil
     assert.equal(attached.rows[0].stripe_checkout_session_id, activationWrite.session.id);
 
     stripe.complete(activationWrite.session.id, {
-      email: "activation-paid@example.com",
+      email: buyerSession.email,
       name: "Activation Buyer",
     });
     const deliveries = await Promise.all([
       account.fulfillCheckoutSession(activationWrite.session.id, activationKey),
       account.upsertLicenseFromCheckoutSession({ id: activationWrite.session.id }),
     ]);
-    assert.ok(deliveries.every((delivery) => delivery.fulfilled));
+    assert.ok(
+      deliveries.every((delivery) => delivery.fulfilled),
+      JSON.stringify(deliveries),
+    );
     const licenseCount = await databasePool.query(
       `
         select count(*)::integer as count
@@ -400,6 +438,60 @@ test("database-backed intents serialize retries, rotate deliberately, and fulfil
       state: "completed",
       stripe_customer_id: activationWrite.session.customer,
     });
+
+    process.env.SIDESTREAM_PRO_INDIA_PRICE_ID = "price_checkout_india";
+    const indiaBuyer = await seedFreeAccount(databasePool, "india-buyer");
+    const indiaBuyerSession = accountSession({
+      accountId: indiaBuyer.accountId,
+      email: indiaBuyer.email,
+      active: false,
+    });
+    const indiaIntent = await account.createCheckoutIntent({
+      buyerCountry: "IN",
+      session: indiaBuyerSession,
+    });
+    assert.ok(indiaIntent);
+    const indiaCheckout = await account.createOrReuseCheckoutSession({
+      intentId: indiaIntent.intentId,
+      browserToken: indiaIntent.browserToken,
+      session: indiaBuyerSession,
+      baseUrl: BASE_URL,
+    });
+    assert.equal(indiaCheckout.ok, true);
+    const indiaWrite = stripe.sessionCreateWrites.at(-1);
+    assert.equal(indiaWrite.params.line_items[0].price, "price_checkout_india");
+    assert.equal(
+      indiaWrite.params.metadata.sidestream_offer_id,
+      "sidestream-unlimited-india",
+    );
+    assert.equal(indiaWrite.params.metadata.sidestream_offer_country, "IN");
+    assert.equal(indiaWrite.params.metadata.sidestream_offer_currency, "inr");
+    assert.equal(indiaWrite.params.metadata.sidestream_offer_amount_minor, "129900");
+    const indiaSnapshot = await databasePool.query(
+      `
+        select offer_id, offer_country, offer_currency, offer_amount_minor,
+          offer_stripe_product_id, offer_stripe_price_id
+        from public.sidestream_checkout_intents
+        where id = $1
+      `,
+      [indiaIntent.intentId],
+    );
+    assert.deepEqual(indiaSnapshot.rows[0], {
+      offer_id: "sidestream-unlimited-india",
+      offer_country: "IN",
+      offer_currency: "inr",
+      offer_amount_minor: 129900,
+      offer_stripe_product_id: "prod_checkout_test",
+      offer_stripe_price_id: "price_checkout_india",
+    });
+    stripe.complete(indiaWrite.session.id, {
+      email: indiaBuyer.email,
+      name: "India Buyer",
+    });
+    assert.deepEqual(
+      await account.fulfillCheckoutSession(indiaWrite.session.id),
+      { fulfilled: true, activationBound: false },
+    );
 
   } finally {
     if (runtimeModules) {
@@ -441,14 +533,15 @@ class RecordingStripe {
     this.prices = {
       retrieve: async (priceId) => {
         this.reads.push({ operation: "prices.retrieve", priceId });
+        const india = priceId === "price_checkout_india";
         return {
           id: priceId,
           active: true,
           product: "prod_checkout_test",
-          unit_amount: 2499,
-          currency: "usd",
+          unit_amount: india ? 129900 : 2499,
+          currency: india ? "inr" : "usd",
           recurring: null,
-          lookup_key: "sidestream_pro_once_2499",
+          lookup_key: india ? null : "sidestream_pro_once_2499",
         };
       },
       list: async () => ({ data: [] }),
@@ -473,8 +566,8 @@ class RecordingStripe {
         return {
           id: paymentIntentId,
           customer: session.customer,
-          amount_received: 999,
-          currency: "usd",
+          amount_received: session.amount_total,
+          currency: session.currency,
           status: "succeeded",
           latest_charge: `ch_${paymentIntentId.slice(3)}`,
         };
@@ -492,7 +585,7 @@ class RecordingStripe {
           id: chargeId,
           customer: session.customer,
           payment_intent: paymentIntentId,
-          currency: "usd",
+          currency: session.currency,
           amount_refunded: 0,
           paid: true,
           disputed: false,
@@ -510,6 +603,9 @@ class RecordingStripe {
           const id = `cs_recorded_${this.#sessionsByKey.size + 1}`;
           const customer = params.customer || `cus_checkout_${this.#sessionsByKey.size + 1}`;
           const expiresAt = params.expires_at || Math.floor(Date.now() / 1_000) + 86_400;
+          const india = params.line_items[0].price === "price_checkout_india";
+          const amount = india ? 129900 : 2499;
+          const currency = india ? "inr" : "usd";
           const session = {
             id,
             url: `https://checkout.stripe.test/${id}`,
@@ -520,8 +616,14 @@ class RecordingStripe {
             customer_details: null,
             customer_email: null,
             payment_intent: `pi_${id}`,
-            amount_total: 999,
-            currency: "usd",
+            amount_subtotal: amount,
+            amount_total: amount,
+            currency,
+            total_details: {
+              amount_discount: 0,
+              amount_shipping: 0,
+              amount_tax: 0,
+            },
             subscription: null,
             expires_at: expiresAt,
             metadata: { ...(params.metadata || {}) },
@@ -714,6 +816,9 @@ async function loadRuntimeModules() {
     const imports = {
       "./entitlement.js": pathToFileURL(
         join(repositoryRoot, "api", "_lib", "entitlement.ts"),
+      ).href,
+      "./checkout-offers.js": pathToFileURL(
+        join(repositoryRoot, "api", "_lib", "checkout-offers.ts"),
       ).href,
       "./device-policy.js": pathToFileURL(
         join(repositoryRoot, "api", "_lib", "device-policy.ts"),

@@ -1190,6 +1190,9 @@ async function loadAccountRuntime(directory) {
       "./customer-identity.js": pathToFileURL(
         join(repositoryRoot, "api/_lib/customer-identity.ts"),
       ).href,
+      "./checkout-offers.js": pathToFileURL(
+        join(repositoryRoot, "api/_lib/checkout-offers.ts"),
+      ).href,
       "./maintenance.js": maintenanceUrl,
       "./paid-acquisition.js": paidAcquisitionUrl,
       "./postgres.js": postgresUrl,

@@ -45,6 +45,10 @@ export type CheckoutVerification =
   | { ok: true }
   | { ok: false; reason: string };
 
+export type ApprovedCheckoutVerification =
+  | { isApprovedPurchase: true }
+  | { isApprovedPurchase: false; reason: string };
+
 export function isZeroTotalCheckoutWithoutPaymentIntent(
   session: CheckoutSessionLike,
 ) {
@@ -91,6 +95,9 @@ export function getDiscountedCheckoutPaymentMismatch(
   ) return "discount";
   if ((session.total_details?.amount_shipping ?? 0) !== 0) return "shipping";
   if (session.total_details?.amount_tax !== 0) return "tax";
+  if (stringId(session.currency).toLowerCase() !== expected.currency) {
+    return "session_currency";
+  }
   if (amountTotal === 0) {
     return !payment && isZeroTotalCheckoutWithoutPaymentIntent(session)
       ? ""
@@ -99,9 +106,6 @@ export function getDiscountedCheckoutPaymentMismatch(
   if (session.payment_status !== "paid") return "payment_status";
   if (!payment) return "missing_payment";
   if (payment.amountPaid !== amountTotal) return "captured_total";
-  if (stringId(session.currency).toLowerCase() !== expected.currency) {
-    return "session_currency";
-  }
   if (stringId(payment.currency).toLowerCase() !== expected.currency) {
     return "payment_currency";
   }
@@ -327,6 +331,74 @@ export function verifyPaidCheckoutSession(
   }
 
   return { ok: true };
+}
+
+export function verifyApprovedCheckoutPurchase(
+  session: CheckoutSessionLike,
+  payment: { amountPaid: unknown; currency: unknown } | null,
+  expected: {
+    sessionId: string;
+    activationKey?: string;
+    intentId: string;
+    accountId: string;
+    offerId: string;
+    country: string;
+    currency: string;
+    amountMinor: number;
+    priceId: string;
+    productId: string;
+    paidPlanKeys: readonly string[];
+  },
+): ApprovedCheckoutVerification {
+  const checkoutVerification = verifyPaidCheckoutSession(session, {
+    sessionId: expected.sessionId,
+    activationKey: expected.activationKey,
+    priceId: expected.priceId,
+    productId: expected.productId,
+    paidPlanKeys: expected.paidPlanKeys,
+  });
+  if (!checkoutVerification.ok) {
+    return {
+      isApprovedPurchase: false,
+      reason: checkoutVerification.reason,
+    };
+  }
+
+  const metadata = session.metadata || {};
+  const exactMetadata = [
+    ["sidestream_checkout_intent_id", expected.intentId],
+    ["sidestream_account_id", expected.accountId],
+    ["sidestream_offer_id", expected.offerId],
+    ["sidestream_offer_country", expected.country],
+    ["sidestream_offer_currency", expected.currency],
+    ["sidestream_offer_amount_minor", String(expected.amountMinor)],
+    ["sidestream_product_id", expected.productId],
+  ] as const;
+  for (const [key, value] of exactMetadata) {
+    if (stringId(metadata[key]) !== value) {
+      return {
+        isApprovedPurchase: false,
+        reason: `${key.replace(/^sidestream_/, "")}_mismatch`,
+      };
+    }
+  }
+
+  const paymentMismatch = getDiscountedCheckoutPaymentMismatch(
+    session,
+    payment,
+    {
+      amountSubtotal: expected.amountMinor,
+      currency: expected.currency,
+    },
+  );
+  if (paymentMismatch) {
+    return {
+      isApprovedPurchase: false,
+      reason: `offer_amount_${paymentMismatch}`,
+    };
+  }
+
+  return { isApprovedPurchase: true };
 }
 
 export function parseStripeIdAllowlist(value: unknown, prefix: "price" | "prod") {
