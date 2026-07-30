@@ -881,6 +881,7 @@ Use the narrowest relevant check after edits:
 
 ## Recent Change Log
 
+- 2026-07-30: Removed the redundant green “Payment complete” badge from the paid-acquisition thank-you header, leaving the Sidestream wordmark as the only header element.
 - 2026-07-30: Removed the redundant red “Do not download Sidestream to this phone” warning card from the paid-acquisition thank-you page while preserving its computer inbox and installation steps.
 - 2026-07-30: Reduced the paid-acquisition email to the Sidestream Unlimited name, one sentence describing the Premiere Pro extension, and Mac/Windows download buttons. Removed setup, recovery, entitlement, refund, and dispute copy from that email; aligned the phone handoff subject and renamed only the customer-visible paid artifact filenames to `Sidestream-Unlimited.dmg` and `Sidestream-Unlimited.exe`, leaving the installer bytes and installed app unchanged.
 - 2026-07-30: Added a separate phone-first paid-acquisition thank-you page with explicit computer inbox, receipt-gated installer, Premiere, and same-Google-email steps. Only Checkout Sessions carrying the server-owned paid-acquisition marker reach it after exact fulfillment; the original `thank-you.html` and ordinary Upgrade/Restore flow remain unchanged.
