@@ -38,6 +38,7 @@ import {
 } from "./entitlement.js";
 import {
   getTrustedCheckoutCountry,
+  SIDESTREAM_GLOBAL_CHECKOUT_OFFER,
   selectCheckoutOffer,
 } from "./checkout-offers.js";
 import {
@@ -112,8 +113,8 @@ const SIDESTREAM_PRO_PRICE = {
   lookupKey: "sidestream_pro_once_2499",
   name: "Sidestream Unlimited",
   description: "Lifetime Sidestream Unlimited access for one editor.",
-  unitAmount: 2499,
-  currency: "usd",
+  unitAmount: SIDESTREAM_GLOBAL_CHECKOUT_OFFER.amountMinor,
+  currency: SIDESTREAM_GLOBAL_CHECKOUT_OFFER.currency,
 };
 // Production can still use the pre-lifecycle license schema. JSON extraction
 // avoids a parse-time column lookup while preserving canonical migrated state
@@ -1647,7 +1648,7 @@ async function resolveCheckoutOfferSnapshot(
     normalizeStripeId(price.product) !== productId ||
     price.currency !== selection.entry.currency ||
     !Number.isSafeInteger(price.unit_amount) ||
-    (price.unit_amount || 0) <= 0 ||
+    price.unit_amount !== selection.entry.amountMinor ||
     price.recurring
   ) {
     throw new Error(

@@ -1355,7 +1355,7 @@
           <div class="plan featured reveal" role="group" aria-label="Sidestream Unlimited one-time purchase">
             <div class="plan-beta-content">
               <p class="plan-name">Unlimited <span class="pill">One-time</span></p>
-              <div class="price"><span class="amt">$24.99</span><span class="per">once</span></div>
+              <div class="price"><span class="amt" data-checkout-offer-price aria-live="polite">$24.99</span><span class="per">once</span></div>
               <ul>
                 <li>Unlimited downloads</li>
                 <li>Full video and audio downloads</li>
@@ -1731,6 +1731,37 @@
       pricingPanels.forEach((panel) => pricingPanelObserver.observe(panel));
     } else {
       pricingPanels.forEach((panel) => panel.classList.add("is-visible"));
+    }
+
+    const checkoutOfferPrices = Array.from(
+      document.querySelectorAll("[data-checkout-offer-price]")
+    );
+    if (checkoutOfferPrices.length) {
+      fetch("/api/checkout/offer", {
+        method: "GET",
+        credentials: "same-origin",
+        cache: "no-store",
+        headers: { Accept: "application/json" }
+      })
+        .then((response) => response.ok ? response.json() : null)
+        .then((offer) => {
+          if (
+            !offer ||
+            typeof offer.formattedPrice !== "string" ||
+            offer.formattedPrice.length < 1 ||
+            offer.formattedPrice.length > 32 ||
+            typeof offer.currency !== "string" ||
+            !/^[A-Z]{3}$/.test(offer.currency)
+          ) {
+            return;
+          }
+          checkoutOfferPrices.forEach((price) => {
+            price.textContent = offer.formattedPrice;
+          });
+        })
+        .catch(() => {
+          // Keep the global catalog price already rendered in the HTML.
+        });
     }
 
     // Download / purchase actions

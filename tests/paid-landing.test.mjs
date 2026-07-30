@@ -148,6 +148,12 @@ test("mobile source carries the accessibility and no-overflow contract", () => {
   assert.match(paidLandingHtml, /role="status" aria-live="polite"/);
   assert.match(
     paidLandingHtml,
-    /aria-label="Buy Sidestream Unlimited now for \$24\.99, one-time purchase"/
+    /aria-label="Buy Sidestream Unlimited now, one-time purchase"/
   );
+  assert.equal(
+    paidLandingHtml.match(/data-checkout-offer-price/g)?.length,
+    3,
+    "two regional price elements plus their selector should remain",
+  );
+  assert.match(paidLandingHtml, /fetch\("\/api\/checkout\/offer"/);
 });

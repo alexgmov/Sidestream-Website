@@ -90,7 +90,7 @@ const mobilePurchaseCard = `          <form class="mobile-download-handoff" id="
             <p class="mobile-download-handoff-title">Purchase Sidestream</p>
             <p class="mobile-download-handoff-subtext">We’ll email your download link after purchase.</p>
             <div class="mobile-download-handoff-fields">
-              <button class="btn btn-primary mobile-download-handoff-submit mobile-paid-purchase-button" type="submit" aria-label="Buy Sidestream Unlimited now for $24.99, one-time purchase">Buy Now $24.99</button>
+              <button class="btn btn-primary mobile-download-handoff-submit mobile-paid-purchase-button" type="submit" aria-label="Buy Sidestream Unlimited now, one-time purchase">Buy Now <span data-checkout-offer-price>$24.99</span></button>
             </div>
             <p class="mobile-paid-checkout-status" id="mobile-paid-checkout-status" role="status" aria-live="polite"></p>
           </form>
@@ -199,7 +199,7 @@ export function buildPaidLanding(canonicalHtml) {
   output = replaceOnce(
     output,
     "<title>Sidestream - Download YouTube Videos in Premiere Pro</title>",
-    "<title>Sidestream Unlimited — $24.99 one-time</title>",
+    "<title>Sidestream Unlimited — one-time purchase</title>",
     "document title"
   );
   output = replaceOnce(
@@ -271,7 +271,7 @@ export function buildPaidLanding(canonicalHtml) {
   output = replaceOnce(
     output,
     '<a class="btn btn-primary" href="/api/checkout/start">Upgrade to Unlimited</a>',
-    '<button class="btn btn-primary" type="button" data-paid-checkout-button aria-label="Buy Sidestream Unlimited for $24.99, one-time purchase">Buy Now</button>',
+    '<button class="btn btn-primary" type="button" data-paid-checkout-button aria-label="Buy Sidestream Unlimited, one-time purchase">Buy Now</button>',
     "Unlimited purchase action"
   );
   output = replaceRange(

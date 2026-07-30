@@ -6,6 +6,8 @@ export type CheckoutOfferCatalogEntry = Readonly<{
   offerId: string;
   countryCodes: readonly string[];
   currency: string;
+  amountMinor: number;
+  displayLocale: string;
   priceSource:
     | Readonly<{ kind: "default" }>
     | Readonly<{ kind: "environment"; variable: string }>;
@@ -21,28 +23,34 @@ const INDIA_OFFER: CheckoutOfferCatalogEntry = Object.freeze({
   offerId: "sidestream-unlimited-india",
   countryCodes: Object.freeze(["IN"]),
   currency: "inr",
+  amountMinor: 99900,
+  displayLocale: "en-IN",
   priceSource: Object.freeze({
     kind: "environment",
     variable: "SIDESTREAM_PRO_INDIA_PRICE_ID",
   }),
 });
 
-const GLOBAL_OFFER: CheckoutOfferCatalogEntry = Object.freeze({
-  offerId: "sidestream-unlimited-global",
-  countryCodes: Object.freeze(["*"]),
-  currency: "usd",
-  priceSource: Object.freeze({ kind: "default" }),
-});
+export const SIDESTREAM_GLOBAL_CHECKOUT_OFFER: CheckoutOfferCatalogEntry =
+  Object.freeze({
+    offerId: "sidestream-unlimited-global",
+    countryCodes: Object.freeze(["*"]),
+    currency: "usd",
+    amountMinor: 2499,
+    displayLocale: "en-US",
+    priceSource: Object.freeze({ kind: "default" }),
+  });
 
 /**
  * Server-owned regional offer allowlist. Country-specific entries must appear
  * before the global fallback. Adding a future country requires another entry
- * with an immutable Stripe Price ID supplied through server configuration.
+ * with an approved amount and an immutable Stripe Price ID supplied through
+ * server configuration.
  */
 export const SIDESTREAM_CHECKOUT_OFFER_CATALOG =
   Object.freeze<readonly CheckoutOfferCatalogEntry[]>([
     INDIA_OFFER,
-    GLOBAL_OFFER,
+    SIDESTREAM_GLOBAL_CHECKOUT_OFFER,
   ]);
 
 export function getTrustedCheckoutCountry(headers: IncomingHttpHeaders) {
@@ -67,11 +75,33 @@ export function selectCheckoutOffer(
       entry.countryCodes.includes(country) &&
       cleanEnvironmentValue(environment[entry.priceSource.variable]),
   );
-  const entry = regionalEntry || GLOBAL_OFFER;
+  const entry = regionalEntry || SIDESTREAM_GLOBAL_CHECKOUT_OFFER;
   const configuredPriceId = entry.priceSource.kind === "environment"
     ? cleanEnvironmentValue(environment[entry.priceSource.variable])
     : "";
   return { country, entry, configuredPriceId };
+}
+
+export function getCheckoutOfferPresentation(
+  countryValue: unknown,
+  environment: NodeJS.ProcessEnv = process.env,
+) {
+  const { entry } = selectCheckoutOffer(countryValue, environment);
+  const currency = entry.currency.toUpperCase();
+  const currencyOptions = new Intl.NumberFormat(entry.displayLocale, {
+    style: "currency",
+    currency,
+  }).resolvedOptions();
+  const fractionDigits = currencyOptions.maximumFractionDigits ?? 2;
+  const minorUnitDivisor = 10 ** fractionDigits;
+  const hasFraction = entry.amountMinor % minorUnitDivisor !== 0;
+  const formattedPrice = new Intl.NumberFormat(entry.displayLocale, {
+    style: "currency",
+    currency,
+    minimumFractionDigits: hasFraction ? fractionDigits : 0,
+    maximumFractionDigits: fractionDigits,
+  }).format(entry.amountMinor / minorUnitDivisor);
+  return Object.freeze({ formattedPrice, currency });
 }
 
 function cleanEnvironmentValue(value: unknown) {

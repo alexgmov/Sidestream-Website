@@ -364,9 +364,9 @@ test("fixture purchase connects sticky paid entry to idempotent verified $24.99 
       verifiedProductRef: "prod_test_sidestream_pro",
       verifiedPriceRef: "price_test_sidestream_pro_india",
       verifiedQuantity: 1,
-      verifiedOriginalAmountMinor: 129900,
+      verifiedOriginalAmountMinor: 99900,
       verifiedDiscountAmountMinor: 0,
-      verifiedAmountMinor: 129900,
+      verifiedAmountMinor: 99900,
       verifiedCurrency: "inr",
     });
   assert.equal(indiaFulfilled.matched, true);

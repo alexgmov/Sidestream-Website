@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   SIDESTREAM_CHECKOUT_OFFER_CATALOG,
+  getCheckoutOfferPresentation,
   getTrustedCheckoutCountry,
   selectCheckoutOffer,
 } from "../api/_lib/checkout-offers.ts";
@@ -29,7 +30,7 @@ const INDIA = {
   offerId: "sidestream-unlimited-india",
   country: "IN",
   currency: "inr",
-  amountMinor: 129900,
+  amountMinor: 99900,
   priceId: "price_india",
 };
 
@@ -37,6 +38,13 @@ test("the server-owned catalog selects India only from configured trusted countr
   assert.deepEqual(
     SIDESTREAM_CHECKOUT_OFFER_CATALOG.map((entry) => entry.offerId),
     ["sidestream-unlimited-india", "sidestream-unlimited-global"],
+  );
+  assert.deepEqual(
+    SIDESTREAM_CHECKOUT_OFFER_CATALOG.map((entry) => [
+      entry.currency,
+      entry.amountMinor,
+    ]),
+    [["inr", 99900], ["usd", 2499]],
   );
   assert.equal(
     selectCheckoutOffer("IN", {}).entry.offerId,
@@ -56,6 +64,16 @@ test("the server-owned catalog selects India only from configured trusted countr
   );
   assert.equal(getTrustedCheckoutCountry({ "x-vercel-ip-country": " in " }), "IN");
   assert.equal(getTrustedCheckoutCountry({ "x-vercel-ip-country": "forged" }), "ZZ");
+  assert.deepEqual(
+    getCheckoutOfferPresentation("IN", {
+      SIDESTREAM_PRO_INDIA_PRICE_ID: "price_india",
+    }),
+    { formattedPrice: "₹999", currency: "INR" },
+  );
+  assert.deepEqual(
+    getCheckoutOfferPresentation("IN", {}),
+    { formattedPrice: "$24.99", currency: "USD" },
+  );
 });
 
 test("global and Indian purchases verify against their exact stored offer snapshots", () => {
@@ -73,7 +91,7 @@ test("global and Indian purchases verify against their exact stored offer snapsh
   assert.deepEqual(
     verifyApprovedCheckoutPurchase(
       indiaSession,
-      { amountPaid: 129900, currency: "inr" },
+      { amountPaid: 99900, currency: "inr" },
       INDIA,
     ),
     { isApprovedPurchase: true },
@@ -92,7 +110,7 @@ test("forged regional metadata and cross-region Prices fail closed", () => {
   assert.equal(
     verifyApprovedCheckoutPurchase(
       forgedCountry,
-      { amountPaid: 129900, currency: "inr" },
+      { amountPaid: 99900, currency: "inr" },
       INDIA,
     ).isApprovedPurchase,
     false,
@@ -111,7 +129,7 @@ test("forged regional metadata and cross-region Prices fail closed", () => {
   assert.deepEqual(
     verifyApprovedCheckoutPurchase(
       crossRegionPrice,
-      { amountPaid: 129900, currency: "inr" },
+      { amountPaid: 99900, currency: "inr" },
       INDIA,
     ),
     {
