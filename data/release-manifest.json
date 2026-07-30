@@ -2,17 +2,17 @@
   "schemaVersion": 1,
   "product": "sidestream",
   "channel": "stable",
-  "version": "1.0.15",
+  "version": "1.0.16",
   "minSupportedVersion": "1.0.12",
   "critical": false,
   "rolloutPercent": 100,
-  "publishedAt": "2026-07-29T03:45:50.819Z",
+  "publishedAt": "2026-07-30T02:35:37.755Z",
   "releaseNotesUrl": "https://sidestream.tv/",
   "artifact": {
     "type": "dmg",
     "url": "https://sidestream.tv/api/download",
-    "pathname": "sidestream/1.0.15/Sidestream-1.0.15-Mac-Installer.dmg",
-    "sha256": "133da3b8b8bea901dae0e35b0cb05d5c8fdcaf8e2b3e39e1b76a143e4ba05a08",
-    "sizeBytes": 226456993
+    "pathname": "sidestream/1.0.16/Sidestream-1.0.16-Mac-Installer.dmg",
+    "sha256": "c7bdaeaad128a03b202eb712545b2a304979d3451a45e05bafabc8e7307ded6b",
+    "sizeBytes": 224597835
   }
 }
