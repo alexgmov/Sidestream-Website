@@ -17,7 +17,12 @@ const REQUIRED_FUNCTIONS = Object.freeze([
   "api/internal/customers/index.func",
   "api/internal/customers/[customerId].func",
 ]);
-const ALLOWED_ROOT_HTML = new Set(["account.html", "index.html", "thank-you.html"]);
+const ALLOWED_ROOT_HTML = new Set([
+  "account.html",
+  "index.html",
+  "paid-thank-you.html",
+  "thank-you.html",
+]);
 
 export async function verifyVercelBuild(outputRoot = OUTPUT_ROOT) {
   const configPath = path.join(outputRoot, "config.json");

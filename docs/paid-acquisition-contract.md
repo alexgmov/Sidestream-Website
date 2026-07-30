@@ -178,14 +178,18 @@ must not read or retain the unvalidated original query.
    success redirects are not evidence.
 5. Only after verified payment does the server accept an idempotent
    paid-installer email job addressed to the verified Checkout email.
-6. The recipient obtains generic platform installer links plus a short-lived,
+6. The verified paid-acquisition browser is sent to the dedicated noindex
+   phone-first thank-you page. It tells the buyer to switch to their Premiere
+   computer and find the separate Sidestream setup email; it does not offer the
+   standard public installer.
+7. The recipient obtains generic platform installer links plus a short-lived,
    opaque paid-onboarding receipt. Provider acceptance is delivery-attempt
    evidence only.
-7. FlowState starts or resumes activation, then the dedicated paid claim asks
+8. FlowState starts or resumes activation, then the dedicated paid claim asks
    Google to show its account chooser before OAuth completes. Automatic claim
    occurs only after the verified-email match and current payment/lifecycle
    checks.
-8. FlowState polls. Only `active` plus a fresh server-issued credential family
+9. FlowState polls. Only `active` plus a fresh server-issued credential family
    grants paid behavior. It persists the existing short-lived license
    credentials, never a permanent cohort-paid flag.
 

@@ -3707,6 +3707,7 @@ export async function fulfillCheckoutSession(
   return {
     fulfilled: true as const,
     activationBound: fulfillment.activationBound,
+    paidAcquisition: paidAcquisitionCheckout,
   };
 }
 

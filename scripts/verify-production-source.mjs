@@ -26,7 +26,12 @@ const BROWSER_UI_MARKERS = Object.freeze([
   "<!doctype html",
   "<html",
 ]);
-const ALLOWED_ROOT_HTML = new Set(["account.html", "index.html", "thank-you.html"]);
+const ALLOWED_ROOT_HTML = new Set([
+  "account.html",
+  "index.html",
+  "paid-thank-you.html",
+  "thank-you.html",
+]);
 
 export function assertCheckoutSourceContract(input) {
   const {

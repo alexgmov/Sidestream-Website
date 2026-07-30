@@ -32,7 +32,12 @@ export default async function handler(
     });
   }
 
-  const destination = new URL("/thank-you.html", baseUrl);
+  const destination = new URL(
+    fulfillment.paidAcquisition
+      ? "/paid-thank-you.html"
+      : "/thank-you.html",
+    baseUrl,
+  );
   destination.searchParams.set("checkout", "success");
   if (activationKey) destination.searchParams.set("activation", activationKey);
   return redirect(response, destination.toString());

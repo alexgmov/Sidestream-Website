@@ -111,6 +111,12 @@
       ]
     },
     {
+      "source": "/paid-thank-you.html",
+      "headers": [
+        { "key": "X-Robots-Tag", "value": "noindex, nofollow" }
+      ]
+    },
+    {
       "source": "/mobile-paid-prototype.html",
       "headers": [
         { "key": "X-Robots-Tag", "value": "noindex, nofollow" }
