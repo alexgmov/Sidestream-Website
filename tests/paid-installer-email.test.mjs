@@ -25,7 +25,7 @@ function checkout(overrides = {}) {
   };
 }
 
-test("builds paid-only Mac and Windows onboarding email with recovery copy", () => {
+test("builds a minimal Sidestream Unlimited download email", () => {
   const job = createPaidInstallerEmailJob({
     checkout: checkout(),
     onboardingReceipt: RECEIPT,
@@ -47,22 +47,29 @@ test("builds paid-only Mac and Windows onboarding email with recovery copy", () 
   assert.equal(job.message.from, "Sidestream <downloads@alexg.mov>");
   assert.equal(job.message.reply_to, "alex@alexg.mov");
   assert.deepEqual(job.message.to, ["buyer@example.com"]);
-  assert.match(job.message.html, /Set up on Mac/);
-  assert.match(job.message.html, /Set up on Windows/);
-  assert.match(job.message.html, /same Google email used at Checkout/i);
-  assert.match(job.message.html, /reply to this message for support recovery/i);
-  assert.match(job.message.html, /installer does not grant Unlimited access/i);
-  assert.match(job.message.html, /refund or dispute may remove paid access/i);
+  assert.equal(job.message.subject, "Sidestream Unlimited");
+  assert.match(job.message.html, /Sidestream Unlimited/);
+  assert.match(job.message.html, /Search, preview, and download YouTube videos and audio directly in Adobe Premiere Pro\./);
+  assert.match(job.message.html, /Download for Mac/);
+  assert.match(job.message.html, /Download for Windows/);
   assert.match(job.message.text, /platform=macos-universal/);
   assert.match(job.message.text, /platform=windows-x64/);
   assert.equal((job.message.html.match(/border-radius:999px/g) || []).length, 2);
   assert.equal((job.message.html.match(/class="platform-link"/g) || []).length, 2);
-  assert.doesNotMatch(job.message.html, /STREAM20|free installer/i);
-  assert.doesNotMatch(job.message.text, /STREAM20|free installer/i);
+  assert.doesNotMatch(
+    job.message.html,
+    /paid[- ]onboarding|same Google email|support recovery|refund|dispute|does not grant/i,
+  );
+  assert.doesNotMatch(
+    job.message.text,
+    /paid[- ]onboarding|same Google email|support recovery|refund|dispute|does not grant/i,
+  );
+  assert.doesNotMatch(job.message.html, /buyer@example\.com/);
+  assert.doesNotMatch(job.message.text, /buyer@example\.com/);
   assert.doesNotMatch(job.message.html, /cs_test_paid_123/);
 });
 
-test("escapes recipient and public artifact URLs in HTML", () => {
+test("keeps the verified recipient private while escaping artifact URLs", () => {
   const recipient = "buyer&ops@example.com";
   const job = createPaidInstallerEmailJob({
     checkout: checkout({ verifiedCheckoutEmail: recipient }),
@@ -70,13 +77,13 @@ test("escapes recipient and public artifact URLs in HTML", () => {
     publicOrigin: "https://paid.sidestream.tv",
   });
 
-  assert.match(job.message.html, /buyer&amp;ops@example\.com/);
-  assert.doesNotMatch(job.message.html, /buyer&ops@example\.com/);
+  assert.deepEqual(job.message.to, ["buyer&ops@example.com"]);
+  assert.doesNotMatch(job.message.html, /buyer(?:&amp;|&)ops@example\.com/);
   assert.match(
     job.message.html,
     /artifact\?receipt=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&amp;platform=macos-universal/,
   );
-  assert.match(job.message.text, /buyer&ops@example\.com/);
+  assert.doesNotMatch(job.message.text, /buyer&ops@example\.com/);
 });
 
 test("requires an explicitly verified paid Checkout input", () => {

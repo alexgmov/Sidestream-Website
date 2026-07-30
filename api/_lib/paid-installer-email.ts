@@ -4,7 +4,7 @@ import { domainToASCII } from "node:url";
 const RESEND_SEND_ENDPOINT = "https://api.resend.com/emails";
 const DEFAULT_FROM = "Sidestream <downloads@alexg.mov>";
 const DEFAULT_REPLY_TO = "alex@alexg.mov";
-const EMAIL_SUBJECT = "Set up your Sidestream Unlimited purchase";
+const EMAIL_SUBJECT = "Sidestream Unlimited";
 const REQUEST_TIMEOUT_MS = 8_000;
 const RECEIPT_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 const SESSION_ID_PATTERN = /^[A-Za-z0-9_]{1,255}$/;
@@ -146,8 +146,8 @@ export function createPaidInstallerEmailJob(options: {
       from,
       to: Object.freeze([recipient]),
       subject: EMAIL_SUBJECT,
-      html: buildHtmlBody({ recipient, macUrl, windowsUrl }),
-      text: buildTextBody({ recipient, macUrl, windowsUrl }),
+      html: buildHtmlBody({ macUrl, windowsUrl }),
+      text: buildTextBody({ macUrl, windowsUrl }),
       reply_to: replyTo,
       tags: Object.freeze([
         Object.freeze({
@@ -242,11 +242,9 @@ function buildArtifactUrl(
 }
 
 function buildHtmlBody(options: {
-  recipient: string;
   macUrl: string;
   windowsUrl: string;
 }) {
-  const recipient = escapeHtml(options.recipient);
   const macUrl = escapeHtml(options.macUrl);
   const windowsUrl = escapeHtml(options.windowsUrl);
   return `<!doctype html>
@@ -264,14 +262,14 @@ function buildHtmlBody(options: {
     </style>
   </head>
   <body style="margin:0;background:#f4f4f5;color:#111827;font-family:Arial,Helvetica,sans-serif;">
-    <div style="display:none;max-height:0;overflow:hidden;opacity:0;">Choose Mac or Windows, then sign in with your Checkout email.</div>
+    <div style="display:none;max-height:0;overflow:hidden;opacity:0;">Download Sidestream Unlimited for Mac or Windows.</div>
     <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#f4f4f5;padding:32px 16px;">
       <tr>
         <td align="center">
           <table class="email-card" role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:560px;background:#ffffff;border:1px solid #e4e4e7;border-radius:18px;padding:36px;">
             <tr><td style="font-size:13px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#71717a;">Sidestream</td></tr>
-            <tr><td style="padding-top:14px;font-size:28px;font-weight:700;line-height:1.15;">Set up Sidestream</td></tr>
-            <tr><td style="padding-top:12px;font-size:16px;line-height:1.55;color:#52525b;">Thanks for your purchase. Choose the paid-onboarding installer for the computer where you want to use Sidestream.</td></tr>
+            <tr><td style="padding-top:14px;font-size:28px;font-weight:700;line-height:1.15;">Sidestream Unlimited</td></tr>
+            <tr><td style="padding-top:12px;font-size:16px;line-height:1.55;color:#52525b;">Search, preview, and download YouTube videos and audio directly in Adobe Premiere Pro.</td></tr>
             <tr>
               <td style="padding-top:26px;">
                 <table role="presentation" width="100%" cellspacing="0" cellpadding="0" bgcolor="#171717" style="background:#171717;border-radius:20px;">
@@ -280,10 +278,10 @@ function buildHtmlBody(options: {
                       <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
                         <tr>
                           <td class="platform-cell" width="50%" style="padding-right:6px;">
-                            <a class="platform-link" href="${macUrl}" aria-label="Set up Sidestream on Mac" style="display:block;padding:15px 16px;border:1px solid #ffffff;border-radius:999px;background:#ffffff;color:#000000;text-align:center;text-decoration:none;font-size:15px;font-weight:700;line-height:1.35;white-space:nowrap;">Set up on Mac</a>
+                            <a class="platform-link" href="${macUrl}" aria-label="Download Sidestream Unlimited for Mac" style="display:block;padding:15px 16px;border:1px solid #ffffff;border-radius:999px;background:#ffffff;color:#000000;text-align:center;text-decoration:none;font-size:15px;font-weight:700;line-height:1.35;white-space:nowrap;">Download for Mac</a>
                           </td>
                           <td class="platform-cell" width="50%" style="padding-left:6px;">
-                            <a class="platform-link" href="${windowsUrl}" aria-label="Set up Sidestream on Windows" style="display:block;padding:15px 16px;border:1px solid #ffffff;border-radius:999px;background:#ffffff;color:#000000;text-align:center;text-decoration:none;font-size:15px;font-weight:700;line-height:1.35;white-space:nowrap;">Set up on Windows</a>
+                            <a class="platform-link" href="${windowsUrl}" aria-label="Download Sidestream Unlimited for Windows" style="display:block;padding:15px 16px;border:1px solid #ffffff;border-radius:999px;background:#ffffff;color:#000000;text-align:center;text-decoration:none;font-size:15px;font-weight:700;line-height:1.35;white-space:nowrap;">Download for Windows</a>
                           </td>
                         </tr>
                       </table>
@@ -292,10 +290,6 @@ function buildHtmlBody(options: {
                 </table>
               </td>
             </tr>
-            <tr><td style="padding-top:24px;font-size:16px;font-weight:700;line-height:1.45;color:#27272a;">Sign in with the same Google email used at Checkout</td></tr>
-            <tr><td style="padding-top:8px;font-size:15px;line-height:1.55;color:#52525b;">After installation, open Sidestream and choose Sign in with Google. Use <strong>${recipient}</strong>, the email used for this Checkout.</td></tr>
-            <tr><td style="padding-top:12px;font-size:15px;line-height:1.55;color:#52525b;">If Google opens a different account, sign out and retry with the Checkout email. If you cannot access that address or the emails still do not match, reply to this message for support recovery. Do not purchase again.</td></tr>
-            <tr><td style="padding-top:16px;font-size:13px;line-height:1.55;color:#71717a;">The installer does not grant Unlimited access. Sidestream enables Unlimited only after the server verifies the payment and the matching Google sign-in. A later refund or dispute may remove paid access.</td></tr>
           </table>
         </td>
       </tr>
@@ -305,27 +299,18 @@ function buildHtmlBody(options: {
 }
 
 function buildTextBody(options: {
-  recipient: string;
   macUrl: string;
   windowsUrl: string;
 }) {
-  return `Set up your Sidestream purchase
+  return `Sidestream Unlimited
 
-Thanks for your purchase. Choose the paid-onboarding installer for the computer where you want to use Sidestream.
+Search, preview, and download YouTube videos and audio directly in Adobe Premiere Pro.
 
-Set up on Mac:
+Download for Mac:
 ${options.macUrl}
 
-Set up on Windows:
-${options.windowsUrl}
-
-SIGN IN WITH THE SAME GOOGLE EMAIL USED AT CHECKOUT
-
-After installation, open Sidestream and choose Sign in with Google. Use ${options.recipient}, the email used for this Checkout.
-
-If Google opens a different account, sign out and retry with the Checkout email. If you cannot access that address or the emails still do not match, reply to this message for support recovery. Do not purchase again.
-
-The installer does not grant Unlimited access. Sidestream enables Unlimited only after the server verifies the payment and the matching Google sign-in. A later refund or dispute may remove paid access.`;
+Download for Windows:
+${options.windowsUrl}`;
 }
 
 function assertVerifiedPaidCheckout(checkout: VerifiedPaidCheckout) {

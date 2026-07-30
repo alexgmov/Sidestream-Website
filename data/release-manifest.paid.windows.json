@@ -2,8 +2,8 @@
   "schemaVersion": 1,
   "platform": "windows-x64",
   "version": "1.0.13",
-  "filename": "Sidestream-1.0.13-Windows-Beta-Installer.exe",
+  "filename": "Sidestream-Unlimited.exe",
   "sizeBytes": 61653939,
   "sha256": "9ab3a9e2fd84d41d9468be184c85081355fe93ab726a33ed62b9c47a32d443ad",
-  "artifactPathname": "sidestream/1.0.13/Sidestream-1.0.13-Windows-Beta-Installer.exe"
+  "artifactPathname": "sidestream/1.0.13/Sidestream-Unlimited.exe"
 }

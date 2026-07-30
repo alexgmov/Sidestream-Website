@@ -400,7 +400,10 @@ test("fixture purchase connects sticky paid entry to idempotent verified $24.99 
     onboardingReceipt: fulfilled.receipt,
   });
   assert.deepEqual(emailJob.message.to, [CHECKOUT_EMAIL]);
-  assert.match(emailJob.message.html, /same Google email used at Checkout/i);
+  assert.equal(emailJob.message.subject, "Sidestream Unlimited");
+  assert.match(emailJob.message.html, /Download for Mac/);
+  assert.match(emailJob.message.html, /Download for Windows/);
+  assert.doesNotMatch(emailJob.message.html, /same Google email used at Checkout/i);
   assert.match(emailJob.message.text, /platform=macos-universal/);
   assert.match(emailJob.message.text, /platform=windows-x64/);
 

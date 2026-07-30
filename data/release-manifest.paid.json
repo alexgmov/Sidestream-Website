@@ -2,8 +2,8 @@
   "schemaVersion": 1,
   "platform": "macos-universal",
   "version": "1.0.16",
-  "filename": "Sidestream-1.0.16-Paid-Onboarding-Mac-Installer.dmg",
+  "filename": "Sidestream-Unlimited.dmg",
   "sizeBytes": 224596103,
   "sha256": "3b15ba701d564654c857152ca8096d852a3350bf368dd80205994ae1575b9743",
-  "artifactPathname": "sidestream/1.0.16/Sidestream-1.0.16-Paid-Onboarding-Mac-Installer.dmg"
+  "artifactPathname": "sidestream/1.0.16/Sidestream-Unlimited.dmg"
 }
