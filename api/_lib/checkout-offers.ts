@@ -23,7 +23,7 @@ const INDIA_OFFER: CheckoutOfferCatalogEntry = Object.freeze({
   offerId: "sidestream-unlimited-india",
   countryCodes: Object.freeze(["IN"]),
   currency: "inr",
-  amountMinor: 99900,
+  amountMinor: 79900,
   displayLocale: "en-IN",
   priceSource: Object.freeze({
     kind: "environment",

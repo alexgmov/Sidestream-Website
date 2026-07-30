@@ -30,7 +30,7 @@ const INDIA = {
   offerId: "sidestream-unlimited-india",
   country: "IN",
   currency: "inr",
-  amountMinor: 99900,
+  amountMinor: 79900,
   priceId: "price_india",
 };
 
@@ -44,7 +44,7 @@ test("the server-owned catalog selects India only from configured trusted countr
       entry.currency,
       entry.amountMinor,
     ]),
-    [["inr", 99900], ["usd", 2499]],
+    [["inr", 79900], ["usd", 2499]],
   );
   assert.equal(
     selectCheckoutOffer("IN", {}).entry.offerId,
@@ -68,7 +68,7 @@ test("the server-owned catalog selects India only from configured trusted countr
     getCheckoutOfferPresentation("IN", {
       SIDESTREAM_PRO_INDIA_PRICE_ID: "price_india",
     }),
-    { formattedPrice: "₹999", currency: "INR" },
+    { formattedPrice: "₹799", currency: "INR" },
   );
   assert.deepEqual(
     getCheckoutOfferPresentation("IN", {}),
@@ -91,7 +91,7 @@ test("global and Indian purchases verify against their exact stored offer snapsh
   assert.deepEqual(
     verifyApprovedCheckoutPurchase(
       indiaSession,
-      { amountPaid: 99900, currency: "inr" },
+      { amountPaid: 79900, currency: "inr" },
       INDIA,
     ),
     { isApprovedPurchase: true },
@@ -110,7 +110,7 @@ test("forged regional metadata and cross-region Prices fail closed", () => {
   assert.equal(
     verifyApprovedCheckoutPurchase(
       forgedCountry,
-      { amountPaid: 99900, currency: "inr" },
+      { amountPaid: 79900, currency: "inr" },
       INDIA,
     ).isApprovedPurchase,
     false,
@@ -129,7 +129,7 @@ test("forged regional metadata and cross-region Prices fail closed", () => {
   assert.deepEqual(
     verifyApprovedCheckoutPurchase(
       crossRegionPrice,
-      { amountPaid: 99900, currency: "inr" },
+      { amountPaid: 79900, currency: "inr" },
       INDIA,
     ),
     {

@@ -476,7 +476,7 @@ test("database-backed intents serialize retries, rotate deliberately, and fulfil
     );
     assert.equal(indiaWrite.params.metadata.sidestream_offer_country, "IN");
     assert.equal(indiaWrite.params.metadata.sidestream_offer_currency, "inr");
-    assert.equal(indiaWrite.params.metadata.sidestream_offer_amount_minor, "99900");
+    assert.equal(indiaWrite.params.metadata.sidestream_offer_amount_minor, "79900");
     const indiaSnapshot = await databasePool.query(
       `
         select offer_id, offer_country, offer_currency, offer_amount_minor,
@@ -490,7 +490,7 @@ test("database-backed intents serialize retries, rotate deliberately, and fulfil
       offer_id: "sidestream-unlimited-india",
       offer_country: "IN",
       offer_currency: "inr",
-      offer_amount_minor: 99900,
+      offer_amount_minor: 79900,
       offer_stripe_product_id: "prod_checkout_test",
       offer_stripe_price_id: "price_checkout_india",
     });
@@ -549,8 +549,8 @@ class RecordingStripe {
           active: true,
           product: "prod_checkout_test",
           unit_amount: priceId.endsWith("_wrong_amount")
-            ? 99901
-            : india ? 99900 : 2499,
+            ? 79901
+            : india ? 79900 : 2499,
           currency: india ? "inr" : "usd",
           recurring: null,
           lookup_key: india ? null : "sidestream_pro_once_2499",
@@ -616,7 +616,7 @@ class RecordingStripe {
           const customer = params.customer || `cus_checkout_${this.#sessionsByKey.size + 1}`;
           const expiresAt = params.expires_at || Math.floor(Date.now() / 1_000) + 86_400;
           const india = params.line_items[0].price === "price_checkout_india";
-          const amount = india ? 99900 : 2499;
+          const amount = india ? 79900 : 2499;
           const currency = india ? "inr" : "usd";
           const session = {
             id,

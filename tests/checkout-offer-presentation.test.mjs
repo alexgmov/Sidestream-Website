@@ -43,7 +43,7 @@ test("the public offer presentation uses only the trusted country header", async
     });
     assert.equal(india.response.statusCode, 200);
     assert.deepEqual(india.response.json, {
-      formattedPrice: "₹999",
+      formattedPrice: "₹799",
       currency: "INR",
     });
     assert.equal(
@@ -54,7 +54,7 @@ test("the public offer presentation uses only the trusted country header", async
     assert.doesNotMatch(india.response.body, /price_india|sidestream-unlimited-india/);
 
     const forged = await invokeHandler(handler, {
-      url: "/api/checkout/offer?country=IN&currency=INR&amount=99900",
+      url: "/api/checkout/offer?country=IN&currency=INR&amount=79900",
       headers: { "x-vercel-ip-country": "US" },
     });
     assert.deepEqual(forged.response.json, {
@@ -93,7 +93,7 @@ test("the presentation route supports HEAD and rejects writes", async () => {
 
   const post = await invokeHandler(handler, {
     method: "POST",
-    body: { country: "IN", amountMinor: 99900 },
+    body: { country: "IN", amountMinor: 79900 },
   });
   assert.equal(post.response.statusCode, 405);
   assert.equal(post.response.getHeader("allow"), "GET, HEAD");
