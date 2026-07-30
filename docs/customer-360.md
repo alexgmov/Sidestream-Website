@@ -2,11 +2,15 @@
 
 ## Status and authority
 
-Customer 360 is not deployed. Production is not migrated, its backfill has not
-run, and no Production Customer 360 API or usage cron is authorized. This file
-documents the repository contract and a human-gated Preview/Test-first rollout;
-it is not evidence of live state and it contains no Production deployment,
-migration, or backfill-apply procedure.
+Customer 360 route code is present in the canonical website deployment, but the
+Production service is inactive. The protected admin and usage-sync
+configuration are absent, Production is not migrated, its backfill has not run,
+and no operational Customer 360 or customer-data claim is justified. Source
+presence, a successful build, or an unauthenticated protected-route response is
+not evidence of migration, backfill, customer data, or authenticated behavior.
+This file documents the repository contract and a human-gated Preview/Test-first
+rollout; it contains no Production deployment, migration, or backfill-apply
+procedure.
 
 The website repository owns the Customer 360 database, Stripe money projection,
 telemetry aggregate import, and private read API. FlowState may provide durable
@@ -421,6 +425,56 @@ blocks rollout progression. The reviewer must record the approved lag threshold
 and alert destination before invoking usage sync or enabling any approved
 non-Production scheduling path.
 
+## Read-only readiness inspection
+
+The repository provides a sanitized readiness report:
+
+```bash
+npm run customer-360:readiness
+npm run customer-360:readiness -- --origin https://approved-preview-host
+SIDESTREAM_TEST_POSTGRES_URL='<disposable-only>' npm run customer-360:readiness -- --test-database
+```
+
+By default, the command checks repository source and backfill-source presence
+and validates the required non-Production selectors already in the process
+environment. It does not load `.env` files, contact a live origin, or open a
+database. A not-ready report exits zero so it can be used for observation. Add
+`--require-ready` only when requested checks must return a nonzero exit for a
+blocked result; invalid options return exit code 2.
+
+The configuration result is deliberately a non-Production gate. It requires
+the Test namespace and Preview/development/Test deployment selectors, validates
+the admin, cron, telemetry, and disposable-Test database selectors without
+printing their values, and fails closed on runtime/telemetry/Test database
+collisions.
+
+`--origin` accepts only a bare HTTPS origin with no credentials, path, query, or
+fragment. It follows no redirects and sends no credential while probing
+`POST /api/internal/customers` and
+`GET /api/internal/customer-usage/sync`. Only an exact `401` response with JSON
+`code=unauthorized` classifies a route as configured and protected. The exact
+documented `503` unavailable code classifies it as protected but unavailable;
+redirects, malformed bodies, different codes, and all other statuses fail
+closed. A `401` is route-boundary evidence only, not proof of schema, migration
+ledger, backfill, customer data, namespace isolation, or authenticated API
+behavior.
+
+`--test-database` is restricted to the disposable database selected by
+`SIDESTREAM_TEST_POSTGRES_URL`; it does not inspect Production or a deployed
+Test runtime. The existing target-separation guard rejects collisions with
+runtime, Production, Preview, deployed-Test, generic, or telemetry endpoints.
+The inspection begins a read-only transaction, checks the complete Customer 360
+table/read-function set and complete checksummed repository migration ledger,
+reads bounded profile/identity/install/pending-review counts, and always
+attempts rollback. Any unresolved `pending_identity_review` result keeps
+backfill readiness false.
+
+Output is limited to selector presence/validity, booleans, bounded counts, and
+HTTP status codes. It omits the supplied origin, environment values, connection
+strings, exception messages, and response payloads. Neither this report, source
+presence, a build, nor an exact protected-route `401` authorizes a migration,
+backfill, scheduler, deployment, or Production cutover.
+
 ## Disposable test harness
 
 `SIDESTREAM_TEST_POSTGRES_URL` must point at a disposable database and is rejected
@@ -542,4 +596,5 @@ checkpoints for review, but do not copy them into Production.
 There is no Production rollback procedure here because no Production action is
 authorized. A future Production plan requires a fresh human review after all
 runbook blockers and Preview/Test gates are closed. Until then, Customer 360
-remains not deployed and Production remains not migrated.
+remains operationally inactive, and Production remains unmigrated and
+unbackfilled.
