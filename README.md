@@ -20,7 +20,7 @@ This repository owns the whole Sidestream web service: the public/account fronte
 - `account.html` - Minimal noindex account bridge on a plain near-black background. Signed-out visits immediately enter Google OAuth, while the server auth session shows returning users their plan status, coarse active-production-device status, explicit device deactivation, latest installer, sign out, and a Manage Billing button that creates a Stripe Customer Portal session.
 - `docs/single-device-entitlements.md` - Device-domain and support reference for the two-active-device contract, privacy boundary, API/page states, and conceptual support decisions. Its obsolete Production command surface has been removed; it authorizes no Production action and points to the API runbook only for blocker/capability status.
 - `docs/api-hardening-runbook.md` - Exact hardened API/release contract, shared Postgres and migration model, Stripe/lead/maintenance facts, bounded configuration, metrics, alerts, and the current fail-closed Production blocker/capability inventory. Production cutover is blocked; this file contains no executable Production cutover or fallback recipe and does not claim Production was changed.
-- `docs/customer-360.md` - Durable cross-repo Customer 360 contract: exact private list/detail fields and nullability, trusted write namespace versus authorized admin read selection, identity/merge and observe-by-default single-device separation, currency-partitioned money and purchase-history semantics in minor units, exhaustive stored/derivable usage versus compact API exposure, privacy/retention, observability, disposable tests, dry-run backfill, rollback, and the only human-gated Preview/Test-first rollout. Route code is present in the canonical website deployment, but the Production service is inactive, unmigrated, and unbackfilled.
+- `docs/customer-360.md` - Durable cross-repo Customer 360 contract: exact private list/detail fields and nullability, trusted write namespace versus authorized admin read selection, identity/merge and observe-by-default single-device separation, currency-partitioned money and purchase-history semantics in minor units, exhaustive stored/derivable usage versus compact API exposure, privacy/retention, observability, disposable tests, dry-run backfill, rollback, and the only human-gated Preview/Test-first rollout. Route code is present in the canonical website deployment, but the Production service is inactive and unconfigured. A read-only operator inspection found schema and materialized identity/commerce rows in the live dashboard database, while runtime database selection, backfill completeness, protected API behavior, and usage sync remain unverified.
 - `thank-you.html` - Minimal noindex Checkout success page on a solid black background. Stripe success URLs land here after purchase and tell buyers how to reconnect Sidestream to the paid account.
 - `data/release-manifest.json` and `data/release-manifest.windows.json` - Sidestream-owned stable release manifests. The default file keeps the public Mac artifact; the Windows file is selected by the explicit `win32-x64` platform query used by the public Windows download CTA. Private Blob pathnames are never returned by the public manifest API.
 - `api/download.ts` - Vercel Node Function for installer fulfillment. `HEAD` returns attachment metadata for the manifest-configured private Vercel Blob installer, and `GET` validates the Blob then redirects to a short-lived signed private Blob URL. Successful Gmail campaign `GET`s are recorded only after the redirect response ends. Bare requests remain Mac; `?platform=win32-x64` selects the Windows beta artifact. Supports `GET` and `HEAD` only.
@@ -228,14 +228,17 @@ daily at `05:27` UTC.
 
 Customer 360 route code is present in the canonical website deployment, but the
 Production service is inactive. Its protected admin and usage-sync
-configuration are absent, Production remains unmigrated and unbackfilled, and
-no operational Customer 360 or customer-data claim is justified. Source
-presence, a successful build, or an unauthenticated protected-route response
-does not change that status. Money is Stripe-verified, currency-separated minor
-units but is not entitlement truth; the separately documented lifecycle
-blockers still prevent describing Production entitlement enforcement as
-complete. `installIdHash` is a Customer 360 association key, not the
-single-device binding, and the Gmail installer-referral HMAC is attribution
+configuration are absent, and no operational Customer 360 claim is justified.
+A read-only 2026-07-29 operator inspection found all required tables and read
+functions plus materialized identity and commerce rows in the live dashboard
+database. It did not prove backfill completeness or that the Production website
+runtime selects that database, and it found no usage sync state or daily usage
+rows. Source presence, a successful build, database rows, or an unauthenticated
+protected-route response does not change that status. Money is Stripe-verified,
+currency-separated minor units but is not entitlement truth; the separately
+documented lifecycle blockers still prevent describing Production entitlement
+enforcement as complete. `installIdHash` is a Customer 360 association key, not
+the single-device binding, and the Gmail installer-referral HMAC is attribution
 only, never identity.
 
 Trusted deployment state selects namespace for Customer 360 writes, identity,
@@ -793,7 +796,7 @@ Use the narrowest relevant check after edits:
 - Customer 360 identity safety is a payment-group invariant. If any retained alias, trusted identity evidence, or already-safe owner resolves one canonical payment group to different live profiles, the namespace advisory lock must clear `profile_id` and set `identity_conflict=true` on every materialization in that group before totals refresh. This whole-group quarantine is sticky across replay, later one-owner rows, and identity-link triggers; only an explicit group-wide recomputation after a deterministic profile merge may clear it. A Stripe customer link alone never scopes unrelated product money.
 - Customer 360 database `created_at` values reach TypeScript as fixed-width six-microsecond UTC timestamps without a timezone suffix. Compare two canonical values lexically before `Date.parse`; parsing first treats them as local time, can reverse order across a DST gap, and violates the database trigger's `(created_at, id)` total-order contract. ISO inputs from pure callers still use parsed instant ordering, and equal timestamps still use the UUID tie-breaker.
 - Customer 360 currently has no deletion or aggregate-expiry job. Daily usage buckets, canonical profiles/identity, and commerce materializations persist; merge and identity-review audits are immutable. Do not claim a retention period until a separately reviewed implementation enforces one. Stripe payload redaction and the 90-day installer-referral policy are separate domains.
-- Customer 360 route code is present in the canonical website deployment, but Production is operationally inactive, unconfigured, unmigrated, and unbackfilled. The repository contract allows only the human-gated Preview/Test-first sequence in `docs/customer-360.md`; no route response, dry-run, local test, build, or documentation result is Production approval.
+- Customer 360 route code is present in the canonical website deployment, but Production is operationally inactive and unconfigured. The live dashboard database contains the required schema and materialized identity/commerce rows, while Production runtime database selection, backfill completeness, protected API behavior, and usage sync remain unverified. The repository contract allows only the human-gated Preview/Test-first sequence in `docs/customer-360.md`; no route response, database row, dry-run, local test, build, or documentation result is Production approval.
 - Customer 360 local or fixture-backed FlowState consumers may implement the audited contract before website deployment, but live upstream Preview/Test integration and QA remain gated on separately approved migration, configuration, deployment, protected API, freshness, and scheduling evidence. Vercel cannot enable only the usage job: use a separately approved protected manual/non-Production scheduler or review all four jobs before the project-wide switch.
 - The project root was missing a README before this restoration.
 - The page uses the local Apple/SF Pro system font stack and does not request external web fonts.

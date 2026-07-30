@@ -4,10 +4,15 @@
 
 Customer 360 route code is present in the canonical website deployment, but the
 Production service is inactive. The protected admin and usage-sync
-configuration are absent, Production is not migrated, its backfill has not run,
-and no operational Customer 360 or customer-data claim is justified. Source
-presence, a successful build, or an unauthenticated protected-route response is
-not evidence of migration, backfill, customer data, or authenticated behavior.
+configuration are absent, and no operational Customer 360 claim is justified.
+A read-only 2026-07-29 operator inspection of the live dashboard database found
+all required tables and read functions plus materialized identity and commerce
+rows, so the earlier "unmigrated and unbackfilled" description is no longer
+supportable. That inspection did not prove backfill completeness or that the
+Production website runtime selects the same database; it also found no usage
+sync state or daily usage rows. Source presence, a successful build, database
+rows, or an unauthenticated protected-route response is not evidence of
+operational readiness or authenticated behavior.
 This file documents the repository contract and a human-gated Preview/Test-first
 rollout; it contains no Production deployment, migration, or backfill-apply
 procedure.
@@ -596,5 +601,5 @@ checkpoints for review, but do not copy them into Production.
 There is no Production rollback procedure here because no Production action is
 authorized. A future Production plan requires a fresh human review after all
 runbook blockers and Preview/Test gates are closed. Until then, Customer 360
-remains operationally inactive, and Production remains unmigrated and
-unbackfilled.
+remains operationally inactive and its backfill completeness, runtime database
+selection, protected API, and usage-sync behavior remain unverified.
