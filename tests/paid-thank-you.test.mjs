@@ -14,7 +14,8 @@ test("paid thank-you is a phone-first computer and email handoff", async () => {
 
   assert.match(html, /<meta name="robots" content="noindex, nofollow" \/>/);
   assert.match(html, /Finish setup on your computer\./);
-  assert.match(html, /Do not download Sidestream to this phone\./);
+  assert.doesNotMatch(html, /Do not download Sidestream to this phone\./);
+  assert.doesNotMatch(html, /class="phone-note"/);
   assert.match(html, /“Sidestream Unlimited”/);
   assert.match(html, /same email you used at Checkout/);
   assert.match(html, /You are finished on this phone\./);
