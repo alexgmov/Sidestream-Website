@@ -233,6 +233,7 @@ export function createApiContractHarness(options = {}) {
     cleared: 0,
     sessionsCreated: 0,
     authUrlError: null,
+    prompt: null,
   };
 
   const dependencies = {
@@ -500,6 +501,8 @@ export function createApiContractHarness(options = {}) {
       if (oauth.authUrlError) throw oauth.authUrlError;
       const url = new URL("https://accounts.google.test/o/oauth2/auth");
       url.searchParams.set("state", values.state);
+      oauth.prompt = values.prompt ?? null;
+      if (values.prompt) url.searchParams.set("prompt", values.prompt);
       return url.toString();
     },
     async exchangeGoogleCode(_request, code) {

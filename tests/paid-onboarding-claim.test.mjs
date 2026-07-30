@@ -61,6 +61,10 @@ test("the dedicated route constrains server-side source and changes only inactiv
     /inactiveEntitlementMode:\s*"support_only"/,
   );
   assert.match(
+    dedicatedRouteSource,
+    /googlePrompt:\s*"select_account"/,
+  );
+  assert.match(
     claimSource,
     /and \(\$4::text is null or a\.source = \$4\)/,
   );
@@ -71,6 +75,10 @@ test("the dedicated route constrains server-side source and changes only inactiv
   assert.match(
     claimSource,
     /const inactiveEntitlementMode = options\.inactiveEntitlementMode \|\| "checkout"/,
+  );
+  assert.match(
+    claimSource,
+    /signIn\.searchParams\.set\("prompt", options\.googlePrompt\)/,
   );
 });
 

@@ -58,8 +58,9 @@ of these bindings to agree:
 | Artifacts | Test-only `SIDESTREAM_PAID_RELEASE_MANIFEST_PATH` and `SIDESTREAM_PAID_WINDOWS_RELEASE_MANIFEST_PATH` after reviewed artifacts are published |
 
 Any missing, ambiguous, shared, cross-mode, or cross-environment binding must
-fail closed. The committed paid manifests contain fixture metadata; they do
-not prove that either macOS or Windows artifact exists in Blob storage.
+fail closed. The committed paid manifests are release pointers, not storage
+evidence; verify the selected pathname, byte size, digest, and live
+receipt-gated response before claiming either platform artifact is available.
 
 ## Deterministic fixture verification
 
@@ -84,11 +85,12 @@ node --experimental-strip-types --test tests/paid-onboarding-claim.test.mjs
 ```
 
 It proves that only the exact raw `paid-acquisition-mc-v1` source selects
-`/api/activation/paid-claim`, the route rechecks the stored source, the inactive
-branch is noindex and support-only, and active owners stay on the existing
-same-origin CSRF and device reconnect/transfer policy. The ordinary route keeps
-its original default: after authentication, a Free account continues through
-`/api/checkout/start` directly to Stripe.
+`/api/activation/paid-claim`, the route rechecks the stored source, requests
+Google's account chooser, keeps the inactive branch noindex and support-only,
+and leaves active owners on the existing same-origin CSRF and device
+reconnect/transfer policy. The ordinary route keeps its original default:
+after authentication, a Free account continues through `/api/checkout/start`
+directly to Stripe.
 
 For a website acceptance pass, also run:
 

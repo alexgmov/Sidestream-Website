@@ -490,6 +490,33 @@ test("OAuth start reuses an active server session without sending the user throu
   assert.equal(harness.oauth.state, "");
 });
 
+test("OAuth start forwards only the exact account-selection prompt", async () => {
+  const harness = createApiContractHarness();
+  const start = await loadAccountHandler("../api/auth/google/start.ts", harness);
+
+  const selected = await invokeHandler(start, {
+    method: "GET",
+    url: "/api/auth/google/start?next=%2Faccount.html&prompt=select_account",
+  });
+  assert.equal(selected.response.statusCode, 302);
+  assert.equal(harness.oauth.prompt, "select_account");
+  assert.equal(
+    new URL(selected.response.getHeader("location")).searchParams.get("prompt"),
+    "select_account",
+  );
+
+  const ignored = await invokeHandler(start, {
+    method: "GET",
+    url: "/api/auth/google/start?next=%2Faccount.html&prompt=consent",
+  });
+  assert.equal(ignored.response.statusCode, 302);
+  assert.equal(harness.oauth.prompt, null);
+  assert.equal(
+    new URL(ignored.response.getHeader("location")).searchParams.has("prompt"),
+    false,
+  );
+});
+
 test("OAuth start fails before setting state cookies when callback configuration is invalid", async (t) => {
   const harness = createApiContractHarness();
   const start = await loadAccountHandler("../api/auth/google/start.ts", harness);

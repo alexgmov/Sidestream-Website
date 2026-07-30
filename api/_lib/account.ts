@@ -384,7 +384,7 @@ export function getGoogleRedirectUri(request: IncomingMessage) {
 
 export function getGoogleAuthUrl(
   request: IncomingMessage,
-  options: { state: string },
+  options: { state: string; prompt?: "select_account" },
 ) {
   const clientId = requireEnv("GOOGLE_CLIENT_ID");
   const redirectUri = getGoogleRedirectUri(request);
@@ -396,6 +396,7 @@ export function getGoogleAuthUrl(
     state: options.state,
     include_granted_scopes: "true",
   });
+  if (options.prompt) params.set("prompt", options.prompt);
 
   return `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`;
 }

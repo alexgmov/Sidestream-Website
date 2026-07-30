@@ -181,9 +181,10 @@ must not read or retain the unvalidated original query.
 6. The recipient obtains generic platform installer links plus a short-lived,
    opaque paid-onboarding receipt. Provider acceptance is delivery-attempt
    evidence only.
-7. FlowState starts or resumes activation, then the browser completes Google
-   OAuth. Automatic claim occurs only after the verified-email match and
-   current payment/lifecycle checks.
+7. FlowState starts or resumes activation, then the dedicated paid claim asks
+   Google to show its account chooser before OAuth completes. Automatic claim
+   occurs only after the verified-email match and current payment/lifecycle
+   checks.
 8. FlowState polls. Only `active` plus a fresh server-issued credential family
    grants paid behavior. It persists the existing short-lived license
    credentials, never a permanent cohort-paid flag.

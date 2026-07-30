@@ -20,6 +20,9 @@ export default async function handler(
 
   const url = new URL(request.url || "/", "http://sidestream.local");
   const nextPath = sanitizeNextPath(url.searchParams.get("next"));
+  const prompt = url.searchParams.get("prompt") === "select_account"
+    ? "select_account"
+    : undefined;
   const session = await getSession(request);
   if (session) return redirect(response, nextPath, 303);
 
@@ -27,7 +30,7 @@ export default async function handler(
   let authUrl = "";
 
   try {
-    authUrl = getGoogleAuthUrl(request, { state });
+    authUrl = getGoogleAuthUrl(request, { state, prompt });
   } catch (error) {
     console.error("[sidestream auth] Google sign-in configuration rejected", error);
     return sendGoogleSignInError(response, 503, "unavailable");

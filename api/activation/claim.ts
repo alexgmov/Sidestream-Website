@@ -53,6 +53,7 @@ export type ActivationClaimHandlerOptions = {
   claimPath?: "/api/activation/claim" | "/api/activation/paid-claim";
   requiredActivationSource?: string;
   inactiveEntitlementMode?: "checkout" | "support_only";
+  googlePrompt?: "select_account";
 };
 
 export default async function handler(
@@ -96,6 +97,9 @@ export async function handleActivationClaim(
       const nextPath = activationClaimPath(activationKey, identity, claimPath);
       const signIn = new URL("/api/auth/google/start", baseUrl);
       signIn.searchParams.set("next", nextPath);
+      if (options.googlePrompt) {
+        signIn.searchParams.set("prompt", options.googlePrompt);
+      }
       return redirect(response, signIn.toString(), 302);
     }
 

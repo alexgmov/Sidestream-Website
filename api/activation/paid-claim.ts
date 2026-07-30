@@ -15,5 +15,6 @@ export default async function handler(
     claimPath: "/api/activation/paid-claim",
     requiredActivationSource: PAID_ACQUISITION_SOURCE,
     inactiveEntitlementMode: "support_only",
+    googlePrompt: "select_account",
   });
 }
