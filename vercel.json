@@ -109,6 +109,14 @@
       ]
     },
     {
+      "source": "/api/installation/claim-complete",
+      "headers": [
+        { "key": "Cache-Control", "value": "no-store" },
+        { "key": "Referrer-Policy", "value": "no-referrer" },
+        { "key": "Content-Security-Policy", "value": "default-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'" }
+      ]
+    },
+    {
       "source": "/account.html",
       "headers": [
         { "key": "X-Robots-Tag", "value": "noindex, nofollow" }
