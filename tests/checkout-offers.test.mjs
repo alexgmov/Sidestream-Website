@@ -17,7 +17,7 @@ const GLOBAL = {
   offerId: "sidestream-unlimited-global",
   country: "US",
   currency: "usd",
-  amountMinor: 1499,
+  amountMinor: 1999,
   priceId: "price_global",
   productId: "prod_sidestream",
   paidPlanKeys: ["sidestream_pro", "sidestream_unlimited"],
@@ -55,7 +55,7 @@ test("the server-owned catalog selects India and Brazil only from configured tru
       entry.currency,
       entry.amountMinor,
     ]),
-    [["inr", 49900], ["brl", 2500], ["usd", 1499]],
+    [["inr", 49900], ["brl", 2500], ["usd", 1999]],
   );
   assert.equal(
     selectCheckoutOffer("IN", {}).entry.offerId,
@@ -99,7 +99,7 @@ test("the server-owned catalog selects India and Brazil only from configured tru
   );
   assert.deepEqual(
     getCheckoutOfferPresentation("IN", {}),
-    { formattedPrice: "$14.99", currency: "USD" },
+    { formattedPrice: "$19.99", currency: "USD" },
   );
 });
 
@@ -108,7 +108,7 @@ test("global, Indian, and Brazilian purchases verify against their exact stored 
   assert.deepEqual(
     verifyApprovedCheckoutPurchase(
       globalSession,
-      { amountPaid: 1499, currency: "usd" },
+      { amountPaid: 1999, currency: "usd" },
       GLOBAL,
     ),
     { isApprovedPurchase: true },
@@ -184,7 +184,7 @@ test("failed payment verification rejects while exact zero-total promotions rema
   assert.deepEqual(
     verifyApprovedCheckoutPurchase(
       failed,
-      { amountPaid: 1499, currency: "usd" },
+      { amountPaid: 1999, currency: "usd" },
       GLOBAL,
     ),
     {

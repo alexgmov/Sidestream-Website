@@ -170,7 +170,7 @@ must not read or retain the unvalidated original query.
    entry token. Merely rendering or prefetching cannot create Checkout.
 3. The website creates or idempotently resumes one server-owned Stripe Checkout
    Session in `mode=payment`, quantity `1`, for the exact configured Sidestream
-   Unlimited Product and Price. The displayed global offer is USD 1499 minor units;
+   Unlimited Product and Price. The displayed global offer is USD 1999 minor units;
    the server must fail closed if Stripe line-item truth differs.
 4. Completion and webhooks re-fetch Stripe objects server-side. Fulfillment
    requires the exact environment, Session, Product, Price, quantity, currency,

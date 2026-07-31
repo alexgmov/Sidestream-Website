@@ -78,8 +78,8 @@ test("rendered paid page contains no prohibited free or pre-purchase email offer
   ];
 
   prohibited.forEach((pattern) => assert.doesNotMatch(text, pattern));
-  assert.match(text, /Buy Now \$14\.99/);
-  assert.match(text, /\$14\.99 once/);
+  assert.match(text, /Buy Now \$19\.99/);
+  assert.match(text, /\$19\.99 once/);
   assert.match(text, /We’ll email your download link after purchase\./);
 });
 

@@ -586,10 +586,10 @@ class RecordingStripe {
           product: "prod_checkout_test",
           unit_amount: priceId.endsWith("_wrong_amount")
             ? 49901
-            : india ? 49900 : brazil ? 2500 : 1499,
+            : india ? 49900 : brazil ? 2500 : 1999,
           currency: india ? "inr" : brazil ? "brl" : "usd",
           recurring: null,
-          lookup_key: india || brazil ? null : "sidestream_pro_once_1499",
+          lookup_key: india || brazil ? null : "sidestream_pro_once_1999",
         };
       },
       list: async () => ({ data: [] }),
@@ -653,7 +653,7 @@ class RecordingStripe {
           const expiresAt = params.expires_at || Math.floor(Date.now() / 1_000) + 86_400;
           const india = params.line_items[0].price === "price_checkout_india";
           const brazil = params.line_items[0].price === "price_checkout_brazil";
-          const amount = india ? 49900 : brazil ? 2500 : 1499;
+          const amount = india ? 49900 : brazil ? 2500 : 1999;
           const currency = india ? "inr" : brazil ? "brl" : "usd";
           const session = {
             id,
@@ -764,10 +764,10 @@ test("a stale configured Price falls through to the current exact lookup Price",
             id: "price_checkout_current",
             active: true,
             product: "prod_checkout_test",
-            unit_amount: 1499,
+            unit_amount: 1999,
             currency: "usd",
             recurring: null,
-            lookup_key: "sidestream_pro_once_1499",
+            lookup_key: "sidestream_pro_once_1999",
           }]
         : [],
     });

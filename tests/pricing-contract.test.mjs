@@ -15,9 +15,9 @@ test("one contract owns Free, global, India, Brazil, and Stripe lookup truth", (
   const contract = SIDESTREAM_PRICING_CONTRACT;
   assert.equal(contract.free.amountMinor, 0);
   assert.equal(formatOfferPrice(contract.free), "$0");
-  assert.equal(formatOfferPrice(contract.global), "$14.99");
-  assert.equal(formatOfferDecimal(contract.global), "14.99");
-  assert.equal(contract.global.lookupKey, "sidestream_pro_once_1499");
+  assert.equal(formatOfferPrice(contract.global), "$19.99");
+  assert.equal(formatOfferDecimal(contract.global), "19.99");
+  assert.equal(contract.global.lookupKey, "sidestream_pro_once_1999");
   assert.equal(formatOfferPrice(contract.india), "₹499");
   assert.equal(contract.india.priceSource.variable, "SIDESTREAM_PRO_INDIA_PRICE_ID");
   assert.equal(formatOfferPrice(contract.brazil), "R$ 25");

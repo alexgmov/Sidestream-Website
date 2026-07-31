@@ -305,13 +305,13 @@ test("fixture purchase connects sticky paid entry to idempotent verified regiona
   assert.deepEqual(
     verifyPaidCheckoutSession(serverRetrievedCheckout, {
       sessionId: CHECKOUT_SESSION_REF,
-      priceId: "price_test_sidestream_pro_1499",
+      priceId: "price_test_sidestream_pro_1999",
       productId: "prod_test_sidestream_pro",
       paidPlanKeys: ["sidestream_pro"],
     }),
     { ok: true },
   );
-  assert.equal(serverRetrievedCheckout.amount_total, 1499);
+  assert.equal(serverRetrievedCheckout.amount_total, 1999);
   assert.equal(serverRetrievedCheckout.currency, "usd");
   assert.equal(serverRetrievedCheckout.payment_status, "paid");
   assert.equal(serverRetrievedCheckout.payment_intent, PAYMENT_REF);
@@ -350,10 +350,10 @@ test("fixture purchase connects sticky paid entry to idempotent verified regiona
       canonicalPaymentRef: PAYMENT_REF,
       verifiedCheckoutEmail: CHECKOUT_EMAIL,
       verifiedProductRef: "prod_test_sidestream_pro",
-      verifiedPriceRef: "price_test_sidestream_pro_1499",
+      verifiedPriceRef: "price_test_sidestream_pro_1999",
       verifiedQuantity: 1,
-      verifiedOriginalAmountMinor: 1499,
-      verifiedDiscountAmountMinor: 1499,
+      verifiedOriginalAmountMinor: 1999,
+      verifiedDiscountAmountMinor: 1999,
       verifiedAmountMinor: 0,
       verifiedCurrency: "usd",
     });
@@ -405,9 +405,9 @@ test("fixture purchase connects sticky paid entry to idempotent verified regiona
       canonicalPaymentRef: PAYMENT_REF,
       verifiedCheckoutEmail: CHECKOUT_EMAIL,
       verifiedProductRef: "prod_test_sidestream_pro",
-      verifiedPriceRef: "price_test_sidestream_pro_1499",
+      verifiedPriceRef: "price_test_sidestream_pro_1999",
       verifiedQuantity: 1,
-      verifiedOriginalAmountMinor: 1499,
+      verifiedOriginalAmountMinor: 1999,
       verifiedDiscountAmountMinor: 500,
       verifiedAmountMinor: 998,
       verifiedCurrency: "usd",
@@ -553,7 +553,7 @@ test("fixture handlers cover pending, delayed webhook replay, identity, lifecycl
   const paidFacts = paymentFacts();
   const refund = planOneTimeEntitlementTransition({
     stored,
-    facts: { ...paidFacts, amountRefunded: 1499 },
+    facts: { ...paidFacts, amountRefunded: 1999 },
     event: { createdAtMs: 200, eventId: "evt_refund" },
   });
   assert.deepEqual(
@@ -990,8 +990,8 @@ function checkoutSessionFixture() {
     status: "complete",
     payment_status: "paid",
     payment_intent: PAYMENT_REF,
-    amount_subtotal: 1499,
-    amount_total: 1499,
+    amount_subtotal: 1999,
+    amount_total: 1999,
     currency: "usd",
     total_details: {
       amount_discount: 0,
@@ -1001,7 +1001,7 @@ function checkoutSessionFixture() {
     customer_details: { email: " Buyer+MC@EXAMPLE.com " },
     metadata: {
       sidestream_plan: "sidestream_pro",
-      sidestream_price_id: "price_test_sidestream_pro_1499",
+      sidestream_price_id: "price_test_sidestream_pro_1999",
       sidestream_paid_acquisition: "mc-mobile-paid-v1",
     },
     line_items: {
@@ -1010,7 +1010,7 @@ function checkoutSessionFixture() {
         {
           quantity: 1,
           price: {
-            id: "price_test_sidestream_pro_1499",
+            id: "price_test_sidestream_pro_1999",
             product: "prod_test_sidestream_pro",
           },
         },
@@ -1068,7 +1068,7 @@ function paymentFacts() {
     paymentIntentId: PAYMENT_REF,
     chargeId: "ch_test_paid_acquisition_e2e",
     customerId: "cus_test_paid_acquisition_e2e",
-    amountPaid: 1499,
+    amountPaid: 1999,
     amountRefunded: 0,
     currency: "usd",
     paymentProven: true,

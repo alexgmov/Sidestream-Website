@@ -61,7 +61,7 @@ test("the public offer presentation uses only the trusted country header", async
       headers: { "x-vercel-ip-country": "US" },
     });
     assert.deepEqual(forged.response.json, {
-      formattedPrice: "$14.99",
+      formattedPrice: "$19.99",
       currency: "USD",
     });
 
@@ -88,7 +88,7 @@ test("India safely receives the global presentation without its approved Price",
       headers: { "x-vercel-ip-country": "IN" },
     });
     assert.deepEqual(result.response.json, {
-      formattedPrice: "$14.99",
+      formattedPrice: "$19.99",
       currency: "USD",
     });
   } finally {
@@ -117,7 +117,7 @@ test("the landing page renders a global fallback and updates text only", async (
   const html = await readFile(new URL("../index.html", import.meta.url), "utf8");
   assert.match(
     html,
-    /data-checkout-offer-price aria-live="polite">\$14\.99<\/span>/,
+    /data-checkout-offer-price aria-live="polite">\$19\.99<\/span>/,
   );
   assert.match(html, /fetch\("\/api\/checkout\/offer"/);
   assert.match(

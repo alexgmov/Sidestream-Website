@@ -52,7 +52,7 @@ of these bindings to agree:
 | Namespace | `SIDESTREAM_LICENSE_NAMESPACE=test` |
 | Host | exact hostname in `SIDESTREAM_TEST_API_HOSTS`, with no Production host overlap |
 | Database | dedicated `SIDESTREAM_TEST_POSTGRES_URL`, different from every Production runtime target |
-| Stripe | `STRIPE_SECRET_KEY` in test mode plus reviewed Test `SIDESTREAM_PRO_PRODUCT_ID`; `SIDESTREAM_PRO_PRICE_ID` is an optional validated hint for USD 1499 |
+| Stripe | `STRIPE_SECRET_KEY` in test mode plus reviewed Test `SIDESTREAM_PRO_PRODUCT_ID`; `SIDESTREAM_PRO_PRICE_ID` is an optional validated hint for USD 1999 |
 | Google OAuth | Test client and exact Test-origin `GOOGLE_REDIRECT_URI` |
 | Email | `SIDESTREAM_PAID_ACQUISITION_EMAIL_ENABLED=0` until an allowlisted Test recipient and Resend gate are approved |
 | Artifacts | Test-only `SIDESTREAM_PAID_RELEASE_MANIFEST_PATH` and `SIDESTREAM_PAID_WINDOWS_RELEASE_MANIFEST_PATH` after reviewed artifacts are published |

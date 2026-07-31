@@ -2,9 +2,9 @@ const globalOffer = Object.freeze({
   offerId: "sidestream-unlimited-global",
   countryCodes: Object.freeze(["*"]),
   currency: "usd",
-  amountMinor: 1499,
+  amountMinor: 1999,
   displayLocale: "en-US",
-  lookupKey: "sidestream_pro_once_1499",
+  lookupKey: "sidestream_pro_once_1999",
   priceSource: Object.freeze({ kind: "default" }),
 });
 
