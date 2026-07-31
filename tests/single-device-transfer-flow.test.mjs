@@ -168,8 +168,7 @@ test("public and account copy states two production devices with confirmed repla
   assert.match(account, /background: var\(--bg\)/);
   assert.doesNotMatch(account, /radial-gradient/);
   assert.doesNotMatch(account, /id="signed-out"/);
-  assert.match(thankYou, /up to two active production devices/i);
-  assert.match(thankYou, /instead of charging you again/);
+  assert.match(thankYou, /You won’t be charged again/);
   assert.match(account, /href="\/api\/checkout\/start">Upgrade<\/a>/);
   assert.match(index, /href="\/api\/checkout\/start">Upgrade to Unlimited<\/a>/);
   assert.match(index, /Use Unlimited on up to two devices/);

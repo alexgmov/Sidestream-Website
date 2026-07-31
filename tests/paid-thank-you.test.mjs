@@ -27,8 +27,10 @@ test("paid thank-you is a phone-first computer and email handoff", async () => {
 test("the original thank-you page and ordinary recovery copy remain intact", async () => {
   const html = await readFile(originalThankYouUrl, "utf8");
 
-  assert.match(html, /If Checkout started inside Sidestream/);
+  assert.match(html, /Return to Premiere/);
+  assert.match(html, /Still seeing Free/);
   assert.match(html, /Upgrade or Restore Purchase/);
+  assert.match(html, /You won’t be charged again/);
   assert.match(html, /href="\/api\/download">Download latest/);
   assert.doesNotMatch(html, /Finish setup on your computer/);
 });

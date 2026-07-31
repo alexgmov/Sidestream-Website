@@ -444,7 +444,7 @@ test("unlinked paid buyers receive a no-second-charge recovery path", async () =
   const thankYouSource = await readFile(new URL("../thank-you.html", import.meta.url), "utf8");
   assert.match(thankYouSource, /same Google email used at Checkout/);
   assert.match(thankYouSource, /Upgrade or Restore Purchase/);
-  assert.match(thankYouSource, /instead of charging you again/);
+  assert.match(thankYouSource, /You won’t be charged again/);
 });
 
 test("paid completion grace is database-bounded and unpaid Sessions fail verification", async () => {
