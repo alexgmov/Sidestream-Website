@@ -19,6 +19,7 @@ const targetMigrations = [
 const INSTALL_HASH = "a".repeat(64);
 const UNMAPPED_INSTALL_HASH = "b".repeat(64);
 const CONTRADICTORY_INSTALL_HASH = "c".repeat(64);
+const INSTALLER_ONLY_HASH = "d".repeat(64);
 const BULK_EVENT_COUNT = 120;
 const {
   buildTelemetryPoolOptions,
@@ -195,7 +196,7 @@ test("daily usage sync is read-only, resumable, idempotent, and UTC-windowed", {
 
       assert.deepEqual(await profileUsage(adminPool, quotedTarget, mappedProfile), {
         first_app_use_at: "2026-03-08T07:59:59.000Z",
-        last_app_use_at: "2026-11-01T18:07:10.000Z",
+        last_app_use_at: "2026-11-01T08:30:00.000Z",
         first_download_attempt_at: "2026-11-01T18:00:00.000Z",
         last_download_attempt_at: "2026-11-01T18:07:00.000Z",
         first_download_success_at: "2026-11-01T18:00:00.000Z",
@@ -252,6 +253,35 @@ test("daily usage sync is read-only, resumable, idempotent, and UTC-windowed", {
 
     });
 
+    await t.test("installer timestamps stay exact and heartbeats do not create opens", async () => {
+      assert.deepEqual(
+        await installRetention(adminPool, quotedTarget, INSTALLER_ONLY_HASH),
+        {
+          first_seen_at: "2026-10-30T14:15:16.789Z",
+          last_seen_at: "2026-10-30T14:15:16.789Z",
+          first_app_use_at: null,
+          last_app_use_at: null,
+          usage_active_days_count: "0",
+          usage_active_days_7: "0",
+          usage_active_days_30: "0",
+          download_attempt_count: "0",
+          bucket_count: 2,
+        },
+      );
+      const heartbeatDay = await adminPool.query(
+        `select first_app_use_at, last_app_use_at, active_event_count
+         from ${quotedTarget}.sidestream_customer_usage_daily
+         where license_namespace = 'test' and install_id_hash = $1
+           and activity_day = date '2026-11-01'`,
+        [INSTALLER_ONLY_HASH],
+      );
+      assert.deepEqual(heartbeatDay.rows[0], {
+        first_app_use_at: null,
+        last_app_use_at: null,
+        active_event_count: "0",
+      });
+    });
+
     await t.test("linked authoritative failure overrides adopted legacy success", async () => {
       const result = await adminPool.query(
         `select download_attempt_count, download_outcome_count,
@@ -304,7 +334,7 @@ test("daily usage sync is read-only, resumable, idempotent, and UTC-windowed", {
 
     await t.test("equal timestamps, overlap boundaries, and unseen-install replay converge", async () => {
       const checkpointBefore = await syncState(adminPool, quotedTarget);
-      assert.equal(checkpointBefore.checkpoint_telemetry_event_id, "event-032");
+      assert.equal(checkpointBefore.checkpoint_telemetry_event_id, "event-034");
       assert.equal(checkpointBefore.checkpoint_received_at, "2026-11-02T10:00:00.000Z");
 
       await insertEvents(adminPool, quotedSource, [
@@ -600,6 +630,13 @@ async function seedInitialTelemetry(pool, quotedSource) {
     event("event-030", "session_heartbeat", "2026-11-01T09:10:00Z"),
     event("event-031", "session_heartbeat", "2026-11-01T09:20:00Z"),
     event("event-032", "session_heartbeat", "2026-11-01T09:25:00Z"),
+    event("event-033", "installer_install_completed", "2026-10-30T14:15:16.789Z", {
+      installHash: INSTALLER_ONLY_HASH,
+      eventCategory: "installer",
+    }),
+    event("event-034", "session_heartbeat", "2026-11-01T15:00:00Z", {
+      installHash: INSTALLER_ONLY_HASH,
+    }),
   ];
   for (let index = 0; index < BULK_EVENT_COUNT; index += 1) {
     events.push(event(
@@ -691,6 +728,30 @@ async function installUsage(pool, quotedSchema, installHash) {
         where checkpoint.license_namespace = install.license_namespace) as checkpoint_count,
        profile.download_attempt_count, profile.download_pending_count,
        profile.usage_install_count
+     from ${quotedSchema}.sidestream_customer_installs install
+     join ${quotedSchema}.sidestream_customer_profiles profile on profile.id = install.profile_id
+     where install.license_namespace = 'test' and install.install_id_hash = $1`,
+    [installHash],
+  );
+  return result.rows[0];
+}
+
+async function installRetention(pool, quotedSchema, installHash) {
+  const result = await pool.query(
+    `select
+       to_char(install.first_seen_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')
+         as first_seen_at,
+       to_char(install.last_seen_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')
+         as last_seen_at,
+       to_char(profile.first_app_use_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')
+         as first_app_use_at,
+       to_char(profile.last_app_use_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')
+         as last_app_use_at,
+       profile.usage_active_days_count, profile.usage_active_days_7,
+       profile.usage_active_days_30, profile.download_attempt_count,
+       (select count(*)::int from ${quotedSchema}.sidestream_customer_usage_daily day
+        where day.license_namespace = install.license_namespace
+          and day.install_id_hash = install.install_id_hash) as bucket_count
      from ${quotedSchema}.sidestream_customer_installs install
      join ${quotedSchema}.sidestream_customer_profiles profile on profile.id = install.profile_id
      where install.license_namespace = 'test' and install.install_id_hash = $1`,

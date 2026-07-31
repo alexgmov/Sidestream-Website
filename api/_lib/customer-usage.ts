@@ -9,6 +9,7 @@ export const CUSTOMER_USAGE_SOURCE_TABLE = "sidestream_telemetry_events";
 export const CUSTOMER_USAGE_SCHEMA_VERSIONS = Object.freeze(["0.2.0"]);
 export const CUSTOMER_USAGE_OVERLAP_MS = 48 * 60 * 60 * 1_000;
 export const CUSTOMER_USAGE_BATCH_SIZE = 250;
+const INSTALL_COMPLETION_BOUNDS = Symbol("installCompletionBounds");
 
 // Only these schema-versioned scalar paths may leave the telemetry query. The
 // query below projects them into explicit aggregate columns and never returns
@@ -84,6 +85,10 @@ export type CustomerUsageDailyAggregate = Readonly<{
   downloadUnknownCount: number;
   platform: "macos" | "windows" | "unknown" | null;
   appVersion: string | null;
+  [INSTALL_COMPLETION_BOUNDS]: Readonly<{
+    first: Date | null;
+    last: Date | null;
+  }>;
 }>;
 
 export type CustomerUsageSyncSummary = Readonly<{
@@ -312,6 +317,10 @@ export function normalizeCustomerUsageAggregateRow(
     ),
     platform: platform as CustomerUsageDailyAggregate["platform"],
     appVersion: optionalString(row.app_version, 64),
+    [INSTALL_COMPLETION_BOUNDS]: {
+      first: optionalDate(row.first_install_completed_at),
+      last: optionalDate(row.last_install_completed_at),
+    },
   };
   if (
     result.downloadOutcomeCount !== result.downloadSuccessCount +
@@ -978,16 +987,19 @@ function buildSourceAggregateSql(schema: string) {
   ), daily_activity as (
     select install_id_hash, activity_day,
       min(occurred_at) filter (
-        where coalesce(event_category, '') <> 'installer'
-          and event_name not like 'installer_%'
+        where event_name = 'installer_install_completed'
+      ) as first_install_completed_at,
+      max(occurred_at) filter (
+        where event_name = 'installer_install_completed'
+      ) as last_install_completed_at,
+      min(occurred_at) filter (
+        where event_name = 'session_started'
       ) as first_app_use_at,
       max(occurred_at) filter (
-        where coalesce(event_category, '') <> 'installer'
-          and event_name not like 'installer_%'
+        where event_name = 'session_started'
       ) as last_app_use_at,
       count(*) filter (
-        where coalesce(event_category, '') <> 'installer'
-          and event_name not like 'installer_%'
+        where event_name = 'session_started'
       )::bigint as active_event_count,
       (array_agg(
         case lower(os_platform)
@@ -999,9 +1011,13 @@ function buildSourceAggregateSql(schema: string) {
           else 'unknown'
         end
         order by occurred_at desc, telemetry_event_id desc
-      ) filter (where os_platform is not null))[1] as platform,
+      ) filter (
+        where event_name = 'session_started' and os_platform is not null
+      ))[1] as platform,
       (array_agg(app_version order by occurred_at desc, telemetry_event_id desc)
-        filter (where app_version is not null))[1] as app_version
+        filter (
+          where event_name = 'session_started' and app_version is not null
+        ))[1] as app_version
     from projected
     group by install_id_hash, activity_day
   ), daily_downloads as (
@@ -1026,6 +1042,7 @@ function buildSourceAggregateSql(schema: string) {
     select install_id_hash, activity_day from daily_downloads
   )
   select days.install_id_hash, days.activity_day::text,
+    activity.first_install_completed_at, activity.last_install_completed_at,
     activity.first_app_use_at, activity.last_app_use_at,
     downloads.first_download_attempt_at, downloads.last_download_attempt_at,
     downloads.first_download_success_at, downloads.last_download_success_at,
@@ -1057,8 +1074,14 @@ async function ensureAnonymousCustomerInstall(
   const lifecycle = aggregateLifecycleBounds(row);
   const updateExisting = () => client.query(
     `update ${schema}.sidestream_customer_installs
-     set first_seen_at = least(first_seen_at, $3),
-         last_seen_at = greatest(last_seen_at, $4),
+     set first_seen_at = case
+           when $3::timestamptz is null then first_seen_at
+           else least(first_seen_at, $3)
+         end,
+         last_seen_at = case
+           when $4::timestamptz is null then last_seen_at
+           else greatest(last_seen_at, $4)
+         end,
          platform = coalesce($5, platform),
          app_version = coalesce($6, app_version)
      where license_namespace = $1 and install_id_hash = $2
@@ -1114,6 +1137,9 @@ async function ensureAnonymousCustomerInstall(
     return;
   }
 
+  const bucketStart = new Date(`${row.activityDay}T00:00:00.000Z`);
+  const firstSeenAt = lifecycle.firstSeenAt || bucketStart;
+  const lastSeenAt = lifecycle.lastSeenAt || bucketStart;
   const profile = await client.query(
     `insert into ${schema}.sidestream_customer_profiles (
        license_namespace, platform_summary, app_version_summary,
@@ -1124,8 +1150,8 @@ async function ensureAnonymousCustomerInstall(
       licenseNamespace,
       row.platform,
       row.appVersion,
-      lifecycle.firstSeenAt,
-      lifecycle.lastSeenAt,
+      firstSeenAt,
+      lastSeenAt,
       now,
     ],
   );
@@ -1141,8 +1167,8 @@ async function ensureAnonymousCustomerInstall(
       row.installIdHash,
       row.platform,
       row.appVersion,
-      lifecycle.firstSeenAt,
-      lifecycle.lastSeenAt,
+      firstSeenAt,
+      lastSeenAt,
     ],
   );
   await ensureInstallIdentityLink(
@@ -1187,8 +1213,9 @@ async function ensureInstallIdentityLink(
 }
 
 function aggregateLifecycleBounds(row: CustomerUsageDailyAggregate) {
-  const bucketStart = new Date(`${row.activityDay}T00:00:00.000Z`);
   const timestamps = [
+    row[INSTALL_COMPLETION_BOUNDS].first,
+    row[INSTALL_COMPLETION_BOUNDS].last,
     row.firstAppUseAt,
     row.lastAppUseAt,
     row.firstDownloadAttemptAt,
@@ -1196,8 +1223,10 @@ function aggregateLifecycleBounds(row: CustomerUsageDailyAggregate) {
     row.firstDownloadSuccessAt,
     row.lastDownloadSuccessAt,
   ].filter((value): value is Date => value !== null);
+  // Heartbeat-only buckets still advance the source checkpoint, but they must
+  // not fabricate an install sighting or an app open.
   if (timestamps.length === 0) {
-    return { firstSeenAt: bucketStart, lastSeenAt: bucketStart };
+    return { firstSeenAt: null, lastSeenAt: null };
   }
   const milliseconds = timestamps.map((value) => value.getTime());
   return {
