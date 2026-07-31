@@ -377,6 +377,13 @@ email, campaign proximity, or any approximate identity. The Gmail
 installer-referral HMAC remains request attribution only and is never a profile
 link.
 
+Installer packages remain static and are never personalized with an
+`acquisition_request_id` or another browser attribution token. The panel may
+send a locally generated installer receipt hash only after receipt verification
+passes; that hash is an exact profile-to-paid-record association edge, not an
+acquisition source by itself. Anonymous installs without an exact server-side
+paid or verified-email link remain unknown.
+
 ### Coverage, output, and privacy
 
 Source-segmented retention covers only exact paid links and exact verified-email

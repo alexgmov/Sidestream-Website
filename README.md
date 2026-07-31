@@ -381,6 +381,13 @@ stickiness/open-day totals still use all install IDs, so low attribution
 coverage limits source comparisons without removing unknown installs from the
 product-wide retention denominator.
 
+Installer packages remain static and are never personalized with an
+`acquisition_request_id` or another browser attribution token. The panel may
+send a locally generated installer receipt hash only after receipt verification
+passes; that hash is an exact profile-to-paid-record association edge, not an
+acquisition source by itself. Anonymous installs without an exact server-side
+paid or verified-email link remain `source=unknown`.
+
 The exact `session_started` rule replaced historical broad non-installer
 activity buckets. The normal sync rereads only its bounded overlap, so a
 one-time full append/update rescan of the source telemetry history is required
@@ -993,7 +1000,7 @@ Use the narrowest relevant check after edits:
 ## Recent Change Log
 
 - 2026-07-30: Separated the protected acquisition report's first-install cohort window from a required later completed UTC-day `observationEnd`. Added auditable aggregate and per-group first-open, activation, return, and one-and-done metrics; excluded immature profiles from return/one-and-done denominators; capped the full observation span at 730 days; bounded activation and usage facts to observation; and rejected paid/email first touches captured after install so later visits cannot rewrite acquisition.
-- 2026-07-30: Added the protected first-install acquisition/retention report contract with exact `session_started` open days, accepted day-zero download attempts, completed-activation/first-open ratios, paid-over-verified-email attribution precedence, explicit paid/freemium experiment dimensions, complete unknown coverage, and bounded privacy-safe journeys. Documented that source-segmented retention covers only exact links while overall stickiness retains all install IDs, and that historical broad activity buckets require a separately approved one-time full append/update rescan without raw telemetry deletion. No Production migration, backfill, configuration, rescan, deployment, or route invocation was authorized.
+- 2026-07-30: Added the protected first-install acquisition/retention report contract with exact `session_started` open days, accepted day-zero download attempts, completed-activation/first-open ratios, paid-over-verified-email attribution precedence, explicit paid/freemium experiment dimensions, complete unknown coverage, and bounded privacy-safe journeys. Documented that source-segmented retention covers only exact server-side links, installer packages carry no browser acquisition token, overall stickiness retains all install IDs, and historical broad activity buckets require a separately approved one-time full append/update rescan without raw telemetry deletion. No Production migration, backfill, configuration, rescan, deployment, or route invocation was authorized.
 - 2026-07-30: Added `https://sidestream.tv/manychat-instagram` as the canonical organic Instagram ManyChat referral link with its own `manychat-instagram` private-Blob reporting bucket, while preserving `/m` and `/mc` behavior for legacy generic and paid-experiment traffic.
 - 2026-07-30: Advanced only the receipt-gated paid Mac manifest to the notarized `Sidestream Unlimited` artifact from FlowState `61e768b`. The refreshed installer keeps the public filename `Sidestream-Unlimited.dmg`, uses a new immutable private Blob pathname, exposes `Install Sidestream Unlimited.pkg`, and removes the redundant paid panel-intro branding/status copy without changing the standard Mac release or paid Windows manifest.
 - 2026-07-30: Bound normalized paid-landing attribution to an internal signed rewrite header so valid UTM-tagged `/mc` and `/mc-preview` visits no longer fail when Vercel forwards the original query alongside the private landing rewrite.
