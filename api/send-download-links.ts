@@ -13,6 +13,7 @@ import {
   MAX_DOWNLOAD_LEAD_BODY_BYTES,
   parseIdempotencyKey,
   type CanonicalDownloadLead,
+  type DownloadLeadExperimentAssignment,
   type DownloadLeadPayload,
 } from "./_lib/download-leads.js";
 import {
@@ -25,13 +26,23 @@ import {
   sendRateLimitExceeded,
   type RateLimitResult,
 } from "./_lib/rate-limit.js";
+import {
+  PAID_ACQUISITION_COOKIE_NAME,
+  validatePaidAcquisitionAssignmentCookie,
+} from "./_lib/paid-acquisition.js";
 
 const MOBILE_DOWNLOAD_SOURCE = "mobile-download-handoff";
 const EMAIL_RATE_LIMIT_WINDOW_SECONDS = 60 * 60;
 const EMAIL_RATE_LIMIT_PER_EMAIL = 3;
 const EMAIL_RATE_LIMIT_PER_IP = 10;
+const validateAssignmentCookie =
+  validatePaidAcquisitionAssignmentCookie as unknown as (
+    cookieValue: string,
+    options: { secret: string; now: number },
+  ) => DownloadLeadExperimentAssignment;
 
 type DownloadLinkRequest = IncomingMessage & { method?: string };
+type Environment = Readonly<Record<string, string | undefined>>;
 
 type DownloadLinkHandlerDependencies = Readonly<{
   now: () => Date;
@@ -127,6 +138,10 @@ export function createDownloadLinkHandler(
           capturedAt: now,
           referrer: firstHeaderValue(request.headers.referer),
           idempotencyKey,
+          experimentAssignment: resolvePaidAcquisitionAssignment(
+            request.headers.cookie,
+            now,
+          ),
         },
       );
     } catch (error) {
@@ -233,6 +248,33 @@ export function createDownloadLinkHandler(
 const handler = createDownloadLinkHandler();
 export default handler;
 
+export function resolvePaidAcquisitionAssignment(
+  cookieHeader: string | string[] | undefined,
+  now: Date,
+  environment: Environment = process.env,
+): DownloadLeadExperimentAssignment | null {
+  const cookieValue = readSingleCookie(
+    cookieHeader,
+    PAID_ACQUISITION_COOKIE_NAME,
+  );
+  if (!cookieValue) return null;
+  const secret =
+    environment.SIDESTREAM_PAID_ACQUISITION_ASSIGNMENT_SECRET?.trim() || "";
+  try {
+    const assignment = validateAssignmentCookie(cookieValue, {
+      secret,
+      now: Math.floor(now.getTime() / 1_000),
+    });
+    return Object.freeze({
+      experimentId: assignment.experimentId,
+      cohort: assignment.cohort,
+      assignmentIdHash: assignment.assignmentIdHash,
+    });
+  } catch {
+    return null;
+  }
+}
+
 async function consumeMobileDownloadLinkRateLimit(
   lead: CanonicalDownloadLead,
   options: { ipAddress: string; now: Date },
@@ -326,6 +368,21 @@ function readRequestBody(request: IncomingMessage, maxBytes: number) {
 
 function firstHeaderValue(value: string | string[] | undefined) {
   return Array.isArray(value) ? value[0] || "" : value || "";
+}
+
+function readSingleCookie(
+  value: string | string[] | undefined,
+  name: string,
+) {
+  const header = Array.isArray(value) ? value.join(";") : value || "";
+  const matches: string[] = [];
+  for (const segment of header.split(";")) {
+    const separator = segment.indexOf("=");
+    if (separator === -1) continue;
+    if (segment.slice(0, separator).trim() !== name) continue;
+    matches.push(segment.slice(separator + 1).trim());
+  }
+  return matches.length === 1 && matches[0] ? matches[0] : "";
 }
 
 function sendJson(

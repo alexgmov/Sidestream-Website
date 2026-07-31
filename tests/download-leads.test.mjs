@@ -11,13 +11,17 @@ const testSecret = "download-lead-tests-use-a-stable-secret-value";
 let compiledDirectory;
 let createDownloadLeadHandler;
 let createDownloadLinkHandler;
+let resolvePaidAcquisitionAssignment;
 let createDownloadLeadReplayHandler;
 let helpers;
 let emailHelpers;
+let paidHelpers;
 const originalEnvironment = {
   NODE_ENV: process.env.NODE_ENV,
   SIDESTREAM_LEAD_HASH_SECRET: process.env.SIDESTREAM_LEAD_HASH_SECRET,
   SIDESTREAM_RATE_LIMIT_HASH_SECRET: process.env.SIDESTREAM_RATE_LIMIT_HASH_SECRET,
+  SIDESTREAM_PAID_ACQUISITION_ASSIGNMENT_SECRET:
+    process.env.SIDESTREAM_PAID_ACQUISITION_ASSIGNMENT_SECRET,
 };
 
 before(async () => {
@@ -44,11 +48,14 @@ before(async () => {
   ({ createDownloadLeadHandler } = await import(
     pathToFileURL(path.join(compiledDirectory, "api", "download-lead.js")).href
   ));
-  ({ createDownloadLinkHandler } = await import(
+  ({ createDownloadLinkHandler, resolvePaidAcquisitionAssignment } = await import(
     pathToFileURL(path.join(compiledDirectory, "api", "send-download-links.js")).href
   ));
   emailHelpers = await import(
     pathToFileURL(path.join(compiledDirectory, "api", "_lib", "download-link-email.js")).href
+  );
+  paidHelpers = await import(
+    pathToFileURL(path.join(compiledDirectory, "api", "_lib", "paid-acquisition.js")).href
   );
   ({ createDownloadLeadReplayHandler } = await import(
     pathToFileURL(
@@ -62,6 +69,7 @@ after(() => {
   restoreEnvironment("NODE_ENV");
   restoreEnvironment("SIDESTREAM_LEAD_HASH_SECRET");
   restoreEnvironment("SIDESTREAM_RATE_LIMIT_HASH_SECRET");
+  restoreEnvironment("SIDESTREAM_PAID_ACQUISITION_ASSIGNMENT_SECRET");
 });
 
 test("canonical identity normalizes email/source and strips sensitive URL query data", () => {
@@ -132,31 +140,83 @@ test("lead validation rejects oversized and malformed fields before persistence"
   );
 });
 
-test("deterministic fallback merging preserves capture range, count, and latest campaign", () => {
+test("deterministic fallback merging preserves earliest valid attribution", () => {
+  const firstAssignment = {
+    experimentId: "mc-mobile-paid-v1",
+    cohort: "mc-control-v1",
+    assignmentIdHash: "a".repeat(64),
+  };
   const first = helpers.buildCanonicalDownloadLead({
     email: "person@example.com",
     source: "download-email-gate",
+    utmSource: "manychat",
+    utmMedium: "dm",
     utmCampaign: "first",
+    utmContent: "first-creative",
   }, {
     capturedAt: new Date("2026-07-14T12:00:00.000Z"),
     idempotencyKey: "attempt-1",
     secret: testSecret,
+    experimentAssignment: firstAssignment,
   });
   const latest = helpers.buildCanonicalDownloadLead({
     email: "person@example.com",
     source: "download-email-gate",
+    utmSource: "instagram",
+    utmMedium: "social",
     utmCampaign: "latest",
+    utmContent: "latest-creative",
   }, {
     capturedAt: new Date("2026-07-14T12:05:00.000Z"),
     idempotencyKey: "attempt-2",
     secret: testSecret,
+    experimentAssignment: {
+      experimentId: "mc-mobile-paid-v1",
+      cohort: "mc-paid-v1",
+      assignmentIdHash: "b".repeat(64),
+    },
   });
   const merged = helpers.mergeFallbackLeads(first, latest);
   assert.equal(merged.firstCapturedAt, first.capturedAt);
   assert.equal(merged.lastCapturedAt, latest.capturedAt);
   assert.equal(merged.submissionCount, 2);
-  assert.equal(merged.utmCampaign, "latest");
+  assert.equal(merged.utmSource, "manychat");
+  assert.equal(merged.utmMedium, "dm");
+  assert.equal(merged.utmCampaign, "first");
+  assert.equal(merged.utmContent, "first-creative");
+  assert.deepEqual(merged.context, {
+    source: "download_email_gate",
+    schemaVersion: 2,
+    ...firstAssignment,
+  });
+  assert.deepEqual(
+    helpers.mergeFallbackLeads(latest, first),
+    merged,
+  );
   assert.equal(helpers.mergeFallbackLeads(merged, latest), merged);
+
+  const unattributedFirst = helpers.buildCanonicalDownloadLead({
+    email: "fill-missing@example.com",
+    source: "download-email-gate",
+    utmSource: "manychat",
+  }, {
+    capturedAt: new Date("2026-07-14T11:00:00.000Z"),
+    secret: testSecret,
+  });
+  const attributedLater = helpers.buildCanonicalDownloadLead({
+    email: "fill-missing@example.com",
+    source: "download-email-gate",
+    utmSource: "instagram",
+    utmMedium: "social",
+  }, {
+    capturedAt: new Date("2026-07-14T11:05:00.000Z"),
+    secret: testSecret,
+    experimentAssignment: firstAssignment,
+  });
+  const filled = helpers.mergeFallbackLeads(unattributedFirst, attributedLater);
+  assert.equal(filled.utmSource, "manychat");
+  assert.equal(filled.utmMedium, "social");
+  assert.equal(filled.context.assignmentIdHash, firstAssignment.assignmentIdHash);
 });
 
 test("historical replay parsing supports mapped formats and discards raw IP/user-agent fields", () => {
@@ -195,6 +255,36 @@ test("historical replay parsing supports mapped formats and discards raw IP/user
   assert.equal(parsed.email, "legacy@example.com");
   assert.equal(serialized.includes("203.0.113.77"), false);
   assert.equal(serialized.includes("private-agent"), false);
+  assert.deepEqual(parsed.context, {
+    source: "download_email_gate",
+    schemaVersion: 2,
+  });
+
+  const attributed = helpers.parseReplayBlob(JSON.stringify({
+    email: "Attributed@Example.com",
+    capturedAt: "2026-07-14T10:00:00.000Z",
+    source: "mobile-download-handoff",
+    context: {
+      source: "download_email_gate",
+      schemaVersion: 2,
+      experimentId: "mc-mobile-paid-v1",
+      cohort: "mc-paid-v1",
+      assignmentIdHash: "c".repeat(64),
+      nonce: "must-not-survive",
+      assignmentCookieValue: "must-not-survive",
+    },
+  }), {
+    uploadedAt: new Date("2026-07-14T10:01:00.000Z"),
+    secret: testSecret,
+  });
+  assert.deepEqual(attributed.context, {
+    source: "download_email_gate",
+    schemaVersion: 2,
+    experimentId: "mc-mobile-paid-v1",
+    cohort: "mc-paid-v1",
+    assignmentIdHash: "c".repeat(64),
+  });
+  assert.equal(helpers.serializeFallbackLead(attributed).includes("must-not-survive"), false);
 });
 
 test("database capture hashes both limiter dimensions before canonical upsert in one transaction", async () => {
@@ -244,6 +334,51 @@ test("database capture hashes both limiter dimensions before canonical upsert in
   const limiterParameters = JSON.stringify(queries[0].params);
   assert.equal(limiterParameters.includes("person@example.com"), false);
   assert.equal(limiterParameters.includes("203.0.113.9"), false);
+});
+
+test("Postgres upsert preserves first-touch UTM and assignment context", async () => {
+  const queries = [];
+  const runner = {
+    query: async (sql, params) => {
+      queries.push({ sql, params });
+      return { rows: [{ inserted: true }] };
+    },
+  };
+  const lead = helpers.buildCanonicalDownloadLead({
+    email: "attributed@example.com",
+    source: "mobile-download-handoff",
+    utmSource: "manychat",
+    utmMedium: "dm",
+    utmCampaign: "launch",
+    utmContent: "creative-a",
+  }, {
+    capturedAt: new Date("2026-07-14T12:00:00.000Z"),
+    secret: testSecret,
+    experimentAssignment: {
+      experimentId: "mc-mobile-paid-v1",
+      cohort: "mc-paid-v1",
+      assignmentIdHash: "d".repeat(64),
+    },
+  });
+
+  await helpers.upsertCanonicalDownloadLead(runner, lead);
+
+  assert.equal(queries.length, 1);
+  const [{ sql, params }] = queries;
+  for (const column of ["utm_source", "utm_medium", "utm_campaign", "utm_content"]) {
+    assert.match(
+      sql,
+      new RegExp(
+        `${column} = case[\\s\\S]*excluded\\.${column} is null[\\s\\S]*` +
+          `excluded\\.first_captured_at < lead\\.first_captured_at`,
+      ),
+    );
+  }
+  assert.match(
+    sql,
+    /lead\.context \?& array\['experimentId', 'cohort', 'assignmentIdHash'\]/,
+  );
+  assert.deepEqual(JSON.parse(params[13]), lead.context);
 });
 
 test("bounded Idempotency-Key receipts suppress repeats and reject identity reuse", async () => {
@@ -568,6 +703,168 @@ test("mobile download route fixes the lead source, rate limits, and never logs t
     outcome: "accepted",
     count: 1,
   }]);
+});
+
+test("mobile download route attaches only a validated server-side experiment assignment", async () => {
+  const now = new Date("2026-07-14T12:00:00.000Z");
+  const assignmentSecret = "paid-assignment-tests-use-a-stable-secret";
+  const nonce = "A".repeat(22);
+  const cookieValue = paidHelpers.createPaidAcquisitionAssignmentCookie({
+    nonce,
+    cohort: paidHelpers.PAID_ACQUISITION_PAID_COHORT,
+    issuedAt: now,
+    secret: assignmentSecret,
+  });
+  const expected = paidHelpers.validatePaidAcquisitionAssignmentCookie(cookieValue, {
+    secret: assignmentSecret,
+    now,
+  });
+  const stored = [];
+  const handler = createDownloadLinkHandler({
+    now: () => now,
+    consumeLimit: async () => ({
+      allowed: true,
+      limit: 3,
+      remaining: 2,
+      retryAfterSeconds: 0,
+      resetAt: "2026-07-14T13:00:00.000Z",
+    }),
+    storeLead: async (lead) => stored.push(lead),
+    sendEmail: async () => {},
+    log: () => {},
+  });
+  process.env.SIDESTREAM_PAID_ACQUISITION_ASSIGNMENT_SECRET = assignmentSecret;
+  try {
+    const response = await invoke(handler, {
+      path: "/api/send-download-links",
+      headers: {
+        "content-type": "application/json",
+        "idempotency-key": "mobile-valid-assignment",
+        cookie: `${paidHelpers.PAID_ACQUISITION_COOKIE_NAME}=${cookieValue}`,
+      },
+      body: JSON.stringify({
+        email: "person@example.com",
+        experimentId: "attacker-experiment",
+        cohort: "attacker-cohort",
+        assignmentIdHash: "f".repeat(64),
+        nonce: "attacker-nonce",
+      }),
+    });
+
+    assert.equal(response.status, 200);
+    assert.equal(stored.length, 1);
+    assert.deepEqual(stored[0].context, {
+      source: "download_email_gate",
+      schemaVersion: 2,
+      experimentId: expected.experimentId,
+      cohort: expected.cohort,
+      assignmentIdHash: expected.assignmentIdHash,
+    });
+    const serialized = helpers.serializeFallbackLead(stored[0]);
+    assert.equal(serialized.includes(cookieValue), false);
+    assert.equal(serialized.includes(nonce), false);
+    assert.equal(serialized.includes("attacker-"), false);
+  } finally {
+    restoreEnvironment("SIDESTREAM_PAID_ACQUISITION_ASSIGNMENT_SECRET");
+  }
+});
+
+test("invalid, duplicate, expired, and unconfigured assignments remain absent and non-blocking", async () => {
+  const now = new Date("2026-07-14T12:00:00.000Z");
+  const assignmentSecret = "paid-assignment-tests-use-a-stable-secret";
+  const validCookie = paidHelpers.createPaidAcquisitionAssignmentCookie({
+    nonce: "B".repeat(22),
+    cohort: paidHelpers.PAID_ACQUISITION_CONTROL_COHORT,
+    issuedAt: now,
+    secret: assignmentSecret,
+  });
+  const expiredCookie = paidHelpers.createPaidAcquisitionAssignmentCookie({
+    nonce: "C".repeat(22),
+    cohort: paidHelpers.PAID_ACQUISITION_CONTROL_COHORT,
+    issuedAt: new Date(
+      now.getTime() -
+        (paidHelpers.PAID_ACQUISITION_COOKIE_MAX_AGE_SECONDS + 1) * 1_000,
+    ),
+    secret: assignmentSecret,
+  });
+  const cookieName = paidHelpers.PAID_ACQUISITION_COOKIE_NAME;
+  const cases = [
+    {
+      name: "forged",
+      header: `${cookieName}=${validCookie.slice(0, -1)}*`,
+      environment: {
+        SIDESTREAM_PAID_ACQUISITION_ASSIGNMENT_SECRET: assignmentSecret,
+      },
+    },
+    {
+      name: "duplicate",
+      header: `${cookieName}=${validCookie}; ${cookieName}=${validCookie}`,
+      environment: {
+        SIDESTREAM_PAID_ACQUISITION_ASSIGNMENT_SECRET: assignmentSecret,
+      },
+    },
+    {
+      name: "expired",
+      header: `${cookieName}=${expiredCookie}`,
+      environment: {
+        SIDESTREAM_PAID_ACQUISITION_ASSIGNMENT_SECRET: assignmentSecret,
+      },
+    },
+    {
+      name: "unconfigured",
+      header: `${cookieName}=${validCookie}`,
+      environment: {},
+    },
+  ];
+  for (const invalidCase of cases) {
+    assert.equal(
+      resolvePaidAcquisitionAssignment(
+        invalidCase.header,
+        now,
+        invalidCase.environment,
+      ),
+      null,
+      invalidCase.name,
+    );
+  }
+
+  const stored = [];
+  const handler = createDownloadLinkHandler({
+    now: () => now,
+    consumeLimit: async () => ({
+      allowed: true,
+      limit: 3,
+      remaining: 2,
+      retryAfterSeconds: 0,
+      resetAt: "2026-07-14T13:00:00.000Z",
+    }),
+    storeLead: async (lead) => stored.push(lead),
+    sendEmail: async () => {},
+    log: () => {},
+  });
+  process.env.SIDESTREAM_PAID_ACQUISITION_ASSIGNMENT_SECRET = assignmentSecret;
+  try {
+    const response = await invoke(handler, {
+      path: "/api/send-download-links",
+      headers: {
+        "content-type": "application/json",
+        "idempotency-key": "mobile-invalid-assignment",
+        cookie: `${cookieName}=${validCookie}; ${cookieName}=${validCookie}`,
+      },
+      body: JSON.stringify({
+        email: "person@example.com",
+        experimentId: "browser-selected",
+        cohort: "browser-selected",
+      }),
+    });
+    assert.equal(response.status, 200);
+    assert.deepEqual(stored[0].context, {
+      source: "download_email_gate",
+      schemaVersion: 2,
+    });
+  } finally {
+    restoreEnvironment("SIDESTREAM_PAID_ACQUISITION_ASSIGNMENT_SECRET");
+  }
 });
 
 test("mobile download route does not call Resend after a consumed rate limit", async () => {

@@ -5,6 +5,11 @@ import {
   type RateLimitResult,
 } from "./rate-limit.js";
 import { withPostgresTransaction } from "./postgres.js";
+import {
+  PAID_ACQUISITION_CONTROL_COHORT,
+  PAID_ACQUISITION_EXPERIMENT_ID,
+  PAID_ACQUISITION_PAID_COHORT,
+} from "./paid-acquisition.js";
 
 const DOWNLOAD_LEADS_TABLE = "public.sidestream_download_leads";
 const IDEMPOTENCY_TABLE = "public.sidestream_download_lead_idempotency";
@@ -35,6 +40,20 @@ const SAFE_CTA_SOURCE_PATTERN = /^[a-z0-9][a-z0-9._:/-]*$/;
 type Environment = Readonly<Record<string, string | undefined>>;
 type QueryRunner = Pick<PoolClient, "query">;
 
+export type DownloadLeadExperimentAssignment = Readonly<{
+  experimentId: string;
+  cohort: string;
+  assignmentIdHash: string;
+}>;
+
+export type DownloadLeadContext = Readonly<{
+  source: "download_email_gate";
+  schemaVersion: 2;
+  experimentId?: string;
+  cohort?: string;
+  assignmentIdHash?: string;
+}>;
+
 export type DownloadLeadPayload = Readonly<{
   email?: unknown;
   page?: unknown;
@@ -63,6 +82,7 @@ export type CanonicalDownloadLead = Readonly<{
   utmMedium: string | null;
   utmCampaign: string | null;
   utmContent: string | null;
+  context: DownloadLeadContext;
   idempotencyKeyHash: string | null;
   submissionCount: number;
 }>;
@@ -116,6 +136,7 @@ export function buildCanonicalDownloadLead(
     idempotencyKey?: string | null;
     secret?: string;
     submissionCount?: number;
+    experimentAssignment?: DownloadLeadExperimentAssignment | null;
   } = {},
 ): CanonicalDownloadLead {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
@@ -170,6 +191,7 @@ export function buildCanonicalDownloadLead(
       readAliasedField(payload, "utmContent", "utm_content"),
       "utmContent",
     ),
+    context: buildDownloadLeadContext(options.experimentAssignment),
     idempotencyKeyHash: idempotencyKey
       ? createIdempotencyKeyHash(idempotencyKey, secret)
       : null,
@@ -308,6 +330,7 @@ export function serializeFallbackLead(lead: CanonicalDownloadLead) {
     utmMedium: lead.utmMedium,
     utmCampaign: lead.utmCampaign,
     utmContent: lead.utmContent,
+    context: lead.context,
     idempotencyKeyHash: lead.idempotencyKeyHash,
     submissionCount: lead.submissionCount,
   });
@@ -345,6 +368,10 @@ export function mergeFallbackLeads(
   const latest = incoming.lastCapturedAt >= existing.lastCapturedAt
     ? incoming
     : existing;
+  const earliest = incoming.firstCapturedAt < existing.firstCapturedAt
+    ? incoming
+    : existing;
+  const later = earliest === existing ? incoming : existing;
   const submissionCount = existing.submissionCount + incoming.submissionCount;
   if (!Number.isSafeInteger(submissionCount) || submissionCount > 1_000_000) {
     throw new DownloadLeadValidationError(
@@ -357,6 +384,11 @@ export function mergeFallbackLeads(
     capturedAt: lastCapturedAt,
     firstCapturedAt,
     lastCapturedAt,
+    utmSource: earliest.utmSource ?? later.utmSource,
+    utmMedium: earliest.utmMedium ?? later.utmMedium,
+    utmCampaign: earliest.utmCampaign ?? later.utmCampaign,
+    utmContent: earliest.utmContent ?? later.utmContent,
+    context: mergeDownloadLeadContexts(earliest.context, later.context),
     submissionCount,
   });
 }
@@ -420,6 +452,7 @@ export function parseReplayBlob(
     referrer: record.referrer,
     secret: options.secret,
     submissionCount: parseSubmissionCount(record.submissionCount),
+    experimentAssignment: parseDownloadLeadExperimentAssignment(record.context),
   });
   const idempotencyKeyHash = typeof record.idempotencyKeyHash === "string" &&
       HEX_DIGEST_PATTERN.test(record.idempotencyKeyHash)
@@ -534,26 +567,42 @@ export async function upsertCanonicalDownloadLead(
           else lead.referrer
         end,
         utm_source = case
-          when excluded.last_captured_at >= lead.last_captured_at
-            then coalesce(excluded.utm_source, lead.utm_source)
+          when excluded.utm_source is null then lead.utm_source
+          when lead.utm_source is null then excluded.utm_source
+          when excluded.first_captured_at < lead.first_captured_at
+            then excluded.utm_source
           else lead.utm_source
         end,
         utm_medium = case
-          when excluded.last_captured_at >= lead.last_captured_at
-            then coalesce(excluded.utm_medium, lead.utm_medium)
+          when excluded.utm_medium is null then lead.utm_medium
+          when lead.utm_medium is null then excluded.utm_medium
+          when excluded.first_captured_at < lead.first_captured_at
+            then excluded.utm_medium
           else lead.utm_medium
         end,
         utm_campaign = case
-          when excluded.last_captured_at >= lead.last_captured_at
-            then coalesce(excluded.utm_campaign, lead.utm_campaign)
+          when excluded.utm_campaign is null then lead.utm_campaign
+          when lead.utm_campaign is null then excluded.utm_campaign
+          when excluded.first_captured_at < lead.first_captured_at
+            then excluded.utm_campaign
           else lead.utm_campaign
         end,
         utm_content = case
-          when excluded.last_captured_at >= lead.last_captured_at
-            then coalesce(excluded.utm_content, lead.utm_content)
+          when excluded.utm_content is null then lead.utm_content
+          when lead.utm_content is null then excluded.utm_content
+          when excluded.first_captured_at < lead.first_captured_at
+            then excluded.utm_content
           else lead.utm_content
         end,
-        context = lead.context || excluded.context,
+        context = case
+          when lead.context ?& array['experimentId', 'cohort', 'assignmentIdHash']
+            and (
+              not excluded.context ?& array['experimentId', 'cohort', 'assignmentIdHash']
+              or lead.first_captured_at <= excluded.first_captured_at
+            )
+            then excluded.context || lead.context
+          else lead.context || excluded.context
+        end,
         updated_at = now()
       returning (xmax = 0) as inserted
     `,
@@ -571,7 +620,7 @@ export async function upsertCanonicalDownloadLead(
       lead.utmMedium,
       lead.utmCampaign,
       lead.utmContent,
-      JSON.stringify({ source: "download_email_gate", schemaVersion: 2 }),
+      JSON.stringify(lead.context),
     ],
   );
   if (result.rows.length !== 1) {
@@ -734,6 +783,50 @@ function parseCapturedAt(value: unknown, fallback: Date) {
 function parseSubmissionCount(value: unknown) {
   if (value === undefined || value === null) return 1;
   return requireBoundedSubmissionCount(value);
+}
+
+function buildDownloadLeadContext(
+  experimentAssignment: DownloadLeadExperimentAssignment | null | undefined,
+): DownloadLeadContext {
+  const assignment = parseDownloadLeadExperimentAssignment(experimentAssignment);
+  return Object.freeze({
+    source: "download_email_gate",
+    schemaVersion: 2,
+    ...(assignment || {}),
+  });
+}
+
+function mergeDownloadLeadContexts(
+  earliest: DownloadLeadContext,
+  later: DownloadLeadContext,
+) {
+  return buildDownloadLeadContext(
+    parseDownloadLeadExperimentAssignment(earliest) ??
+      parseDownloadLeadExperimentAssignment(later),
+  );
+}
+
+function parseDownloadLeadExperimentAssignment(
+  value: unknown,
+): DownloadLeadExperimentAssignment | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  if (
+    record.experimentId !== PAID_ACQUISITION_EXPERIMENT_ID ||
+    (
+      record.cohort !== PAID_ACQUISITION_CONTROL_COHORT &&
+      record.cohort !== PAID_ACQUISITION_PAID_COHORT
+    ) ||
+    typeof record.assignmentIdHash !== "string" ||
+    !HEX_DIGEST_PATTERN.test(record.assignmentIdHash)
+  ) {
+    return null;
+  }
+  return Object.freeze({
+    experimentId: record.experimentId,
+    cohort: record.cohort,
+    assignmentIdHash: record.assignmentIdHash,
+  });
 }
 
 function requireBoundedSubmissionCount(value: unknown) {
