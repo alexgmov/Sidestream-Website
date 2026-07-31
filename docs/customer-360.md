@@ -177,9 +177,11 @@ bounded Stripe claim/reclaim behavior, and the other Production prerequisites in
   `api/_lib/customer-usage.ts` may participate in SQL aggregation. Raw
   `payload` and `data_points` objects never leave the telemetry query or enter
   the website database.
-- App activity excludes installer-category and `installer_*` events. Platform
-  is reduced to `macos`, `windows`, or `unknown`; app version is a bounded
-  latest-value summary.
+- Install-completion evidence is exactly `installer_install_completed`. App
+  open/activity evidence is exactly `session_started`; installer events,
+  heartbeats, download events, and other app events do not create an open or
+  active day. Platform is reduced to `macos`, `windows`, or `unknown`, and the
+  bounded latest platform/app-version summary is taken from session starts.
 
 ### Attempts, outcomes, and first timestamps
 
@@ -251,10 +253,11 @@ or backfill handling.
 Each completed run rematerializes all live profiles, even if no new event was
 found. `activeDays7` covers the current UTC day plus six prior days;
 `activeDays30` covers the current UTC day plus 29 prior days. An active day has
-at least one non-installer event. `downloadFrequency30d` is accepted download
-attempts in that 30-day window divided by active days in the same window,
-rounded to six decimal places; it is null when there are no active days. This
-daily rematerialization is what makes old activity decay out of rolling windows.
+at least one exact `session_started` event. `downloadFrequency30d` is accepted
+download attempts in that 30-day window divided by active days in the same
+window, rounded to six decimal places; it is null when there are no active days.
+This daily rematerialization is what makes old activity decay out of rolling
+windows.
 
 `usage.syncedAt` is when the website aggregate was materialized.
 `usage.sourceFreshnessAt` is the greatest source `received_at` captured by the
@@ -264,7 +267,144 @@ freshness value means no accepted source high-water has been observed. Operators
 must review lag and define an acceptable non-Production threshold before rollout;
 the code intentionally does not invent one.
 
-## Private list and detail API
+## Measurable acquisition and retention funnel
+
+### Protected report boundary and window
+
+The server-only report route is:
+
+- `POST /api/internal/customers/funnel`
+
+It uses the same `SIDESTREAM_CRM_ADMIN_SECRET`, POST-only, browser-origin
+rejection, request-size, JSON, no-store, and error-shaping boundary as the
+private list/detail API. It runs in a repeatable-read, read-only transaction.
+The request body accepts only:
+
+| Field | Contract |
+| --- | --- |
+| `licenseNamespace` | Required `production` or `test`; scopes every identity, install, usage, activation, and attribution read |
+| `cohortStart` | Required valid UTC timestamp ending in `Z`; inclusive |
+| `cohortEnd` | Required valid UTC timestamp ending in `Z`; exclusive and after the start |
+| `journeyLimit` | Optional integer 1-100; defaults to 50 |
+
+The cohort window cannot exceed 366 days. `dateWindow.cohortDefinition` is
+`first_install_at`, `endExclusive` is true, and the observation contract is
+events before `cohortEnd`.
+
+### Exact metric definitions
+
+| Metric | Exact definition |
+| --- | --- |
+| Install / cohort membership | `firstInstallAt` is the minimum `first_seen_at` across the live profile's current `sidestream_customer_installs` memberships. A profile is in the cohort only when `cohortStart <= firstInstallAt < cohortEnd`. |
+| Telemetry-derived install evidence | `installer_install_completed`, `session_started`, or an accepted download attempt/success may contribute an exact lifecycle timestamp. A heartbeat is not install-completion or open evidence and must not advance an existing install lifecycle. |
+| First open | Earliest `first_app_use_at` before the exclusive end, where `first_app_use_at` is populated only from an exact schema `0.2.0` `session_started` event. |
+| Active/open day | UTC calendar day with at least one `session_started`. Installer events, heartbeats, download events, and other telemetry do not create an active/open day. |
+| Download attempt | First accepted, non-speculative `download_requested`, deduplicated by install/session/download identity when present and telemetry event identity otherwise. Speculative requests count only when terminal facts are linked to a real user request. |
+| Day-zero downloads | Accepted download attempts whose UTC activity date equals the first-open UTC date. A download attempt does not itself create an open day. |
+| Activation | Earliest non-null `completed_at` on a `sidestream_activation_sessions` row reached through the profile's exact `activation_record` identity link. Pending or merely created activation rows do not count. |
+| Return day | Distinct UTC active/open date after the first-open date and before `cohortEnd`. |
+| One-and-done | `firstOpenAt` exists and no later open date was observed through the requested exclusive end. This is an observation-window result, not a lifetime prediction. |
+
+The top-level and per-group activation percentage has:
+
+- numerator: profiles with a completed linked activation;
+- denominator: profiles with a first open;
+- percentage: numerator divided by denominator, rounded to two decimal places,
+  or null when the denominator is zero.
+
+It is not activations divided by installs, clicks, downloads, attributed
+profiles, or paid customers. `totals` always exposes profiles,
+first-opened profiles, and completed activations so the ratio can be audited.
+
+### Source precedence and experiment dimensions
+
+Attribution is deterministic and deliberately narrow:
+
+1. `verified_paid` has highest precedence. It requires an active, completed
+   paid-acquisition Checkout joined to the exact entry/environment/experiment/
+   cohort/assignment/token/attribution proof. That verified Checkout must link
+   to the profile through an exact installer-receipt hash, verified Checkout
+   Session reference, or claimed activation/account record. The source is
+   `manychat`; medium, campaign, experiment, cohort, and first-attributed time
+   come from the verified paid entry.
+2. `verified_email` is considered only when a
+   `cta_source=mobile-download-handoff` lead's normalized email exactly equals
+   both the verified account email and the profile's verified contact email.
+   Source, medium, campaign, and first-attributed time come from that lead.
+3. Every other profile is `source=unknown` with
+   `attributionConfidence=unattributed`.
+
+Paid attribution wins over verified email even if the email lead was captured
+earlier. Within paid candidates, the earliest exact paid entry wins with stable
+entry/Checkout tie-breakers. Within freemium candidates, the earliest lead wins
+with a stable lead-ID tie-breaker.
+
+For repeat mobile handoffs, each UTM field preserves its earliest non-null value:
+a later submission may fill a field that was previously null but cannot replace
+an earlier non-null first touch. Experiment assignment is accepted only from a
+valid server-signed assignment cookie captured into the lead context. Its exact
+dimensions are `experiment=mc-mobile-paid-v1` and
+`cohort=mc-control-v1` or `mc-paid-v1`; the earliest valid assignment is
+preserved. Paid Checkout attribution carries the verified paid entry's
+`mc-mobile-paid-v1` / `mc-paid-v1` dimensions. Browser-supplied experiment,
+cohort, assignment hash, amount, price, country, Product, or environment values
+are not selectors.
+
+No attribution may be inferred from timing, IP, user agent, referrer, similar
+email, campaign proximity, or any approximate identity. The Gmail
+installer-referral HMAC remains request attribution only and is never a profile
+link.
+
+### Coverage, output, and privacy
+
+Source-segmented retention covers only exact paid links and exact verified-email
+matches. Every anonymous unlinked install remains unknown. This is an explicit
+coverage boundary, not missing data that the report may guess away.
+`attributionCoverage` therefore reports:
+
+- numerator: `verified_paid + verified_email` cohort profiles;
+- denominator: every profile in the first-install cohort;
+- percentage: that ratio, or null for an empty cohort;
+- paid-attributed, freemium-attributed, and unattributed profile counts.
+
+Overall stickiness continues to use all install IDs and all exact open days.
+Unknown installs remain in product-wide install/open/return denominators even
+though they cannot support source-segmented comparison.
+
+`groups` cover the complete cohort and are partitioned by source, medium,
+campaign, experiment, cohort, and attribution confidence. Each group exposes
+profile, first-open, completed-activation, and activation-percentage values.
+`journeys` are ordered by exact first install time then customer UUID and expose
+only the customer UUID, bounded attribution dimensions/confidence,
+first-attributed/install/open/activation timestamps, day-zero attempt count,
+later UTC open dates, and one-and-done status. The response includes
+`journeyLimit`, `journeysReturned`, and `journeysTruncated`.
+
+Email, `installIdHash`, installer receipt/assignment hashes, Stripe identifiers,
+identity-link values, raw telemetry, and raw attribution proof do not cross the
+report boundary.
+
+### Historical correction requirement
+
+The exact `session_started` activity rule supersedes the former broad
+non-installer event rule. The normal usage sync rereads only its configured
+24-168 hour overlap (48 hours by default), so it cannot automatically replace
+every older broad daily bucket.
+
+Before historical retention is trusted, an operator must run one separately
+reviewed, human-approved full append/update rescan of the schema-versioned raw
+telemetry history so every affected `sidestream_customer_usage_daily` row is
+upserted under the exact install/open/active-day/download definitions. The
+rescan must not delete, truncate, or rewrite raw telemetry, and it must not
+delete canonical profiles, identity, commerce, audit, or entitlement/device
+state. The repository currently provides no approved Production rescan command.
+Preview/Test requires an approved target, authenticated read-only source,
+secret-safe invocation mechanism, checkpoint/replay design, evidence, and
+rollback decision. Production remains blocked behind every existing human-gated
+migration, backfill, configuration, deployment, scheduling, and verification
+rule in this document and `docs/api-hardening-runbook.md`.
+
+## Private Customer 360 APIs
 
 ### Authentication and transport
 
@@ -272,6 +412,7 @@ The server-only routes are:
 
 - `POST /api/internal/customers`
 - `POST /api/internal/customers/{customerId}`
+- `POST /api/internal/customers/funnel`
 
 They require exactly one `Authorization: Bearer <SIDESTREAM_CRM_ADMIN_SECRET>`
 credential. The secret is 16-512 printable non-space ASCII characters. Missing
@@ -283,7 +424,9 @@ are JSON with `Cache-Control: no-store, max-age=0`, `Pragma: no-cache`,
 bodies are JSON objects capped at 16 KiB; unknown fields fail closed.
 
 The list body requires `licenseNamespace` and accepts `limit`, `cursor`, and
-`filters`. `limit` defaults to 50 and is bounded from 1 to 100. Filters are:
+`filters`. `limit` defaults to 50 and is bounded from 1 to 100. The funnel body
+uses the separately documented cohort window and journey limit above. Filters
+below apply only to the list route:
 
 | Filter | Accepted value |
 | --- | --- |
@@ -295,8 +438,8 @@ The list body requires `licenseNamespace` and accepts `limit`, `cursor`, and
 
 There is intentionally no search text, email substring, name substring, raw
 identity, Stripe-ID, or behavioral search filter. The detail body accepts only
-`licenseNamespace`; `{customerId}` must be a UUID. Namespace is required on both
-routes so a caller cannot retrieve a same-ID record from another namespace.
+`licenseNamespace`; `{customerId}` must be a UUID. Namespace is required on all
+three routes so a caller cannot retrieve or aggregate another namespace.
 
 ### Cursors and consistency
 
@@ -311,7 +454,10 @@ secret returns `400 invalid_cursor`. `nextCursor` is null on the final page.
 
 List success is `{"customers":[...],"nextCursor":string|null}`. Detail success
 is `{"customer":{...}}`; a missing live root in the requested namespace returns
-`404 customer_not_found`. List and detail use the same customer object.
+`404 customer_not_found`. List and detail use the same customer object. Funnel
+success is the date window, activation percentage, attribution coverage,
+totals, complete groups, bounded journeys, and journey truncation metadata
+documented above; it does not use the compact customer object.
 
 Every customer field and nullability is listed here. Timestamps are UTC ISO
 strings. Counts and money are decimal strings to avoid JavaScript integer loss.
@@ -356,7 +502,7 @@ strings. Counts and money are decimal strings to avoid JavaScript integer loss.
 | `usage.firstDownloadSucceededAt` | ISO string or null | Earliest successful request time |
 | `usage.downloadOutcomeNumerator` | decimal string or null | Successful terminal attempts |
 | `usage.downloadOutcomeDenominator` | decimal string or null | Success + failure + cancelled attempts |
-| `usage.lastUseAt` | ISO string or null | Latest non-installer app-use time |
+| `usage.lastUseAt` | ISO string or null | Latest exact `session_started` time |
 | `usage.activeDays7` | decimal string or null | Active UTC days in rolling seven-day window |
 | `usage.activeDays30` | decimal string or null | Active UTC days in rolling 30-day window |
 | `usage.downloadFrequency30d` | decimal string or null | 30-day attempts per active day, six decimals |
@@ -372,9 +518,11 @@ The possible `dataQualityFlags` are `usage_not_synced`,
 
 Validation failures return `400` with a stable code such as
 `invalid_request`, `invalid_namespace`, `invalid_limit`, `invalid_filter`,
-`invalid_cursor`, or `invalid_customer_id`. An unexpected read failure returns
-`500 customer_query_failed`. Error payloads do not expose database or source
-details.
+`invalid_cursor`, `invalid_customer_id`, `unknown_request_key`,
+`invalid_cohort_window`, or `invalid_journey_limit`. An unexpected list/detail
+read failure returns `500 customer_query_failed`; an unexpected funnel read
+failure returns `500 acquisition_funnel_query_failed`. Error payloads do not
+expose database or source details.
 
 ## Privacy exclusions and retention
 
@@ -419,6 +567,10 @@ Operators must inspect:
 - the cron result and last completed run once daily;
 - `usage.syncedAt` versus `usage.sourceFreshnessAt` for source lag;
 - the nine data-quality flags on list/detail results;
+- funnel activation numerator/first-open denominator and attribution-coverage
+  numerator/all-cohort denominator before comparing sources;
+- unattributed profile share, which must remain explicit rather than being
+  reassigned or excluded from overall stickiness;
 - unresolved `pending_identity_review` and `commerce_identity_conflict` counts;
 - backfill candidate/orphan/conflict totals and the complete checkpoint;
 - protected route `401`, `403`, `400`, and `500` rates without logging bearer
@@ -507,10 +659,14 @@ npm run build
 ```
 
 `test:customer-360-postgres` exercises core merge/identity, commerce,
-once-daily usage sync and rolling decay, list/detail privacy/cursors, dry-run and
-test-only backfill recovery, and the end-to-end merge/replay pipeline. The
-complete pipeline proves Stripe/Vercel/network isolation and verifies that
-Customer 360 leaves entitlement and device-seat state unchanged.
+once-daily usage sync and rolling decay, list/detail privacy/cursors, the
+first-install acquisition/retention funnel, dry-run and test-only backfill
+recovery, and the end-to-end merge/replay pipeline. Funnel coverage proves the
+exclusive window, exact UTC open/return days, accepted day-zero attempts,
+completed-activation/first-open ratios, paid-over-email precedence, unknown
+coverage, deterministic journey ordering, and privacy exclusions. The complete
+pipeline proves Stripe/Vercel/network isolation and verifies that Customer 360
+leaves entitlement and device-seat state unchanged.
 
 ## Dry-run backfill contract
 
@@ -576,14 +732,23 @@ This is the only rollout sequence:
    and resolve every orphan/conflict decision. Any Test apply requires a new,
    separate human approval; dry-run approval is not apply approval. Verify a
    complete checkpoint and an idempotent no-op rerun afterward.
-7. Verify both protected Customer APIs, no-store headers, namespace isolation,
+7. Before trusting historical open/return results, separately approve and run
+   the one-time full append/update telemetry rescan in Preview/Test. The review
+   must name the exact non-Production target and authenticated read-only source,
+   preserve raw telemetry, define checkpoint/replay and failure recovery, prove
+   every historical daily bucket was reconsidered, and show an idempotent rerun.
+   The repository currently supplies no approved invocation mechanism, so its
+   absence blocks this stage. Dry-run identity-backfill approval is not rescan
+   approval, and neither authorizes Production.
+8. Verify all three protected Customer APIs, no-store headers, namespace isolation,
    null-heavy and multi-currency responses, cursor tamper/filter binding, merged
    tombstone hiding, quality flags, daily sync summaries, source lag, rolling
-   decay, and unchanged entitlement/device-seat rows. Then either approve the
-   protected manual/separate scheduler path for usage sync, or separately review
-   and approve project-wide scheduling for all four jobs; never claim that only
-   the usage cron was enabled.
-8. Only then run live upstream integration and QA from the separately reviewed
+   decay, funnel ratios/coverage/unknown groups, and unchanged
+   entitlement/device-seat rows. Then either approve the protected
+   manual/separate scheduler path for usage sync, or separately review and
+   approve project-wide scheduling for all four jobs; never claim that only the
+   usage cron was enabled.
+9. Only then run live upstream integration and QA from the separately reviewed
    FlowState plan against Preview/Test. Local or fixture-backed FlowState work
    may already exist; live verification must confirm existing activation/license
    behavior first, then optional `installIdHash` association without changing
