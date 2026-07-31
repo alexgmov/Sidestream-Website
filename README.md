@@ -34,7 +34,7 @@ This repository owns the whole Sidestream web service: the public/account fronte
 - `api/_lib/customer-profiles.ts` and `tests/customer-360/core*.test.mjs` - Server-only Customer 360 identity/profile primitives, transactional merge planning, privacy-contract proof, and disposable-Postgres coverage. Merge survivors follow the database's immutable `(created_at, id)` total order within one license namespace.
 - `api/_lib/customer-commerce.ts`, `db/migrations/20260715122000_add_customer_commerce_ledger.sql`, and `tests/customer-360/commerce*.test.mjs` - Stripe-verified Customer 360 money projection. A settled PaymentIntent, or a captured standalone Charge without one, is canonical when present. Until then, paid Checkout and Invoice facts remain fallbacks; a paid InvoicePayment edge suppresses only the Checkout fallback for the same absent instrument, namespace, profile, and currency, preferring the related Invoice without collapsing their payment keys. Both fallbacks are atomically suppressed when the related instrument arrives. Gross includes all settled customer money, while `off_stripe_paid_minor` is an explicit subset in each profile/namespace/currency total. Current InvoicePayment objects persist as many-to-many allocation edges without unioning invoices and instruments into one payment key. Namespace-locked reconciliation attaches or quarantines a whole canonical payment group before currency totals refresh and never reads or mutates entitlement/device state.
 - `api/_lib/customer-usage.ts`, `api/_lib/customer-query.ts`, `api/_lib/customer-admin.ts`, `api/internal/customer-usage/sync.ts`, and `api/internal/customers/*` - Once-daily privacy-limited telemetry aggregation plus private Customer 360 list/detail reads. The aggregate layer retains complete first/last use and attempt timestamps, outcome counts, activity/frequency, coarse client summaries, and freshness/materialization state; the compact API intentionally omits total accepted attempts and current subscription status. `SIDESTREAM_TELEMETRY_POSTGRES_URL` is a separate read-only source, while `SIDESTREAM_CRM_ADMIN_SECRET` protects POST-only non-browser reads and signs namespace/filter-bound cursors. Raw telemetry, identity values, `installIdHash`, Stripe IDs, search text, and merged tombstones stay excluded.
-- `api/_lib/acquisition-funnel.ts` and `api/internal/customers/funnel.ts` - Protected, read-only acquisition and retention report for first-install cohorts. It reports complete attributed and unknown groups, explicit activation and attribution-coverage ratios, and bounded privacy-safe journeys without exposing email, install hashes, receipt hashes, assignment hashes, Stripe IDs, or identity-link values.
+- `api/_lib/acquisition-funnel.ts` and `api/internal/customers/funnel.ts` - Protected, read-only acquisition and retention report for first-install cohorts observed through a separately selected completed UTC-day boundary. It reports complete attributed and unknown groups, auditable first-open/activation/return/one-and-done ratios, and bounded privacy-safe journeys without exposing email, install hashes, receipt hashes, assignment hashes, Stripe IDs, or identity-link values.
 - `scripts/backfill-customer-360.mjs`, `scripts/verify-customer-360-backfill.mjs`, and `tests/customer-360/backfill*.test.mjs` - Offline identity-only Customer 360 backfill planning. Dry-run never opens Postgres or writes a checkpoint; Production apply is disabled; Test apply is separately human-gated, append-only, batch-atomic, resumable, idempotent, conflict-preserving, and restricted to `SIDESTREAM_TEST_POSTGRES_URL`.
 - `scripts/check-customer-360-readiness.mjs` - Sanitized, read-only Customer 360 readiness report for repository source, non-Production configuration, optional unauthenticated HTTPS route probes, and optional disposable-Test database inspection. It loads no `.env` file, performs no network or database access by default, and cannot prove Production migration, backfill, customer data, or operational readiness.
 - `api/_lib/account.ts`, `api/_lib/entitlement.ts`, `api/_lib/device-policy.ts`, and `api/_lib/license-environment.ts` - Shared server-only account/Stripe/Postgres implementation plus dependency-free entitlement primitives. They own exact Checkout verification, account-device transactions, two-active-device decisions, unlimited confirmed moves, production/Test isolation from trusted deployment state, short-lived access tokens, rotating refresh credentials, legacy compatibility through 1.0.13, safe OAuth return paths, and restore CSRF validation. Account-session, activation-status, verification, refresh, and download-authorization reads tolerate the pre-entitlement-lifecycle Production schema through one fail-closed JSON-based lifecycle expression, granting legacy compatibility only to the same exact one-time paid rows that the pending migration would backfill. Serverless route imports intentionally use `.js` extensions so Vercel's Node ESM runtime resolves compiled helpers.
@@ -115,7 +115,7 @@ This repository owns the whole Sidestream web service: the public/account fronte
 - Paid mobile acquisition - Exact `/mc` is an unlinked, default-off experiment entry owned by `middleware.ts`; `/m`, `/m/`, and `/mc/` retain their existing redirects. Eligible paid-cohort navigation is internally rendered from deterministic `generated/mobile-paid-prototype.html`, generated from the current canonical root. Vite compiles that page as a dedicated entry so its shader and media use deployable hashed assets, then `scripts/stage-paid-landing-runtime.mjs` stages the compiled page at `runtime/mobile-paid-prototype.html` for the serverless bundle. The paid landing function injects its bounded Checkout token into that compiled runtime artifact. Paid Checkout uses the same trusted-country offer catalog and immutable snapshot as ordinary Checkout. Verified email, installer receipt, claim, artifact, and lifecycle records remain namespaced and cannot be selected by browser-supplied price, product, amount, currency, country, offer, cohort, or environment.
 - Customer 360 commerce ledger - `api/_lib/customer-commerce.ts`, `20260715122000_add_customer_commerce_ledger.sql`, and `tests/customer-360/commerce*.test.mjs`; settled money comes from one canonical PaymentIntent or standalone Charge per payment group. Before that instrument exists, a paid InvoicePayment edge makes the related Invoice the preferred fallback and suppresses only the Checkout view resolving to the same namespace/profile/currency payment key. Gross and its `off_stripe_paid_minor` subset stay currency-separated, unrelated Checkout fallbacks remain independent, paid InvoicePayment edges never collapse many-to-many allocations into alias equivalence, and contradictory live identity evidence triggers sticky whole-group quarantine.
 - Customer 360 usage and private reads - `api/_lib/customer-usage.ts`, `api/_lib/customer-query.ts`, `api/internal/customer-usage/sync.ts`, `api/internal/customers/index.ts`, and `api/internal/customers/[customerId].ts`; schema-versioned telemetry becomes replaceable UTC daily aggregates with exhaustive stored/derivable first/last use and attempt timestamps, outcome counts, lifetime and rolling activity, attempts-per-active-day frequency, coarse client summaries, and source/materialization freshness. The compact list/detail projection exposes only its documented subset, requires an authenticated admin body to select an authorized namespace, binds that namespace into signed keyset cursors, and exposes neither total accepted attempts nor current subscription status. The full cross-repo field/privacy/rollout contract is `docs/customer-360.md`.
-- Acquisition and retention report - `api/_lib/acquisition-funnel.ts` and `api/internal/customers/funnel.ts`; an authenticated non-browser caller selects a namespace and bounded first-install cohort, then receives complete source/experiment groups plus ordered, capped journeys. Paid attribution requires exact verified paid-acquisition linkage, freemium attribution requires an exact verified-email match, paid wins over freemium, and every unlinked anonymous install remains `unknown`. Overall stickiness continues to use all install IDs rather than only attributable profiles.
+- Acquisition and retention report - `api/_lib/acquisition-funnel.ts` and `api/internal/customers/funnel.ts`; an authenticated non-browser caller selects a namespace, bounded first-install cohort, and later completed UTC-day observation boundary, then receives complete source/experiment groups plus ordered, capped journeys. Paid attribution requires exact verified paid-acquisition linkage, freemium attribution requires an exact verified-email match, both first touches must predate or equal first install, paid wins over freemium, and every unlinked anonymous install remains `unknown`. Overall stickiness continues to use all install IDs rather than only attributable profiles.
 - Customer 360 backfill - `scripts/backfill-customer-360.mjs` and `scripts/verify-customer-360-backfill.mjs`; reviewed offline identity exports become privacy-safe candidate/orphan/conflict plans. Dry-run is the default and Production apply is unavailable. Any Test apply requires separate approval after dry-run review.
 - API operations - `api/_lib/postgres.ts` owns the shared bounded runtime pool; checksummed migrations own schema changes; `api/_lib/stripe-events.ts` owns durable claimed Stripe work; `api/_lib/maintenance.ts` owns bounded cleanup/redaction; `vercel.json` schedules all four `CRON_SECRET`-protected internal routes. Customer reads never run migrations or drain event backlog.
 
@@ -215,7 +215,7 @@ operator response.
 | `/api/internal/customer-usage/sync` | `GET` | `CRON_SECRET`-protected once daily aggregate summary `{ok,outcome,licenseNamespace,batches,sourceRowsScanned,dailyBucketsWritten,profilesRefreshed,sourceFreshnessAt}` |
 | `/api/internal/customers` | `POST` | `SIDESTREAM_CRM_ADMIN_SECRET`-protected `{customers,nextCursor}`; browser origins are forbidden |
 | `/api/internal/customers/[customerId]` | `POST` | Same protected compact shape as list, wrapped as `{customer}`; merged tombstones and cross-namespace IDs return `404` |
-| `/api/internal/customers/funnel` | `POST` | Same protected non-browser boundary; returns a read-only first-install cohort report with explicit activation/coverage ratios, complete groups, and bounded privacy-safe journeys |
+| `/api/internal/customers/funnel` | `POST` | Same protected non-browser boundary; returns a read-only first-install cohort report through an explicit completed UTC-day observation end, with auditable first-open/activation/return/one-and-done and coverage ratios, complete groups, and bounded privacy-safe journeys |
 
 For `/api/activation/status`, a parsed non-null JSON value with missing or invalid
 required fields returns `400 invalid_request`. Valid JSON `null` is currently
@@ -298,10 +298,14 @@ backfill apply.
 `POST /api/internal/customers/funnel` uses the same
 `SIDESTREAM_CRM_ADMIN_SECRET`, POST-only, no-browser-origin, no-store boundary as
 the Customer 360 list/detail routes. Its body is exactly
-`licenseNamespace`, `cohortStart`, `cohortEnd`, and optional `journeyLimit`.
-Both timestamps must be UTC `Z` values, the end is exclusive, the window is at
-most 366 days, and `journeyLimit` defaults to 50 and is bounded from 1 to 100.
-The query is a read-only repeatable-read transaction.
+`licenseNamespace`, `cohortStart`, `cohortEnd`, required `observationEnd`, and
+optional `journeyLimit`. The cohort timestamps must be UTC `Z` values and
+`cohortEnd` is the exclusive first-install bound. `observationEnd` must be an
+exclusive completed UTC-day boundary at `00:00:00Z`, at or after `cohortEnd`.
+The cohort window remains capped at 366 days and the full
+`cohortStart`-to-`observationEnd` span is capped at 730 days. `journeyLimit`
+defaults to 50 and is bounded from 1 to 100. The query is a read-only
+repeatable-read transaction.
 
 The report uses these definitions:
 
@@ -312,7 +316,7 @@ The report uses these definitions:
   that cohort, including unknown source.
 - **Open and active day:** an open is exactly a schema `0.2.0`
   `session_started` event. `firstOpenAt` is the earliest such event observed
-  before the exclusive end. An active UTC day has at least one
+  before `observationEnd`. An active UTC day has at least one
   `session_started`; installer events, heartbeats, download events, and other
   app telemetry do not create an open or active day.
 - **Download:** an attempt starts at the first accepted, non-speculative
@@ -322,17 +326,25 @@ The report uses these definitions:
   day.
 - **Activation:** `activationAt` is the earliest non-null `completed_at` on an
   activation session reached through that profile's exact
-  `activation_record` identity link. The report's activation percentage is
-  completed activations divided by first-opened profiles, both overall and per
-  group; a zero first-open denominator returns `percentage: null`.
+  `activation_record` identity link and completed before `observationEnd`.
+  The activation numerator counts only first-opened profiles, so it is always a
+  subset of its first-open denominator and cannot exceed 100 percent.
 - **Return / one-and-done:** `laterOpenDays` contains distinct UTC open dates
-  after the first-open date and before `cohortEnd`. `oneAndDone=true` means one
-  observed UTC open day through that requested end, not a lifetime prediction.
+  after the first-open date and before `observationEnd`. A profile is return
+  eligible only after first open and when at least one complete later UTC day
+  exists before the observation boundary. Only an eligible profile with no
+  later open day has `oneAndDone=true`; an immature profile is not labeled
+  one-and-done.
 
-`dateWindow` states the inclusive start, exclusive end, first-install cohort,
-and events-before-end observation contract. `groups` cover the complete cohort.
-`journeys` are ordered by `firstInstallAt`, then customer UUID, and the response
-states whether the bounded journey sample was truncated.
+Top-level and per-group `firstOpenPercentage`, `activationPercentage`,
+`returnPercentage`, and `oneAndDonePercentage` each expose numerator,
+denominator, and percentage; zero denominators produce `percentage: null`.
+`totals` exposes the corresponding profile counts. `dateWindow` keeps the
+inclusive/exclusive first-install selection window separate from the completed
+UTC-day observation boundary. `groups` cover the complete cohort. `journeys`
+add explicit return eligibility and returned/one-and-done state, remain ordered
+by `firstInstallAt` then customer UUID, and state whether the bounded sample was
+truncated.
 
 Attribution is deterministic and deliberately narrow. `verified_paid` is the
 highest-precedence source and requires an active, completed paid-acquisition
@@ -345,6 +357,13 @@ verified account email and the profile contact email. Its source/medium/campaign
 come from the lead, while experiment dimensions are accepted only from a valid
 server-signed assignment: experiment `mc-mobile-paid-v1` and cohort
 `mc-control-v1` or `mc-paid-v1`.
+
+Both candidate classes require `firstAttributedAt <= firstInstallAt`. A paid
+entry first captured after installation is not an acquisition candidate. A
+canonical verified-email lead must have both its first and last capture no
+later than first install, because the stored row has no per-field capture
+timestamps; this conservatively excludes a row revisited after install instead
+of allowing its later-filled fields to rewrite acquisition.
 
 Paid attribution wins over verified email even when the email capture happened
 earlier. Within each class, the earliest exact candidate wins. Repeated mobile
@@ -827,7 +846,7 @@ Use the narrowest relevant check after edits:
 - Run `TZ=America/Los_Angeles node --experimental-strip-types --test tests/customer-360/core.test.mjs` after Customer 360 identity or profile-merge changes, then run `node --experimental-strip-types --test tests/customer-360/core-postgres.test.mjs` for the database total-order contract.
 - Run `node --experimental-strip-types --test tests/customer-360/commerce.test.mjs` after commerce normalization changes, then run `SIDESTREAM_TEST_POSTGRES_URL='<disposable-postgres-url>' node --experimental-strip-types --test tests/customer-360/commerce-postgres.test.mjs` after payment-group, identity-link trigger, allocation-edge, or totals changes. The Postgres suite proves partial capture authority, Checkout-only and paid-Invoice fallback replacement, paid InvoicePayment overlap deduplication with an unrelated-Checkout negative control, fully and partially off-Stripe totals, verified fallback dates, modern paid/open InvoicePayment shapes, many-to-many allocations, refund-first late attachment, product scope, and whole-group quarantine.
 - Run `npm run test:customer-360`, then `SIDESTREAM_TEST_POSTGRES_URL='<disposable-postgres-url>' npm run test:customer-360-postgres`, after any Customer 360 contract, identity, commerce, usage, query, migration, or backfill change. Confirm the harness rejects runtime/telemetry endpoint collisions, protected list/detail fields match `docs/customer-360.md`, dry-run makes no connection or checkpoint write, and the complete pipeline leaves entitlement/single-device state unchanged.
-- Run `npm run test:customer-360` after acquisition/retention documentation or report-contract changes. For query or aggregation behavior, also run the unmodified `npm run test:customer-360-postgres` against its approved disposable database and confirm first-install cohort bounds, exact `session_started` open days, day-zero accepted attempts, activation numerator/first-open denominator, paid-over-email precedence, complete unknown coverage, privacy exclusions, and deterministic journey ordering.
+- Run `npm run test:customer-360` after acquisition/retention documentation or report-contract changes. For query or aggregation behavior, also run the unmodified `npm run test:customer-360-postgres` against its approved disposable database and confirm first-install cohort bounds remain separate from the completed UTC-day observation end, immature profiles are excluded from return/one-and-done denominators, exact `session_started` open days and day-zero accepted attempts stop at that boundary, activation numerators are first-open subsets, post-install attribution candidates cannot rewrite acquisition, unknown coverage remains complete, and privacy exclusions plus journey ordering remain deterministic.
 - Run `npm run build` after shader, TypeScript, Tailwind, HTML mount, Vite config, or package changes.
 - Run `npm run test:download-referral` after changing installer attribution or `/api/download`. It verifies that tagged `GET`s are recorded only after a successful redirect, while `HEAD`, `304`, bad platforms, fulfillment errors, database errors, and database timeouts cannot create a false successful event or block delivery.
 - Run `npm run test:referral-visits` after changing `/manychat-instagram`, `/m`, `/mc`, `/api/referral-visit`, the ManyChat browser hook, private-Blob referral storage, or its report. It verifies the dedicated and legacy route forms, both allowlisted sources, bounded request body, response-before-storage behavior, source-separated daily anonymous dedupe inputs, scanner separation, and hash-free aggregate output.
@@ -973,6 +992,7 @@ Use the narrowest relevant check after edits:
 
 ## Recent Change Log
 
+- 2026-07-30: Separated the protected acquisition report's first-install cohort window from a required later completed UTC-day `observationEnd`. Added auditable aggregate and per-group first-open, activation, return, and one-and-done metrics; excluded immature profiles from return/one-and-done denominators; capped the full observation span at 730 days; bounded activation and usage facts to observation; and rejected paid/email first touches captured after install so later visits cannot rewrite acquisition.
 - 2026-07-30: Added the protected first-install acquisition/retention report contract with exact `session_started` open days, accepted day-zero download attempts, completed-activation/first-open ratios, paid-over-verified-email attribution precedence, explicit paid/freemium experiment dimensions, complete unknown coverage, and bounded privacy-safe journeys. Documented that source-segmented retention covers only exact links while overall stickiness retains all install IDs, and that historical broad activity buckets require a separately approved one-time full append/update rescan without raw telemetry deletion. No Production migration, backfill, configuration, rescan, deployment, or route invocation was authorized.
 - 2026-07-30: Added `https://sidestream.tv/manychat-instagram` as the canonical organic Instagram ManyChat referral link with its own `manychat-instagram` private-Blob reporting bucket, while preserving `/m` and `/mc` behavior for legacy generic and paid-experiment traffic.
 - 2026-07-30: Advanced only the receipt-gated paid Mac manifest to the notarized `Sidestream Unlimited` artifact from FlowState `61e768b`. The refreshed installer keeps the public filename `Sidestream-Unlimited.dmg`, uses a new immutable private Blob pathname, exposes `Install Sidestream Unlimited.pkg`, and removes the redundant paid panel-intro branding/status copy without changing the standard Mac release or paid Windows manifest.

@@ -9,6 +9,7 @@ const VALID_BODY = {
   licenseNamespace: "test",
   cohortStart: "2026-07-01T00:00:00Z",
   cohortEnd: "2026-08-01T00:00:00Z",
+  observationEnd: "2026-09-01T00:00:00Z",
   journeyLimit: 2,
 };
 
@@ -92,10 +93,25 @@ test("request contract rejects unknown keys and unbounded or non-UTC windows", a
     [{ ...VALID_BODY, licenseNamespace: "preview" }, "invalid_namespace"],
     [{ ...VALID_BODY, cohortStart: "2026-07-01T00:00:00-07:00" }, "invalid_cohort_window"],
     [{ ...VALID_BODY, cohortEnd: VALID_BODY.cohortStart }, "invalid_cohort_window"],
+    [{ ...VALID_BODY, observationEnd: undefined }, "invalid_cohort_window"],
+    [{
+      ...VALID_BODY,
+      observationEnd: "2026-09-01T12:00:00Z",
+    }, "invalid_cohort_window"],
+    [{
+      ...VALID_BODY,
+      observationEnd: "2026-07-31T00:00:00Z",
+    }, "invalid_cohort_window"],
     [{
       ...VALID_BODY,
       cohortStart: "2025-01-01T00:00:00Z",
       cohortEnd: "2026-08-01T00:00:00Z",
+    }, "invalid_cohort_window"],
+    [{
+      ...VALID_BODY,
+      cohortStart: "2024-01-01T00:00:00Z",
+      cohortEnd: "2024-02-01T00:00:00Z",
+      observationEnd: "2026-01-01T00:00:00Z",
     }, "invalid_cohort_window"],
     [{ ...VALID_BODY, journeyLimit: 101 }, "invalid_journey_limit"],
     [{ ...VALID_BODY, journeyLimit: 1.5 }, "invalid_journey_limit"],
@@ -131,6 +147,9 @@ test("aggregate and journey output exposes all ratios without raw linkage", asyn
               profile_count: "2",
               first_opened_count: "2",
               completed_activation_count: "1",
+              return_eligible_count: "2",
+              returned_count: "1",
+              one_and_done_count: "1",
             },
             {
               source: "unknown",
@@ -142,6 +161,9 @@ test("aggregate and journey output exposes all ratios without raw linkage", asyn
               profile_count: "1",
               first_opened_count: "0",
               completed_activation_count: "0",
+              return_eligible_count: "0",
+              returned_count: "0",
+              one_and_done_count: "0",
             },
           ],
         };
@@ -161,6 +183,7 @@ test("aggregate and journey output exposes all ratios without raw linkage", asyn
           activation_at: "2026-07-03T12:00:00Z",
           day_zero_download_attempts: "3",
           later_open_days: ["2026-07-05"],
+          return_eligible: true,
           email: "must-not-cross@example.com",
           link_value: "must-not-cross",
         }],
@@ -170,6 +193,21 @@ test("aggregate and journey output exposes all ratios without raw linkage", asyn
 
   const result = await funnelModule.queryAcquisitionFunnel(VALID_BODY, { transaction });
   assert.deepEqual(result.activationPercentage, {
+    numerator: "1",
+    denominator: "2",
+    percentage: "50.00",
+  });
+  assert.deepEqual(result.firstOpenPercentage, {
+    numerator: "2",
+    denominator: "3",
+    percentage: "66.67",
+  });
+  assert.deepEqual(result.returnPercentage, {
+    numerator: "1",
+    denominator: "2",
+    percentage: "50.00",
+  });
+  assert.deepEqual(result.oneAndDonePercentage, {
     numerator: "1",
     denominator: "2",
     percentage: "50.00",
@@ -184,6 +222,8 @@ test("aggregate and journey output exposes all ratios without raw linkage", asyn
   });
   assert.equal(result.groups[0].activationPercentage.percentage, "50.00");
   assert.equal(result.journeys[0].dayZeroDownloadAttempts, "3");
+  assert.equal(result.journeys[0].returnEligible, true);
+  assert.equal(result.journeys[0].returned, true);
   assert.equal(result.journeys[0].oneAndDone, false);
   assert.equal(result.journeysTruncated, true);
   assert.doesNotMatch(
@@ -195,13 +235,21 @@ test("aggregate and journey output exposes all ratios without raw linkage", asyn
   assert.match(sqlCalls[0].sql, /payment_state = 'active'/);
   assert.match(sqlCalls[0].sql, /claim\.claim_state = 'claimed'/);
   assert.match(sqlCalls[0].sql, /lead\.cta_source = 'mobile-download-handoff'/);
+  assert.match(sqlCalls[0].sql, /paid\.first_attributed_at <= cohort\.first_install_at/);
+  assert.match(sqlCalls[0].sql, /lead\.first_captured_at <= cohort\.first_install_at/);
+  assert.match(sqlCalls[0].sql, /lead\.last_captured_at <= cohort\.first_install_at/);
   assert.match(sqlCalls[0].sql, /account\.email = profile\.contact_email/);
+  assert.match(
+    sqlCalls[0].sql,
+    /where first_open_at is not null and activation_at is not null/,
+  );
   assert.match(sqlCalls[0].sql, /order by[\s\S]*paid\.first_attributed_at[\s\S]*paid\.entry_id/);
-  assert.match(sqlCalls[1].sql, /order by first_install_at, profile_id[\s\S]*limit \$4/);
+  assert.match(sqlCalls[1].sql, /order by first_install_at, profile_id[\s\S]*limit \$5/);
   assert.deepEqual(sqlCalls[1].params, [
     "test",
     "2026-07-01T00:00:00.000Z",
     "2026-08-01T00:00:00.000Z",
+    "2026-09-01T00:00:00.000Z",
     2,
   ]);
 });
@@ -223,6 +271,9 @@ test("zero first-open denominator returns an explicit null percentage", async ()
           profile_count: "1",
           first_opened_count: "0",
           completed_activation_count: "0",
+          return_eligible_count: "0",
+          returned_count: "0",
+          one_and_done_count: "0",
         }] : [],
       }),
     }),

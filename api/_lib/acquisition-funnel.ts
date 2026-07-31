@@ -4,6 +4,7 @@ import { withPostgresTransaction } from "./postgres.js";
 const DEFAULT_JOURNEY_LIMIT = 50;
 const MAX_JOURNEY_LIMIT = 100;
 const MAX_COHORT_WINDOW_MS = 366 * 24 * 60 * 60 * 1_000;
+const MAX_OBSERVATION_SPAN_MS = 730 * 24 * 60 * 60 * 1_000;
 const UTC_TIMESTAMP_PATTERN =
   /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z$/;
 
@@ -13,6 +14,7 @@ type FunnelInput = Readonly<{
   licenseNamespace: LicenseNamespace;
   cohortStart: string;
   cohortEnd: string;
+  observationEnd: string;
   journeyLimit: number;
 }>;
 
@@ -37,6 +39,9 @@ type FunnelGroupRow = QueryResultRow & Readonly<{
   profile_count: string | number | bigint;
   first_opened_count: string | number | bigint;
   completed_activation_count: string | number | bigint;
+  return_eligible_count: string | number | bigint;
+  returned_count: string | number | bigint;
+  one_and_done_count: string | number | bigint;
 }>;
 
 type FunnelJourneyRow = QueryResultRow & Readonly<{
@@ -53,6 +58,7 @@ type FunnelJourneyRow = QueryResultRow & Readonly<{
   activation_at: Date | string | null;
   day_zero_download_attempts: string | number | bigint;
   later_open_days: string[] | null;
+  return_eligible: boolean;
 }>;
 
 export class AcquisitionFunnelValidationError extends Error {
@@ -98,7 +104,7 @@ const FUNNEL_CTES = `
     left join public.sidestream_customer_usage_daily usage
       on usage.license_namespace = install.license_namespace
       and usage.install_id_hash = install.install_id_hash
-      and usage.activity_day < ($3::timestamptz at time zone 'UTC')::date
+      and usage.activity_day < ($4::timestamptz at time zone 'UTC')::date
     group by cohort.profile_id
   ),
   usage_detail as (
@@ -125,7 +131,13 @@ const FUNNEL_CTES = `
               (profile_usage.first_open_at at time zone 'UTC')::date
         ),
         array[]::text[]
-      ) as later_open_days
+      ) as later_open_days,
+      (
+        profile_usage.first_open_at is not null
+        and (
+          (profile_usage.first_open_at at time zone 'UTC')::date + 1
+        ) < ($4::timestamptz at time zone 'UTC')::date
+      ) as return_eligible
     from cohort_profiles cohort
     join profile_usage on profile_usage.profile_id = cohort.profile_id
     left join public.sidestream_customer_installs install
@@ -134,7 +146,7 @@ const FUNNEL_CTES = `
     left join public.sidestream_customer_usage_daily usage
       on usage.license_namespace = install.license_namespace
       and usage.install_id_hash = install.install_id_hash
-      and usage.activity_day < ($3::timestamptz at time zone 'UTC')::date
+      and usage.activity_day < ($4::timestamptz at time zone 'UTC')::date
     group by
       cohort.profile_id,
       cohort.first_install_at,
@@ -152,6 +164,7 @@ const FUNNEL_CTES = `
         '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
       and activation.id = link.link_value::uuid
       and activation.completed_at is not null
+      and activation.completed_at < $4::timestamptz
     where link.license_namespace = $1
     group by link.profile_id
   ),
@@ -241,7 +254,9 @@ const FUNNEL_CTES = `
       ) as candidate_order
     from paid_profile_edges edge
     join cohort_profiles cohort on cohort.profile_id = edge.profile_id
-    join verified_paid_checkouts paid on paid.checkout_id = edge.checkout_id
+    join verified_paid_checkouts paid
+      on paid.checkout_id = edge.checkout_id
+      and paid.first_attributed_at <= cohort.first_install_at
   ),
   freemium_candidates as (
     select
@@ -287,6 +302,8 @@ const FUNNEL_CTES = `
       on lead.cta_source = 'mobile-download-handoff'
       and lead.email = account.email
       and lead.email = lower(btrim(lead.email))
+      and lead.first_captured_at <= cohort.first_install_at
+      and lead.last_captured_at <= cohort.first_install_at
   ),
   attribution_candidates as (
     select
@@ -325,6 +342,7 @@ const FUNNEL_CTES = `
       activation.activation_at,
       usage.day_zero_download_attempts,
       usage.later_open_days,
+      usage.return_eligible,
       coalesce(attribution.source, 'unknown') as source,
       attribution.medium,
       attribution.campaign,
@@ -353,6 +371,7 @@ export async function queryAcquisitionFunnel(
     input.licenseNamespace,
     input.cohortStart,
     input.cohortEnd,
+    input.observationEnd,
   ] as const;
 
   return dependencies.transaction(async (client) => {
@@ -368,8 +387,17 @@ export async function queryAcquisitionFunnel(
         count(*)::bigint as profile_count,
         count(*) filter (where first_open_at is not null)::bigint
           as first_opened_count,
-        count(*) filter (where activation_at is not null)::bigint
-          as completed_activation_count
+        count(*) filter (
+          where first_open_at is not null and activation_at is not null
+        )::bigint as completed_activation_count,
+        count(*) filter (where return_eligible)::bigint
+          as return_eligible_count,
+        count(*) filter (
+          where return_eligible and cardinality(later_open_days) > 0
+        )::bigint as returned_count,
+        count(*) filter (
+          where return_eligible and cardinality(later_open_days) = 0
+        )::bigint as one_and_done_count
       from attributed_profiles
       group by
         source, medium, campaign, experiment, cohort, attribution_confidence
@@ -397,10 +425,11 @@ export async function queryAcquisitionFunnel(
         first_open_at,
         activation_at,
         day_zero_download_attempts,
-        later_open_days
+        later_open_days,
+        return_eligible
       from attributed_profiles
       order by first_install_at, profile_id
-      limit $4
+      limit $5
     `, [...parameters, input.journeyLimit]);
 
     const groups = groupsResult.rows.map(formatGroup);
@@ -429,13 +458,27 @@ export async function queryAcquisitionFunnel(
       dateWindow: {
         cohortStart: input.cohortStart,
         cohortEnd: input.cohortEnd,
+        observationEnd: input.observationEnd,
         endExclusive: true,
+        observationEndExclusive: true,
         cohortDefinition: "first_install_at",
-        observationDefinition: "events_before_cohort_end",
+        observationDefinition: "completed_utc_days_before_observation_end",
       },
+      firstOpenPercentage: percentageMetric(
+        totals.firstOpenedProfiles,
+        totals.profiles,
+      ),
       activationPercentage: percentageMetric(
         totals.completedActivations,
         totals.firstOpenedProfiles,
+      ),
+      returnPercentage: percentageMetric(
+        totals.returnedProfiles,
+        totals.returnEligibleProfiles,
+      ),
+      oneAndDonePercentage: percentageMetric(
+        totals.oneAndDoneProfiles,
+        totals.returnEligibleProfiles,
       ),
       attributionCoverage: {
         ...percentageMetric(attributedProfiles, totals.profiles),
@@ -447,6 +490,9 @@ export async function queryAcquisitionFunnel(
         profiles: totals.profiles.toString(),
         firstOpenedProfiles: totals.firstOpenedProfiles.toString(),
         completedActivations: totals.completedActivations.toString(),
+        returnEligibleProfiles: totals.returnEligibleProfiles.toString(),
+        returnedProfiles: totals.returnedProfiles.toString(),
+        oneAndDoneProfiles: totals.oneAndDoneProfiles.toString(),
       },
       groups,
       journeys: journeysResult.rows.map(formatJourney),
@@ -463,6 +509,7 @@ function parseFunnelInput(request: unknown): FunnelInput {
     "licenseNamespace",
     "cohortStart",
     "cohortEnd",
+    "observationEnd",
     "journeyLimit",
   ]);
 
@@ -474,8 +521,10 @@ function parseFunnelInput(request: unknown): FunnelInput {
   }
   const cohortStart = normalizeUtcTimestamp(body.cohortStart, "cohortStart");
   const cohortEnd = normalizeUtcTimestamp(body.cohortEnd, "cohortEnd");
+  const observationEnd = normalizeUtcDayBoundary(body.observationEnd);
   const startTime = Date.parse(cohortStart);
   const endTime = Date.parse(cohortEnd);
+  const observationEndTime = Date.parse(observationEnd);
   if (endTime <= startTime) {
     throw new AcquisitionFunnelValidationError(
       "invalid_cohort_window",
@@ -486,6 +535,18 @@ function parseFunnelInput(request: unknown): FunnelInput {
     throw new AcquisitionFunnelValidationError(
       "invalid_cohort_window",
       "Cohort window cannot exceed 366 days",
+    );
+  }
+  if (observationEndTime < endTime) {
+    throw new AcquisitionFunnelValidationError(
+      "invalid_cohort_window",
+      "observationEnd must be at or after cohortEnd",
+    );
+  }
+  if (observationEndTime - startTime > MAX_OBSERVATION_SPAN_MS) {
+    throw new AcquisitionFunnelValidationError(
+      "invalid_cohort_window",
+      "Cohort start to observation end cannot exceed 730 days",
     );
   }
 
@@ -507,6 +568,7 @@ function parseFunnelInput(request: unknown): FunnelInput {
     licenseNamespace: body.licenseNamespace,
     cohortStart,
     cohortEnd,
+    observationEnd,
     journeyLimit,
   };
 }
@@ -551,10 +613,30 @@ function normalizeUtcTimestamp(value: unknown, name: string) {
   return parsed.toISOString();
 }
 
+function normalizeUtcDayBoundary(value: unknown) {
+  const normalized = normalizeUtcTimestamp(value, "observationEnd");
+  const parsed = new Date(normalized);
+  if (
+    parsed.getUTCHours() !== 0 ||
+    parsed.getUTCMinutes() !== 0 ||
+    parsed.getUTCSeconds() !== 0 ||
+    parsed.getUTCMilliseconds() !== 0
+  ) {
+    throw new AcquisitionFunnelValidationError(
+      "invalid_cohort_window",
+      "observationEnd must be a completed UTC-day boundary at 00:00:00Z",
+    );
+  }
+  return normalized;
+}
+
 function formatGroup(row: FunnelGroupRow) {
   const profiles = toBigInt(row.profile_count);
   const firstOpenedProfiles = toBigInt(row.first_opened_count);
   const completedActivations = toBigInt(row.completed_activation_count);
+  const returnEligibleProfiles = toBigInt(row.return_eligible_count);
+  const returnedProfiles = toBigInt(row.returned_count);
+  const oneAndDoneProfiles = toBigInt(row.one_and_done_count);
   return {
     source: row.source,
     medium: row.medium,
@@ -565,9 +647,21 @@ function formatGroup(row: FunnelGroupRow) {
     profileCount: profiles.toString(),
     firstOpenedProfiles: firstOpenedProfiles.toString(),
     completedActivations: completedActivations.toString(),
+    returnEligibleProfiles: returnEligibleProfiles.toString(),
+    returnedProfiles: returnedProfiles.toString(),
+    oneAndDoneProfiles: oneAndDoneProfiles.toString(),
+    firstOpenPercentage: percentageMetric(firstOpenedProfiles, profiles),
     activationPercentage: percentageMetric(
       completedActivations,
       firstOpenedProfiles,
+    ),
+    returnPercentage: percentageMetric(
+      returnedProfiles,
+      returnEligibleProfiles,
+    ),
+    oneAndDonePercentage: percentageMetric(
+      oneAndDoneProfiles,
+      returnEligibleProfiles,
     ),
   };
 }
@@ -590,7 +684,9 @@ function formatJourney(row: FunnelJourneyRow) {
     activationAt: nullableIsoString(row.activation_at),
     dayZeroDownloadAttempts: toBigInt(row.day_zero_download_attempts).toString(),
     laterOpenDays,
-    oneAndDone: row.first_open_at !== null && laterOpenDays.length === 0,
+    returnEligible: row.return_eligible,
+    returned: row.return_eligible && laterOpenDays.length > 0,
+    oneAndDone: row.return_eligible && laterOpenDays.length === 0,
   };
 }
 
@@ -601,10 +697,19 @@ function sumGroupCounts(rows: readonly FunnelGroupRow[]) {
       totals.firstOpenedProfiles + toBigInt(row.first_opened_count),
     completedActivations:
       totals.completedActivations + toBigInt(row.completed_activation_count),
+    returnEligibleProfiles:
+      totals.returnEligibleProfiles + toBigInt(row.return_eligible_count),
+    returnedProfiles:
+      totals.returnedProfiles + toBigInt(row.returned_count),
+    oneAndDoneProfiles:
+      totals.oneAndDoneProfiles + toBigInt(row.one_and_done_count),
   }), {
     profiles: 0n,
     firstOpenedProfiles: 0n,
     completedActivations: 0n,
+    returnEligibleProfiles: 0n,
+    returnedProfiles: 0n,
+    oneAndDoneProfiles: 0n,
   });
 }
 

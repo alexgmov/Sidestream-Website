@@ -285,11 +285,15 @@ The request body accepts only:
 | `licenseNamespace` | Required `production` or `test`; scopes every identity, install, usage, activation, and attribution read |
 | `cohortStart` | Required valid UTC timestamp ending in `Z`; inclusive |
 | `cohortEnd` | Required valid UTC timestamp ending in `Z`; exclusive and after the start |
+| `observationEnd` | Required UTC day boundary at `00:00:00Z`; exclusive, at or after `cohortEnd`, and used only for completed observation days |
 | `journeyLimit` | Optional integer 1-100; defaults to 50 |
 
-The cohort window cannot exceed 366 days. `dateWindow.cohortDefinition` is
-`first_install_at`, `endExclusive` is true, and the observation contract is
-events before `cohortEnd`.
+The first-install cohort window cannot exceed 366 days, and the complete span
+from `cohortStart` through `observationEnd` cannot exceed 730 days.
+`dateWindow.cohortDefinition` is `first_install_at`, `endExclusive` applies to
+`cohortEnd`, and `observationEndExclusive` applies to the completed UTC-day
+observation boundary. Cohort selection never expands when an analyst moves
+`observationEnd` later.
 
 ### Exact metric definitions
 
@@ -297,24 +301,33 @@ events before `cohortEnd`.
 | --- | --- |
 | Install / cohort membership | `firstInstallAt` is the minimum `first_seen_at` across the live profile's current `sidestream_customer_installs` memberships. A profile is in the cohort only when `cohortStart <= firstInstallAt < cohortEnd`. |
 | Telemetry-derived install evidence | `installer_install_completed`, `session_started`, or an accepted download attempt/success may contribute an exact lifecycle timestamp. A heartbeat is not install-completion or open evidence and must not advance an existing install lifecycle. |
-| First open | Earliest `first_app_use_at` before the exclusive end, where `first_app_use_at` is populated only from an exact schema `0.2.0` `session_started` event. |
+| First open | Earliest `first_app_use_at` before `observationEnd`, where `first_app_use_at` is populated only from an exact schema `0.2.0` `session_started` event. |
 | Active/open day | UTC calendar day with at least one `session_started`. Installer events, heartbeats, download events, and other telemetry do not create an active/open day. |
 | Download attempt | First accepted, non-speculative `download_requested`, deduplicated by install/session/download identity when present and telemetry event identity otherwise. Speculative requests count only when terminal facts are linked to a real user request. |
 | Day-zero downloads | Accepted download attempts whose UTC activity date equals the first-open UTC date. A download attempt does not itself create an open day. |
-| Activation | Earliest non-null `completed_at` on a `sidestream_activation_sessions` row reached through the profile's exact `activation_record` identity link. Pending or merely created activation rows do not count. |
-| Return day | Distinct UTC active/open date after the first-open date and before `cohortEnd`. |
-| One-and-done | `firstOpenAt` exists and no later open date was observed through the requested exclusive end. This is an observation-window result, not a lifetime prediction. |
+| Activation | Earliest non-null `completed_at` before `observationEnd` on a `sidestream_activation_sessions` row reached through the profile's exact `activation_record` identity link. Pending or merely created activation rows do not count. The metric numerator includes only profiles that also have a first open. |
+| Return eligibility | A first-opened profile with at least one complete later UTC calendar day available before `observationEnd`. If first open occurs on the last completed day before the boundary, the profile is immature and excluded from return and one-and-done denominators. |
+| Return day | Distinct UTC active/open date after the first-open date and before `observationEnd`. |
+| One-and-done | A return-eligible profile with no later open date before `observationEnd`. An unopened or immature profile is never one-and-done. This is an observation-window result, not a lifetime prediction. |
 
-The top-level and per-group activation percentage has:
+The top-level and every per-group result expose these complete percentage
+objects:
 
-- numerator: profiles with a completed linked activation;
-- denominator: profiles with a first open;
-- percentage: numerator divided by denominator, rounded to two decimal places,
-  or null when the denominator is zero.
+| Object | Numerator | Denominator |
+| --- | --- | --- |
+| `firstOpenPercentage` | First-opened profiles | All cohort profiles |
+| `activationPercentage` | First-opened profiles with a completed linked activation before `observationEnd` | First-opened profiles |
+| `returnPercentage` | Return-eligible profiles with at least one later open day | Return-eligible profiles |
+| `oneAndDonePercentage` | Return-eligible profiles with no later open day | Return-eligible profiles |
 
-It is not activations divided by installs, clicks, downloads, attributed
-profiles, or paid customers. `totals` always exposes profiles,
-first-opened profiles, and completed activations so the ratio can be audited.
+Each object contains explicit decimal-string `numerator` and `denominator`
+values plus a percentage rounded to two decimal places, or null when the
+denominator is zero. Completed activation numerators are defined as a subset of
+first-opened profiles, so activation percentage cannot exceed 100 percent. It
+is not activations divided by installs, clicks, downloads, attributed profiles,
+or paid customers. `totals` also exposes profiles, first-opened profiles,
+completed activations, return-eligible profiles, returned profiles, and
+one-and-done profiles so every ratio can be audited.
 
 ### Source precedence and experiment dimensions
 
@@ -338,6 +351,15 @@ Paid attribution wins over verified email even if the email lead was captured
 earlier. Within paid candidates, the earliest exact paid entry wins with stable
 entry/Checkout tie-breakers. Within freemium candidates, the earliest lead wins
 with a stable lead-ID tie-breaker.
+
+Both candidate classes are acquisition first touches only when their
+`first_attributed_at`/`first_captured_at` is at or before the profile's exact
+`firstInstallAt`. A paid entry first captured after installation is ineligible
+even when its exact identity linkage is otherwise valid. The canonical
+verified-email lead must also have `last_captured_at <= firstInstallAt`: because
+that row does not retain per-field capture timestamps, a row revisited after
+install is conservatively excluded instead of allowing later-filled attribution
+fields to rewrite acquisition source, campaign, or experiment dimensions.
 
 For repeat mobile handoffs, each UTM field preserves its earliest non-null value:
 a later submission may fill a field that was previously null but cannot replace
@@ -373,12 +395,14 @@ though they cannot support source-segmented comparison.
 
 `groups` cover the complete cohort and are partitioned by source, medium,
 campaign, experiment, cohort, and attribution confidence. Each group exposes
-profile, first-open, completed-activation, and activation-percentage values.
-`journeys` are ordered by exact first install time then customer UUID and expose
-only the customer UUID, bounded attribution dimensions/confidence,
-first-attributed/install/open/activation timestamps, day-zero attempt count,
-later UTC open dates, and one-and-done status. The response includes
-`journeyLimit`, `journeysReturned`, and `journeysTruncated`.
+profile, first-open, completed-activation, return-eligible, returned, and
+one-and-done counts plus the four numerator/denominator/percentage objects
+defined above. `journeys` are ordered by exact first install time then customer
+UUID and expose only the customer UUID, bounded attribution
+dimensions/confidence, first-attributed/install/open/activation timestamps,
+day-zero attempt count, later UTC open dates, explicit return eligibility,
+returned status, and one-and-done status. The response includes `journeyLimit`,
+`journeysReturned`, and `journeysTruncated`.
 
 Email, `installIdHash`, installer receipt/assignment hashes, Stripe identifiers,
 identity-link values, raw telemetry, and raw attribution proof do not cross the
@@ -567,8 +591,10 @@ Operators must inspect:
 - the cron result and last completed run once daily;
 - `usage.syncedAt` versus `usage.sourceFreshnessAt` for source lag;
 - the nine data-quality flags on list/detail results;
-- funnel activation numerator/first-open denominator and attribution-coverage
-  numerator/all-cohort denominator before comparing sources;
+- funnel first-open/all-cohort, activation/first-open,
+  returned/return-eligible, one-and-done/return-eligible, and
+  attribution-coverage/all-cohort numerator/denominator pairs before comparing
+  sources;
 - unattributed profile share, which must remain explicit rather than being
   reassigned or excluded from overall stickiness;
 - unresolved `pending_identity_review` and `commerce_identity_conflict` counts;
@@ -662,8 +688,10 @@ npm run build
 once-daily usage sync and rolling decay, list/detail privacy/cursors, the
 first-install acquisition/retention funnel, dry-run and test-only backfill
 recovery, and the end-to-end merge/replay pipeline. Funnel coverage proves the
-exclusive window, exact UTC open/return days, accepted day-zero attempts,
-completed-activation/first-open ratios, paid-over-email precedence, unknown
+exclusive first-install window stays separate from the completed UTC-day
+observation boundary, exact UTC open/return days, mature return eligibility,
+accepted day-zero attempts, completed-activation/first-open subset ratios,
+pre-install-only paid/email first touches, paid-over-email precedence, unknown
 coverage, deterministic journey ordering, and privacy exclusions. The complete
 pipeline proves Stripe/Vercel/network isolation and verifies that Customer 360
 leaves entitlement and device-seat state unchanged.

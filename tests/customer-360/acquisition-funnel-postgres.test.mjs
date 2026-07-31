@@ -28,11 +28,18 @@ const PROFILE_FREEMIUM = "00000000-0000-4000-8000-000000000002";
 const PROFILE_UNVERIFIED_EMAIL = "00000000-0000-4000-8000-000000000003";
 const PROFILE_UNKNOWN = "00000000-0000-4000-8000-000000000004";
 const ACCOUNT_FREEMIUM = "10000000-0000-4000-8000-000000000001";
+const ACCOUNT_LATE_EMAIL = "10000000-0000-4000-8000-000000000002";
 const ACTIVATION_PAID = "20000000-0000-4000-8000-000000000001";
+const ACTIVATION_UNOPENED = "20000000-0000-4000-8000-000000000002";
+const ACTIVATION_AFTER_OBSERVATION = "20000000-0000-4000-8000-000000000003";
 const CHECKOUT_INTENT = "30000000-0000-4000-8000-000000000001";
+const CHECKOUT_INTENT_LATE = "30000000-0000-4000-8000-000000000002";
 const ENTRY_PAID = "40000000-0000-4000-8000-000000000001";
+const ENTRY_LATE = "40000000-0000-4000-8000-000000000002";
 const CHECKOUT_PAID = "50000000-0000-4000-8000-000000000001";
+const CHECKOUT_LATE = "50000000-0000-4000-8000-000000000002";
 const RECEIPT_HASH = "a".repeat(64);
+const LATE_RECEIPT_HASH = "9".repeat(64);
 const ASSIGNMENT_HASH = "b".repeat(64);
 
 const funnelModule = await loadInjectedModule(
@@ -93,23 +100,44 @@ test("acquisition funnel keeps attribution exact and retention UTC-day based", {
     const report = await funnelModule.queryAcquisitionFunnel({
       licenseNamespace: "test",
       cohortStart: "2026-07-01T00:00:00Z",
-      cohortEnd: "2026-08-01T00:00:00Z",
-      journeyLimit: 3,
+      cohortEnd: "2026-07-08T00:00:00Z",
+      observationEnd: "2026-08-01T00:00:00Z",
+      journeyLimit: 4,
     }, { transaction });
 
     assert.deepEqual(report.dateWindow, {
       cohortStart: "2026-07-01T00:00:00.000Z",
-      cohortEnd: "2026-08-01T00:00:00.000Z",
+      cohortEnd: "2026-07-08T00:00:00.000Z",
+      observationEnd: "2026-08-01T00:00:00.000Z",
       endExclusive: true,
+      observationEndExclusive: true,
       cohortDefinition: "first_install_at",
-      observationDefinition: "events_before_cohort_end",
+      observationDefinition: "completed_utc_days_before_observation_end",
     });
     assert.deepEqual(report.totals, {
       profiles: "4",
-      firstOpenedProfiles: "2",
+      firstOpenedProfiles: "3",
       completedActivations: "1",
+      returnEligibleProfiles: "2",
+      returnedProfiles: "1",
+      oneAndDoneProfiles: "1",
+    });
+    assert.deepEqual(report.firstOpenPercentage, {
+      numerator: "3",
+      denominator: "4",
+      percentage: "75.00",
     });
     assert.deepEqual(report.activationPercentage, {
+      numerator: "1",
+      denominator: "3",
+      percentage: "33.33",
+    });
+    assert.deepEqual(report.returnPercentage, {
+      numerator: "1",
+      denominator: "2",
+      percentage: "50.00",
+    });
+    assert.deepEqual(report.oneAndDonePercentage, {
       numerator: "1",
       denominator: "2",
       percentage: "50.00",
@@ -137,10 +165,28 @@ test("acquisition funnel keeps attribution exact and retention UTC-day based", {
       profileCount: "1",
       firstOpenedProfiles: "1",
       completedActivations: "1",
+      returnEligibleProfiles: "1",
+      returnedProfiles: "1",
+      oneAndDoneProfiles: "0",
+      firstOpenPercentage: {
+        numerator: "1",
+        denominator: "1",
+        percentage: "100.00",
+      },
       activationPercentage: {
         numerator: "1",
         denominator: "1",
         percentage: "100.00",
+      },
+      returnPercentage: {
+        numerator: "1",
+        denominator: "1",
+        percentage: "100.00",
+      },
+      oneAndDonePercentage: {
+        numerator: "0",
+        denominator: "1",
+        percentage: "0.00",
       },
     });
 
@@ -155,6 +201,8 @@ test("acquisition funnel keeps attribution exact and retention UTC-day based", {
     assert.equal(freemium.cohort, "mc-control-v1");
     assert.equal(freemium.dayZeroDownloadAttempts, "1");
     assert.deepEqual(freemium.laterOpenDays, []);
+    assert.equal(freemium.returnEligible, true);
+    assert.equal(freemium.returned, false);
     assert.equal(freemium.oneAndDone, true);
 
     const paid = report.journeys.find(
@@ -166,21 +214,36 @@ test("acquisition funnel keeps attribution exact and retention UTC-day based", {
     assert.equal(paid.activationAt, "2026-07-03T12:00:00.000Z");
     assert.equal(paid.dayZeroDownloadAttempts, "2");
     assert.deepEqual(paid.laterOpenDays, ["2026-07-04"]);
+    assert.equal(paid.returnEligible, true);
+    assert.equal(paid.returned, true);
     assert.equal(paid.oneAndDone, false);
 
-    assert.equal(report.journeysReturned, 3);
-    assert.equal(report.journeysTruncated, true);
+    const lateEmail = report.journeys.find(
+      (journey) => journey.customerId === PROFILE_UNVERIFIED_EMAIL,
+    );
+    assert.equal(lateEmail.attributionConfidence, "unattributed");
+    assert.equal(lateEmail.firstOpenAt, "2026-07-31T10:00:00.000Z");
+    assert.equal(lateEmail.returnEligible, false);
+    assert.equal(lateEmail.returned, false);
+    assert.equal(lateEmail.oneAndDone, false);
+
+    const unopened = report.journeys.find(
+      (journey) => journey.customerId === PROFILE_UNKNOWN,
+    );
+    assert.equal(unopened.attributionConfidence, "unattributed");
+    assert.equal(unopened.firstOpenAt, null);
+    assert.equal(unopened.activationAt, "2026-07-08T12:00:00.000Z");
+    assert.equal(unopened.returnEligible, false);
+    assert.equal(unopened.oneAndDone, false);
+
+    assert.equal(report.journeysReturned, 4);
+    assert.equal(report.journeysTruncated, false);
     assert.deepEqual(report.journeys.map((journey) => journey.customerId), [
       PROFILE_PAID,
       PROFILE_FREEMIUM,
       PROFILE_UNVERIFIED_EMAIL,
+      PROFILE_UNKNOWN,
     ]);
-    assert.equal(
-      report.journeys.find(
-        (journey) => journey.customerId === PROFILE_UNVERIFIED_EMAIL,
-      ).attributionConfidence,
-      "unattributed",
-    );
 
     const serialized = JSON.stringify(report);
     assert.doesNotMatch(serialized, /freemium@example\.com|unverified@example\.com/);
@@ -192,6 +255,7 @@ test("acquisition funnel keeps attribution exact and retention UTC-day based", {
       licenseNamespace: "production",
       cohortStart: "2026-07-01T00:00:00Z",
       cohortEnd: "2026-08-01T00:00:00Z",
+      observationEnd: "2026-08-01T00:00:00Z",
     }, { transaction });
     assert.equal(production.totals.profiles, "0");
     assert.deepEqual(production.groups, []);
@@ -208,19 +272,33 @@ async function seedFunnel(pool, schema) {
   await pool.query(
     `insert into ${schema}.sidestream_accounts (
        id, google_sub, email, created_at, updated_at
-     ) values ($1, 'google-freemium', 'freemium@example.com',
-       '2026-06-30T00:00:00Z', '2026-06-30T00:00:00Z')`,
-    [ACCOUNT_FREEMIUM],
+     ) values
+       ($1, 'google-freemium', 'freemium@example.com',
+        '2026-06-30T00:00:00Z', '2026-06-30T00:00:00Z'),
+       ($2, 'google-late-email', 'unverified@example.com',
+        '2026-07-06T00:00:00Z', '2026-07-06T00:00:00Z')`,
+    [ACCOUNT_FREEMIUM, ACCOUNT_LATE_EMAIL],
   );
   await pool.query(
     `insert into ${schema}.sidestream_activation_sessions (
        id, activation_key, status, completed_at, expires_at, created_at, updated_at
-     ) values (
-       $1, 'paid-activation-key', 'completed', '2026-07-03T12:00:00Z',
-       '2026-08-01T00:00:00Z', '2026-07-03T11:00:00Z',
-       '2026-07-03T12:00:00Z'
-     )`,
-    [ACTIVATION_PAID],
+     ) values
+       (
+         $1, 'paid-activation-key', 'completed', '2026-07-03T12:00:00Z',
+         '2026-08-01T00:00:00Z', '2026-07-03T11:00:00Z',
+         '2026-07-03T12:00:00Z'
+       ),
+       (
+         $2, 'unopened-activation-key', 'completed', '2026-07-08T12:00:00Z',
+         '2026-08-01T00:00:00Z', '2026-07-08T11:00:00Z',
+         '2026-07-08T12:00:00Z'
+       ),
+       (
+         $3, 'late-activation-key', 'completed', '2026-08-02T12:00:00Z',
+         '2026-09-01T00:00:00Z', '2026-08-02T11:00:00Z',
+         '2026-08-02T12:00:00Z'
+       )`,
+    [ACTIVATION_PAID, ACTIVATION_UNOPENED, ACTIVATION_AFTER_OBSERVATION],
   );
 
   const profiles = [
@@ -251,13 +329,23 @@ async function seedFunnel(pool, schema) {
      ) values
        ($1, 'test', 'installer_receipt_hash', $2),
        ($1, 'test', 'activation_record', $3),
-       ($4, 'test', 'account_identity', $5)`,
+       ($4, 'test', 'account_identity', $5),
+       ($4, 'test', 'activation_record', $6),
+       ($7, 'test', 'account_identity', $8),
+       ($9, 'test', 'installer_receipt_hash', $10),
+       ($9, 'test', 'activation_record', $11)`,
     [
       PROFILE_PAID,
       RECEIPT_HASH,
       ACTIVATION_PAID,
       PROFILE_FREEMIUM,
       ACCOUNT_FREEMIUM,
+      ACTIVATION_AFTER_OBSERVATION,
+      PROFILE_UNVERIFIED_EMAIL,
+      ACCOUNT_LATE_EMAIL,
+      PROFILE_UNKNOWN,
+      LATE_RECEIPT_HASH,
+      ACTIVATION_UNOPENED,
     ],
   );
 
@@ -279,6 +367,18 @@ async function seedFunnel(pool, schema) {
     firstOpenAt: "2026-07-05T10:00:00Z",
     attempts: 1,
   });
+  await insertUsageDay(pool, schema, {
+    profileId: PROFILE_FREEMIUM,
+    day: "2026-08-02",
+    firstOpenAt: "2026-08-02T10:00:00Z",
+    attempts: 0,
+  });
+  await insertUsageDay(pool, schema, {
+    profileId: PROFILE_UNVERIFIED_EMAIL,
+    day: "2026-07-31",
+    firstOpenAt: "2026-07-31T10:00:00Z",
+    attempts: 0,
+  });
 
   await pool.query(
     `insert into ${schema}.sidestream_download_leads (
@@ -294,10 +394,10 @@ async function seedFunnel(pool, schema) {
          'manychat', 'dm', 'freemium-launch'
        ),
        (
-         'lead-unverified', 'unverified@example.com', '2026-07-04T09:00:00Z',
+         'lead-unverified', 'unverified@example.com', '2026-07-05T09:00:00Z',
          'mobile-download-handoff',
          '{}'::jsonb,
-         '2026-07-04T09:00:00Z', '2026-07-04T09:00:00Z', 1,
+         '2026-07-05T09:00:00Z', '2026-07-07T09:00:00Z', 2,
          'manychat', 'dm', 'must-not-attach'
        )`,
     [JSON.stringify({
@@ -312,11 +412,21 @@ async function seedFunnel(pool, schema) {
   await pool.query(
     `insert into ${schema}.sidestream_checkout_intents (
        id, intent_kind, browser_token_hash, state, expires_at, created_at, updated_at
-     ) values (
-       $1, 'anonymous', $2, 'completed', '2026-08-01T00:00:00Z',
-       '2026-07-01T08:05:00Z', '2026-07-01T08:10:00Z'
-     )`,
-    [CHECKOUT_INTENT, "c".repeat(64)],
+     ) values
+       (
+         $1, 'anonymous', $2, 'completed', '2026-08-01T00:00:00Z',
+         '2026-07-01T08:05:00Z', '2026-07-01T08:10:00Z'
+       ),
+       (
+         $3, 'anonymous', $4, 'completed', '2026-09-01T00:00:00Z',
+         '2026-07-08T08:05:00Z', '2026-07-08T08:10:00Z'
+       )`,
+    [
+      CHECKOUT_INTENT,
+      "c".repeat(64),
+      CHECKOUT_INTENT_LATE,
+      "7".repeat(64),
+    ],
   );
   await pool.query(
     `insert into ${schema}.sidestream_paid_acquisition_entries (
@@ -362,6 +472,52 @@ async function seedFunnel(pool, schema) {
       "60000000-0000-4000-8000-000000000001",
       "1".repeat(64),
       RECEIPT_HASH,
+    ],
+  );
+  await pool.query(
+    `insert into ${schema}.sidestream_paid_acquisition_entries (
+       id, contract_version, environment, experiment_id, cohort,
+       assignment_id_hash, assignment_cookie_signature_hash, entry_path,
+       entry_token_hash, attribution_hash, utm_medium, utm_campaign,
+       expires_at, created_at, updated_at
+     ) values (
+       $1, 1, 'test', 'mc-mobile-paid-v1', 'mc-paid-v1',
+       $2, $3, '/mc', $4, $5, 'dm', 'late-paid-visit',
+       '2026-07-09T08:00:00Z', '2026-07-08T08:00:00Z',
+       '2026-07-08T08:00:00Z'
+     )`,
+    [
+      ENTRY_LATE,
+      "6".repeat(64),
+      "5".repeat(64),
+      "4".repeat(64),
+      "3".repeat(64),
+    ],
+  );
+  await pool.query(
+    `insert into ${schema}.sidestream_paid_acquisition_checkouts (
+       id, entry_id, contract_version, environment, experiment_id, cohort,
+       assignment_id_hash, entry_token_hash, attribution_hash,
+       checkout_intent_ref, idempotency_key, request_fingerprint,
+       verified_checkout_session_ref, installer_receipt_hash,
+       payment_state, completed_at, expires_at, created_at, updated_at
+     ) values (
+       $1, $2, 1, 'test', 'mc-mobile-paid-v1', 'mc-paid-v1',
+       $3, $4, $5, $6, $7, $8, 'cs_test_late_paid',
+       $9, 'active', '2026-07-08T08:10:00Z',
+       '2026-09-01T00:00:00Z', '2026-07-08T08:05:00Z',
+       '2026-07-08T08:10:00Z'
+     )`,
+    [
+      CHECKOUT_LATE,
+      ENTRY_LATE,
+      "6".repeat(64),
+      "4".repeat(64),
+      "3".repeat(64),
+      CHECKOUT_INTENT_LATE,
+      "60000000-0000-4000-8000-000000000002",
+      "2".repeat(64),
+      LATE_RECEIPT_HASH,
     ],
   );
 }
