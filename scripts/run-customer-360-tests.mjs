@@ -4,8 +4,11 @@ import { spawn } from "node:child_process";
 import { readdir } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { Pool } from "pg";
 import {
+  TEST_DATABASE_ENV,
   createIsolatedTestDatabaseEnvironment,
+  createTestPoolOptions,
   requireSafeTestDatabaseUrl,
 } from "./run-postgres-integration.mjs";
 
@@ -59,22 +62,50 @@ export async function runCustomer360Tests({ postgres = false } = {}) {
   await assertCustomer360TestsClassified();
   if (postgres) requireSafeTestDatabaseUrl(process.env);
   const tests = postgres ? CUSTOMER_360_POSTGRES_TESTS : CUSTOMER_360_NON_POSTGRES_TESTS;
+  const childEnvironment = postgres
+    ? await createCustomer360PostgresEnvironment(process.env)
+    : { ...process.env };
   for (const testFile of tests) {
     const arguments_ = ["--experimental-strip-types"];
     if (postgres) arguments_.push("--import", NETWORK_GUARD);
     arguments_.push("--test", "--test-concurrency=1", path.join(TESTS_DIRECTORY, testFile));
-    const exitCode = await runChild(arguments_, { postgres });
+    const exitCode = await runChild(arguments_, childEnvironment);
     if (exitCode !== 0) {
       throw new Error(`Customer 360 suite failed: ${testFile}`);
     }
   }
 }
 
-async function runChild(arguments_, { postgres }) {
-  const childEnvironment = postgres
-    ? createIsolatedTestDatabaseEnvironment(process.env)
-    : { ...process.env };
-  childEnvironment.TZ = "America/Los_Angeles";
+export async function createCustomer360PostgresEnvironment(environment = process.env) {
+  const childEnvironment = createIsolatedTestDatabaseEnvironment(environment);
+  const connectionString = childEnvironment[TEST_DATABASE_ENV];
+  const pool = new Pool(createTestPoolOptions(connectionString));
+  try {
+    const result = await pool.query(
+      "select current_setting('createrole_self_grant', true) is not null as supported",
+    );
+    if (result.rows[0]?.supported) {
+      // PostgreSQL 16+ CREATEROLE users otherwise receive an ADMIN-only
+      // self-grant, which cannot run the suites' DROP OWNED cleanup.
+      const url = new URL(connectionString);
+      const existingOptions = url.searchParams.get("options")?.trim();
+      const roleCleanupOption = "-c createrole_self_grant=inherit,set";
+      if (!existingOptions?.includes(roleCleanupOption)) {
+        url.searchParams.set(
+          "options",
+          [existingOptions, roleCleanupOption].filter(Boolean).join(" "),
+        );
+      }
+      childEnvironment[TEST_DATABASE_ENV] = url.toString();
+    }
+    return childEnvironment;
+  } finally {
+    await pool.end();
+  }
+}
+
+async function runChild(arguments_, environment) {
+  const childEnvironment = { ...environment, TZ: "America/Los_Angeles" };
   const child = spawn(process.execPath, arguments_, {
     cwd: process.cwd(),
     env: childEnvironment,
