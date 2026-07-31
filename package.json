@@ -31,7 +31,7 @@
     "test:single-device-ops": "node --experimental-strip-types --test tests/single-device-ops.test.mjs",
     "test:single-device-postgres": "node --experimental-strip-types --test --test-concurrency=1 tests/single-device-postgres.test.mjs",
     "typecheck": "tsc --noEmit",
-    "verify:checkout-contract": "node scripts/verify-production-source.mjs --checkout-only",
+    "verify:checkout-contract": "node scripts/verify-production-source.mjs --checkout-only && node --experimental-strip-types --test tests/checkout-contract.test.mjs",
     "promote:production-canonical": "node scripts/promote-canonical-production.mjs",
     "verify:production-source": "node scripts/verify-production-source.mjs",
     "verify:production-live": "node scripts/verify-production-live.mjs",
