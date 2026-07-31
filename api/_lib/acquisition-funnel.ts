@@ -53,6 +53,8 @@ type FunnelJourneyRow = QueryResultRow & Readonly<{
   cohort: string | null;
   attribution_confidence: string;
   first_attributed_at: Date | string | null;
+  first_installer_requested_at: Date | string | null;
+  first_installer_platform: string | null;
   first_install_at: Date | string;
   first_open_at: Date | string | null;
   activation_at: Date | string | null;
@@ -242,8 +244,10 @@ const FUNNEL_CTES = `
       paid.utm_campaign as campaign,
       paid.experiment_id as experiment,
       paid.cohort,
-      'verified_paid'::text as attribution_confidence,
+      'exact_paid_checkout'::text as attribution_confidence,
       paid.first_attributed_at,
+      null::timestamptz as first_installer_requested_at,
+      null::text as first_installer_platform,
       1 as attribution_priority,
       row_number() over (
         partition by edge.profile_id
@@ -257,6 +261,36 @@ const FUNNEL_CTES = `
     join verified_paid_checkouts paid
       on paid.checkout_id = edge.checkout_id
       and paid.first_attributed_at <= cohort.first_install_at
+  ),
+  anonymous_claim_candidates as (
+    select
+      acquisition.claimed_profile_id as profile_id,
+      acquisition.first_touch_source as source,
+      acquisition.first_touch_medium as medium,
+      acquisition.first_touch_campaign as campaign,
+      acquisition.experiment_id as experiment,
+      acquisition.experiment_cohort as cohort,
+      'exact_anonymous_claim'::text as attribution_confidence,
+      acquisition.first_seen_at as first_attributed_at,
+      acquisition.first_installer_requested_at,
+      acquisition.first_installer_platform,
+      2 as attribution_priority,
+      row_number() over (
+        partition by acquisition.claimed_profile_id
+        order by acquisition.first_seen_at, acquisition.id
+      ) as candidate_order
+    from public.sidestream_anonymous_acquisition_sessions acquisition
+    join cohort_profiles cohort
+      on cohort.profile_id = acquisition.claimed_profile_id
+    where acquisition.license_namespace = $1
+      and acquisition.claim_state = 'claimed'
+      and acquisition.claimed_profile_id is not null
+      and acquisition.first_installer_requested_at is not null
+      and acquisition.first_seen_at <= cohort.first_install_at
+      and (
+        acquisition.first_touch_medium is distinct from 'installation_claim'
+        or acquisition.first_touch_campaign is distinct from 'server_claim_v1'
+      )
   ),
   freemium_candidates as (
     select
@@ -278,9 +312,11 @@ const FUNNEL_CTES = `
         then lead.context->>'cohort'
         else null
       end as cohort,
-      'verified_email'::text as attribution_confidence,
+      'exact_verified_email'::text as attribution_confidence,
       lead.first_captured_at as first_attributed_at,
-      2 as attribution_priority,
+      null::timestamptz as first_installer_requested_at,
+      null::text as first_installer_platform,
+      3 as attribution_priority,
       row_number() over (
         partition by cohort.profile_id
         order by lead.first_captured_at, lead.id
@@ -308,7 +344,9 @@ const FUNNEL_CTES = `
   attribution_candidates as (
     select
       profile_id, source, medium, campaign, experiment, cohort,
-      attribution_confidence, first_attributed_at, attribution_priority
+      attribution_confidence, first_attributed_at,
+      first_installer_requested_at, first_installer_platform,
+      attribution_priority
     from paid_candidates
     where candidate_order = 1
 
@@ -316,7 +354,19 @@ const FUNNEL_CTES = `
 
     select
       profile_id, source, medium, campaign, experiment, cohort,
-      attribution_confidence, first_attributed_at, attribution_priority
+      attribution_confidence, first_attributed_at,
+      first_installer_requested_at, first_installer_platform,
+      attribution_priority
+    from anonymous_claim_candidates
+    where candidate_order = 1
+
+    union all
+
+    select
+      profile_id, source, medium, campaign, experiment, cohort,
+      attribution_confidence, first_attributed_at,
+      first_installer_requested_at, first_installer_platform,
+      attribution_priority
     from freemium_candidates
     where candidate_order = 1
   ),
@@ -352,12 +402,23 @@ const FUNNEL_CTES = `
         attribution.attribution_confidence,
         'unattributed'
       ) as attribution_confidence,
-      attribution.first_attributed_at
+      attribution.first_attributed_at,
+      coalesce(
+        attribution.first_installer_requested_at,
+        anonymous_lifecycle.first_installer_requested_at
+      ) as first_installer_requested_at,
+      coalesce(
+        attribution.first_installer_platform,
+        anonymous_lifecycle.first_installer_platform
+      ) as first_installer_platform
     from usage_detail usage
     left join activations activation on activation.profile_id = usage.profile_id
     left join selected_attribution attribution
       on attribution.profile_id = usage.profile_id
       and attribution.selected_order = 1
+    left join anonymous_claim_candidates anonymous_lifecycle
+      on anonymous_lifecycle.profile_id = usage.profile_id
+      and anonymous_lifecycle.candidate_order = 1
   )
 `;
 
@@ -421,6 +482,8 @@ export async function queryAcquisitionFunnel(
         cohort,
         attribution_confidence,
         first_attributed_at,
+        first_installer_requested_at,
+        first_installer_platform,
         first_install_at,
         first_open_at,
         activation_at,
@@ -441,17 +504,24 @@ export async function queryAcquisitionFunnel(
       0n,
     );
     const paidAttributedProfiles = groupsResult.rows.reduce(
-      (sum, row) => row.attribution_confidence === "verified_paid"
+      (sum, row) => row.attribution_confidence === "exact_paid_checkout"
         ? sum + toBigInt(row.profile_count)
         : sum,
       0n,
     );
     const freemiumAttributedProfiles = groupsResult.rows.reduce(
-      (sum, row) => row.attribution_confidence === "verified_email"
+      (sum, row) => row.attribution_confidence === "exact_verified_email"
         ? sum + toBigInt(row.profile_count)
         : sum,
       0n,
     );
+    const anonymousAttributedProfiles = groupsResult.rows.reduce(
+      (sum, row) => row.attribution_confidence === "exact_anonymous_claim"
+        ? sum + toBigInt(row.profile_count)
+        : sum,
+      0n,
+    );
+    const unattributedProfiles = totals.profiles - attributedProfiles;
 
     return {
       licenseNamespace: input.licenseNamespace,
@@ -483,8 +553,22 @@ export async function queryAcquisitionFunnel(
       attributionCoverage: {
         ...percentageMetric(attributedProfiles, totals.profiles),
         paidAttributedProfiles: paidAttributedProfiles.toString(),
+        anonymousAttributedProfiles: anonymousAttributedProfiles.toString(),
         freemiumAttributedProfiles: freemiumAttributedProfiles.toString(),
-        unattributedProfiles: (totals.profiles - attributedProfiles).toString(),
+        unattributedProfiles: unattributedProfiles.toString(),
+      },
+      coverage: {
+        attributed: percentageMetric(attributedProfiles, totals.profiles),
+        unknown: percentageMetric(unattributedProfiles, totals.profiles),
+        exactPaidCheckout: percentageMetric(paidAttributedProfiles, totals.profiles),
+        exactAnonymousClaim: percentageMetric(
+          anonymousAttributedProfiles,
+          totals.profiles,
+        ),
+        exactVerifiedEmail: percentageMetric(
+          freemiumAttributedProfiles,
+          totals.profiles,
+        ),
       },
       totals: {
         profiles: totals.profiles.toString(),
@@ -644,6 +728,7 @@ function formatGroup(row: FunnelGroupRow) {
     experiment: row.experiment,
     cohort: row.cohort,
     attributionConfidence: row.attribution_confidence,
+    confidence: row.attribution_confidence,
     profileCount: profiles.toString(),
     firstOpenedProfiles: firstOpenedProfiles.toString(),
     completedActivations: completedActivations.toString(),
@@ -678,10 +763,15 @@ function formatJourney(row: FunnelJourneyRow) {
     experiment: row.experiment,
     cohort: row.cohort,
     attributionConfidence: row.attribution_confidence,
+    confidence: row.attribution_confidence,
+    firstVisitAt: nullableIsoString(row.first_attributed_at),
     firstAttributedAt: nullableIsoString(row.first_attributed_at),
+    installerRequestedAt: nullableIsoString(row.first_installer_requested_at),
+    installerPlatform: row.first_installer_platform,
     firstInstallAt: toIsoString(row.first_install_at),
     firstOpenAt: nullableIsoString(row.first_open_at),
     activationAt: nullableIsoString(row.activation_at),
+    completedActivation: row.activation_at !== null,
     dayZeroDownloadAttempts: toBigInt(row.day_zero_download_attempts).toString(),
     laterOpenDays,
     returnEligible: row.return_eligible,

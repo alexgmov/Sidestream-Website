@@ -24,6 +24,7 @@ const BULK_EVENT_COUNT = 120;
 const {
   buildTelemetryPoolOptions,
   runCustomerUsageSync,
+  runCustomerUsageSessionRescan,
 } = await loadInjectedModule(
   new URL("../../api/_lib/customer-usage.ts", import.meta.url),
   {
@@ -402,6 +403,98 @@ test("daily usage sync is read-only, resumable, idempotent, and UTC-windowed", {
       assert.equal(usage.usage_active_days_7, "0");
       assert.equal(usage.usage_active_days_30, "0");
       assert.equal(usage.download_frequency_30d, null);
+    });
+
+    await t.test("historical session_started replay is aggregate-only and idempotent", async () => {
+      await adminPool.query(
+        `update ${quotedTarget}.sidestream_customer_usage_daily
+         set active_event_count = 99,
+             first_app_use_at = '2026-11-01T00:00:00Z',
+             last_app_use_at = '2026-11-01T23:59:59Z'
+         where license_namespace = 'test' and install_id_hash = $1
+           and activity_day = date '2026-11-01'`,
+        [INSTALL_HASH],
+      );
+      const syncCheckpoint = await syncState(adminPool, quotedTarget);
+      const persisted = [];
+      const first = await runCustomerUsageSessionRescan({
+        targetPool: adminPool,
+        telemetryPool: sourcePool,
+        targetSchema,
+        telemetrySchema: sourceSchema,
+        licenseNamespace: "test",
+        batchSize: 25,
+        maxBatches: 1,
+        now: new Date("2026-12-05T13:00:00Z"),
+        afterBatchCommitted: ({ checkpoint }) => persisted.push(checkpoint),
+      });
+      assert.equal(first.outcome, "completed");
+      assert.equal(first.sourceEventsScanned, 2);
+      assert.equal(first.dailyBucketsWritten, 2);
+      assert.equal(first.complete, true);
+      assert.equal(persisted.length, 1);
+
+      const afterFirst = await adminPool.query(
+        `select activity_day::text, first_app_use_at, last_app_use_at,
+           active_event_count, download_attempt_count
+         from ${quotedTarget}.sidestream_customer_usage_daily
+         where license_namespace = 'test' and install_id_hash = $1
+         order by activity_day`,
+        [INSTALL_HASH],
+      );
+      assert.deepEqual(afterFirst.rows.map((row) => ({
+        ...row,
+        first_app_use_at: row.first_app_use_at?.toISOString() || null,
+        last_app_use_at: row.last_app_use_at?.toISOString() || null,
+      })), [
+        {
+          activity_day: "2026-03-08",
+          first_app_use_at: "2026-03-08T07:59:59.000Z",
+          last_app_use_at: "2026-03-08T07:59:59.000Z",
+          active_event_count: "1",
+          download_attempt_count: "0",
+        },
+        {
+          activity_day: "2026-11-01",
+          first_app_use_at: "2026-11-01T08:30:00.000Z",
+          last_app_use_at: "2026-11-01T08:30:00.000Z",
+          active_event_count: "1",
+          download_attempt_count: "9",
+        },
+      ]);
+      assert.deepEqual(await syncState(adminPool, quotedTarget), syncCheckpoint);
+
+      const replay = await runCustomerUsageSessionRescan({
+        targetPool: adminPool,
+        telemetryPool: sourcePool,
+        targetSchema,
+        telemetrySchema: sourceSchema,
+        licenseNamespace: "test",
+        batchSize: 25,
+        maxBatches: 1,
+        now: new Date("2026-12-05T14:00:00Z"),
+      });
+      assert.equal(replay.outcome, "completed");
+      const afterReplay = await adminPool.query(
+        `select activity_day::text, first_app_use_at, last_app_use_at,
+           active_event_count, download_attempt_count
+         from ${quotedTarget}.sidestream_customer_usage_daily
+         where license_namespace = 'test' and install_id_hash = $1
+         order by activity_day`,
+        [INSTALL_HASH],
+      );
+      assert.deepEqual(
+        afterReplay.rows.map((row) => ({
+          ...row,
+          first_app_use_at: row.first_app_use_at?.toISOString() || null,
+          last_app_use_at: row.last_app_use_at?.toISOString() || null,
+        })),
+        afterFirst.rows.map((row) => ({
+          ...row,
+          first_app_use_at: row.first_app_use_at?.toISOString() || null,
+          last_app_use_at: row.last_app_use_at?.toISOString() || null,
+        })),
+      );
     });
 
     await t.test("the target stores no raw telemetry objects or sensitive fixture values", async () => {
