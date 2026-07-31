@@ -30,6 +30,16 @@
   ],
   "redirects": [
     {
+      "source": "/manychat-instagram",
+      "destination": "https://sidestream.tv/?utm_source=manychat-instagram&utm_medium=dm&utm_campaign=organic-instagram",
+      "permanent": false
+    },
+    {
+      "source": "/manychat-instagram/",
+      "destination": "https://sidestream.tv/?utm_source=manychat-instagram&utm_medium=dm&utm_campaign=organic-instagram",
+      "permanent": false
+    },
+    {
       "source": "/m",
       "destination": "https://sidestream.tv/?utm_source=manychat",
       "permanent": false

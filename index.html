@@ -1949,7 +1949,7 @@
         .get("utm_source")
         ?.trim()
         .toLowerCase();
-      if (source !== "manychat") return;
+      if (source !== "manychat" && source !== "manychat-instagram") return;
 
       fetch("/api/referral-visit", {
         method: "POST",

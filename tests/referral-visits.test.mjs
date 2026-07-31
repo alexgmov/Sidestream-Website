@@ -62,19 +62,21 @@ test("ManyChat POST schedules a privacy-limited visit write without delaying the
     scheduleBackground: (operation) => backgroundTasks.push(operation),
     logTrackingError: () => assert.fail("tracking should not fail"),
   });
-  const result = await invoke(handler, {
-    body: { source: "ManyChat" },
-    headers: {
-      "user-agent": "Mozilla/5.0 Chrome/140.0",
-      "x-forwarded-for": "203.0.113.7",
-    },
-  });
-
-  assert.equal(result.response.status, 204);
-  await result.handlerDone;
+  for (const source of ["ManyChat", "ManyChat-Instagram"]) {
+    const result = await invoke(handler, {
+      body: { source },
+      headers: {
+        "user-agent": "Mozilla/5.0 Chrome/140.0",
+        "x-forwarded-for": "203.0.113.7",
+      },
+    });
+    assert.equal(result.response.status, 204);
+    await result.handlerDone;
+  }
   await Promise.all(backgroundTasks);
-  assert.equal(recorded.length, 1);
+  assert.equal(recorded.length, 2);
   assert.equal(recorded[0].source, "manychat");
+  assert.equal(recorded[1].source, "manychat-instagram");
   assert.equal(recorded[0].likelyScanner, false);
   assert.match(recorded[0].visitorHash, /^[0-9a-f]{64}$/);
   assert.equal(JSON.stringify(recorded[0]).includes("203.0.113.7"), false);
@@ -116,10 +118,19 @@ test("daily visitor hashes are deterministic and rotate by day", () => {
     now: new Date("2026-07-22T00:00:00.000Z"),
     secret: "secret-a",
   });
+  const instagram = buildReferralVisitEvent(request, "manychat-instagram", {
+    now: new Date("2026-07-21T12:00:00.000Z"),
+    secret: "secret-a",
+  });
 
   assert.equal(first.visitorHash, repeat.visitorHash);
   assert.notEqual(first.visitorHash, nextDay.visitorHash);
+  assert.notEqual(first.visitorHash, instagram.visitorHash);
   assert.equal(parseReferralVisitSource(" ManyChat "), "manychat");
+  assert.equal(
+    parseReferralVisitSource(" ManyChat-Instagram "),
+    "manychat-instagram",
+  );
   assert.equal(parseReferralVisitSource("gmail"), null);
 });
 
@@ -150,14 +161,29 @@ test("referral report counts unique daily humans and scanners without exposing h
     fromDay: "2026-07-20",
     throughDay: "2026-07-21",
   });
+  assert.equal(
+    parseReportArguments(
+      ["--source", "manychat-instagram"],
+      new Date("2026-07-21T12:00:00Z"),
+    ).source,
+    "manychat-instagram",
+  );
 });
 
-test("landing page and Vercel config preserve the /m and /mc route forms", () => {
+test("landing page and Vercel config preserve dedicated and legacy ManyChat routes", () => {
   const html = readFileSync(path.join(repoRoot, "index.html"), "utf8");
   const vercel = JSON.parse(readFileSync(path.join(repoRoot, "vercel.json"), "utf8"));
   const middleware = readFileSync(path.join(repoRoot, "middleware.ts"), "utf8");
   assert.match(html, /fetch\("\/api\/referral-visit"/);
   assert.match(html, /utm_source/);
+  for (const source of ["/manychat-instagram", "/manychat-instagram/"]) {
+    assert.ok(vercel.redirects.some((redirect) =>
+      redirect.source === source &&
+      redirect.destination ===
+        "https://sidestream.tv/?utm_source=manychat-instagram&utm_medium=dm&utm_campaign=organic-instagram" &&
+      redirect.permanent === false
+    ));
+  }
   for (const source of ["/m", "/m/", "/mc/"]) {
     assert.ok(vercel.redirects.some((redirect) =>
       redirect.source === source &&
@@ -169,7 +195,10 @@ test("landing page and Vercel config preserve the /m and /mc route forms", () =>
     vercel.redirects.some((redirect) => redirect.source === "/mc"),
     false,
   );
-  assert.match(middleware, /matcher:\s*"\/mc"/);
+  assert.match(
+    middleware,
+    /matcher:\s*\[\s*"\/mc",\s*"\/mc-preview"\s*\]/,
+  );
   assert.match(middleware, /SIDESTREAM_PAID_ACQUISITION_ASSIGNMENT_SECRET/);
 });
 
