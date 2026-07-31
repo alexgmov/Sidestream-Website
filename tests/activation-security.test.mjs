@@ -433,7 +433,7 @@ test("activation, claim, Checkout, and credential invariants execute against Pos
           liveAttachment.checkoutSessionId,
           liveActivation.activationKey,
         ),
-        { fulfilled: true, activationBound: true },
+        { fulfilled: true, activationBound: true, paidAcquisition: false },
       );
       assert.equal(
         (await activationState(databasePool, liveActivation.activationKey)).account_id,
@@ -467,7 +467,7 @@ test("activation, claim, Checkout, and credential invariants execute against Pos
           expiredActivation.checkoutSessionId,
           expiredActivation.activationKey,
         ),
-        { fulfilled: true, activationBound: false },
+        { fulfilled: true, activationBound: false, paidAcquisition: false },
       );
       assert.equal(
         (await activationState(databasePool, expiredActivation.activationKey)).account_id,

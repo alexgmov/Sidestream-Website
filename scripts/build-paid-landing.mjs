@@ -4,6 +4,10 @@ import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import path from "node:path";
+import {
+  formatOfferPrice,
+  SIDESTREAM_PRICING_CONTRACT,
+} from "../config/pricing-contract.mjs";
 
 export const PAID_LANDING_ENTRY_TOKEN_PLACEHOLDER =
   "__SIDESTREAM_PAID_ENTRY_TOKEN__";
@@ -86,11 +90,13 @@ const variantStyles = `
   }
 `;
 
+const globalDisplayPrice = formatOfferPrice(SIDESTREAM_PRICING_CONTRACT.global);
+
 const mobilePurchaseCard = `          <form class="mobile-download-handoff" id="mobile-paid-checkout" data-paid-checkout novalidate>
             <p class="mobile-download-handoff-title">Purchase Sidestream</p>
             <p class="mobile-download-handoff-subtext">We’ll email your download link after purchase.</p>
             <div class="mobile-download-handoff-fields">
-              <button class="btn btn-primary mobile-download-handoff-submit mobile-paid-purchase-button" type="submit" aria-label="Buy Sidestream Unlimited now, one-time purchase">Buy Now <span data-checkout-offer-price>$24.99</span></button>
+              <button class="btn btn-primary mobile-download-handoff-submit mobile-paid-purchase-button" type="submit" aria-label="Buy Sidestream Unlimited now, one-time purchase">Buy Now <span data-checkout-offer-price>${globalDisplayPrice}</span></button>
             </div>
             <p class="mobile-paid-checkout-status" id="mobile-paid-checkout-status" role="status" aria-live="polite"></p>
           </form>

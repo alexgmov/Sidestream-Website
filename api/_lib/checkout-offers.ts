@@ -1,17 +1,13 @@
 import type { IncomingHttpHeaders } from "node:http";
+import {
+  formatOfferPrice,
+  SIDESTREAM_PRICING_CONTRACT,
+  type PricingOffer,
+} from "../../config/pricing-contract.mjs";
 
 export const UNKNOWN_CHECKOUT_COUNTRY = "ZZ";
 
-export type CheckoutOfferCatalogEntry = Readonly<{
-  offerId: string;
-  countryCodes: readonly string[];
-  currency: string;
-  amountMinor: number;
-  displayLocale: string;
-  priceSource:
-    | Readonly<{ kind: "default" }>
-    | Readonly<{ kind: "environment"; variable: string }>;
-}>;
+export type CheckoutOfferCatalogEntry = PricingOffer;
 
 export type CheckoutOfferSelection = Readonly<{
   country: string;
@@ -19,27 +15,8 @@ export type CheckoutOfferSelection = Readonly<{
   configuredPriceId: string;
 }>;
 
-const INDIA_OFFER: CheckoutOfferCatalogEntry = Object.freeze({
-  offerId: "sidestream-unlimited-india",
-  countryCodes: Object.freeze(["IN"]),
-  currency: "inr",
-  amountMinor: 79900,
-  displayLocale: "en-IN",
-  priceSource: Object.freeze({
-    kind: "environment",
-    variable: "SIDESTREAM_PRO_INDIA_PRICE_ID",
-  }),
-});
-
 export const SIDESTREAM_GLOBAL_CHECKOUT_OFFER: CheckoutOfferCatalogEntry =
-  Object.freeze({
-    offerId: "sidestream-unlimited-global",
-    countryCodes: Object.freeze(["*"]),
-    currency: "usd",
-    amountMinor: 2499,
-    displayLocale: "en-US",
-    priceSource: Object.freeze({ kind: "default" }),
-  });
+  SIDESTREAM_PRICING_CONTRACT.global;
 
 /**
  * Server-owned regional offer allowlist. Country-specific entries must appear
@@ -48,10 +25,7 @@ export const SIDESTREAM_GLOBAL_CHECKOUT_OFFER: CheckoutOfferCatalogEntry =
  * server configuration.
  */
 export const SIDESTREAM_CHECKOUT_OFFER_CATALOG =
-  Object.freeze<readonly CheckoutOfferCatalogEntry[]>([
-    INDIA_OFFER,
-    SIDESTREAM_GLOBAL_CHECKOUT_OFFER,
-  ]);
+  SIDESTREAM_PRICING_CONTRACT.checkoutCatalog;
 
 export function getTrustedCheckoutCountry(headers: IncomingHttpHeaders) {
   const raw = headers["x-vercel-ip-country"];
@@ -88,19 +62,7 @@ export function getCheckoutOfferPresentation(
 ) {
   const { entry } = selectCheckoutOffer(countryValue, environment);
   const currency = entry.currency.toUpperCase();
-  const currencyOptions = new Intl.NumberFormat(entry.displayLocale, {
-    style: "currency",
-    currency,
-  }).resolvedOptions();
-  const fractionDigits = currencyOptions.maximumFractionDigits ?? 2;
-  const minorUnitDivisor = 10 ** fractionDigits;
-  const hasFraction = entry.amountMinor % minorUnitDivisor !== 0;
-  const formattedPrice = new Intl.NumberFormat(entry.displayLocale, {
-    style: "currency",
-    currency,
-    minimumFractionDigits: hasFraction ? fractionDigits : 0,
-    maximumFractionDigits: fractionDigits,
-  }).format(entry.amountMinor / minorUnitDivisor);
+  const formattedPrice = formatOfferPrice(entry);
   return Object.freeze({ formattedPrice, currency });
 }
 

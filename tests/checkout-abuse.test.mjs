@@ -500,7 +500,7 @@ test("database-backed intents serialize retries, rotate deliberately, and fulfil
     });
     assert.deepEqual(
       await account.fulfillCheckoutSession(indiaWrite.session.id),
-      { fulfilled: true, activationBound: false },
+      { fulfilled: true, activationBound: false, paidAcquisition: false },
     );
 
   } finally {

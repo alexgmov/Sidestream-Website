@@ -110,7 +110,7 @@ const SIDESTREAM_PRO_DEFAULT_PRODUCT_ID = "prod_UpwXh6oO1OmPyQ";
 // lookup key, creating it once if this deployment is the first to use it.
 const SIDESTREAM_PRO_DEFAULT_PRICE_ID = "";
 const SIDESTREAM_PRO_PRICE = {
-  lookupKey: "sidestream_pro_once_2499",
+  lookupKey: SIDESTREAM_GLOBAL_CHECKOUT_OFFER.lookupKey!,
   name: "Sidestream Unlimited",
   description: "Lifetime Sidestream Unlimited access for one editor.",
   unitAmount: SIDESTREAM_GLOBAL_CHECKOUT_OFFER.amountMinor,
