@@ -19,6 +19,7 @@ export const SIDESTREAM_PRICING_CONTRACT: Readonly<{
   }>;
   global: PricingOffer;
   india: PricingOffer;
+  brazil: PricingOffer;
   checkoutCatalog: readonly PricingOffer[];
 }>;
 

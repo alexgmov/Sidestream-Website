@@ -11,16 +11,18 @@ import { getPricingSurfaceResults } from "../scripts/sync-pricing-contract.mjs";
 
 const repositoryRoot = new URL("..", import.meta.url);
 
-test("one contract owns Free, global, India, and Stripe lookup truth", () => {
+test("one contract owns Free, global, India, Brazil, and Stripe lookup truth", () => {
   const contract = SIDESTREAM_PRICING_CONTRACT;
   assert.equal(contract.free.amountMinor, 0);
   assert.equal(formatOfferPrice(contract.free), "$0");
-  assert.equal(formatOfferPrice(contract.global), "$24.99");
-  assert.equal(formatOfferDecimal(contract.global), "24.99");
-  assert.equal(contract.global.lookupKey, "sidestream_pro_once_2499");
-  assert.equal(formatOfferPrice(contract.india), "₹799");
+  assert.equal(formatOfferPrice(contract.global), "$14.99");
+  assert.equal(formatOfferDecimal(contract.global), "14.99");
+  assert.equal(contract.global.lookupKey, "sidestream_pro_once_1499");
+  assert.equal(formatOfferPrice(contract.india), "₹499");
   assert.equal(contract.india.priceSource.variable, "SIDESTREAM_PRO_INDIA_PRICE_ID");
-  assert.deepEqual(contract.checkoutCatalog, [contract.india, contract.global]);
+  assert.equal(formatOfferPrice(contract.brazil), "R$ 25");
+  assert.equal(contract.brazil.priceSource.variable, "SIDESTREAM_PRO_BRAZIL_PRICE_ID");
+  assert.deepEqual(contract.checkoutCatalog, [contract.india, contract.brazil, contract.global]);
 });
 
 test("ordinary Upgrade and paid acquisition both enter the shared offer resolver", async () => {
@@ -35,18 +37,18 @@ test("ordinary Upgrade and paid acquisition both enter the shared offer resolver
   assert.match(account, /SIDESTREAM_GLOBAL_CHECKOUT_OFFER\.lookupKey/);
 });
 
-test("a hypothetical $14.99 contract makes every generated public surface fail the drift check", async () => {
+test("a hypothetical global change makes every generated public surface fail the drift check", async () => {
   const hypothetical = {
     ...SIDESTREAM_PRICING_CONTRACT.global,
-    amountMinor: 1499,
-    lookupKey: "sidestream_pro_once_1499",
+    amountMinor: 1299,
+    lookupKey: "sidestream_pro_once_1299",
   };
   const results = await getPricingSurfaceResults(hypothetical);
   assert.deepEqual(
     results.filter((result) => result.actual !== result.expected).map((result) => result.path),
     ["index.html", "public/llms.txt"],
   );
-  assert.match(results[0].expected, /\$14\.99/);
-  assert.match(results[0].expected, /"price": "14\.99"/);
-  assert.match(results[1].expected, /\$14\.99 one-time paid upgrade/);
+  assert.match(results[0].expected, /\$12\.99/);
+  assert.match(results[0].expected, /"price": "12\.99"/);
+  assert.match(results[1].expected, /\$12\.99 one-time paid upgrade/);
 });

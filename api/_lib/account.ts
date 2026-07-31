@@ -106,7 +106,7 @@ const LEGACY_SUBSCRIPTION_PRODUCT_IDS_ENV =
 const LEGACY_SUBSCRIPTION_PRICE_IDS_ENV =
   "SIDESTREAM_LEGACY_SUBSCRIPTION_PRICE_IDS";
 const SIDESTREAM_PRO_DEFAULT_PRODUCT_ID = "prod_UpwXh6oO1OmPyQ";
-// Stripe Prices are immutable. Resolve the active $24.99 one-time Price by
+// Stripe Prices are immutable. Resolve the active approved global Price by
 // lookup key, creating it once if this deployment is the first to use it.
 const SIDESTREAM_PRO_DEFAULT_PRICE_ID = "";
 const SIDESTREAM_PRO_PRICE = {
@@ -1808,7 +1808,7 @@ async function findSidestreamProLookupPriceId(productId: string) {
   const conflictingPrice = prices.data[0];
   if (conflictingPrice) {
     throw new Error(
-      `Stripe lookup key ${SIDESTREAM_PRO_PRICE.lookupKey} points to a price that is not the active $24.99 one-time Sidestream Unlimited price for product ${productId}`,
+      `Stripe lookup key ${SIDESTREAM_PRO_PRICE.lookupKey} points to a price that is not the active approved one-time Sidestream Unlimited price for product ${productId}`,
     );
   }
 

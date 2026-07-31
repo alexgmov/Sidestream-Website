@@ -41,6 +41,7 @@ const CONTROLLED_ENVIRONMENT = [
   "SIDESTREAM_PRO_PRODUCT_ID",
   "SIDESTREAM_PRO_PRICE_ID",
   "SIDESTREAM_PRO_INDIA_PRICE_ID",
+  "SIDESTREAM_PRO_BRAZIL_PRICE_ID",
   "SIDESTREAM_BASE_URL",
   "PUBLIC_BASE_URL",
   "STRIPE_SECRET_KEY",
@@ -476,7 +477,7 @@ test("database-backed intents serialize retries, rotate deliberately, and fulfil
     );
     assert.equal(indiaWrite.params.metadata.sidestream_offer_country, "IN");
     assert.equal(indiaWrite.params.metadata.sidestream_offer_currency, "inr");
-    assert.equal(indiaWrite.params.metadata.sidestream_offer_amount_minor, "79900");
+    assert.equal(indiaWrite.params.metadata.sidestream_offer_amount_minor, "49900");
     const indiaSnapshot = await databasePool.query(
       `
         select offer_id, offer_country, offer_currency, offer_amount_minor,
@@ -490,7 +491,7 @@ test("database-backed intents serialize retries, rotate deliberately, and fulfil
       offer_id: "sidestream-unlimited-india",
       offer_country: "IN",
       offer_currency: "inr",
-      offer_amount_minor: 79900,
+      offer_amount_minor: 49900,
       offer_stripe_product_id: "prod_checkout_test",
       offer_stripe_price_id: "price_checkout_india",
     });
@@ -500,6 +501,40 @@ test("database-backed intents serialize retries, rotate deliberately, and fulfil
     });
     assert.deepEqual(
       await account.fulfillCheckoutSession(indiaWrite.session.id),
+      { fulfilled: true, activationBound: false, paidAcquisition: false },
+    );
+
+    const brazilBuyer = await seedFreeAccount(databasePool, "brazil-buyer");
+    const brazilBuyerSession = accountSession({
+      accountId: brazilBuyer.accountId,
+      email: brazilBuyer.email,
+      active: false,
+    });
+    process.env.SIDESTREAM_PRO_BRAZIL_PRICE_ID = "price_checkout_brazil";
+    const brazilIntent = await account.createCheckoutIntent({
+      buyerCountry: "BR",
+      session: brazilBuyerSession,
+    });
+    assert.ok(brazilIntent);
+    const brazilCheckout = await account.createOrReuseCheckoutSession({
+      intentId: brazilIntent.intentId,
+      browserToken: brazilIntent.browserToken,
+      session: brazilBuyerSession,
+      baseUrl: BASE_URL,
+    });
+    assert.equal(brazilCheckout.ok, true);
+    const brazilWrite = stripe.sessionCreateWrites.at(-1);
+    assert.equal(brazilWrite.params.line_items[0].price, "price_checkout_brazil");
+    assert.equal(brazilWrite.params.metadata.sidestream_offer_id, "sidestream-unlimited-brazil");
+    assert.equal(brazilWrite.params.metadata.sidestream_offer_country, "BR");
+    assert.equal(brazilWrite.params.metadata.sidestream_offer_currency, "brl");
+    assert.equal(brazilWrite.params.metadata.sidestream_offer_amount_minor, "2500");
+    stripe.complete(brazilWrite.session.id, {
+      email: brazilBuyer.email,
+      name: "Brazil Buyer",
+    });
+    assert.deepEqual(
+      await account.fulfillCheckoutSession(brazilWrite.session.id),
       { fulfilled: true, activationBound: false, paidAcquisition: false },
     );
 
@@ -544,16 +579,17 @@ class RecordingStripe {
       retrieve: async (priceId) => {
         this.reads.push({ operation: "prices.retrieve", priceId });
         const india = priceId.startsWith("price_checkout_india");
+        const brazil = priceId.startsWith("price_checkout_brazil");
         return {
           id: priceId,
           active: true,
           product: "prod_checkout_test",
           unit_amount: priceId.endsWith("_wrong_amount")
-            ? 79901
-            : india ? 79900 : 2499,
-          currency: india ? "inr" : "usd",
+            ? 49901
+            : india ? 49900 : brazil ? 2500 : 1499,
+          currency: india ? "inr" : brazil ? "brl" : "usd",
           recurring: null,
-          lookup_key: india ? null : "sidestream_pro_once_2499",
+          lookup_key: india || brazil ? null : "sidestream_pro_once_1499",
         };
       },
       list: async () => ({ data: [] }),
@@ -616,8 +652,9 @@ class RecordingStripe {
           const customer = params.customer || `cus_checkout_${this.#sessionsByKey.size + 1}`;
           const expiresAt = params.expires_at || Math.floor(Date.now() / 1_000) + 86_400;
           const india = params.line_items[0].price === "price_checkout_india";
-          const amount = india ? 79900 : 2499;
-          const currency = india ? "inr" : "usd";
+          const brazil = params.line_items[0].price === "price_checkout_brazil";
+          const amount = india ? 49900 : brazil ? 2500 : 1499;
+          const currency = india ? "inr" : brazil ? "brl" : "usd";
           const session = {
             id,
             url: `https://checkout.stripe.test/${id}`,
@@ -716,10 +753,10 @@ test("a stale configured Price falls through to the current exact lookup Price",
       id: priceId,
       active: true,
       product: "prod_checkout_test",
-      unit_amount: 1499,
+      unit_amount: 2499,
       currency: "usd",
       recurring: null,
-      lookup_key: "sidestream_pro_once_1499",
+      lookup_key: "sidestream_pro_once_2499",
     });
     stripe.prices.list = async (params) => ({
       data: params.lookup_keys
@@ -727,10 +764,10 @@ test("a stale configured Price falls through to the current exact lookup Price",
             id: "price_checkout_current",
             active: true,
             product: "prod_checkout_test",
-            unit_amount: 2499,
+            unit_amount: 1499,
             currency: "usd",
             recurring: null,
-            lookup_key: "sidestream_pro_once_2499",
+            lookup_key: "sidestream_pro_once_1499",
           }]
         : [],
     });

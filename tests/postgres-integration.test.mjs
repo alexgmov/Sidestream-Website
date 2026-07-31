@@ -137,7 +137,7 @@ test("cross-lane contracts hold in one isolated disposable Postgres schema", {
               id,
               active: true,
               product: "prod_integration",
-              unit_amount: 2499,
+              unit_amount: 1499,
               currency: "usd",
               recurring: null,
             };

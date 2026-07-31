@@ -6,6 +6,7 @@ import test, { after, before } from "node:test";
 import { invokeHandler } from "./helpers/http.mjs";
 
 const INDIA_PRICE_ENV = "SIDESTREAM_PRO_INDIA_PRICE_ID";
+const BRAZIL_PRICE_ENV = "SIDESTREAM_PRO_BRAZIL_PRICE_ID";
 const repositoryRoot = fileURLToPath(new URL("..", import.meta.url));
 let handler;
 let temporaryModuleDirectory;
@@ -35,7 +36,9 @@ after(async () => {
 
 test("the public offer presentation uses only the trusted country header", async () => {
   const previous = process.env[INDIA_PRICE_ENV];
+  const previousBrazil = process.env[BRAZIL_PRICE_ENV];
   process.env[INDIA_PRICE_ENV] = "price_india";
+  process.env[BRAZIL_PRICE_ENV] = "price_brazil";
   try {
     const india = await invokeHandler(handler, {
       url: "/api/checkout/offer?country=US&currency=USD&amount=1",
@@ -43,7 +46,7 @@ test("the public offer presentation uses only the trusted country header", async
     });
     assert.equal(india.response.statusCode, 200);
     assert.deepEqual(india.response.json, {
-      formattedPrice: "₹799",
+      formattedPrice: "₹499",
       currency: "INR",
     });
     assert.equal(
@@ -54,15 +57,26 @@ test("the public offer presentation uses only the trusted country header", async
     assert.doesNotMatch(india.response.body, /price_india|sidestream-unlimited-india/);
 
     const forged = await invokeHandler(handler, {
-      url: "/api/checkout/offer?country=IN&currency=INR&amount=79900",
+      url: "/api/checkout/offer?country=IN&currency=INR&amount=49900",
       headers: { "x-vercel-ip-country": "US" },
     });
     assert.deepEqual(forged.response.json, {
-      formattedPrice: "$24.99",
+      formattedPrice: "$14.99",
       currency: "USD",
     });
+
+    const brazil = await invokeHandler(handler, {
+      url: "/api/checkout/offer?country=US&currency=USD&amount=1",
+      headers: { "x-vercel-ip-country": "BR" },
+    });
+    assert.deepEqual(brazil.response.json, {
+      formattedPrice: "R$ 25",
+      currency: "BRL",
+    });
+    assert.doesNotMatch(brazil.response.body, /price_brazil|sidestream-unlimited-brazil/);
   } finally {
     restoreEnvironment(previous);
+    restoreNamedEnvironment(BRAZIL_PRICE_ENV, previousBrazil);
   }
 });
 
@@ -74,7 +88,7 @@ test("India safely receives the global presentation without its approved Price",
       headers: { "x-vercel-ip-country": "IN" },
     });
     assert.deepEqual(result.response.json, {
-      formattedPrice: "$24.99",
+      formattedPrice: "$14.99",
       currency: "USD",
     });
   } finally {
@@ -93,7 +107,7 @@ test("the presentation route supports HEAD and rejects writes", async () => {
 
   const post = await invokeHandler(handler, {
     method: "POST",
-    body: { country: "IN", amountMinor: 79900 },
+    body: { country: "IN", amountMinor: 49900 },
   });
   assert.equal(post.response.statusCode, 405);
   assert.equal(post.response.getHeader("allow"), "GET, HEAD");
@@ -103,7 +117,7 @@ test("the landing page renders a global fallback and updates text only", async (
   const html = await readFile(new URL("../index.html", import.meta.url), "utf8");
   assert.match(
     html,
-    /data-checkout-offer-price aria-live="polite">\$24\.99<\/span>/,
+    /data-checkout-offer-price aria-live="polite">\$14\.99<\/span>/,
   );
   assert.match(html, /fetch\("\/api\/checkout\/offer"/);
   assert.match(
@@ -117,6 +131,10 @@ test("the landing page renders a global fallback and updates text only", async (
 });
 
 function restoreEnvironment(previous) {
-  if (previous === undefined) delete process.env[INDIA_PRICE_ENV];
-  else process.env[INDIA_PRICE_ENV] = previous;
+  restoreNamedEnvironment(INDIA_PRICE_ENV, previous);
+}
+
+function restoreNamedEnvironment(name, previous) {
+  if (previous === undefined) delete process.env[name];
+  else process.env[name] = previous;
 }

@@ -2,9 +2,9 @@ const globalOffer = Object.freeze({
   offerId: "sidestream-unlimited-global",
   countryCodes: Object.freeze(["*"]),
   currency: "usd",
-  amountMinor: 2499,
+  amountMinor: 1499,
   displayLocale: "en-US",
-  lookupKey: "sidestream_pro_once_2499",
+  lookupKey: "sidestream_pro_once_1499",
   priceSource: Object.freeze({ kind: "default" }),
 });
 
@@ -12,12 +12,25 @@ const indiaOffer = Object.freeze({
   offerId: "sidestream-unlimited-india",
   countryCodes: Object.freeze(["IN"]),
   currency: "inr",
-  amountMinor: 79900,
+  amountMinor: 49900,
   displayLocale: "en-IN",
   lookupKey: null,
   priceSource: Object.freeze({
     kind: "environment",
     variable: "SIDESTREAM_PRO_INDIA_PRICE_ID",
+  }),
+});
+
+const brazilOffer = Object.freeze({
+  offerId: "sidestream-unlimited-brazil",
+  countryCodes: Object.freeze(["BR"]),
+  currency: "brl",
+  amountMinor: 2500,
+  displayLocale: "pt-BR",
+  lookupKey: null,
+  priceSource: Object.freeze({
+    kind: "environment",
+    variable: "SIDESTREAM_PRO_BRAZIL_PRICE_ID",
   }),
 });
 
@@ -30,7 +43,8 @@ export const SIDESTREAM_PRICING_CONTRACT = Object.freeze({
   }),
   global: globalOffer,
   india: indiaOffer,
-  checkoutCatalog: Object.freeze([indiaOffer, globalOffer]),
+  brazil: brazilOffer,
+  checkoutCatalog: Object.freeze([indiaOffer, brazilOffer, globalOffer]),
 });
 
 export function formatOfferPrice(offer) {
