@@ -79,13 +79,19 @@ test("the router cookie is consumable by the audited server helper", async () =>
   assert.match(cookieValue, /^1\.[A-Za-z0-9_-]{22}\.mc-paid-v1\./);
   assert.equal(
     response.headers.get("x-test-rewrite"),
-    "https://sidestream.tv/mobile-paid-prototype.html?utm_source=manychat&utm_medium=dm&utm_campaign=Launch_1",
+    "https://sidestream.tv/mobile-paid-prototype.html",
   );
   assert.match(
     response.headers.get(
       "x-rewrite-x-sidestream-paid-acquisition-assignment",
     ),
     /^1\./,
+  );
+  assert.equal(
+    response.headers.get(
+      "x-rewrite-x-sidestream-paid-acquisition-attribution",
+    ),
+    "utm_source=manychat&utm_medium=dm&utm_campaign=Launch_1",
   );
 });
 

@@ -20,6 +20,8 @@ const LANDING_PROOF_CONTEXT = "sidestream-paid-acquisition-landing-proof-v1";
 const INTERNAL_ASSIGNMENT_HEADER =
   "x-sidestream-paid-acquisition-assignment";
 const INTERNAL_PROOF_HEADER = "x-sidestream-paid-acquisition-proof";
+const INTERNAL_ATTRIBUTION_HEADER =
+  "x-sidestream-paid-acquisition-attribution";
 const BOT_SIGNATURES = [
   "bot",
   "crawler",
@@ -265,17 +267,15 @@ function controlRedirect(attribution, cookie) {
 async function cohortResponse(cohort, attribution, cookie, runtime) {
   if (cohort === CONTROL_COHORT) return controlRedirect(attribution, cookie);
 
-  const destination = attributionUrl(
-    new URL(runtime.paidLandingPath, CONTROL_DESTINATION),
-    attribution,
-  );
+  const destination = new URL(runtime.paidLandingPath, CONTROL_DESTINATION);
+  const attributionQuery = new URLSearchParams(attribution).toString();
   const proof = bytesToBase64Url(
     new Uint8Array(
       await crypto.subtle.sign(
         "HMAC",
         runtime.key,
         encoder.encode(
-          `${LANDING_PROOF_CONTEXT}:${runtime.assignmentCookieValue}:${destination.searchParams.toString()}`,
+          `${LANDING_PROOF_CONTEXT}:${runtime.assignmentCookieValue}:${attributionQuery}`,
         ),
       ),
     ),
@@ -285,6 +285,7 @@ async function cohortResponse(cohort, attribution, cookie, runtime) {
     INTERNAL_ASSIGNMENT_HEADER,
     runtime.assignmentCookieValue,
   );
+  requestHeaders.set(INTERNAL_ATTRIBUTION_HEADER, attributionQuery);
   requestHeaders.set(INTERNAL_PROOF_HEADER, proof);
   const response = rewrite(destination, {
     request: { headers: requestHeaders },

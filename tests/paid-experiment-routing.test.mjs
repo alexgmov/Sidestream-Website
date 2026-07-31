@@ -25,8 +25,12 @@ const helperSource = `
   export function next() {
     return new Response(null, { headers: { "x-test-next": "1" } });
   }
-  export function rewrite(url) {
-    return new Response(null, { headers: { "x-test-rewrite": String(url) } });
+  export function rewrite(url, init = {}) {
+    const response = new Response(null, { headers: { "x-test-rewrite": String(url) } });
+    for (const [name, value] of init.request?.headers || []) {
+      response.headers.set("x-rewrite-" + name, value);
+    }
+    return response;
   }
 `;
 const helperUrl = `data:text/javascript;base64,${Buffer.from(helperSource).toString("base64")}`;
@@ -158,7 +162,13 @@ test("the unlinked review route deterministically renders the paid landing on de
   assert.equal(review.status, 200);
   assert.equal(
     review.headers.get("x-test-rewrite"),
-    "https://sidestream.tv/mobile-paid-prototype.html?utm_source=manychat",
+    "https://sidestream.tv/mobile-paid-prototype.html",
+  );
+  assert.equal(
+    review.headers.get(
+      "x-rewrite-x-sidestream-paid-acquisition-attribution",
+    ),
+    "utm_source=manychat",
   );
   assert.match(review.headers.get("set-cookie"), new RegExp(`^${COOKIE_NAME}=`));
 
@@ -289,7 +299,7 @@ test("first eligible requests use the exact 50/50 bucket partition and secure co
   assert.equal(paid.status, 200);
   assert.equal(
     paid.headers.get("x-test-rewrite"),
-    "https://sidestream.tv/mobile-paid-prototype.html?utm_source=manychat",
+    "https://sidestream.tv/mobile-paid-prototype.html",
   );
   assert.equal(paid.headers.has("location"), false);
 
@@ -331,7 +341,12 @@ test("valid assignments are sticky and invalid values are safely replaced", asyn
     request("/mc?utm_campaign=returning", { cookie: paidCookie }),
     { nonceBytes: CONTROL_NONCE },
   );
-  assert.match(sticky.headers.get("x-test-rewrite"), /utm_campaign=returning/);
+  assert.equal(
+    sticky.headers.get(
+      "x-rewrite-x-sidestream-paid-acquisition-attribution",
+    ),
+    "utm_source=manychat&utm_campaign=returning",
+  );
   assert.equal(sticky.headers.has("set-cookie"), false);
 
   const tamperedValue = cookieValue(firstPaid).replace(
@@ -401,7 +416,13 @@ test("bounded attribution is normalized identically for both cohorts", async () 
   });
   assert.equal(
     paid.headers.get("x-test-rewrite"),
-    `https://sidestream.tv/mobile-paid-prototype.html?${expected}`,
+    "https://sidestream.tv/mobile-paid-prototype.html",
+  );
+  assert.equal(
+    paid.headers.get(
+      "x-rewrite-x-sidestream-paid-acquisition-attribution",
+    ),
+    expected,
   );
 
   const ineligible = await deterministicRoute(

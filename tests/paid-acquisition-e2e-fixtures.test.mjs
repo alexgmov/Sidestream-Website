@@ -163,9 +163,15 @@ test("fixture router covers exact sticky mobile assignment and every safe fallba
 
   const paid = await route(request("/mc"), { nonceBytes: paidNonce });
   assert.equal(paid.status, 200);
-  assert.match(
+  assert.equal(
     paid.headers.get("x-test-rewrite"),
-    /mobile-paid-prototype\.html\?utm_source=manychat$/,
+    "https://sidestream.tv/mobile-paid-prototype.html",
+  );
+  assert.equal(
+    paid.headers.get(
+      "x-rewrite-x-sidestream-paid-acquisition-attribution",
+    ),
+    "utm_source=manychat",
   );
   const paidCookie = cookiePair(paid);
   assert.ok(paidCookie);
@@ -175,9 +181,11 @@ test("fixture router covers exact sticky mobile assignment and every safe fallba
     { nonceBytes: controlNonce },
   );
   assert.equal(stickyPaid.status, 200);
-  assert.match(
-    stickyPaid.headers.get("x-test-rewrite"),
-    /utm_source=manychat&utm_medium=dm$/,
+  assert.equal(
+    stickyPaid.headers.get(
+      "x-rewrite-x-sidestream-paid-acquisition-attribution",
+    ),
+    "utm_source=manychat&utm_medium=dm",
   );
   assert.equal(stickyPaid.headers.has("set-cookie"), false);
 

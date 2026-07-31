@@ -15,6 +15,7 @@ import {
 
 const ASSIGNMENT_HEADER = "x-sidestream-paid-acquisition-assignment";
 const PROOF_HEADER = "x-sidestream-paid-acquisition-proof";
+const ATTRIBUTION_HEADER = "x-sidestream-paid-acquisition-attribution";
 const ENTRY_PLACEHOLDER = "__SIDESTREAM_PAID_ENTRY_TOKEN__";
 const LANDING_PATH = path.join(
   process.cwd(),
@@ -41,19 +42,21 @@ export default async function handler(
     request.headers[ASSIGNMENT_HEADER],
   );
   const proof = firstHeader(request.headers[PROOF_HEADER]);
-  const requestUrl = new URL(
-    request.url || "/api/paid-acquisition/landing",
-    "https://sidestream.tv",
+  const attributionQuery = firstHeader(
+    request.headers[ATTRIBUTION_HEADER],
   );
-  const attribution = readNormalizedAttribution(requestUrl.searchParams);
-  if (!assignmentCookieValue || !proof || !attribution) {
+  const attribution =
+    attributionQuery.length <= 320
+      ? readNormalizedAttribution(new URLSearchParams(attributionQuery))
+      : null;
+  if (!assignmentCookieValue || !proof || !attributionQuery || !attribution) {
     return sendLandingError(response, 403);
   }
 
   try {
     validatePaidAcquisitionLandingProof({
       assignmentCookieValue,
-      attributionQuery: requestUrl.searchParams.toString(),
+      attributionQuery,
       proof,
       secret,
     });
