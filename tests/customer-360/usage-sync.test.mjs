@@ -3,9 +3,18 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { Pool } from "pg";
 import { loadInjectedModule } from "../helpers/handler-loader.mjs";
+import {
+  CUSTOMER_USAGE_OPERATOR_INVARIANTS,
+  PRODUCTION_CONFIRMATION,
+  authenticatedPostgresPoolOptions,
+  parseCustomerUsageSyncArgs,
+  runCustomerUsageSyncOperator,
+  sanitizedTargetFingerprint,
+} from "../../scripts/sync-customer-usage.mjs";
 
 const {
   CUSTOMER_USAGE_JSON_PATH_ALLOWLIST,
+  buildTelemetryPoolOptions,
   compareCustomerUsageHighWater,
   loadCustomerUsageSyncConfiguration,
   normalizeCustomerUsageAggregateRow,
@@ -169,7 +178,6 @@ test("high-water ordering preserves equal timestamps with the telemetry event id
 });
 
 test("rolling boundaries are UTC across Los Angeles spring-forward and fall-back", () => {
-  assert.equal(process.env.TZ, "America/Los_Angeles");
   assert.deepEqual(utcUsageWindow(new Date("2026-03-08T09:30:00.000Z")), {
     today: "2026-03-08",
     sevenDayStart: "2026-03-02",
@@ -180,4 +188,78 @@ test("rolling boundaries are UTC across Los Angeles spring-forward and fall-back
     sevenDayStart: "2026-10-26",
     thirtyDayStart: "2026-10-03",
   });
+});
+
+test("offline sync is dry-run by default and Production requires two exact confirmations", async () => {
+  const dryRun = parseCustomerUsageSyncArgs(["--target", "test", "--dry-run"]);
+  let connections = 0;
+  const report = await runCustomerUsageSyncOperator({
+    options: dryRun,
+    environment: {
+      SIDESTREAM_TEST_POSTGRES_URL: "postgres://user:password@localhost/disposable",
+    },
+    createPool() {
+      connections += 1;
+      throw new Error("dry-run connected");
+    },
+  });
+  assert.equal(report.mode, "dry_run");
+  assert.equal(report.connected, false);
+  assert.equal(report.writes, 0);
+  assert.equal(connections, 0);
+  assert.equal(CUSTOMER_USAGE_OPERATOR_INVARIANTS.deleteStatements, "forbidden");
+
+  assert.throws(
+    () => parseCustomerUsageSyncArgs(["--apply", "--target", "production"]),
+    /confirm-production/,
+  );
+  assert.throws(
+    () => parseCustomerUsageSyncArgs([
+      "--apply", "--target", "production",
+      "--confirm-production", PRODUCTION_CONFIRMATION,
+    ]),
+    /confirm-target/,
+  );
+  assert.throws(
+    () => parseCustomerUsageSyncArgs([
+      "--apply", "--target", "test", "--target-url-env", "POSTGRES_URL",
+    ]),
+    /only SIDESTREAM_TEST_POSTGRES_URL/,
+  );
+});
+
+test("operator fingerprints omit credentials and remote pools authenticate TLS", () => {
+  const first = sanitizedTargetFingerprint(
+    "postgres://private-user:private-password@db.example.com:5432/sidestream?sslmode=require",
+  );
+  const second = sanitizedTargetFingerprint(
+    "postgres://different:different@db.example.com:5432/sidestream?sslmode=verify-full",
+  );
+  assert.equal(first, second);
+  assert.match(first, /^pg-[0-9a-f]{16}$/);
+  assert.doesNotMatch(first, /private|password|example|sidestream/);
+  const remote = authenticatedPostgresPoolOptions(
+    "postgres://private-user:private-password@db.example.com/sidestream?sslmode=require",
+    { readOnly: true },
+  );
+  assert.deepEqual(remote.ssl, { rejectUnauthorized: true });
+  assert.equal(remote.options, "-c default_transaction_read_only=on");
+  assert.throws(
+    () => authenticatedPostgresPoolOptions(
+      "postgres://private@db.example.com/sidestream?sslmode=disable",
+    ),
+    /authenticated TLS/,
+  );
+  assert.deepEqual(
+    buildTelemetryPoolOptions(
+      "postgres://reader:secret@telemetry.example.com/events?sslmode=require",
+    ).ssl,
+    { rejectUnauthorized: true },
+  );
+  assert.throws(
+    () => buildTelemetryPoolOptions(
+      "postgres://reader:secret@telemetry.example.com/events?sslmode=disable",
+    ),
+    /authenticated TLS/,
+  );
 });

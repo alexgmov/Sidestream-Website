@@ -143,7 +143,7 @@ test("aggregate and journey output exposes all ratios without raw linkage", asyn
               campaign: "launch",
               experiment: "mc-mobile-paid-v1",
               cohort: "mc-paid-v1",
-              attribution_confidence: "verified_paid",
+              attribution_confidence: "exact_paid_checkout",
               profile_count: "2",
               first_opened_count: "2",
               completed_activation_count: "1",
@@ -176,8 +176,10 @@ test("aggregate and journey output exposes all ratios without raw linkage", asyn
           campaign: "launch",
           experiment: "mc-mobile-paid-v1",
           cohort: "mc-paid-v1",
-          attribution_confidence: "verified_paid",
+          attribution_confidence: "exact_paid_checkout",
           first_attributed_at: "2026-07-01T12:00:00Z",
+          first_installer_requested_at: null,
+          first_installer_platform: null,
           first_install_at: "2026-07-02T12:00:00Z",
           first_open_at: "2026-07-02T13:00:00Z",
           activation_at: "2026-07-03T12:00:00Z",
@@ -217,24 +219,37 @@ test("aggregate and journey output exposes all ratios without raw linkage", asyn
     denominator: "3",
     percentage: "66.67",
     paidAttributedProfiles: "2",
+    anonymousAttributedProfiles: "0",
     freemiumAttributedProfiles: "0",
     unattributedProfiles: "1",
+  });
+  assert.deepEqual(result.coverage.unknown, {
+    numerator: "1",
+    denominator: "3",
+    percentage: "33.33",
   });
   assert.equal(result.groups[0].activationPercentage.percentage, "50.00");
   assert.equal(result.journeys[0].dayZeroDownloadAttempts, "3");
   assert.equal(result.journeys[0].returnEligible, true);
   assert.equal(result.journeys[0].returned, true);
   assert.equal(result.journeys[0].oneAndDone, false);
+  assert.equal(result.journeys[0].completedActivation, true);
+  assert.equal(result.journeys[0].firstVisitAt, "2026-07-01T12:00:00.000Z");
   assert.equal(result.journeysTruncated, true);
   assert.doesNotMatch(
     JSON.stringify(result),
-    /must-not-cross|email|link_value|install_id_hash|assignmentIdHash/i,
+    /must-not-cross|"email"\s*:|link_value|install_id_hash|assignmentIdHash/i,
   );
 
   assert.equal(sqlCalls.length, 2);
   assert.match(sqlCalls[0].sql, /payment_state = 'active'/);
   assert.match(sqlCalls[0].sql, /claim\.claim_state = 'claimed'/);
   assert.match(sqlCalls[0].sql, /lead\.cta_source = 'mobile-download-handoff'/);
+  assert.match(sqlCalls[0].sql, /sidestream_anonymous_acquisition_sessions/);
+  assert.match(sqlCalls[0].sql, /'exact_paid_checkout'/);
+  assert.match(sqlCalls[0].sql, /'exact_anonymous_claim'/);
+  assert.match(sqlCalls[0].sql, /'exact_verified_email'/);
+  assert.match(sqlCalls[0].sql, /first_touch_medium is distinct from 'installation_claim'/);
   assert.match(sqlCalls[0].sql, /paid\.first_attributed_at <= cohort\.first_install_at/);
   assert.match(sqlCalls[0].sql, /lead\.first_captured_at <= cohort\.first_install_at/);
   assert.match(sqlCalls[0].sql, /lead\.last_captured_at <= cohort\.first_install_at/);
@@ -294,6 +309,7 @@ test("source uses explicit columns and never selects raw identity values into ou
   assert.doesNotMatch(source, /select\s+\*/i);
   assert.doesNotMatch(source, /\b(?:referrer|user_agent|ip_address)\b/i);
   assert.doesNotMatch(source, /\b(?:similarity|levenshtein|soundex)\s*\(/i);
+  assert.doesNotMatch(source, /(?:payload|data_points)\s*->[^\n]*(?:source|utm_source)/i);
 });
 
 function assertPrivateHeaders(response) {
