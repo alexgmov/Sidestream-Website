@@ -569,6 +569,23 @@
     opacity: 0.72;
     transform: none;
   }
+  .mobile-download-handoff-copy-link {
+    width: 100%;
+    min-height: 44px;
+    margin-top: 10px;
+    border: 0;
+    background: transparent;
+    color: rgba(226, 232, 240, 0.76);
+    font: inherit;
+    font-size: 13px;
+    text-decoration: underline;
+    text-underline-offset: 3px;
+    cursor: pointer;
+  }
+  .mobile-download-handoff-copy-link:disabled {
+    cursor: wait;
+    opacity: 0.6;
+  }
   .mobile-download-handoff-status {
     min-height: 19px;
     margin: 10px 0 0;
@@ -1287,6 +1304,7 @@
               <input class="mobile-download-handoff-input" id="mobile-download-email" name="email" type="email" inputmode="email" autocomplete="email" enterkeyhint="send" placeholder="you@email.com" required>
               <button class="btn btn-primary mobile-download-handoff-submit" id="mobile-download-submit" type="submit">Send me the links</button>
             </div>
+            <button class="mobile-download-handoff-copy-link" id="mobile-download-copy-link" type="button">Share a secure computer link instead</button>
             <p class="mobile-download-handoff-status" id="mobile-download-status" aria-live="polite"></p>
           </form>
         </div>
@@ -1783,6 +1801,7 @@
     const mobileDownloadForm = document.getElementById("mobile-download-handoff");
     const mobileDownloadInput = document.getElementById("mobile-download-email");
     const mobileDownloadSubmit = document.getElementById("mobile-download-submit");
+    const mobileDownloadCopyLink = document.getElementById("mobile-download-copy-link");
     const mobileDownloadStatus = document.getElementById("mobile-download-status");
     const mobileDownloadMedia = window.matchMedia("(max-width: 900px)");
     const downloadEmailStorageKey = "sidestream.download.email";
@@ -2084,6 +2103,47 @@
           window.clearTimeout(timeout);
         }
       });
+      if (mobileDownloadCopyLink) {
+        mobileDownloadCopyLink.addEventListener("click", async () => {
+          mobileDownloadStatus.classList.remove("is-error", "is-success");
+          mobileDownloadCopyLink.disabled = true;
+          mobileDownloadStatus.textContent = "Creating your secure computer link...";
+          try {
+            const response = await fetch("/api/send-download-links", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ handoffOnly: true })
+            });
+            if (!response.ok) throw new Error("Computer handoff returned " + response.status);
+            const result = await response.json();
+            if (!result || typeof result.handoffUrl !== "string") {
+              throw new Error("Computer handoff response was invalid");
+            }
+            if (navigator.share) {
+              await navigator.share({
+                title: "Download Sidestream",
+                text: "Open this secure Sidestream download link on your computer.",
+                url: result.handoffUrl
+              });
+              mobileDownloadStatus.textContent = "Link ready to open on your computer.";
+            } else {
+              await navigator.clipboard.writeText(result.handoffUrl);
+              mobileDownloadStatus.textContent = "Secure computer link copied.";
+            }
+            mobileDownloadStatus.classList.add("is-success");
+          } catch (error) {
+            if (error && error.name === "AbortError") {
+              mobileDownloadStatus.textContent = "";
+            } else {
+              console.warn("Sidestream computer handoff failed", error);
+              mobileDownloadStatus.textContent = "Could not create the computer link. Try again.";
+              mobileDownloadStatus.classList.add("is-error");
+            }
+          } finally {
+            mobileDownloadCopyLink.disabled = false;
+          }
+        });
+      }
     }
     if (windowsWaitlistForm && windowsWaitlistInput && windowsWaitlistSubmit && windowsWaitlistStatus) {
       windowsWaitlistForm.addEventListener("submit", async (ev) => {
