@@ -881,6 +881,7 @@ Use the narrowest relevant check after edits:
 
 ## Recent Change Log
 
+- 2026-07-30: Advanced only the receipt-gated paid Mac manifest to the notarized `Sidestream Unlimited` artifact from FlowState `61e768b`. The refreshed installer keeps the public filename `Sidestream-Unlimited.dmg`, uses a new immutable private Blob pathname, exposes `Install Sidestream Unlimited.pkg`, and removes the redundant paid panel-intro branding/status copy without changing the standard Mac release or paid Windows manifest.
 - 2026-07-30: Removed the redundant green “Payment complete” badge from the paid-acquisition thank-you header, leaving the Sidestream wordmark as the only header element.
 - 2026-07-30: Removed the redundant red “Do not download Sidestream to this phone” warning card from the paid-acquisition thank-you page while preserving its computer inbox and installation steps.
 - 2026-07-30: Reduced the paid-acquisition email to the Sidestream Unlimited name, one sentence describing the Premiere Pro extension, and Mac/Windows download buttons. Removed setup, recovery, entitlement, refund, and dispute copy from that email; aligned the phone handoff subject and renamed only the customer-visible paid artifact filenames to `Sidestream-Unlimited.dmg` and `Sidestream-Unlimited.exe`, leaving the installer bytes and installed app unchanged.
