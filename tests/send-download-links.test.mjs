@@ -99,8 +99,10 @@ test("forged, expired, duplicated, and identity-augmented handoffs fail closed",
     acquisitionCookieValue: cookie.value,
     platform: "macos",
   }, { secret: SECRET, now: NOW });
+  const forgedToken = `${token.slice(0, -1)}${token.endsWith("A") ? "B" : "A"}`;
+  assert.notEqual(forgedToken, token);
   for (const path of [
-    `/api/send-download-links?handoff=${token.slice(0, -1)}A`,
+    `/api/send-download-links?handoff=${forgedToken}`,
     `/api/send-download-links?handoff=${token}&email=private%40example.com`,
     `/api/send-download-links?handoff=${token}&handoff=${token}`,
   ]) {

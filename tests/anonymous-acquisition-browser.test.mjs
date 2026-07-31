@@ -192,7 +192,13 @@ test("mobile handoff is opaque, signed, expiring, and carries no source or ident
       expiresAt: NOW_SECONDS + 7 * 24 * 60 * 60,
     },
   );
-  assert.throws(() => verifyAcquisitionHandoff(`${handoff.slice(0, -1)}A`, {
+  const nonCanonicalSignature = mutateSignaturePadBits(handoff);
+  assert.notEqual(nonCanonicalSignature, handoff);
+  assert.equal(
+    Buffer.from(nonCanonicalSignature.split(".").at(-1), "base64url").toString("hex"),
+    Buffer.from(handoff.split(".").at(-1), "base64url").toString("hex"),
+  );
+  assert.throws(() => verifyAcquisitionHandoff(nonCanonicalSignature, {
     secret: SECRET,
     now: NOW_MS,
   }));
@@ -201,3 +207,11 @@ test("mobile handoff is opaque, signed, expiring, and carries no source or ident
     now: NOW_MS + 7 * 24 * 60 * 60 * 1000,
   }));
 });
+
+function mutateSignaturePadBits(token) {
+  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+  const signature = token.split(".").at(-1);
+  const finalIndex = alphabet.indexOf(signature.at(-1));
+  assert.notEqual(finalIndex, -1);
+  return `${token.slice(0, -1)}${alphabet[finalIndex ^ 1]}`;
+}

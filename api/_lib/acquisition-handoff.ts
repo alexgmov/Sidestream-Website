@@ -87,21 +87,26 @@ export function verifyAcquisitionHandoff(
   }
   const unsigned = [version, ivValue, ciphertextValue, tagValue].join(".");
   const expected = Buffer.from(sign(unsigned, secret), "base64url");
-  const supplied = Buffer.from(signatureValue, "base64url");
+  let supplied: Buffer;
+  try {
+    supplied = decodeCanonicalBase64Url(signatureValue);
+  } catch {
+    throw new Error("Acquisition handoff signature is invalid");
+  }
   if (supplied.length !== expected.length || !timingSafeEqual(supplied, expected)) {
     throw new Error("Acquisition handoff signature is invalid");
   }
 
   let decoded: unknown;
   try {
-    const iv = Buffer.from(ivValue, "base64url");
-    const tag = Buffer.from(tagValue, "base64url");
+    const iv = decodeCanonicalBase64Url(ivValue);
+    const tag = decodeCanonicalBase64Url(tagValue);
     if (iv.length !== 12 || tag.length !== 16) throw new Error("invalid envelope");
     const decipher = createDecipheriv("aes-256-gcm", encryptionKey(secret), iv);
     decipher.setAAD(Buffer.from(ENCRYPTION_CONTEXT, "utf8"));
     decipher.setAuthTag(tag);
     const plaintext = Buffer.concat([
-      decipher.update(Buffer.from(ciphertextValue, "base64url")),
+      decipher.update(decodeCanonicalBase64Url(ciphertextValue)),
       decipher.final(),
     ]);
     decoded = JSON.parse(plaintext.toString("utf8"));
@@ -150,6 +155,14 @@ function sign(unsigned: string, secret: Buffer) {
   return createHmac("sha256", secret)
     .update(`${SIGNATURE_CONTEXT}:${unsigned}`, "utf8")
     .digest("base64url");
+}
+
+function decodeCanonicalBase64Url(value: string) {
+  const decoded = Buffer.from(value, "base64url");
+  if (decoded.toString("base64url") !== value) {
+    throw new Error("Acquisition handoff encoding is invalid");
+  }
+  return decoded;
 }
 
 function validSecret(value: unknown) {
