@@ -15,7 +15,10 @@ rows, or an unauthenticated protected-route response is not evidence of
 operational readiness or authenticated behavior.
 This file documents the repository contract and a human-gated Preview/Test-first
 rollout; it contains no Production deployment, migration, or backfill-apply
-procedure.
+claim. The anonymous-acquisition migration, secrets, historical rescan,
+scheduler decision, website deployment, and FlowState release described below
+remain human-authorized external work; this documentation change performed none
+of them.
 
 The website repository owns the Customer 360 database, Stripe money projection,
 telemetry aggregate import, and private read API. FlowState may provide durable
@@ -26,6 +29,55 @@ upstream Preview/Test integration and QA wait for the separately approved
 website migration, configuration, deployment, and verification gates below.
 
 ## Domain boundaries
+
+### Four identities that must stay separate
+
+Anonymous acquisition continuity uses four deliberately different identities.
+None is a substitute for another:
+
+| Identity | Authority and lifetime | Explicit non-authority |
+| --- | --- | --- |
+| Browser acquisition session | A random 256-bit token in the signed, 30-day, `Secure`, `HttpOnly`, `SameSite=Lax`, host-only `__Host-sidestream-acquisition-v1` cookie. Postgres stores only its SHA-256 digest, immutable first touch, optional signed experiment, first installer request, and claim state. The default retained-until horizon is 90 days and the schema caps it at 180 days. | It is not an account, email, install, device credential, payment, or entitlement. A visit alone creates no Customer 360 profile. |
+| Installation evidence | The panel's existing lowercase hex64 `installIdHash` plus a separately generated lowercase hex64 `installerReceiptIdHash`, submitted only after local receipt verification. | Neither hash authenticates an account, grants a device seat, proves payment, or selects attribution. Raw IDs never cross this boundary. |
+| Customer 360 profile | A server-created UUID in one trusted `production` or `test` namespace, connected to the browser session only by the one-time installation claim. It may remain sparse and email-free indefinitely. | The profile is not a login session, active device binding, license credential, or browser token. |
+| Verified account/contact | A Google-authenticated server account and its verified email, optionally attached later through exact server-side identity evidence. | Email does not merge profiles and does not replace the anonymous first touch. It is acquisition evidence only under the lower-precedence exact verified-email rule below. |
+
+The end-to-end path is:
+
+```text
+eligible page GET
+  -> signed first-touch browser cookie (best effort)
+  -> desktop /api/download GET
+       -> same static platform package
+       -> background session + first installer-request write
+     or mobile computer handoff
+       -> optional email, or no-email secure share link
+       -> opaque seven-day handoff restores the same cookie on the computer
+       -> same /api/download route and same static package
+  -> panel verifies its local installer receipt
+  -> POST /api/installation/claim with only two hashes
+  -> browser opens a 15-minute opaque nonce
+  -> GET /api/installation/claim-complete combines nonce + signed cookie once
+  -> sparse Customer 360 profile is created or reused
+  -> later verified Google/account evidence may attach to that same profile
+```
+
+The cookie write is intentionally nonblocking. A missing or invalid
+`SIDESTREAM_ANONYMOUS_ACQUISITION_SECRET`, malformed/forged cookie, database
+error, timeout, or background scheduling failure cannot block the page or a
+validated installer redirect. Missing configuration does block association:
+the claim-creation route returns `503 claim_unavailable`, protected Customer
+360 reads return `503 customer_admin_unavailable`, and usage sync fails closed.
+The browser-completion page deliberately returns the same minimal noindex body
+when browser state is missing or forged and does not consume the one-time claim.
+
+The claim request accepts exactly `installIdHash` and
+`installerReceiptIdHash`; attribution, account, email, payment, entitlement,
+and device fields are rejected. Its encrypted, signed nonce expires after 15
+minutes and is the only claim URL parameter. Exact replay to the same profile is
+idempotent. Reuse against different evidence, conflicting identity ownership,
+or contradictory profile ownership is quarantined with append-only hashed
+evidence; it is never guessed, overwritten, or silently re-opened.
 
 ### Profiles, installs, and identity
 
@@ -267,6 +319,55 @@ freshness value means no accepted source high-water has been observed. Operators
 must review lag and define an acceptable non-Production threshold before rollout;
 the code intentionally does not invent one.
 
+## Anonymous browser, download, and mobile handoff contract
+
+The first eligible non-speculative page `GET` creates the browser cookie once.
+A valid existing cookie wins over later query parameters, so a return visit
+cannot overwrite first touch. The source taxonomy is bounded, not open text:
+missing source becomes `direct`; source and medium normalize to lowercase and
+must match `[a-z0-9][a-z0-9._-]{0,63}`; campaign and content preserve case and
+must match `[A-Za-z0-9][A-Za-z0-9._-]{0,63}`. Recognized named sources include
+`instagram`, `facebook`, `linkedin`, `reddit`, `youtube`, `google`, `manychat`,
+and `manychat-instagram`; another source is accepted only inside the same
+bounded grammar. Duplicate fields or any invalid value collapse the whole
+browser attribution to `direct` with null optional fields rather than storing a
+partial or attacker-shaped value.
+
+The paid mobile experiment remains a separate signed assignment. Only the
+server-issued `mc-mobile-paid-v1` assignment may set cohort `paid` or
+`freemium` in the anonymous acquisition cookie; query/body values cannot select
+experiment, cohort, assignment, environment, Product, Price, amount, payment,
+or entitlement. The assignment is sticky for 30 days. Stored first-touch and
+signed-experiment values are immutable once non-null; contradictory evidence
+quarantines the session.
+
+`GET /api/download` verifies the cookie or issues a fresh direct/UTM first
+touch, selects Mac or Windows only through the existing release manifest, sends
+the short-lived Blob redirect, and then best-effort records the anonymous
+session and first installer request. Scanner-like requests are not recorded.
+`HEAD`, `304`, invalid platform, manifest failure, or Blob failure do not create
+an installer-request fact. Recording failure is logged without a token, email,
+or raw identity and cannot change the already-sent installer response.
+
+On mobile, email is optional continuity rather than identity authority. The
+existing email path stores a bounded `mobile-download-handoff` lead and sends
+separate signed Mac and Windows links when anonymous continuity is configured;
+otherwise its established delivery path may safely fall back to direct static
+installer links without claiming continuity. The no-email path posts only
+`{"handoffOnly":true}` and returns one share/copy link. Both use an encrypted,
+signed, seven-day envelope containing the acquisition cookie and optional
+platform; the public URL contains exactly one opaque `handoff` parameter and no
+email, UTM, install hash, receipt hash, or profile ID. The computer `GET`
+accepts no additional parameter, restores the signed cookie, and redirects to
+the same canonical installer route. Forged, expired, duplicated, noncanonical,
+or identity-augmented handoffs return `404`.
+
+Installer packages remain static. Every acquisition source, mobile path, and
+email choice resolves to the same manifest-selected pathname, SHA-256, size,
+and public filename for a platform. No package contains an
+`acquisition_request_id`, browser token, email, campaign, or personalized
+payload. The panel creates install/receipt evidence only after installation.
+
 ## Measurable acquisition and retention funnel
 
 ### Protected report boundary and window
@@ -340,19 +441,27 @@ Attribution is deterministic and deliberately narrow:
    Session reference, or claimed activation/account record. The source is
    `manychat`; medium, campaign, experiment, cohort, and first-attributed time
    come from the verified paid entry.
-2. `verified_email` is considered only when a
+2. `exact_anonymous_claim` is next. It requires a non-marker anonymous
+   acquisition session whose one-time browser-to-install claim is complete,
+   whose first installer request exists, and whose claimed profile is in the
+   cohort. Source, medium, campaign, experiment, cohort, first visit, installer
+   request, and platform come only from that immutable server session. The
+   first visit must be at or before first install.
+3. `verified_email` is considered only when a
    `cta_source=mobile-download-handoff` lead's normalized email exactly equals
    both the verified account email and the profile's verified contact email.
    Source, medium, campaign, and first-attributed time come from that lead.
-3. Every other profile is `source=unknown` with
+4. Every other profile is `source=unknown` with
    `attributionConfidence=unattributed`.
 
-Paid attribution wins over verified email even if the email lead was captured
-earlier. Within paid candidates, the earliest exact paid entry wins with stable
-entry/Checkout tie-breakers. Within freemium candidates, the earliest lead wins
-with a stable lead-ID tie-breaker.
+Paid attribution wins over anonymous claim and verified email even when either
+was captured earlier; exact anonymous claim wins over verified email. Within
+paid candidates, the earliest exact paid entry wins with stable entry/Checkout
+tie-breakers. Within anonymous candidates, the earliest first visit wins with a
+stable acquisition-session ID tie-breaker. Within freemium candidates, the
+earliest lead wins with a stable lead-ID tie-breaker.
 
-Both candidate classes are acquisition first touches only when their
+All candidate classes are acquisition first touches only when their
 `first_attributed_at`/`first_captured_at` is at or before the profile's exact
 `firstInstallAt`. A paid entry first captured after installation is ineligible
 even when its exact identity linkage is otherwise valid. The canonical
@@ -380,21 +489,28 @@ link.
 Installer packages remain static and are never personalized with an
 `acquisition_request_id` or another browser attribution token. The panel may
 send a locally generated installer receipt hash only after receipt verification
-passes; that hash is an exact profile-to-paid-record association edge, not an
-acquisition source by itself. Anonymous installs without an exact server-side
-paid or verified-email link remain unknown.
+passes; that hash is association evidence, not an acquisition source by itself.
+An anonymous session becomes source attribution only after the exact one-time
+claim joins its browser token digest to that verified install/receipt evidence.
+Anonymous installs without an exact server-side paid, anonymous-claim, or
+verified-email link remain unknown.
 
 ### Coverage, output, and privacy
 
-Source-segmented retention covers only exact paid links and exact verified-email
-matches. Every anonymous unlinked install remains unknown. This is an explicit
-coverage boundary, not missing data that the report may guess away.
+Source-segmented retention covers only exact paid links, exact anonymous claims,
+and exact verified-email matches. Every anonymous unlinked install remains
+unknown. This is an explicit coverage boundary, not missing data that the
+report may guess away.
 `attributionCoverage` therefore reports:
 
-- numerator: `verified_paid + verified_email` cohort profiles;
+- numerator: `exact_paid_checkout + exact_anonymous_claim +
+  exact_verified_email` cohort profiles;
 - denominator: every profile in the first-install cohort;
 - percentage: that ratio, or null for an empty cohort;
-- paid-attributed, freemium-attributed, and unattributed profile counts.
+- paid-attributed, anonymous-attributed, freemium-attributed, and unattributed
+  profile counts. The parallel `coverage` object exposes the same total
+  attributed and unknown ratios plus one cohort-denominator ratio per exact
+  confidence class.
 
 Overall stickiness continues to use all install IDs and all exact open days.
 Unknown installs remain in product-wide install/open/return denominators even
@@ -407,8 +523,9 @@ one-and-done counts plus the four numerator/denominator/percentage objects
 defined above. `journeys` are ordered by exact first install time then customer
 UUID and expose only the customer UUID, bounded attribution
 dimensions/confidence, first-attributed/install/open/activation timestamps,
-day-zero attempt count, later UTC open dates, explicit return eligibility,
-returned status, and one-and-done status. The response includes `journeyLimit`,
+first anonymous installer-request timestamp/platform when present, day-zero
+attempt count, later UTC open dates, explicit return eligibility, returned
+status, and one-and-done status. The response includes `journeyLimit`,
 `journeysReturned`, and `journeysTruncated`.
 
 Email, `installIdHash`, installer receipt/assignment hashes, Stripe identifiers,
@@ -428,12 +545,66 @@ telemetry history so every affected `sidestream_customer_usage_daily` row is
 upserted under the exact install/open/active-day/download definitions. The
 rescan must not delete, truncate, or rewrite raw telemetry, and it must not
 delete canonical profiles, identity, commerce, audit, or entitlement/device
-state. The repository currently provides no approved Production rescan command.
-Preview/Test requires an approved target, authenticated read-only source,
-secret-safe invocation mechanism, checkpoint/replay design, evidence, and
-rollback decision. Production remains blocked behind every existing human-gated
-migration, backfill, configuration, deployment, scheduling, and verification
-rule in this document and `docs/api-hardening-runbook.md`.
+state.
+
+The repository now contains narrow operator entry points. Their dry-run modes
+perform no network or database access:
+
+```bash
+node scripts/sync-customer-usage.mjs --dry-run --target test
+node scripts/rescan-customer-usage.mjs --dry-run --target test
+node scripts/sync-customer-usage.mjs --dry-run --target production
+node scripts/rescan-customer-usage.mjs --dry-run --target production
+```
+
+The only Test apply forms are:
+
+```bash
+node scripts/sync-customer-usage.mjs --apply --target test --batch-size 250
+node scripts/rescan-customer-usage.mjs --apply --target test \
+  --checkpoint /restricted/path/customer-usage-rescan.json
+```
+
+They accept the target only from `SIDESTREAM_TEST_POSTGRES_URL` and the source
+only from `SIDESTREAM_TELEMETRY_POSTGRES_URL`; the disposable-target collision
+guard remains active. The Production-capable forms exist for a later explicit
+human gate, but their presence is not authorization:
+
+```bash
+node scripts/sync-customer-usage.mjs --apply --target production \
+  --confirm-production APPLY_PRODUCTION_CUSTOMER_USAGE \
+  --confirm-target pg-<reviewed-fingerprint>
+node scripts/rescan-customer-usage.mjs --apply --target production \
+  --checkpoint /restricted/path/customer-usage-rescan.json \
+  --confirm-production APPLY_PRODUCTION_CUSTOMER_USAGE \
+  --confirm-target pg-<reviewed-fingerprint>
+```
+
+Production target selection is only through
+`SIDESTREAM_POSTGRES_URL_NON_POOLING`; the source remains
+`SIDESTREAM_TELEMETRY_POSTGRES_URL`. Both tools reject a source/target
+fingerprint collision, reject remote TLS weakening modes, remove the URL's
+`sslmode` option, enable certificate verification for remote Postgres, use one
+connection, and never print a connection string. The reviewed
+`pg-<fingerprint>` binds only hostname, port, and database name; it is safe to
+record but is not connected-target evidence by itself.
+
+The sync and rescan share code-enforced invariants: raw telemetry is read-only;
+target writes are append/update only; historical rescan writes are limited to
+usage aggregates; SQL deletes and canonical acquisition rewrites are forbidden;
+and profile identity, commerce, payment, entitlement, device, audit, and raw
+telemetry domains are protected. Rescan writes a mode-`0600`, versioned
+source/target-bound checkpoint by atomic rename after every committed batch.
+A database commit may survive a following checkpoint-write failure, so resume
+depends on idempotent upserts. Mismatched checkpoints fail closed. A deliberate
+from-zero replay additionally requires `--replay --confirm-replay
+REPLAY_SESSION_STARTED_AGGREGATES`; replay is idempotent and never deletes.
+
+No apply command may run until the target, source, secret launcher, source-lag
+threshold, checkpoint path, replay/failure plan, and rollback have separate
+human approval. Production remains blocked behind the migration-tooling and
+other Production blockers in `docs/api-hardening-runbook.md` plus every
+human-gated configuration, deployment, scheduling, and verification rule below.
 
 ## Private Customer 360 APIs
 
@@ -698,8 +869,9 @@ recovery, and the end-to-end merge/replay pipeline. Funnel coverage proves the
 exclusive first-install window stays separate from the completed UTC-day
 observation boundary, exact UTC open/return days, mature return eligibility,
 accepted day-zero attempts, completed-activation/first-open subset ratios,
-pre-install-only paid/email first touches, paid-over-email precedence, unknown
-coverage, deterministic journey ordering, and privacy exclusions. The complete
+pre-install-only paid/anonymous/email first touches, paid-over-anonymous-over-email
+precedence, anonymous browser-to-install claim continuity, unknown coverage,
+deterministic journey ordering, and privacy exclusions. The complete
 pipeline proves Stripe/Vercel/network isolation and verifies that Customer 360
 leaves entitlement and device-seat state unchanged.
 
@@ -735,6 +907,28 @@ separate human approval after reviewing the dry-run digest, every orphan and
 conflict, target identity, migration state, checkpoint path, and rollback plan.
 This document intentionally provides no apply command.
 
+## Required Vercel configuration names
+
+Values belong only in the approved secret/configuration manager. Never put them
+in this document, source, command arguments, handoffs, logs, URLs, or browser
+storage.
+
+| Scope | Required variable names |
+| --- | --- |
+| Anonymous browser/download/claim continuity | `SIDESTREAM_ANONYMOUS_ACQUISITION_SECRET`; the existing pooled runtime selector `SIDESTREAM_POSTGRES_URL`; trusted `SIDESTREAM_LICENSE_NAMESPACE` |
+| Protected Customer 360 reads and daily sync | `SIDESTREAM_CRM_ADMIN_SECRET`; `CRON_SECRET`; separately selected read-only `SIDESTREAM_TELEMETRY_POSTGRES_URL` |
+| Human-only migration/sync/rescan tools | `SIDESTREAM_POSTGRES_URL_NON_POOLING`; `SIDESTREAM_TELEMETRY_POSTGRES_URL` (and `SIDESTREAM_TEST_POSTGRES_URL` for an approved Test target only) |
+| Signed `/mc` experiment metadata | `SIDESTREAM_PAID_ACQUISITION_ASSIGNMENT_SECRET` when the paid/freemium experiment is enabled; absent/invalid configuration keeps `/mc` on its existing safe fallback and adds no signed experiment dimension |
+| Optional email-later path | Existing `RESEND_API_KEY`, `BLOB_READ_WRITE_TOKEN`, `SIDESTREAM_LEAD_HASH_SECRET`, and `SIDESTREAM_RATE_LIMIT_HASH_SECRET`, plus optional `SIDESTREAM_DOWNLOAD_EMAIL_FROM` and `SIDESTREAM_DOWNLOAD_EMAIL_REPLY_TO` overrides; Vercel-managed Blob access may instead use its existing `VERCEL_OIDC_TOKEN` plus `BLOB_STORE_ID`, and the no-email secure share path does not require a recipient |
+
+Production must fail closed while unconfigured. Without the anonymous secret,
+middleware and installer delivery continue without acquisition persistence and
+claim creation returns `503`. Without the admin secret, protected Customer 360
+reads return `503`. Without `CRON_SECRET` or the telemetry selector, usage sync
+cannot run. A direct-only runtime Postgres configuration is rejected in
+Production; the non-pooling selector is operator-only. No browser value may
+select any of these settings.
+
 ## Human-gated Preview/Test-first rollout
 
 This is the only rollout sequence:
@@ -749,20 +943,21 @@ This is the only rollout sequence:
    Verify the ledger/checksums, RLS, private function grants, runtime-DDL
    prohibition, and a documented non-Production rollback/recreate path.
 4. Configure Preview/Test secrets and invocation ownership: a stable
+   `SIDESTREAM_ANONYMOUS_ACQUISITION_SECRET`,
    `SIDESTREAM_CRM_ADMIN_SECRET`, separate
    `SIDESTREAM_TELEMETRY_POSTGRES_URL`, distinct
    `SIDESTREAM_TEST_POSTGRES_URL`, `CRON_SECRET`, trusted Test namespace/hosts,
-   and existing website runtime database secrets. Record owners without putting
+   optional `SIDESTREAM_PAID_ACQUISITION_ASSIGNMENT_SECRET`, and existing
+   website runtime database/Blob/email secrets. Record owners without putting
    values in commands, source, reports, or logs.
 5. Deploy Preview/Test only. Confirm the immutable artifact/commit and protected
    host before invoking anything. Vercel scheduling has one project-wide control
    for all four configured jobs, not a Customer 360-only toggle. Keep project-wide
    scheduling disabled unless all four jobs, their targets, secrets, side effects,
    failure handling, and alert paths receive separate non-Production approval.
-   For usage-sync verification while it remains disabled, require either an
-   approved secret-safe protected manual trigger or a separately approved
-   non-Production scheduler; the repository currently supplies neither operator
-   control, so the absence of one blocks this rollout stage.
+   Verify usage while scheduling remains disabled with the approved
+   `scripts/sync-customer-usage.mjs --apply --target test` operator path and its
+   secret-safe environment launcher. Do not manually forge a cron request.
 6. Run the offline backfill dry-run, verify its digest and privacy-safe report,
    and resolve every orphan/conflict decision. Any Test apply requires a new,
    separate human approval; dry-run approval is not apply approval. Verify a
@@ -772,9 +967,9 @@ This is the only rollout sequence:
    must name the exact non-Production target and authenticated read-only source,
    preserve raw telemetry, define checkpoint/replay and failure recovery, prove
    every historical daily bucket was reconsidered, and show an idempotent rerun.
-   The repository currently supplies no approved invocation mechanism, so its
-   absence blocks this stage. Dry-run identity-backfill approval is not rescan
-   approval, and neither authorizes Production.
+   Use only `scripts/rescan-customer-usage.mjs --apply --target test` with the
+   restricted checkpoint described above. Dry-run identity-backfill approval is
+   not rescan approval, and neither authorizes Production.
 8. Verify all three protected Customer APIs, no-store headers, namespace isolation,
    null-heavy and multi-currency responses, cursor tamper/filter binding, merged
    tombstone hiding, quality flags, daily sync summaries, source lag, rolling
@@ -789,17 +984,117 @@ This is the only rollout sequence:
    behavior first, then optional `installIdHash` association without changing
    device or entitlement decisions.
 
-For non-Production rollback, stop the approved usage-sync invocation path. If
-project-wide Vercel scheduling was approved, disabling it affects all four jobs
-and requires the corresponding operator decision; there is no usage-only switch.
-Remove access to the two admin routes, redeploy the last known Preview/Test
-artifact, and restore or recreate the approved disposable/staging database from
-its pre-migration snapshot. Migrations are append-only; do not improvise down
-SQL or delete audit rows. Preserve failure evidence, backfill reports, and
-checkpoints for review, but do not copy them into Production.
+After every Preview/Test gate passes, the exact remaining Production sequence
+still requires a new human authorization for each external stage:
 
-There is no Production rollback procedure here because no Production action is
-authorized. A future Production plan requires a fresh human review after all
-runbook blockers and Preview/Test gates are closed. Until then, Customer 360
-remains operationally inactive and its backfill completeness, runtime database
-selection, protected API, and usage-sync behavior remain unverified.
+1. Close the Production blockers in `docs/api-hardening-runbook.md`, including
+   authenticated migration status/apply tooling, then freeze the reviewed
+   website commit, FlowState commit, migration chain, manifests, environment
+   inventory, alert owners, source-lag threshold, and rollback artifacts. A
+   local gate or dry-run is not this approval.
+2. Capture a restorable Production database snapshot and authenticated
+   connected-target evidence. Run complete checksummed migration status, apply
+   the pending chain through
+   `20260731120000_add_anonymous_acquisition_sessions.sql`, and re-run complete
+   status/checksum, RLS, grant, and no-runtime-DDL verification. Stop on any
+   unexpected existing object, checksum, role, or target.
+3. In Vercel, set the required names above for Production without exposing
+   values. Keep project-wide cron scheduling disabled. Prove pooled runtime,
+   direct operator target, and read-only telemetry source are three reviewed
+   roles/selections and that source and target fingerprints differ.
+4. Release the clean, pushed `origin/main` commit through the Git-linked Vercel
+   Production deployment only. Do not use a feature/Orchestra branch or direct
+   CLI promotion. Wait for canonical `https://sidestream.tv/version.json` to
+   report the exact pushed SHA and recheck the ordinary
+   Upgrade -> Google authentication -> Stripe redirect before proceeding.
+5. With scheduling still disabled, run the real-product smoke checklist below,
+   then human-authorize the guarded full Production rescan using the exact
+   target fingerprint and restricted checkpoint. Preserve every checkpoint and
+   summary, require `complete=true`, review source freshness and quarantine
+   counts, and run an explicitly confirmed idempotent from-zero replay only if
+   the approved evidence plan requires it.
+6. Run one guarded Production usage sync, verify protected list/detail/funnel
+   reads, all numerator/denominator and coverage semantics, freshness, unknown
+   groups, privacy exclusions, and unchanged entitlement/device rows. Stop if
+   historical totals are trusted before the rescan is complete.
+7. Separately approve either a protected external scheduler for usage sync or
+   Vercel's project-wide cron switch. The Vercel switch enables all four declared
+   jobs, so Stripe processing, lead replay, maintenance, and usage sync must each
+   have reviewed credentials, targets, alerts, and failure handling.
+8. Only after website schema, canonical runtime, claim flow, and monitoring are
+   proven may FlowState publish a separately signed/notarized release that calls
+   the claim endpoints. Verify its release manifest and actual installer bytes;
+   acquisition never changes or personalizes those bytes. Observe the first
+   bounded cohort before widening any release rollout.
+
+### Failure-stop and rollback rules
+
+Stop immediately on a target/source collision; TLS or hostname/certificate
+failure; stale source beyond the approved threshold; migration/checksum/RLS
+drift; checkpoint mismatch or write failure; unexpected delete or protected
+domain mutation; claim conflict/quarantine growth; privacy-field leakage;
+package hash/size drift; canonical SHA mismatch; protected route without the
+expected `401`/authenticated behavior; scheduler ambiguity; nonzero unexpected
+entitlement/device diff; incomplete rescan; or any funnel numerator larger than
+its documented denominator. Preserve the evidence and do not advance to the
+next stage.
+
+Rollback is stop-first and no-delete. Disable the approved usage invocation; if
+the Vercel project-wide cron switch was enabled, disable it only under the
+four-job operator decision. Remove/rotate the anonymous and Customer 360 access
+secrets to return the new surfaces to fail-closed behavior, restore the last
+known website commit through the canonical `origin/main` Git deployment path,
+and halt/roll back the FlowState release manifest to the last verified static
+installer. Do not run down SQL, delete acquisition sessions/conflicts,
+truncate/rewrite telemetry, delete profiles/identity/commerce/audit rows, or
+discard checkpoints. A database snapshot restore is a separately authorized
+last resort and must account for all concurrent website writes, not only this
+feature.
+
+### Real-product smoke checklist
+
+Use a designated test campaign and test account; never expose a real customer's
+email, cookie, token, install hash, receipt hash, or profile ID in screenshots or
+logs.
+
+1. Open canonical Production from a bounded direct/UTM source in a real phone
+   and desktop browser. Confirm the response sets the host-only HttpOnly
+   acquisition cookie once and a later tagged visit cannot overwrite it.
+2. On mobile, exercise the no-email secure share path and, separately, the
+   optional email-later path. Open the opaque link on a real computer; confirm
+   it contains only `handoff`, rejects appended identity/query fields, restores
+   continuity, and selects the expected platform.
+3. Compare public release metadata, download `HEAD`, and the downloaded file's
+   platform, filename, size, and SHA-256. Direct, tagged, shared, and emailed
+   paths must return the same static package bytes.
+4. Install and open the actual signed/notarized FlowState product. Confirm the
+   panel verifies the local receipt, requests a claim with only the two hashes,
+   opens the 15-minute browser URL, shows the generic connected page, and
+   resumes in Premiere without email or Google authentication.
+5. Through the protected report, verify one exact anonymous journey from first
+   visit through installer request, install, exact `session_started` first open,
+   and any accepted day-zero attempt. Confirm confidence is
+   `exact_anonymous_claim`, unknown profiles remain included, and no private
+   hash/token/email crosses the response.
+6. Optionally authenticate the same installation later with Google. Confirm the
+   verified account attaches to the existing profile rather than creating a
+   second journey, while payment, entitlement, device binding, and transfer
+   history remain byte-for-byte/logically unchanged.
+7. Re-run ordinary Upgrade -> Google authentication -> Stripe Checkout plus an
+   existing active-account restore/transfer check. Anonymous acquisition must
+   not change either server-owned path. Verify alerts, source freshness, cron
+   summaries, and canonical SHA before ending the smoke.
+
+For non-Production rollback, the same stop-first rule applies: stop the approved
+usage invocation, account for the four-job scheduler switch, remove protected
+route access, redeploy the last known Preview/Test artifact, and restore or
+recreate only the approved staging database from its snapshot. Preserve failure
+evidence, backfill reports, and checkpoints, but do not copy them into
+Production.
+
+The Production sequence and rollback above are a required future human gate,
+not present authorization or evidence that any step occurred. Until separately
+approved and observed, Customer 360 remains operationally inactive and its
+anonymous migration, backfill completeness, runtime database selection,
+protected API behavior, historical rescan, usage sync, scheduling, and
+real-product claim path remain unverified.
