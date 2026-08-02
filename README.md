@@ -387,7 +387,9 @@ The exact `session_started` rule replaced historical broad non-installer
 activity buckets. The normal sync rereads only its bounded overlap, so a
 one-time full append/update rescan of the source telemetry history is required
 to rebuild older open, accepted-download, and outcome buckets before historical
-usage or retention is trusted. `scripts/rescan-customer-usage.mjs` now provides dry-run plus guarded
+usage or retention is trusted. Historical install identities are materialized
+first through the identity backfill; rescan then remains usage-aggregate-only.
+`scripts/rescan-customer-usage.mjs` now provides dry-run plus guarded
 Test/Production-capable apply forms with verified remote TLS, source/target
 fingerprint collision checks, source freshness, append/update-only aggregate
 writes, no deletes, and a versioned source/target-bound mode-`0600` checkpoint.

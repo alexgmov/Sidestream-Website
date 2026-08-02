@@ -546,7 +546,9 @@ Before historical usage or retention is trusted, an operator must run one
 separately reviewed, human-approved full append/update rescan of the
 schema-versioned raw telemetry history so every valid historical source event
 is reconsidered and every affected `sidestream_customer_usage_daily` row is
-upserted under the exact install/open/active-day/download definitions. The
+upserted under the exact install/open/active-day/download definitions. Historical
+install identities must first be materialized through the separately reviewed
+identity backfill; rescan itself writes only usage aggregates for known installs. The
 rescan must not delete, truncate, or rewrite raw telemetry, and it must not
 delete canonical profiles, identity, commerce, audit, or entitlement/device
 state.

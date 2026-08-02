@@ -614,6 +614,7 @@ export async function runCustomerUsageSessionRescan(
             aggregate,
             batch.checkpoint,
             now,
+            { requireExistingInstall: true },
           );
         }
       });
@@ -1563,14 +1564,18 @@ async function upsertDailyAggregate(
   row: CustomerUsageDailyAggregate,
   checkpoint: CustomerUsageHighWater,
   now: Date,
+  options: Readonly<{ requireExistingInstall?: boolean }> = {},
 ) {
-  await ensureAnonymousCustomerInstall(
-    client,
-    schema,
-    licenseNamespace,
-    row,
-    now,
-  );
+  const requireExistingInstall = options.requireExistingInstall === true;
+  if (!requireExistingInstall) {
+    await ensureAnonymousCustomerInstall(
+      client,
+      schema,
+      licenseNamespace,
+      row,
+      now,
+    );
+  }
   const result = await client.query(
     `insert into ${schema}.sidestream_customer_usage_daily (
        license_namespace, install_id_hash, activity_day,
@@ -1585,6 +1590,10 @@ async function upsertDailyAggregate(
      )
      select $1, $2, $3::date, $4, $5, $6, $7, $8, $9,
        $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22
+     where $23::boolean is false or exists (
+       select 1 from ${schema}.sidestream_customer_installs install
+       where install.license_namespace = $1 and install.install_id_hash = $2
+     )
      on conflict (license_namespace, install_id_hash, activity_day) do update set
        first_app_use_at = excluded.first_app_use_at,
        last_app_use_at = excluded.last_app_use_at,
@@ -1628,6 +1637,7 @@ async function upsertDailyAggregate(
       checkpoint.receivedAt,
       checkpoint.telemetryEventId,
       now,
+      requireExistingInstall,
     ],
   );
   return result.rowCount || 0;

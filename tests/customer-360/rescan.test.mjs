@@ -216,6 +216,8 @@ test("rescan implementation is aggregate-only and contains no delete capability"
   assert.match(core, /where event_name = 'download_requested'/);
   assert.match(core, /readSourceAggregateBatch\(/);
   assert.match(core, /upsertDailyAggregate\(/);
+  assert.match(core, /\{ requireExistingInstall: true \}/);
+  assert.match(core, /sidestream_customer_installs install/);
   assert.match(core, /on conflict \(license_namespace, install_id_hash, activity_day\) do update/i);
   assert.doesNotMatch(core, /(?:payload|data_points)\s*->[^\n]*(?:source|utm_source)/i);
   for (const forbidden of [
