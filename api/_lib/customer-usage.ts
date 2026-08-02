@@ -519,9 +519,9 @@ export async function runCustomerUsageSync(
 }
 
 /**
- * Rebuilds only session_started-derived daily aggregates. The source is always
- * read-only, the target mutation is limited to replaceable usage aggregates,
- * and the caller owns the durable checkpoint file used for resume/replay.
+ * Rebuilds complete daily usage aggregates from all valid historical telemetry.
+ * The source is always read-only, the target mutation is limited to replaceable
+ * usage aggregates, and the caller owns the durable checkpoint used for resume.
  */
 export async function runCustomerUsageSessionRescan(
   options: CustomerUsageSessionRescanOptions,
@@ -550,7 +550,7 @@ export async function runCustomerUsageSessionRescan(
       }
     : null;
   const client = await options.targetPool.connect();
-  const lockName = `sidestream_customer_usage_session_rescan:${options.licenseNamespace}`;
+  const lockName = `sidestream_customer_usage_historical_rescan:${options.licenseNamespace}`;
   let locked = false;
 
   try {
@@ -573,10 +573,11 @@ export async function runCustomerUsageSessionRescan(
       };
     }
 
-    const upper = await readSessionStartedUpperHighWater(
+    const upper = await readSourceUpperHighWater(
       options.telemetryPool,
       sourceSchema,
       options.licenseNamespace,
+      new Date(0),
     );
     let cursor = checkpoint || {
       receivedAt: new Date(0),
@@ -594,7 +595,7 @@ export async function runCustomerUsageSessionRescan(
       batches < maxBatches &&
       compareCustomerUsageHighWater(cursor, upper) < 0
     ) {
-      const batch = await readSessionStartedAggregateBatch(
+      const batch = await readSourceAggregateBatch(
         options.telemetryPool,
         sourceSchema,
         options.licenseNamespace,
@@ -606,7 +607,7 @@ export async function runCustomerUsageSessionRescan(
       let written = 0;
       await runClientTransaction(client, async () => {
         for (const aggregate of batch.aggregates) {
-          written += await upsertSessionStartedAggregate(
+          written += await upsertDailyAggregate(
             client,
             targetSchema,
             options.licenseNamespace,
@@ -624,14 +625,26 @@ export async function runCustomerUsageSessionRescan(
     }
 
     const complete = !upper || compareCustomerUsageHighWater(cursor, upper) >= 0;
+    let profilesRefreshed = 0;
+    if (upper) {
+      await runClientTransaction(client, async () => {
+        profilesRefreshed = await materializeCustomerUsageProfiles({
+          query: client.query.bind(client),
+          targetSchema,
+          licenseNamespace: options.licenseNamespace,
+          now,
+          sourceFreshnessAt: cursor.receivedAt,
+        });
+      });
+    }
     return {
       outcome: complete ? "completed" : "partial",
       licenseNamespace: options.licenseNamespace,
       batches,
       sourceEventsScanned,
       dailyBucketsWritten,
-      profilesRefreshed: 0,
-      sourceFreshnessAt: upper?.receivedAt.toISOString() || null,
+      profilesRefreshed,
+      sourceFreshnessAt: upper ? cursor.receivedAt.toISOString() : null,
       checkpoint: upper || checkpoint ? serializeHighWater(cursor) : null,
       complete,
     };
@@ -871,6 +884,7 @@ async function readSourceAggregateBatch(
   limit: number,
 ): Promise<Readonly<{
   checkpoint: CustomerUsageHighWater;
+  sourceEventCount: number;
   aggregates: readonly CustomerUsageDailyAggregate[];
 }> | null> {
   const result = await source.query(
@@ -901,6 +915,10 @@ async function readSourceAggregateBatch(
   }
   return {
     checkpoint,
+    sourceEventCount: nonnegativeInteger(
+      result.rows[0].source_event_count,
+      "source_event_count",
+    ),
     aggregates: result.rows.map(normalizeCustomerUsageAggregateRow),
   };
 }
@@ -1358,7 +1376,8 @@ function buildSourceAggregateSql(schema: string) {
     coalesce(downloads.download_unknown_count, 0)::bigint as download_unknown_count,
     activity.platform, activity.app_version,
     checkpoint.received_at as checkpoint_received_at,
-    checkpoint.telemetry_event_id as checkpoint_telemetry_event_id
+    checkpoint.telemetry_event_id as checkpoint_telemetry_event_id,
+    (select count(*)::bigint from batch_events) as source_event_count
   from days
   left join daily_activity activity using (install_id_hash, activity_day)
   left join daily_downloads downloads using (install_id_hash, activity_day)

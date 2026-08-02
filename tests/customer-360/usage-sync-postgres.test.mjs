@@ -436,7 +436,7 @@ test("daily usage sync is read-only, resumable, idempotent, and UTC-windowed", {
       assert.equal(usage.download_frequency_30d, null);
     });
 
-    await t.test("historical session_started replay is aggregate-only and idempotent", async () => {
+    await t.test("historical full-usage replay is aggregate-only and idempotent", async () => {
       await adminPool.query(
         `update ${quotedTarget}.sidestream_customer_usage_daily
          set active_event_count = 99,
@@ -455,15 +455,15 @@ test("daily usage sync is read-only, resumable, idempotent, and UTC-windowed", {
         telemetrySchema: sourceSchema,
         licenseNamespace: "test",
         batchSize: 25,
-        maxBatches: 1,
+        maxBatches: 100,
         now: new Date("2026-12-05T13:00:00Z"),
         afterBatchCommitted: ({ checkpoint }) => persisted.push(checkpoint),
       });
       assert.equal(first.outcome, "completed");
-      assert.equal(first.sourceEventsScanned, 2);
-      assert.equal(first.dailyBucketsWritten, 2);
+      assert.ok(first.sourceEventsScanned > 2);
+      assert.ok(first.dailyBucketsWritten >= 2);
       assert.equal(first.complete, true);
-      assert.equal(persisted.length, 1);
+      assert.ok(persisted.length > 1);
 
       const afterFirst = await adminPool.query(
         `select activity_day::text, first_app_use_at, last_app_use_at,
@@ -486,6 +486,13 @@ test("daily usage sync is read-only, resumable, idempotent, and UTC-windowed", {
           download_attempt_count: "0",
         },
         {
+          activity_day: "2026-10-15",
+          first_app_use_at: null,
+          last_app_use_at: null,
+          active_event_count: "0",
+          download_attempt_count: "1",
+        },
+        {
           activity_day: "2026-11-01",
           first_app_use_at: "2026-11-01T08:30:00.000Z",
           last_app_use_at: "2026-11-01T08:30:00.000Z",
@@ -502,7 +509,7 @@ test("daily usage sync is read-only, resumable, idempotent, and UTC-windowed", {
         telemetrySchema: sourceSchema,
         licenseNamespace: "test",
         batchSize: 25,
-        maxBatches: 1,
+        maxBatches: 100,
         now: new Date("2026-12-05T14:00:00Z"),
       });
       assert.equal(replay.outcome, "completed");

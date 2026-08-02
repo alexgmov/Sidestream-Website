@@ -25,7 +25,7 @@ import {
   writeMode600JsonAtomic,
 } from "./customer-360-operator-guards.mjs";
 
-export const RESCAN_CHECKPOINT_VERSION = 1;
+export const RESCAN_CHECKPOINT_VERSION = 2;
 export const REPLAY_CONFIRMATION = "REPLAY_SESSION_STARTED_AGGREGATES";
 export const CUSTOMER_USAGE_RESCAN_OPERATION = "customer_usage_historical_rescan";
 
@@ -191,7 +191,7 @@ export async function runCustomerUsageRescanOperator({
   const parsed = options || parseCustomerUsageRescanArgs([]);
   const planned = {
     mode: parsed.apply ? "apply" : parsed.status ? "status" : "dry_run",
-    operation: "full_historical_session_started_rescan",
+    operation: "full_historical_customer_usage_rescan",
     target: parsed.target || null,
     targetFingerprint: null,
     sourceFingerprint: null,

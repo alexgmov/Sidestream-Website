@@ -32,7 +32,7 @@ test("rescan dry-run has no database or checkpoint side effects", async () => {
     },
   });
   assert.equal(report.mode, "dry_run");
-  assert.equal(report.operation, "full_historical_session_started_rescan");
+  assert.equal(report.operation, "full_historical_customer_usage_rescan");
   assert.equal(report.connected, false);
   assert.equal(report.writes, 0);
   assert.equal(connections, 0);
@@ -74,7 +74,7 @@ test("checkpoint resume binds to the sanitized source and target fingerprints", 
     sourceFingerprint: "pg-2222222222222222",
   };
   const checkpoint = normalizeRescanCheckpoint({
-    version: 1,
+    version: 2,
     ...identity,
     complete: false,
     next: {
@@ -213,6 +213,9 @@ test("rescan implementation is aggregate-only and contains no delete capability"
   ]);
   assert.doesNotMatch(`${core}\n${script}`, /\bdelete\s+from\b/i);
   assert.match(core, /event_name = 'session_started'/);
+  assert.match(core, /where event_name = 'download_requested'/);
+  assert.match(core, /readSourceAggregateBatch\(/);
+  assert.match(core, /upsertDailyAggregate\(/);
   assert.match(core, /on conflict \(license_namespace, install_id_hash, activity_day\) do update/i);
   assert.doesNotMatch(core, /(?:payload|data_points)\s*->[^\n]*(?:source|utm_source)/i);
   for (const forbidden of [

@@ -540,11 +540,12 @@ report boundary.
 The exact `session_started` activity rule supersedes the former broad
 non-installer event rule. The normal usage sync rereads only its configured
 24-168 hour overlap (48 hours by default), so it cannot automatically replace
-every older broad daily bucket.
+every older broad daily bucket or reconstruct older accepted-download outcomes.
 
-Before historical retention is trusted, an operator must run one separately
-reviewed, human-approved full append/update rescan of the schema-versioned raw
-telemetry history so every affected `sidestream_customer_usage_daily` row is
+Before historical usage or retention is trusted, an operator must run one
+separately reviewed, human-approved full append/update rescan of the
+schema-versioned raw telemetry history so every valid historical source event
+is reconsidered and every affected `sidestream_customer_usage_daily` row is
 upserted under the exact install/open/active-day/download definitions. The
 rescan must not delete, truncate, or rewrite raw telemetry, and it must not
 delete canonical profiles, identity, commerce, audit, or entitlement/device
