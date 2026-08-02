@@ -45,17 +45,33 @@ const BRAZIL = {
   priceId: "price_brazil",
 };
 
-test("the server-owned catalog selects India and Brazil only from configured trusted country state", () => {
+const SOUTH_KOREA = {
+  ...GLOBAL,
+  sessionId: "cs_south_korea",
+  intentId: "55555555-5555-4555-8555-555555555555",
+  offerId: "sidestream-unlimited-south-korea",
+  country: "KR",
+  currency: "krw",
+  amountMinor: 24900,
+  priceId: "price_south_korea",
+};
+
+test("the server-owned catalog selects regional offers only from configured trusted country state", () => {
   assert.deepEqual(
     SIDESTREAM_CHECKOUT_OFFER_CATALOG.map((entry) => entry.offerId),
-    ["sidestream-unlimited-india", "sidestream-unlimited-brazil", "sidestream-unlimited-global"],
+    [
+      "sidestream-unlimited-india",
+      "sidestream-unlimited-brazil",
+      "sidestream-unlimited-south-korea",
+      "sidestream-unlimited-global",
+    ],
   );
   assert.deepEqual(
     SIDESTREAM_CHECKOUT_OFFER_CATALOG.map((entry) => [
       entry.currency,
       entry.amountMinor,
     ]),
-    [["inr", 49900], ["brl", 2500], ["usd", 1999]],
+    [["inr", 49900], ["brl", 2500], ["krw", 24900], ["usd", 1999]],
   );
   assert.equal(
     selectCheckoutOffer("IN", {}).entry.offerId,
@@ -83,6 +99,16 @@ test("the server-owned catalog selects India and Brazil only from configured tru
     selectCheckoutOffer("BR", {}).entry.offerId,
     "sidestream-unlimited-global",
   );
+  assert.equal(
+    selectCheckoutOffer("KR", {
+      SIDESTREAM_PRO_SOUTH_KOREA_PRICE_ID: "price_south_korea",
+    }).entry.offerId,
+    "sidestream-unlimited-south-korea",
+  );
+  assert.equal(
+    selectCheckoutOffer("KR", {}).entry.offerId,
+    "sidestream-unlimited-global",
+  );
   assert.equal(getTrustedCheckoutCountry({ "x-vercel-ip-country": " in " }), "IN");
   assert.equal(getTrustedCheckoutCountry({ "x-vercel-ip-country": "forged" }), "ZZ");
   assert.deepEqual(
@@ -98,12 +124,18 @@ test("the server-owned catalog selects India and Brazil only from configured tru
     { formattedPrice: "R$ 25", currency: "BRL" },
   );
   assert.deepEqual(
+    getCheckoutOfferPresentation("KR", {
+      SIDESTREAM_PRO_SOUTH_KOREA_PRICE_ID: "price_south_korea",
+    }),
+    { formattedPrice: "₩24,900", currency: "KRW" },
+  );
+  assert.deepEqual(
     getCheckoutOfferPresentation("IN", {}),
     { formattedPrice: "$19.99", currency: "USD" },
   );
 });
 
-test("global, Indian, and Brazilian purchases verify against their exact stored offer snapshots", () => {
+test("global and regional purchases verify against their exact stored offer snapshots", () => {
   const globalSession = checkoutSession(GLOBAL);
   assert.deepEqual(
     verifyApprovedCheckoutPurchase(
@@ -130,6 +162,16 @@ test("global, Indian, and Brazilian purchases verify against their exact stored 
       brazilSession,
       { amountPaid: 2500, currency: "brl" },
       BRAZIL,
+    ),
+    { isApprovedPurchase: true },
+  );
+
+  const southKoreaSession = checkoutSession(SOUTH_KOREA);
+  assert.deepEqual(
+    verifyApprovedCheckoutPurchase(
+      southKoreaSession,
+      { amountPaid: 24900, currency: "krw" },
+      SOUTH_KOREA,
     ),
     { isApprovedPurchase: true },
   );
