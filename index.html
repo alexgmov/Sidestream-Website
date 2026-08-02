@@ -1300,7 +1300,7 @@
               <div class="mobile-download-handoff-fields" id="mobile-download-handoff-fields" hidden>
                 <label class="mobile-download-handoff-label" for="mobile-download-email">Email address</label>
                 <input class="mobile-download-handoff-input" id="mobile-download-email" name="email" type="email" inputmode="email" autocomplete="email" enterkeyhint="send" placeholder="you@email.com" required>
-                <button class="btn btn-primary mobile-download-handoff-submit" id="mobile-download-submit" type="submit">Send me the links</button>
+                <button class="btn btn-primary mobile-download-handoff-submit" id="mobile-download-submit" type="submit">Email it to me</button>
               </div>
               <button class="btn btn-secondary mobile-download-handoff-copy-link" id="mobile-download-copy-link" type="button">Send it directly to your computer</button>
             </div>
@@ -2112,7 +2112,7 @@
             : "Could not send the email. Try again.";
           mobileDownloadStatus.classList.add("is-error");
           mobileDownloadSubmit.disabled = false;
-          mobileDownloadSubmit.textContent = "Send me the links";
+          mobileDownloadSubmit.textContent = "Email it to me";
         } finally {
           window.clearTimeout(timeout);
         }

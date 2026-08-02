@@ -1053,6 +1053,8 @@ Use the narrowest relevant check after edits:
 
 ## Recent Change Log
 
+- 2026-08-01: Shortened the expanded mobile email handoff button from “Send me the links” to “Email it to me.”
+
 - 2026-08-01: Reworked the mobile download handoff into two initial actions: “Enter your email” now reveals and focuses the existing email form, while “Send it directly to your computer” opens the secure share flow. Successful share/copy feedback now replaces the direct-send button label instead of adding a status line below the controls.
 
 - 2026-08-01: Expanded the guarded Customer 360 historical rescan from session-only replay to the complete exact daily usage aggregator. Version-2 checkpoints now reconsider every valid historical telemetry row, rebuilding open, accepted-download, terminal-outcome, platform, and version buckets before profile materialization while preserving the read-only source and append/update-only target boundary. Rescan-only batches may be raised to 10,000 rows for high-volume remote history while normal daily sync retains its tighter bound.
