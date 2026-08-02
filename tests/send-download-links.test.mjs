@@ -68,6 +68,27 @@ test("email-optional POST returns one opaque computer link and no identity-beari
   await result.handlerDone;
 });
 
+test("email-optional POST rejects every identity or attribution field beside the exact handoff flag", async () => {
+  for (const body of [
+    { handoffOnly: true, email: "private@example.com" },
+    { handoffOnly: true, utmSource: "instagram" },
+    { handoffOnly: true, installIdHash: "1".repeat(64) },
+    { handoffOnly: false },
+  ]) {
+    const result = await invoke(handoffHandler(), {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+    assert.equal(result.response.status, 400);
+    assert.deepEqual(await result.response.json(), {
+      error: "Invalid computer handoff request",
+      code: "invalid_handoff_request",
+    });
+    assert.equal(result.response.headers.get("set-cookie"), null);
+    await result.handlerDone;
+  }
+});
+
 test("computer GET verifies the opaque handoff, sets the acquisition cookie, then selects the same installer route", async () => {
   const cookie = createBrowserAcquisitionCookie({
     attribution: { source: "instagram", medium: "social", campaign: "launch", content: null },
