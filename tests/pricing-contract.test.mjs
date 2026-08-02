@@ -11,7 +11,7 @@ import { getPricingSurfaceResults } from "../scripts/sync-pricing-contract.mjs";
 
 const repositoryRoot = new URL("..", import.meta.url);
 
-test("one contract owns Free, global, India, Brazil, and Stripe lookup truth", () => {
+test("one contract owns Free, global, India, Brazil, South Korea, and Stripe lookup truth", () => {
   const contract = SIDESTREAM_PRICING_CONTRACT;
   assert.equal(contract.free.amountMinor, 0);
   assert.equal(formatOfferPrice(contract.free), "$0");
@@ -22,7 +22,17 @@ test("one contract owns Free, global, India, Brazil, and Stripe lookup truth", (
   assert.equal(contract.india.priceSource.variable, "SIDESTREAM_PRO_INDIA_PRICE_ID");
   assert.equal(formatOfferPrice(contract.brazil), "R$ 25");
   assert.equal(contract.brazil.priceSource.variable, "SIDESTREAM_PRO_BRAZIL_PRICE_ID");
-  assert.deepEqual(contract.checkoutCatalog, [contract.india, contract.brazil, contract.global]);
+  assert.equal(formatOfferPrice(contract.southKorea), "₩24,900");
+  assert.equal(
+    contract.southKorea.priceSource.variable,
+    "SIDESTREAM_PRO_SOUTH_KOREA_PRICE_ID",
+  );
+  assert.deepEqual(contract.checkoutCatalog, [
+    contract.india,
+    contract.brazil,
+    contract.southKorea,
+    contract.global,
+  ]);
 });
 
 test("ordinary Upgrade and paid acquisition both enter the shared offer resolver", async () => {

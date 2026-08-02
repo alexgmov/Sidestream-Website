@@ -42,6 +42,7 @@ const CONTROLLED_ENVIRONMENT = [
   "SIDESTREAM_PRO_PRICE_ID",
   "SIDESTREAM_PRO_INDIA_PRICE_ID",
   "SIDESTREAM_PRO_BRAZIL_PRICE_ID",
+  "SIDESTREAM_PRO_SOUTH_KOREA_PRICE_ID",
   "SIDESTREAM_BASE_URL",
   "PUBLIC_BASE_URL",
   "STRIPE_SECRET_KEY",
@@ -538,6 +539,47 @@ test("database-backed intents serialize retries, rotate deliberately, and fulfil
       { fulfilled: true, activationBound: false, paidAcquisition: false },
     );
 
+    const southKoreaBuyer = await seedFreeAccount(databasePool, "south-korea-buyer");
+    const southKoreaBuyerSession = accountSession({
+      accountId: southKoreaBuyer.accountId,
+      email: southKoreaBuyer.email,
+      active: false,
+    });
+    process.env.SIDESTREAM_PRO_SOUTH_KOREA_PRICE_ID =
+      "price_checkout_south_korea";
+    const southKoreaIntent = await account.createCheckoutIntent({
+      buyerCountry: "KR",
+      session: southKoreaBuyerSession,
+    });
+    assert.ok(southKoreaIntent);
+    const southKoreaCheckout = await account.createOrReuseCheckoutSession({
+      intentId: southKoreaIntent.intentId,
+      browserToken: southKoreaIntent.browserToken,
+      session: southKoreaBuyerSession,
+      baseUrl: BASE_URL,
+    });
+    assert.equal(southKoreaCheckout.ok, true);
+    const southKoreaWrite = stripe.sessionCreateWrites.at(-1);
+    assert.equal(
+      southKoreaWrite.params.line_items[0].price,
+      "price_checkout_south_korea",
+    );
+    assert.equal(
+      southKoreaWrite.params.metadata.sidestream_offer_id,
+      "sidestream-unlimited-south-korea",
+    );
+    assert.equal(southKoreaWrite.params.metadata.sidestream_offer_country, "KR");
+    assert.equal(southKoreaWrite.params.metadata.sidestream_offer_currency, "krw");
+    assert.equal(southKoreaWrite.params.metadata.sidestream_offer_amount_minor, "24900");
+    stripe.complete(southKoreaWrite.session.id, {
+      email: southKoreaBuyer.email,
+      name: "South Korea Buyer",
+    });
+    assert.deepEqual(
+      await account.fulfillCheckoutSession(southKoreaWrite.session.id),
+      { fulfilled: true, activationBound: false, paidAcquisition: false },
+    );
+
   } finally {
     if (runtimeModules) {
       const postgresModule = await import(
@@ -580,16 +622,19 @@ class RecordingStripe {
         this.reads.push({ operation: "prices.retrieve", priceId });
         const india = priceId.startsWith("price_checkout_india");
         const brazil = priceId.startsWith("price_checkout_brazil");
+        const southKorea = priceId.startsWith("price_checkout_south_korea");
         return {
           id: priceId,
           active: true,
           product: "prod_checkout_test",
           unit_amount: priceId.endsWith("_wrong_amount")
             ? 49901
-            : india ? 49900 : brazil ? 2500 : 1999,
-          currency: india ? "inr" : brazil ? "brl" : "usd",
+            : india ? 49900 : brazil ? 2500 : southKorea ? 24900 : 1999,
+          currency: india ? "inr" : brazil ? "brl" : southKorea ? "krw" : "usd",
           recurring: null,
-          lookup_key: india || brazil ? null : "sidestream_pro_once_1999",
+          lookup_key: india || brazil || southKorea
+            ? null
+            : "sidestream_pro_once_1999",
         };
       },
       list: async () => ({ data: [] }),
@@ -653,8 +698,10 @@ class RecordingStripe {
           const expiresAt = params.expires_at || Math.floor(Date.now() / 1_000) + 86_400;
           const india = params.line_items[0].price === "price_checkout_india";
           const brazil = params.line_items[0].price === "price_checkout_brazil";
-          const amount = india ? 49900 : brazil ? 2500 : 1999;
-          const currency = india ? "inr" : brazil ? "brl" : "usd";
+          const southKorea = params.line_items[0].price ===
+            "price_checkout_south_korea";
+          const amount = india ? 49900 : brazil ? 2500 : southKorea ? 24900 : 1999;
+          const currency = india ? "inr" : brazil ? "brl" : southKorea ? "krw" : "usd";
           const session = {
             id,
             url: `https://checkout.stripe.test/${id}`,

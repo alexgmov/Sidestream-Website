@@ -7,6 +7,7 @@ import { invokeHandler } from "./helpers/http.mjs";
 
 const INDIA_PRICE_ENV = "SIDESTREAM_PRO_INDIA_PRICE_ID";
 const BRAZIL_PRICE_ENV = "SIDESTREAM_PRO_BRAZIL_PRICE_ID";
+const SOUTH_KOREA_PRICE_ENV = "SIDESTREAM_PRO_SOUTH_KOREA_PRICE_ID";
 const repositoryRoot = fileURLToPath(new URL("..", import.meta.url));
 let handler;
 let temporaryModuleDirectory;
@@ -37,8 +38,10 @@ after(async () => {
 test("the public offer presentation uses only the trusted country header", async () => {
   const previous = process.env[INDIA_PRICE_ENV];
   const previousBrazil = process.env[BRAZIL_PRICE_ENV];
+  const previousSouthKorea = process.env[SOUTH_KOREA_PRICE_ENV];
   process.env[INDIA_PRICE_ENV] = "price_india";
   process.env[BRAZIL_PRICE_ENV] = "price_brazil";
+  process.env[SOUTH_KOREA_PRICE_ENV] = "price_south_korea";
   try {
     const india = await invokeHandler(handler, {
       url: "/api/checkout/offer?country=US&currency=USD&amount=1",
@@ -74,9 +77,23 @@ test("the public offer presentation uses only the trusted country header", async
       currency: "BRL",
     });
     assert.doesNotMatch(brazil.response.body, /price_brazil|sidestream-unlimited-brazil/);
+
+    const southKorea = await invokeHandler(handler, {
+      url: "/api/checkout/offer?country=US&currency=USD&amount=1",
+      headers: { "x-vercel-ip-country": "KR" },
+    });
+    assert.deepEqual(southKorea.response.json, {
+      formattedPrice: "₩24,900",
+      currency: "KRW",
+    });
+    assert.doesNotMatch(
+      southKorea.response.body,
+      /price_south_korea|sidestream-unlimited-south-korea/,
+    );
   } finally {
     restoreEnvironment(previous);
     restoreNamedEnvironment(BRAZIL_PRICE_ENV, previousBrazil);
+    restoreNamedEnvironment(SOUTH_KOREA_PRICE_ENV, previousSouthKorea);
   }
 });
 

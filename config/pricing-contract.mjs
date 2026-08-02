@@ -34,6 +34,19 @@ const brazilOffer = Object.freeze({
   }),
 });
 
+const southKoreaOffer = Object.freeze({
+  offerId: "sidestream-unlimited-south-korea",
+  countryCodes: Object.freeze(["KR"]),
+  currency: "krw",
+  amountMinor: 24900,
+  displayLocale: "ko-KR",
+  lookupKey: null,
+  priceSource: Object.freeze({
+    kind: "environment",
+    variable: "SIDESTREAM_PRO_SOUTH_KOREA_PRICE_ID",
+  }),
+});
+
 export const SIDESTREAM_PRICING_CONTRACT = Object.freeze({
   free: Object.freeze({
     offerId: "sidestream-free",
@@ -44,7 +57,13 @@ export const SIDESTREAM_PRICING_CONTRACT = Object.freeze({
   global: globalOffer,
   india: indiaOffer,
   brazil: brazilOffer,
-  checkoutCatalog: Object.freeze([indiaOffer, brazilOffer, globalOffer]),
+  southKorea: southKoreaOffer,
+  checkoutCatalog: Object.freeze([
+    indiaOffer,
+    brazilOffer,
+    southKoreaOffer,
+    globalOffer,
+  ]),
 });
 
 export function formatOfferPrice(offer) {
