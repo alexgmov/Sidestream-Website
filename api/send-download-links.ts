@@ -143,8 +143,14 @@ export function createDownloadLinkHandler(
     }
 
     const now = dependencies.now();
-    if (payload.handoffOnly === true) {
+    if (isExactHandoffOnlyPayload(payload)) {
       return createEmailOptionalHandoff(request, response, dependencies, now);
+    }
+    if (hasHandoffOnlyKey(payload)) {
+      return sendJson(response, 400, {
+        error: "Invalid computer handoff request",
+        code: "invalid_handoff_request",
+      });
     }
     let lead: CanonicalDownloadLead;
     try {
@@ -535,6 +541,20 @@ function readSingleCookie(
     matches.push(segment.slice(separator + 1).trim());
   }
   return matches.length === 1 && matches[0] ? matches[0] : "";
+}
+
+function isExactHandoffOnlyPayload(value: unknown) {
+  return isPlainObject(value) &&
+    Object.keys(value).length === 1 &&
+    value.handoffOnly === true;
+}
+
+function hasHandoffOnlyKey(value: unknown) {
+  return isPlainObject(value) && Object.hasOwn(value, "handoffOnly");
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
 function sendJson(
