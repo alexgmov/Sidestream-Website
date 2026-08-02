@@ -8,9 +8,9 @@ const WINDOWS_DOWNLOAD_MARK_PNG =
   "iVBORw0KGgoAAAANSUhEUgAAADAAAAAwCAYAAABXAvmHAAAAAXNSR0IArs4c6QAAAERlWElmTU0AKgAAAAgAAYdpAAQAAAABAAAAGgAAAAAAA6ABAAMAAAABAAEAAKACAAQAAAABAAAAMKADAAQAAAABAAAAMAAAAADbN2wMAAABk0lEQVRoBe1ZbUoEMQxdRVBcVBBFWfzh519B9AqeQO+y6B09gycRTcZ5bLqkQ7AN7WIGQpJO5vXlZVjK7GwWVygQCmy0Alsdsz8jbnfC3jWurRs4JVK3gqQkfLBGWOW6s1bkkR5nCDLZo9IN1a7+ALpNz1yQ3Qh7G3G+R1/qVK7qYmanXVq/JOORS6IcX5HxfXkB27WBqVdoSWwkWVaYle7qgkoaqVLlgF2KA27AQz747hRN2BmSaMAgkmtJTMBVXgN4TMAgkmtJTMBVXgN4TMAgkmvJ1GHuqdLOtXAq0ekMRj3hjRwfC7l+VMIBDeAhH/xUA6XHYGCX4oAw8JAPPn6FEjkaJDGBBqInW8YEEjkaJDGBBqInW8YEEjkaJBs/ganj9DMJKr+N4oPuvIHQ2S3VA1K2+vfGOTk0A49GT8SzwHY9zIn9qoSHhPJA9irQPin+IuNGSkxArkKotFrxifi/g2sy+RcSYv5sb+Gh1qiLPj1kUffoDr+CaEj6hXiqB66Cji3cp7J7shdbeVSFAv9PgR8iECaXQfGmRwAAAABJRU5ErkJggg==";
 
 export const MAC_DOWNLOAD_URL =
-  "https://sidestream.tv/api/download?utm_source=mobile_handoff&utm_medium=email&utm_campaign=mobile_download_link&utm_content=mac";
+  "https://sidestream.tv/api/download";
 export const WINDOWS_DOWNLOAD_URL =
-  "https://sidestream.tv/api/download?platform=win32-x64&utm_source=mobile_handoff&utm_medium=email&utm_campaign=mobile_download_link&utm_content=windows";
+  "https://sidestream.tv/api/download?platform=win32-x64";
 
 type RuntimeEnvironment = Readonly<Record<string, string | undefined>>;
 
@@ -55,6 +55,7 @@ export class DownloadLinkEmailDeliveryError extends Error {
 export function buildDownloadLinkEmail(
   recipient: string,
   environment: RuntimeEnvironment = process.env,
+  links?: Readonly<{ macUrl: string; windowsUrl: string }>,
 ): DownloadLinkEmailMessage {
   const from = readMailbox(
     environment.SIDESTREAM_DOWNLOAD_EMAIL_FROM || DEFAULT_FROM,
@@ -69,8 +70,8 @@ export function buildDownloadLinkEmail(
     from,
     to: Object.freeze([recipient]),
     subject: EMAIL_SUBJECT,
-    html: buildHtmlBody(),
-    text: buildTextBody(),
+    html: buildHtmlBody(links),
+    text: buildTextBody(links),
     reply_to: replyTo,
     attachments: Object.freeze([
       Object.freeze({
@@ -91,6 +92,7 @@ export async function sendDownloadLinkEmail(options: {
   idempotencyKeyHash: string;
   environment?: RuntimeEnvironment;
   fetchImpl?: ResendFetch;
+  links?: Readonly<{ macUrl: string; windowsUrl: string }>;
 }): Promise<{ emailId: string }> {
   const environment = options.environment || process.env;
   const apiKey = environment.RESEND_API_KEY?.trim() || "";
@@ -112,7 +114,11 @@ export async function sendDownloadLinkEmail(options: {
         "Content-Type": "application/json",
         "Idempotency-Key": `mobile-download-links/${options.idempotencyKeyHash}`,
       },
-      body: JSON.stringify(buildDownloadLinkEmail(options.recipient, environment)),
+      body: JSON.stringify(buildDownloadLinkEmail(
+        options.recipient,
+        environment,
+        options.links,
+      )),
       signal: controller.signal,
     });
   } catch {
@@ -147,9 +153,9 @@ export async function sendDownloadLinkEmail(options: {
   return { emailId };
 }
 
-function buildHtmlBody() {
-  const macUrl = MAC_DOWNLOAD_URL.replaceAll("&", "&amp;");
-  const windowsUrl = WINDOWS_DOWNLOAD_URL.replaceAll("&", "&amp;");
+function buildHtmlBody(links?: Readonly<{ macUrl: string; windowsUrl: string }>) {
+  const macUrl = safeDownloadUrl(links?.macUrl || MAC_DOWNLOAD_URL).replaceAll("&", "&amp;");
+  const windowsUrl = safeDownloadUrl(links?.windowsUrl || WINDOWS_DOWNLOAD_URL).replaceAll("&", "&amp;");
   return `<!doctype html>
 <html lang="en">
   <head>
@@ -205,7 +211,9 @@ function buildHtmlBody() {
 </html>`;
 }
 
-function buildTextBody() {
+function buildTextBody(links?: Readonly<{ macUrl: string; windowsUrl: string }>) {
+  const macUrl = safeDownloadUrl(links?.macUrl || MAC_DOWNLOAD_URL);
+  const windowsUrl = safeDownloadUrl(links?.windowsUrl || WINDOWS_DOWNLOAD_URL);
   return `Your Sidestream download links
 
 You asked us to send Sidestream to your computer. Choose the installer you need.
@@ -213,12 +221,25 @@ You asked us to send Sidestream to your computer. Choose the installer you need.
 Save 20% on Sidestream Unlimited with code ${DISCOUNT_CODE}.
 
 Download for Mac:
-${MAC_DOWNLOAD_URL}
+${macUrl}
 
 Download for Windows:
-${WINDOWS_DOWNLOAD_URL}
+${windowsUrl}
 
 You received this one-time email because someone entered this address on sidestream.tv.`;
+}
+
+function safeDownloadUrl(value: string) {
+  const url = new URL(value);
+  if (
+    url.protocol !== "https:" ||
+    url.hostname !== "sidestream.tv" ||
+    (url.pathname !== "/api/download" && url.pathname !== "/api/send-download-links") ||
+    url.username || url.password || url.hash
+  ) {
+    throw new DownloadLinkEmailConfigurationError("Download URL is invalid");
+  }
+  return url.toString();
 }
 
 function readMailbox(value: string, label: string) {

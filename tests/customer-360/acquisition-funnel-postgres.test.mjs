@@ -21,6 +21,7 @@ const migrations = [
   "20260715121000_add_customer_identity_links.sql",
   "20260715123000_add_customer_usage_aggregates.sql",
   "20260727010000_add_paid_acquisition_experiment.sql",
+  "20260731120000_add_anonymous_acquisition_sessions.sql",
 ];
 
 const PROFILE_PAID = "00000000-0000-4000-8000-000000000001";
@@ -143,17 +144,23 @@ test("acquisition funnel keeps attribution exact and retention UTC-day based", {
       percentage: "50.00",
     });
     assert.deepEqual(report.attributionCoverage, {
-      numerator: "2",
+      numerator: "3",
       denominator: "4",
-      percentage: "50.00",
+      percentage: "75.00",
       paidAttributedProfiles: "1",
+      anonymousAttributedProfiles: "1",
       freemiumAttributedProfiles: "1",
-      unattributedProfiles: "2",
+      unattributedProfiles: "1",
     });
-    assert.equal(report.groups.length, 3);
+    assert.deepEqual(report.coverage.unknown, {
+      numerator: "1",
+      denominator: "4",
+      percentage: "25.00",
+    });
+    assert.equal(report.groups.length, 4);
 
     const paidGroup = report.groups.find(
-      (group) => group.attributionConfidence === "verified_paid",
+      (group) => group.attributionConfidence === "exact_paid_checkout",
     );
     assert.deepEqual(paidGroup, {
       source: "manychat",
@@ -161,7 +168,8 @@ test("acquisition funnel keeps attribution exact and retention UTC-day based", {
       campaign: "paid-launch",
       experiment: "mc-mobile-paid-v1",
       cohort: "mc-paid-v1",
-      attributionConfidence: "verified_paid",
+      attributionConfidence: "exact_paid_checkout",
+      confidence: "exact_paid_checkout",
       profileCount: "1",
       firstOpenedProfiles: "1",
       completedActivations: "1",
@@ -193,7 +201,7 @@ test("acquisition funnel keeps attribution exact and retention UTC-day based", {
     const freemium = report.journeys.find(
       (journey) => journey.customerId === PROFILE_FREEMIUM,
     );
-    assert.equal(freemium.attributionConfidence, "verified_email");
+    assert.equal(freemium.attributionConfidence, "exact_verified_email");
     assert.equal(freemium.source, "manychat");
     assert.equal(freemium.medium, "dm");
     assert.equal(freemium.campaign, "freemium-launch");
@@ -209,6 +217,8 @@ test("acquisition funnel keeps attribution exact and retention UTC-day based", {
       (journey) => journey.customerId === PROFILE_PAID,
     );
     assert.equal(paid.firstAttributedAt, "2026-07-01T08:00:00.000Z");
+    assert.equal(paid.installerRequestedAt, "2026-07-01T07:30:00.000Z");
+    assert.equal(paid.installerPlatform, "macos");
     assert.equal(paid.firstInstallAt, "2026-07-02T10:15:16.789Z");
     assert.equal(paid.firstOpenAt, "2026-07-02T11:00:00.000Z");
     assert.equal(paid.activationAt, "2026-07-03T12:00:00.000Z");
@@ -230,7 +240,13 @@ test("acquisition funnel keeps attribution exact and retention UTC-day based", {
     const unopened = report.journeys.find(
       (journey) => journey.customerId === PROFILE_UNKNOWN,
     );
-    assert.equal(unopened.attributionConfidence, "unattributed");
+    assert.equal(unopened.attributionConfidence, "exact_anonymous_claim");
+    assert.equal(unopened.source, "instagram");
+    assert.equal(unopened.medium, "organic");
+    assert.equal(unopened.campaign, "anonymous-first");
+    assert.equal(unopened.firstVisitAt, "2026-07-06T07:00:00.000Z");
+    assert.equal(unopened.installerRequestedAt, "2026-07-06T08:00:00.000Z");
+    assert.equal(unopened.installerPlatform, "macos");
     assert.equal(unopened.firstOpenAt, null);
     assert.equal(unopened.activationAt, "2026-07-08T12:00:00.000Z");
     assert.equal(unopened.returnEligible, false);
@@ -322,6 +338,34 @@ async function seedFunnel(pool, schema) {
       [profileId, installHash(profileId), firstInstallAt],
     );
   }
+
+  await pool.query(
+    `insert into ${schema}.sidestream_anonymous_acquisition_sessions (
+       license_namespace, token_hash, first_touch_source, first_touch_medium,
+       first_touch_campaign, attribution_confidence, first_seen_at,
+       first_installer_requested_at, first_installer_platform, claim_state,
+       claimed_profile_id, claimed_at, expires_at, retained_until
+     ) values
+       (
+         'test', $1, 'instagram', 'organic', 'anonymous-first', 'utm',
+         '2026-07-06T07:00:00Z', '2026-07-06T08:00:00Z', 'macos', 'claimed',
+         $2, '2026-07-07T08:00:00Z', '2026-08-01T00:00:00Z',
+         '2026-09-01T00:00:00Z'
+       ),
+       (
+         'test', $3, 'later-visit', 'organic', 'must-not-rewrite', 'utm',
+         '2026-07-08T07:00:00Z', '2026-07-08T08:00:00Z', 'windows', 'claimed',
+         $2, '2026-07-08T08:30:00Z', '2026-08-02T00:00:00Z',
+         '2026-09-02T00:00:00Z'
+       ),
+       (
+         'test', $4, 'anonymous-before-paid', 'organic', 'lower-priority', 'utm',
+         '2026-07-01T07:00:00Z', '2026-07-01T07:30:00Z', 'macos', 'claimed',
+         $5, '2026-07-01T07:45:00Z', '2026-08-01T00:00:00Z',
+         '2026-09-01T00:00:00Z'
+       )`,
+    ["8".repeat(64), PROFILE_UNKNOWN, "7".repeat(64), "6".repeat(64), PROFILE_PAID],
+  );
 
   await pool.query(
     `insert into ${schema}.sidestream_customer_identity_links (

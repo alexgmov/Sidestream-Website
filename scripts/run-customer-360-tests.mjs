@@ -14,17 +14,24 @@ import {
 
 export const CUSTOMER_360_NON_POSTGRES_TESTS = Object.freeze([
   "customer-360/acquisition-funnel.test.mjs",
+  "customer-360/anonymous-acquisition.test.mjs",
+  "customer-360/anonymous-claim.test.mjs",
   "customer-360/backfill.test.mjs",
   "customer-360/commerce.test.mjs",
   "customer-360/core.test.mjs",
   "customer-360/harness.test.mjs",
+  "customer-360/privacy-contract.test.mjs",
   "customer-360/query-api.test.mjs",
   "customer-360/readiness.test.mjs",
+  "customer-360/rescan.test.mjs",
   "customer-360/usage-sync.test.mjs",
 ]);
 
 export const CUSTOMER_360_POSTGRES_TESTS = Object.freeze([
   "customer-360/acquisition-funnel-postgres.test.mjs",
+  "customer-360/anonymous-acquisition-journey-postgres.test.mjs",
+  "customer-360/anonymous-acquisition-postgres.test.mjs",
+  "customer-360/anonymous-claim-postgres.test.mjs",
   "customer-360/backfill-postgres.test.mjs",
   "customer-360/commerce-postgres.test.mjs",
   "customer-360/core-postgres.test.mjs",

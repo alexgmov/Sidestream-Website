@@ -124,6 +124,37 @@ export type CustomerUsageSyncOptions = Readonly<{
   }>) => void | Promise<void>;
 }>;
 
+export type CustomerUsageSessionRescanSummary = Readonly<{
+  outcome: "completed" | "partial" | "locked";
+  licenseNamespace: LicenseNamespace;
+  batches: number;
+  sourceEventsScanned: number;
+  dailyBucketsWritten: number;
+  profilesRefreshed: number;
+  sourceFreshnessAt: string | null;
+  checkpoint: Readonly<{
+    receivedAt: string;
+    telemetryEventId: string;
+  }> | null;
+  complete: boolean;
+}>;
+
+export type CustomerUsageSessionRescanOptions = Readonly<{
+  targetPool: ConnectableQueryRunner;
+  telemetryPool: QueryRunner;
+  targetSchema?: string;
+  telemetrySchema?: string;
+  licenseNamespace: LicenseNamespace;
+  checkpoint?: CustomerUsageHighWater | null;
+  batchSize?: number;
+  maxBatches?: number;
+  now?: Date;
+  afterBatchCommitted?: (details: Readonly<{
+    batch: number;
+    checkpoint: CustomerUsageHighWater;
+  }>) => void | Promise<void>;
+}>;
+
 let telemetryPool: Pool | null = null;
 let telemetryPoolIdentity = "";
 
@@ -170,6 +201,9 @@ export function buildTelemetryPoolOptions(connectionString: string) {
   const url = parsePostgresUrl(connectionString, "SIDESTREAM_TELEMETRY_POSTGRES_URL");
   const local = ["localhost", "127.0.0.1", "::1"].includes(url.hostname.toLowerCase());
   const sslDisabled = /sslmode=(?:disable|false)/i.test(connectionString);
+  if (!local && sslDisabled) {
+    throw new Error("Remote telemetry Postgres requires authenticated TLS");
+  }
   if (/^(prefer|require)$/i.test(url.searchParams.get("sslmode") || "")) {
     url.searchParams.delete("sslmode");
   }
@@ -181,8 +215,14 @@ export function buildTelemetryPoolOptions(connectionString: string) {
     query_timeout: 15_000,
     statement_timeout: 15_000,
     options: "-c default_transaction_read_only=on",
-    ssl: local || sslDisabled ? false : { rejectUnauthorized: false },
+    ssl: local ? false : { rejectUnauthorized: true },
   };
+}
+
+export function sanitizedPostgresTargetFingerprint(connectionString: string) {
+  const url = parsePostgresUrl(connectionString, "Postgres target");
+  const database = decodeURIComponent(url.pathname.replace(/^\/+/, ""));
+  return `${url.hostname.toLowerCase()}:${url.port || "5432"}/${database}`;
 }
 
 export function getCustomerUsageTelemetryPool(connectionString: string) {
@@ -478,6 +518,131 @@ export async function runCustomerUsageSync(
   }
 }
 
+/**
+ * Rebuilds only session_started-derived daily aggregates. The source is always
+ * read-only, the target mutation is limited to replaceable usage aggregates,
+ * and the caller owns the durable checkpoint file used for resume/replay.
+ */
+export async function runCustomerUsageSessionRescan(
+  options: CustomerUsageSessionRescanOptions,
+): Promise<CustomerUsageSessionRescanSummary> {
+  const targetSchema = validatedIdentifier(options.targetSchema || "public", "target schema");
+  const sourceSchema = validatedIdentifier(
+    options.telemetrySchema || "public",
+    "telemetry schema",
+  );
+  const now = options.now ? new Date(options.now) : new Date();
+  if (!Number.isFinite(now.getTime())) throw new TypeError("Rescan time is invalid");
+  const batchSize = Math.trunc(boundedNumber(
+    options.batchSize ?? CUSTOMER_USAGE_BATCH_SIZE,
+    25,
+    1_000,
+  ));
+  const maxBatches = Math.trunc(boundedNumber(options.maxBatches ?? 100, 1, 10_000));
+  const checkpoint = options.checkpoint
+    ? {
+        receivedAt: requiredDate(options.checkpoint.receivedAt, "rescan checkpoint"),
+        telemetryEventId: requiredString(
+          options.checkpoint.telemetryEventId,
+          "rescan checkpoint telemetry_event_id",
+          200,
+        ),
+      }
+    : null;
+  const client = await options.targetPool.connect();
+  const lockName = `sidestream_customer_usage_session_rescan:${options.licenseNamespace}`;
+  let locked = false;
+
+  try {
+    const lock = await client.query(
+      "select pg_try_advisory_lock(hashtext($1)) as locked",
+      [lockName],
+    );
+    locked = lock.rows[0]?.locked === true;
+    if (!locked) {
+      return {
+        outcome: "locked",
+        licenseNamespace: options.licenseNamespace,
+        batches: 0,
+        sourceEventsScanned: 0,
+        dailyBucketsWritten: 0,
+        profilesRefreshed: 0,
+        sourceFreshnessAt: null,
+        checkpoint: checkpoint ? serializeHighWater(checkpoint) : null,
+        complete: false,
+      };
+    }
+
+    const upper = await readSessionStartedUpperHighWater(
+      options.telemetryPool,
+      sourceSchema,
+      options.licenseNamespace,
+    );
+    let cursor = checkpoint || {
+      receivedAt: new Date(0),
+      telemetryEventId: "",
+    };
+    if (upper && compareCustomerUsageHighWater(cursor, upper) > 0) {
+      throw new Error("Rescan checkpoint is ahead of source freshness");
+    }
+
+    let batches = 0;
+    let sourceEventsScanned = 0;
+    let dailyBucketsWritten = 0;
+    while (
+      upper &&
+      batches < maxBatches &&
+      compareCustomerUsageHighWater(cursor, upper) < 0
+    ) {
+      const batch = await readSessionStartedAggregateBatch(
+        options.telemetryPool,
+        sourceSchema,
+        options.licenseNamespace,
+        cursor,
+        upper,
+        batchSize,
+      );
+      if (!batch) break;
+      let written = 0;
+      await runClientTransaction(client, async () => {
+        for (const aggregate of batch.aggregates) {
+          written += await upsertSessionStartedAggregate(
+            client,
+            targetSchema,
+            options.licenseNamespace,
+            aggregate,
+            batch.checkpoint,
+            now,
+          );
+        }
+      });
+      batches += 1;
+      sourceEventsScanned += batch.sourceEventCount;
+      dailyBucketsWritten += written;
+      cursor = batch.checkpoint;
+      await options.afterBatchCommitted?.({ batch: batches, checkpoint: cursor });
+    }
+
+    const complete = !upper || compareCustomerUsageHighWater(cursor, upper) >= 0;
+    return {
+      outcome: complete ? "completed" : "partial",
+      licenseNamespace: options.licenseNamespace,
+      batches,
+      sourceEventsScanned,
+      dailyBucketsWritten,
+      profilesRefreshed: 0,
+      sourceFreshnessAt: upper?.receivedAt.toISOString() || null,
+      checkpoint: upper || checkpoint ? serializeHighWater(cursor) : null,
+      complete,
+    };
+  } finally {
+    if (locked) {
+      await client.query("select pg_advisory_unlock(hashtext($1))", [lockName]).catch(() => {});
+    }
+    client.release();
+  }
+}
+
 export async function materializeCustomerUsageProfiles(options: Readonly<{
   query: QueryRunner["query"];
   targetSchema?: string;
@@ -736,6 +901,143 @@ async function readSourceAggregateBatch(
   }
   return {
     checkpoint,
+    aggregates: result.rows.map(normalizeCustomerUsageAggregateRow),
+  };
+}
+
+async function readSessionStartedUpperHighWater(
+  source: QueryRunner,
+  schema: string,
+  licenseNamespace: LicenseNamespace,
+) {
+  const result = await source.query(
+    `select received_at, telemetry_event_id
+     from ${schema}.${CUSTOMER_USAGE_SOURCE_TABLE}
+     where event_name = 'session_started'
+       and schema_version = any($1::text[])
+       and coalesce(nullif(build_channel, ''), 'production') = any($2::text[])
+       and install_id_hash ~ '^[0-9a-f]{64}$'
+       and occurred_at is not null
+     order by received_at desc, telemetry_event_id desc
+     limit 1`,
+    [[...CUSTOMER_USAGE_SCHEMA_VERSIONS], sourceChannels(licenseNamespace)],
+  );
+  return result.rows[0] ? highWaterFromRow(result.rows[0]) : null;
+}
+
+async function readSessionStartedAggregateBatch(
+  source: QueryRunner,
+  schema: string,
+  licenseNamespace: LicenseNamespace,
+  cursor: CustomerUsageHighWater,
+  upper: CustomerUsageHighWater,
+  limit: number,
+) {
+  const result = await source.query(
+    `with batch_events as (
+       select telemetry_event_id, received_at, install_id_hash,
+         (occurred_at at time zone 'UTC')::date as activity_day
+       from ${schema}.${CUSTOMER_USAGE_SOURCE_TABLE}
+       where event_name = 'session_started'
+         and (received_at, telemetry_event_id) > ($1::timestamptz, $2::text)
+         and (received_at, telemetry_event_id) <= ($3::timestamptz, $4::text)
+         and schema_version = any($5::text[])
+         and coalesce(nullif(build_channel, ''), 'production') = any($6::text[])
+         and install_id_hash ~ '^[0-9a-f]{64}$'
+         and occurred_at is not null
+       order by received_at, telemetry_event_id
+       limit $7
+     ), batch_checkpoint as (
+       select received_at, telemetry_event_id
+       from batch_events
+       order by received_at desc, telemetry_event_id desc
+       limit 1
+     ), affected_days as (
+       select distinct install_id_hash, activity_day from batch_events
+     ), projected as (
+       select event.telemetry_event_id, event.install_id_hash,
+         (event.occurred_at at time zone 'UTC')::date as activity_day,
+         event.occurred_at, event.app_version,
+         case event.schema_version
+           when '0.2.0' then coalesce(
+             nullif(event.data_points #>> '{runtime,osPlatform}', ''),
+             nullif(event.data_points #>> '{runtime,os_platform}', '')
+           )
+           else null
+         end as os_platform
+       from ${schema}.${CUSTOMER_USAGE_SOURCE_TABLE} event
+       join affected_days day
+         on day.install_id_hash = event.install_id_hash
+        and day.activity_day = (event.occurred_at at time zone 'UTC')::date
+       where event.event_name = 'session_started'
+         and (event.received_at, event.telemetry_event_id)
+           <= ($3::timestamptz, $4::text)
+         and event.schema_version = any($5::text[])
+         and coalesce(nullif(event.build_channel, ''), 'production') = any($6::text[])
+         and event.install_id_hash ~ '^[0-9a-f]{64}$'
+         and event.occurred_at is not null
+     )
+     select projected.install_id_hash, projected.activity_day::text,
+       null::timestamptz as first_install_completed_at,
+       null::timestamptz as last_install_completed_at,
+       min(projected.occurred_at) as first_app_use_at,
+       max(projected.occurred_at) as last_app_use_at,
+       null::timestamptz as first_download_attempt_at,
+       null::timestamptz as last_download_attempt_at,
+       null::timestamptz as first_download_success_at,
+       null::timestamptz as last_download_success_at,
+       count(*)::bigint as active_event_count,
+       0::bigint as download_attempt_count,
+       0::bigint as download_outcome_count,
+       0::bigint as download_success_count,
+       0::bigint as download_failure_count,
+       0::bigint as download_cancelled_count,
+       0::bigint as download_pending_count,
+       0::bigint as download_unknown_count,
+       (array_agg(
+         case lower(projected.os_platform)
+           when 'darwin' then 'macos'
+           when 'macos' then 'macos'
+           when 'win32' then 'windows'
+           when 'windows' then 'windows'
+           when '' then null
+           else 'unknown'
+         end
+         order by projected.occurred_at desc, projected.telemetry_event_id desc
+       ) filter (where projected.os_platform is not null))[1] as platform,
+       (array_agg(
+         projected.app_version
+         order by projected.occurred_at desc, projected.telemetry_event_id desc
+       ) filter (where projected.app_version is not null))[1] as app_version,
+       checkpoint.received_at as checkpoint_received_at,
+       checkpoint.telemetry_event_id as checkpoint_telemetry_event_id,
+       (select count(*)::bigint from batch_events) as source_event_count
+     from projected
+     cross join batch_checkpoint checkpoint
+     group by projected.install_id_hash, projected.activity_day,
+       checkpoint.received_at, checkpoint.telemetry_event_id
+     order by projected.install_id_hash, projected.activity_day`,
+    [
+      cursor.receivedAt,
+      cursor.telemetryEventId,
+      upper.receivedAt,
+      upper.telemetryEventId,
+      [...CUSTOMER_USAGE_SCHEMA_VERSIONS],
+      sourceChannels(licenseNamespace),
+      limit,
+    ],
+  );
+  if (result.rows.length === 0) return null;
+  const checkpoint = highWaterFromRow({
+    received_at: result.rows[0].checkpoint_received_at,
+    telemetry_event_id: result.rows[0].checkpoint_telemetry_event_id,
+  });
+  return {
+    checkpoint,
+    sourceEventCount: nonnegativeInteger(
+      result.rows[0].source_event_count,
+      "source_event_count",
+    ),
     aggregates: result.rows.map(normalizeCustomerUsageAggregateRow),
   };
 }
@@ -1312,6 +1614,75 @@ async function upsertDailyAggregate(
   return result.rowCount || 0;
 }
 
+async function upsertSessionStartedAggregate(
+  client: PoolClient,
+  schema: string,
+  licenseNamespace: LicenseNamespace,
+  row: CustomerUsageDailyAggregate,
+  checkpoint: CustomerUsageHighWater,
+  now: Date,
+) {
+  const result = await client.query(
+    `insert into ${schema}.sidestream_customer_usage_daily (
+       license_namespace, install_id_hash, activity_day,
+       first_app_use_at, last_app_use_at,
+       first_download_attempt_at, last_download_attempt_at,
+       first_download_success_at, last_download_success_at,
+       active_event_count, download_attempt_count, download_outcome_count,
+       download_success_count, download_failure_count, download_cancelled_count,
+       download_pending_count, download_unknown_count, platform, app_version,
+       source_watermark_received_at,
+       source_watermark_telemetry_event_id, refreshed_at
+     )
+     select $1, $2, $3::date, $4, $5,
+       null, null, null, null,
+       $6, 0, 0, 0, 0, 0, 0, 0, $7, $8, $9, $10, $11
+     from ${schema}.sidestream_customer_installs install
+     where install.license_namespace = $1
+       and install.install_id_hash = $2
+     on conflict (license_namespace, install_id_hash, activity_day) do update set
+       first_app_use_at = excluded.first_app_use_at,
+       last_app_use_at = excluded.last_app_use_at,
+       active_event_count = excluded.active_event_count,
+       platform = coalesce(excluded.platform, sidestream_customer_usage_daily.platform),
+       app_version = coalesce(
+         excluded.app_version,
+         sidestream_customer_usage_daily.app_version
+       ),
+       source_watermark_received_at = greatest(
+         sidestream_customer_usage_daily.source_watermark_received_at,
+         excluded.source_watermark_received_at
+       ),
+       source_watermark_telemetry_event_id = case
+         when excluded.source_watermark_received_at
+           > sidestream_customer_usage_daily.source_watermark_received_at
+           then excluded.source_watermark_telemetry_event_id
+         when excluded.source_watermark_received_at
+           = sidestream_customer_usage_daily.source_watermark_received_at
+           then greatest(
+             sidestream_customer_usage_daily.source_watermark_telemetry_event_id,
+             excluded.source_watermark_telemetry_event_id
+           )
+         else sidestream_customer_usage_daily.source_watermark_telemetry_event_id
+       end,
+       refreshed_at = excluded.refreshed_at`,
+    [
+      licenseNamespace,
+      row.installIdHash,
+      row.activityDay,
+      row.firstAppUseAt,
+      row.lastAppUseAt,
+      row.activeEventCount,
+      row.platform,
+      row.appVersion,
+      checkpoint.receivedAt,
+      checkpoint.telemetryEventId,
+      now,
+    ],
+  );
+  return result.rowCount || 0;
+}
+
 async function commitCustomerUsageCheckpoint(
   client: PoolClient,
   schema: string,
@@ -1386,6 +1757,13 @@ function highWaterFromRow(row: QueryRow): CustomerUsageHighWater {
   return Object.freeze({
     receivedAt: requiredDate(row.received_at, "received_at"),
     telemetryEventId: requiredString(row.telemetry_event_id, "telemetry_event_id", 200),
+  });
+}
+
+function serializeHighWater(value: CustomerUsageHighWater) {
+  return Object.freeze({
+    receivedAt: value.receivedAt.toISOString(),
+    telemetryEventId: value.telemetryEventId,
   });
 }
 

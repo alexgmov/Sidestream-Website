@@ -30,6 +30,19 @@ import {
   PAID_ACQUISITION_COOKIE_NAME,
   validatePaidAcquisitionAssignmentCookie,
 } from "./_lib/paid-acquisition.js";
+import {
+  ACQUISITION_SECRET_NAME,
+  createBrowserAcquisitionCookie,
+  readBrowserAcquisitionCookie,
+  serializeBrowserAcquisitionCookie,
+  verifyBrowserAcquisitionCookie,
+  type BrowserAcquisitionCookie,
+} from "./_lib/acquisition-cookie.js";
+import {
+  buildAcquisitionHandoffUrl,
+  createAcquisitionHandoff,
+  verifyAcquisitionHandoff,
+} from "./_lib/acquisition-handoff.js";
 
 const MOBILE_DOWNLOAD_SOURCE = "mobile-download-handoff";
 const EMAIL_RATE_LIMIT_WINDOW_SECONDS = 60 * 60;
@@ -51,7 +64,11 @@ type DownloadLinkHandlerDependencies = Readonly<{
     options: { ipAddress: string; now: Date },
   ) => Promise<RateLimitResult>;
   storeLead: (lead: CanonicalDownloadLead) => Promise<void>;
-  sendEmail: (lead: CanonicalDownloadLead) => Promise<void>;
+  sendEmail: (
+    lead: CanonicalDownloadLead,
+    links?: Readonly<{ macUrl: string; windowsUrl: string }>,
+  ) => Promise<void>;
+  getAcquisitionSecret: () => string;
   log: (entry: Record<string, string | number>) => void;
 }>;
 
@@ -75,15 +92,17 @@ const defaultDependencies: DownloadLinkHandlerDependencies = {
       lead,
     );
   },
-  sendEmail: async (lead) => {
+  sendEmail: async (lead, links) => {
     if (!lead.idempotencyKeyHash) {
       throw new DownloadLinkEmailConfigurationError("Missing idempotency hash");
     }
     await sendDownloadLinkEmail({
       recipient: lead.email,
       idempotencyKeyHash: lead.idempotencyKeyHash,
+      links,
     });
   },
+  getAcquisitionSecret: () => process.env[ACQUISITION_SECRET_NAME]?.trim() || "",
   log: (entry) => console.info(JSON.stringify(entry)),
 };
 
@@ -97,8 +116,11 @@ export function createDownloadLinkHandler(
     response: ServerResponse,
   ) {
     const method = (request.method || "GET").toUpperCase();
+    if (method === "GET") {
+      return serveAcquisitionHandoff(request, response, dependencies);
+    }
     if (method !== "POST") {
-      response.setHeader("Allow", "POST");
+      response.setHeader("Allow", "GET, POST");
       return sendJson(response, 405, { error: "Method not allowed" });
     }
     if (!isJsonContentType(firstHeaderValue(request.headers["content-type"]))) {
@@ -108,7 +130,7 @@ export function createDownloadLinkHandler(
       });
     }
 
-    let payload: DownloadLeadPayload;
+    let payload: DownloadLeadPayload & { handoffOnly?: unknown };
     try {
       const body = await readRequestBody(request, MAX_DOWNLOAD_LEAD_BODY_BYTES);
       payload = JSON.parse(body) as DownloadLeadPayload;
@@ -121,6 +143,9 @@ export function createDownloadLinkHandler(
     }
 
     const now = dependencies.now();
+    if (payload.handoffOnly === true) {
+      return createEmailOptionalHandoff(request, response, dependencies, now);
+    }
     let lead: CanonicalDownloadLead;
     try {
       const idempotencyKey = parseIdempotencyKey(
@@ -209,7 +234,9 @@ export function createDownloadLinkHandler(
     }
 
     try {
-      await dependencies.sendEmail(lead);
+      const links = createEmailHandoffLinks(request, dependencies, now);
+      if (links?.setCookie) response.setHeader("Set-Cookie", links.setCookie);
+      await dependencies.sendEmail(lead, links?.links);
       dependencies.log({
         event: "mobile_download_link_email",
         outcome: "accepted",
@@ -273,6 +300,131 @@ export function resolvePaidAcquisitionAssignment(
   } catch {
     return null;
   }
+}
+
+function serveAcquisitionHandoff(
+  request: DownloadLinkRequest,
+  response: ServerResponse,
+  dependencies: DownloadLinkHandlerDependencies,
+) {
+  try {
+    const requestUrl = new URL(
+      request.url || "/api/send-download-links",
+      "https://sidestream.tv",
+    );
+    const tokens = requestUrl.searchParams.getAll("handoff");
+    if (tokens.length !== 1 || requestUrl.searchParams.size !== 1) {
+      return sendJson(response, 404, { error: "Download handoff not found" });
+    }
+    const now = dependencies.now();
+    const secret = dependencies.getAcquisitionSecret();
+    const handoff = verifyAcquisitionHandoff(tokens[0], { secret, now });
+    const cookie = verifyBrowserAcquisitionCookie(
+      handoff.acquisitionCookieValue,
+      { secret, now },
+    );
+    const platform = handoff.platform || platformFromUserAgent(
+      firstHeaderValue(request.headers["user-agent"]),
+    );
+    response.statusCode = 302;
+    response.setHeader(
+      "Location",
+      platform === "windows" ? "/api/download?platform=win32-x64" : "/api/download",
+    );
+    response.setHeader("Set-Cookie", serializeBrowserAcquisitionCookie(cookie));
+    response.setHeader("Cache-Control", "private, no-store");
+    response.setHeader("X-Content-Type-Options", "nosniff");
+    response.end();
+  } catch {
+    return sendJson(response, 404, { error: "Download handoff not found" });
+  }
+}
+
+function createEmailOptionalHandoff(
+  request: DownloadLinkRequest,
+  response: ServerResponse,
+  dependencies: DownloadLinkHandlerDependencies,
+  now: Date,
+) {
+  try {
+    const resolved = resolveOrCreateHandoffCookie(request, dependencies, now);
+    const token = createAcquisitionHandoff({
+      acquisitionCookieValue: resolved.cookie.value,
+      platform: null,
+    }, {
+      secret: resolved.secret,
+      now,
+    });
+    if (resolved.setCookie) response.setHeader("Set-Cookie", resolved.setCookie);
+    return sendJson(response, 200, {
+      ok: true,
+      handoffUrl: buildAcquisitionHandoffUrl(token),
+    });
+  } catch {
+    return sendJson(response, 503, {
+      error: "Computer handoff temporarily unavailable",
+      code: "handoff_unavailable",
+    });
+  }
+}
+
+function createEmailHandoffLinks(
+  request: DownloadLinkRequest,
+  dependencies: DownloadLinkHandlerDependencies,
+  now: Date,
+) {
+  try {
+    const resolved = resolveOrCreateHandoffCookie(request, dependencies, now);
+    const makeUrl = (platform: "macos" | "windows") => buildAcquisitionHandoffUrl(
+      createAcquisitionHandoff({
+        acquisitionCookieValue: resolved.cookie.value,
+        platform,
+      }, {
+        secret: resolved.secret,
+        now,
+      }),
+    );
+    return {
+      links: Object.freeze({
+        macUrl: makeUrl("macos"),
+        windowsUrl: makeUrl("windows"),
+      }),
+      setCookie: resolved.setCookie,
+    };
+  } catch {
+    // Preserve the existing direct installer email if attribution is unavailable.
+    return null;
+  }
+}
+
+function resolveOrCreateHandoffCookie(
+  request: DownloadLinkRequest,
+  dependencies: DownloadLinkHandlerDependencies,
+  now: Date,
+) {
+  const secret = dependencies.getAcquisitionSecret();
+  const existing = readBrowserAcquisitionCookie(request.headers.cookie);
+  if (existing) {
+    try {
+      return {
+        cookie: verifyBrowserAcquisitionCookie(existing, { secret, now }),
+        secret,
+        setCookie: "",
+      };
+    } catch {
+      // Invalid browser state is replaced with a fresh, direct first touch.
+    }
+  }
+  const cookie = createBrowserAcquisitionCookie({}, { secret, now });
+  return {
+    cookie,
+    secret,
+    setCookie: serializeBrowserAcquisitionCookie(cookie),
+  };
+}
+
+function platformFromUserAgent(userAgent: string) {
+  return /windows/i.test(userAgent) ? "windows" : "macos";
 }
 
 async function consumeMobileDownloadLinkRateLimit(

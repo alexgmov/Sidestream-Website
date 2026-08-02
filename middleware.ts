@@ -22,6 +22,12 @@ const INTERNAL_ASSIGNMENT_HEADER =
 const INTERNAL_PROOF_HEADER = "x-sidestream-paid-acquisition-proof";
 const INTERNAL_ATTRIBUTION_HEADER =
   "x-sidestream-paid-acquisition-attribution";
+const ACQUISITION_COOKIE_NAME = "__Host-sidestream-acquisition-v1";
+const ACQUISITION_SECRET_NAME = "SIDESTREAM_ANONYMOUS_ACQUISITION_SECRET";
+const ACQUISITION_COOKIE_VERSION = 1;
+const ACQUISITION_COOKIE_MAX_AGE_SECONDS = 2_592_000;
+const ACQUISITION_SIGNATURE_CONTEXT =
+  "sidestream-anonymous-acquisition-cookie-v1";
 const BOT_SIGNATURES = [
   "bot",
   "crawler",
@@ -54,13 +60,14 @@ const OPTIONAL_ATTRIBUTION_FIELDS = [
 const SAFE_CAMPAIGN_VALUE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const BASE64URL_VALUE = /^[A-Za-z0-9_-]+$/;
 const encoder = new TextEncoder();
+const acquisitionExperiments = new WeakMap();
 
 export const config = {
-  matcher: ["/mc", "/mc-preview"],
+  matcher: ["/", "/index.html", "/mc", "/mc-preview"],
 };
 
-export default function paidAcquisitionMiddleware(request) {
-  return routePaidExperiment(request, productionRuntime());
+export default async function paidAcquisitionMiddleware(request) {
+  return routeBrowserRequest(request, productionRuntime());
 }
 
 // This seam is called directly by the local routing tests. No request header,
@@ -77,6 +84,19 @@ export function routePaidExperimentForTest(request, overrides) {
     },
     secret: overrides.secret,
     paidLandingPath: TEST_PAID_LANDING_PATH,
+  });
+}
+
+export function routeBrowserAcquisitionForTest(request, overrides) {
+  return routeBrowserRequest(request, {
+    now: () => overrides.nowMs,
+    randomBytes: (length) => new Uint8Array(
+      length === 32 ? overrides.tokenBytes : overrides.nonceBytes || 16,
+    ),
+    secret: overrides.paidSecret,
+    acquisitionSecret: overrides.acquisitionSecret,
+    paidLandingPath: TEST_PAID_LANDING_PATH,
+    acquisitionExperiment: overrides.experiment || null,
   });
 }
 
@@ -130,6 +150,7 @@ async function routePaidExperiment(request, runtime) {
         ...runtime,
         key,
         assignmentCookieValue: suppliedCookie,
+        experimentIssuedAtSeconds: existing.issuedAtSeconds,
       });
     }
 
@@ -150,6 +171,7 @@ async function routePaidExperiment(request, runtime) {
     return cohortResponse(cohort, attribution, cookie, {
       ...runtime,
       key,
+      experimentIssuedAtSeconds: nowSeconds,
       assignmentCookieValue: cookie
         .split(";", 1)[0]
         .slice(`${COOKIE_NAME}=`.length),
@@ -157,6 +179,16 @@ async function routePaidExperiment(request, runtime) {
   } catch {
     return fallback();
   }
+}
+
+async function routeBrowserRequest(request, runtime) {
+  const url = new URL(request.url);
+  const paidResponse = url.pathname === "/mc" || url.pathname === REVIEW_PATH
+    ? await routePaidExperiment(request, runtime)
+    : next();
+  const experiment = acquisitionExperiments.get(paidResponse) ||
+    runtime.acquisitionExperiment || null;
+  return attachBrowserAcquisition(request, paidResponse, runtime, experiment);
 }
 
 function productionRuntime() {
@@ -168,6 +200,7 @@ function productionRuntime() {
       return bytes;
     },
     secret: process.env[ASSIGNMENT_SECRET_NAME],
+    acquisitionSecret: process.env[ACQUISITION_SECRET_NAME],
     paidLandingPath: PAID_LANDING_PATH,
   };
 }
@@ -265,7 +298,11 @@ function controlRedirect(attribution, cookie) {
 }
 
 async function cohortResponse(cohort, attribution, cookie, runtime) {
-  if (cohort === CONTROL_COHORT) return controlRedirect(attribution, cookie);
+  if (cohort === CONTROL_COHORT) {
+    const response = controlRedirect(attribution, cookie);
+    rememberAcquisitionExperiment(response, cohort, runtime.experimentIssuedAtSeconds);
+    return response;
+  }
 
   const destination = new URL(runtime.paidLandingPath, CONTROL_DESTINATION);
   const attributionQuery = new URLSearchParams(attribution).toString();
@@ -292,7 +329,186 @@ async function cohortResponse(cohort, attribution, cookie, runtime) {
   });
   response.headers.set("Cache-Control", "private, no-store");
   if (cookie) response.headers.append("Set-Cookie", cookie);
+  rememberAcquisitionExperiment(response, cohort, runtime.experimentIssuedAtSeconds);
   return response;
+}
+
+function rememberAcquisitionExperiment(response, cohort, issuedAtSeconds) {
+  if (!Number.isSafeInteger(issuedAtSeconds)) return;
+  acquisitionExperiments.set(response, {
+    experimentId: EXPERIMENT_ID,
+    cohort: cohort === PAID_COHORT ? "paid" : "freemium",
+    issuedAt: issuedAtSeconds,
+    expiresAt: issuedAtSeconds + COOKIE_MAX_AGE_SECONDS,
+  });
+}
+
+async function attachBrowserAcquisition(request, response, runtime, experiment) {
+  if (request.method !== "GET" || isSpeculativeRequest(request)) return response;
+  const secretBytes = validSecretBytes(runtime.acquisitionSecret);
+  if (!secretBytes) return response;
+  try {
+    const nowSeconds = Math.floor(runtime.now() / 1_000);
+    const key = await crypto.subtle.importKey(
+      "raw",
+      secretBytes,
+      { name: "HMAC", hash: "SHA-256" },
+      false,
+      ["sign", "verify"],
+    );
+    const existing = readSingleCookie(
+      request.headers.get("cookie"),
+      ACQUISITION_COOKIE_NAME,
+    );
+    if (existing && await verifyAcquisitionCookie(existing, key, nowSeconds)) {
+      return response;
+    }
+    const tokenBytes = runtime.randomBytes(32);
+    if (!(tokenBytes instanceof Uint8Array) || tokenBytes.length !== 32) {
+      return response;
+    }
+    const issued = await createAcquisitionCookie(
+      key,
+      bytesToBase64Url(tokenBytes),
+      normalizeBrowserAttribution(new URL(request.url).searchParams),
+      normalizeBrowserExperiment(experiment, nowSeconds),
+      nowSeconds,
+    );
+    response.headers.append("Set-Cookie", issued);
+  } catch {
+    // Acquisition is intentionally best-effort and can never block the page.
+  }
+  return response;
+}
+
+function isSpeculativeRequest(request) {
+  for (const name of ["purpose", "sec-purpose", "x-moz"]) {
+    const value = request.headers.get(name)?.toLowerCase() || "";
+    if (value.includes("prefetch") || value.includes("prerender")) return true;
+  }
+  return false;
+}
+
+function normalizeBrowserAttribution(searchParams) {
+  try {
+    const values = {};
+    for (const key of ["source", "medium", "campaign", "content"]) {
+      const candidates = searchParams.getAll(`utm_${key}`);
+      if (candidates.length > 1) throw new Error("duplicate attribution");
+      values[key] = candidates.length === 1 ? candidates[0] : null;
+    }
+    const source = values.source
+      ? normalizeBrowserLower(values.source)
+      : "direct";
+    const medium = values.medium ? normalizeBrowserLower(values.medium) : null;
+    const campaign = values.campaign ? normalizeBrowserMixed(values.campaign) : null;
+    const content = values.content ? normalizeBrowserMixed(values.content) : null;
+    return { source, medium, campaign, content };
+  } catch {
+    return { source: "direct", medium: null, campaign: null, content: null };
+  }
+}
+
+function normalizeBrowserLower(value) {
+  const normalized = value.trim().toLowerCase();
+  if (!/^[a-z0-9][a-z0-9._-]{0,63}$/.test(normalized)) {
+    throw new Error("invalid attribution");
+  }
+  return normalized;
+}
+
+function normalizeBrowserMixed(value) {
+  const normalized = value.trim();
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(normalized)) {
+    throw new Error("invalid attribution");
+  }
+  return normalized;
+}
+
+function normalizeBrowserExperiment(value, nowSeconds) {
+  if (!value) return null;
+  if (
+    typeof value.experimentId !== "string" ||
+    !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/.test(value.experimentId) ||
+    !["paid", "freemium"].includes(value.cohort) ||
+    !Number.isSafeInteger(value.issuedAt) ||
+    !Number.isSafeInteger(value.expiresAt) ||
+    value.issuedAt > nowSeconds ||
+    value.expiresAt <= nowSeconds ||
+    value.expiresAt > nowSeconds + ACQUISITION_COOKIE_MAX_AGE_SECONDS
+  ) {
+    return null;
+  }
+  return value;
+}
+
+async function createAcquisitionCookie(
+  key,
+  token,
+  attribution,
+  experiment,
+  issuedAt,
+) {
+  const expiresAt = issuedAt + ACQUISITION_COOKIE_MAX_AGE_SECONDS;
+  const payload = bytesToBase64Url(encoder.encode(JSON.stringify({
+    v: ACQUISITION_COOKIE_VERSION,
+    token,
+    attribution: [
+      attribution.source,
+      attribution.medium,
+      attribution.campaign,
+      attribution.content,
+    ],
+    experiment: experiment
+      ? [experiment.experimentId, experiment.cohort, experiment.issuedAt, experiment.expiresAt]
+      : null,
+    issuedAt,
+    expiresAt,
+  })));
+  const signature = bytesToBase64Url(new Uint8Array(
+    await crypto.subtle.sign(
+      "HMAC",
+      key,
+      encoder.encode(`${ACQUISITION_SIGNATURE_CONTEXT}:${payload}`),
+    ),
+  ));
+  return [
+    `${ACQUISITION_COOKIE_NAME}=${payload}.${signature}`,
+    `Max-Age=${ACQUISITION_COOKIE_MAX_AGE_SECONDS}`,
+    "Path=/",
+    "Secure",
+    "HttpOnly",
+    "SameSite=Lax",
+  ].join("; ");
+}
+
+async function verifyAcquisitionCookie(value, key, nowSeconds) {
+  if (value.length > 1024 || !/^[A-Za-z0-9_.-]+$/.test(value)) return false;
+  const [payload, signatureValue, extra] = value.split(".");
+  if (!payload || extra || !/^[A-Za-z0-9_-]{43}$/.test(signatureValue || "")) {
+    return false;
+  }
+  const signature = base64UrlToBytes(signatureValue);
+  if (signature?.length !== 32) return false;
+  const valid = await crypto.subtle.verify(
+    "HMAC",
+    key,
+    signature,
+    encoder.encode(`${ACQUISITION_SIGNATURE_CONTEXT}:${payload}`),
+  );
+  if (!valid) return false;
+  let decoded;
+  try {
+    decoded = JSON.parse(new TextDecoder().decode(base64UrlToBytes(payload)));
+  } catch {
+    return false;
+  }
+  return decoded?.v === ACQUISITION_COOKIE_VERSION &&
+    /^[A-Za-z0-9_-]{43}$/.test(decoded.token || "") &&
+    Number.isSafeInteger(decoded.issuedAt) && decoded.issuedAt <= nowSeconds &&
+    Number.isSafeInteger(decoded.expiresAt) && decoded.expiresAt > nowSeconds &&
+    decoded.expiresAt - decoded.issuedAt === ACQUISITION_COOKIE_MAX_AGE_SECONDS &&
+    Array.isArray(decoded.attribution) && decoded.attribution.length === 4;
 }
 
 function validSecretBytes(secret) {

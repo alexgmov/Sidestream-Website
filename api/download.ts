@@ -18,10 +18,25 @@ import type {
 } from "./_lib/release-manifest.js";
 import {
   buildInstallerReferralEvent,
+  isLikelyScanner,
   parseGmailReferral,
   recordInstallerReferral,
 } from "./_lib/installer-referral.js";
 import type { InstallerReferralEvent } from "./_lib/installer-referral.js";
+import {
+  createBrowserAcquisitionCookie,
+  normalizeBrowserAcquisitionAttribution,
+  readBrowserAcquisitionCookie,
+  serializeBrowserAcquisitionCookie,
+  verifyBrowserAcquisitionCookie,
+  ACQUISITION_SECRET_NAME,
+  type BrowserAcquisitionCookie,
+} from "./_lib/acquisition-cookie.js";
+import {
+  createAnonymousAcquisitionAssignment,
+  createAnonymousAcquisitionSession,
+  recordAnonymousAcquisitionInstallerRequest,
+} from "./_lib/anonymous-acquisition.js";
 
 const DEFAULT_CONTENT_TYPE = "application/octet-stream";
 const SIGNED_DOWNLOAD_TTL_MS = 5 * 60 * 1000;
@@ -40,11 +55,20 @@ type DownloadDependencies = {
   }>;
   createSignedUrl: (pathname: string) => Promise<string>;
   recordReferral: (event: InstallerReferralEvent) => Promise<void>;
+  recordAcquisition: (event: AnonymousAcquisitionDownloadEvent) => Promise<void>;
+  getAcquisitionSecret: () => string;
+  now: () => Date;
   trackingTimeoutMs: number;
   logTrackingError: (error: unknown) => void;
   logManifestError: (error: unknown) => void;
   scheduleBackground: (operation: Promise<void>) => void;
 };
+
+export type AnonymousAcquisitionDownloadEvent = Readonly<{
+  cookie: BrowserAcquisitionCookie;
+  platform: "macos" | "windows";
+  requestedAt: Date;
+}>;
 
 class ReleaseArtifactMetadataError extends Error {}
 
@@ -55,6 +79,9 @@ export function createDownloadHandler(
     headInstaller: head,
     createSignedUrl: createSignedDownloadUrl,
     recordReferral: recordInstallerReferral,
+    recordAcquisition: persistAnonymousAcquisitionDownload,
+    getAcquisitionSecret: () => process.env[ACQUISITION_SECRET_NAME]?.trim() || "",
+    now: () => new Date(),
     trackingTimeoutMs: REFERRAL_WRITE_TIMEOUT_MS,
     logTrackingError: (error) => {
       console.error("Sidestream installer referral capture failed", error);
@@ -124,11 +151,34 @@ export function createDownloadHandler(
       }
 
       const signedDownloadUrl = await dependencies.createSignedUrl(pathname);
+      const acquisition = resolveAcquisitionForDownload(
+        request,
+        requestUrl,
+        dependencies,
+      );
       response.statusCode = 302;
       response.setHeader("Location", signedDownloadUrl);
       response.setHeader("Cache-Control", "no-store");
       response.setHeader("X-Content-Type-Options", "nosniff");
+      if (acquisition?.setCookie) {
+        response.setHeader("Set-Cookie", acquisition.setCookie);
+      }
       response.end();
+
+      if (acquisition && !isLikelyScanner(request)) {
+        try {
+          dependencies.scheduleBackground(
+            captureAcquisitionAfterResponse(
+              acquisition.cookie,
+              platform,
+              acquisition.requestedAt,
+              dependencies,
+            ),
+          );
+        } catch (error) {
+          dependencies.logTrackingError(error);
+        }
+      }
 
       if (parseGmailReferral(requestUrl.searchParams)) {
         try {
@@ -169,6 +219,89 @@ export function createDownloadHandler(
       throw error;
     }
   };
+}
+
+function resolveAcquisitionForDownload(
+  request: DownloadRequest,
+  requestUrl: URL,
+  dependencies: Pick<
+    DownloadDependencies,
+    "getAcquisitionSecret" | "now" | "logTrackingError"
+  >,
+) {
+  try {
+    const secret = dependencies.getAcquisitionSecret();
+    const secretLength = Buffer.byteLength(secret, "utf8");
+    if (secretLength < 32 || secretLength > 512) return null;
+    const requestedAt = dependencies.now();
+    const existing = readBrowserAcquisitionCookie(request.headers.cookie);
+    if (existing) {
+      try {
+        return {
+          cookie: verifyBrowserAcquisitionCookie(existing, { secret, now: requestedAt }),
+          requestedAt,
+          setCookie: "",
+        };
+      } catch {
+        // A forged or expired cookie has no authority over the fresh first touch.
+      }
+    }
+    const cookie = createBrowserAcquisitionCookie({
+      attribution: normalizeBrowserAcquisitionAttribution(requestUrl.searchParams),
+    }, { secret, now: requestedAt });
+    return {
+      cookie,
+      requestedAt,
+      setCookie: serializeBrowserAcquisitionCookie(cookie),
+    };
+  } catch (error) {
+    dependencies.logTrackingError(error);
+    return null;
+  }
+}
+
+async function captureAcquisitionAfterResponse(
+  cookie: BrowserAcquisitionCookie,
+  platform: ReleasePlatform,
+  requestedAt: Date,
+  dependencies: Pick<
+    DownloadDependencies,
+    "recordAcquisition" | "trackingTimeoutMs" | "logTrackingError"
+  >,
+) {
+  try {
+    await withTimeout(
+      dependencies.recordAcquisition({ cookie, platform, requestedAt }),
+      dependencies.trackingTimeoutMs,
+    );
+  } catch (error) {
+    dependencies.logTrackingError(error);
+  }
+}
+
+async function persistAnonymousAcquisitionDownload(
+  event: AnonymousAcquisitionDownloadEvent,
+) {
+  const secret = process.env[ACQUISITION_SECRET_NAME]?.trim() || "";
+  const assignment = event.cookie.experiment
+    ? createAnonymousAcquisitionAssignment({
+        ...event.cookie.experiment,
+        secret,
+      })
+    : null;
+  await createAnonymousAcquisitionSession({
+    token: event.cookie.token,
+    attribution: event.cookie.attribution,
+    assignment,
+    assignmentSecret: assignment ? secret : undefined,
+    firstSeenAt: new Date(event.cookie.issuedAt * 1000),
+    expiresAt: new Date(event.cookie.expiresAt * 1000),
+  });
+  await recordAnonymousAcquisitionInstallerRequest({
+    token: event.cookie.token,
+    platform: event.platform,
+    requestedAt: event.requestedAt,
+  });
 }
 
 export default createDownloadHandler();

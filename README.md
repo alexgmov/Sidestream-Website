@@ -10,7 +10,7 @@ This repository owns the whole Sidestream web service: the public/account fronte
 
 - `AGENTS.md` - Durable repository instructions for the exact Upgrade, Google authentication, and Stripe sequence plus the only supported Production deployment command.
 - `Sidestream front end 2/Sidestream.html` - Inert `noindex` fallback document for the old exported page URL. Production requests never serve it because `vercel.json` sends the legacy path to `https://sidestream.tv/` with a server-side `308`.
-- `index.html` - Canonical page implementation served at `/`. Contains the shader mount root, header, hero, desktop Mac/Windows download CTAs in the hero and Free pricing card, mobile email handoff, dormant historical waitlist modal, feature sections, pricing, final CTA, footer, styles, rotating-word script, toast behavior, crawler metadata, and structured data.
+- `index.html` - Canonical page implementation served at `/`. Contains the shader mount root, header, hero, desktop Mac/Windows download CTAs in the hero and Free pricing card, optional mobile email handoff plus no-email secure computer-link sharing, dormant historical waitlist modal, feature sections, pricing, final CTA, footer, styles, rotating-word script, toast behavior, crawler metadata, and structured data.
 - `public/robots.txt` - Public crawler policy copied to `/robots.txt` by Vite. Allows normal search plus OpenAI `OAI-SearchBot`, blocks all `/api/` routes from automatic crawlers, and opts out of training-oriented `GPTBot` separately.
 - `public/sitemap.xml` - Valid source template for the canonical root-only XML sitemap. It intentionally contains no hand-maintained date; the build replaces its marker in `dist/sitemap.xml` with the root page's last meaningful source modification time.
 - `public/llms.txt` - Concise AI-readable product summary and canonical-source guide for LLM/search agents. It is additive and does not replace normal SEO metadata or visible page content.
@@ -20,21 +20,23 @@ This repository owns the whole Sidestream web service: the public/account fronte
 - `account.html` - Minimal noindex account bridge on a plain near-black background. Signed-out visits immediately enter Google OAuth, while the server auth session shows returning users their plan status, coarse active-production-device status, explicit device deactivation, latest installer, sign out, and a Manage Billing button that creates a Stripe Customer Portal session.
 - `docs/single-device-entitlements.md` - Device-domain and support reference for the two-active-device contract, privacy boundary, API/page states, and conceptual support decisions. Its obsolete Production command surface has been removed; it authorizes no Production action and points to the API runbook only for blocker/capability status.
 - `docs/api-hardening-runbook.md` - Exact hardened API/release contract, shared Postgres and migration model, Stripe/lead/maintenance facts, bounded configuration, metrics, alerts, and the current fail-closed Production blocker/capability inventory. Production cutover is blocked; this file contains no executable Production cutover or fallback recipe and does not claim Production was changed.
-- `docs/customer-360.md` - Durable cross-repo Customer 360 contract: exact private list/detail fields and nullability, trusted write namespace versus authorized admin read selection, identity/merge and observe-by-default single-device separation, currency-partitioned money and purchase-history semantics in minor units, exhaustive stored/derivable usage versus compact API exposure, privacy/retention, observability, disposable tests, dry-run backfill, rollback, and the only human-gated Preview/Test-first rollout. Route code is present in the canonical website deployment, but the Production service is inactive and unconfigured. A read-only operator inspection found schema and materialized identity/commerce rows in the live dashboard database, while runtime database selection, backfill completeness, protected API behavior, and usage sync remain unverified.
+- `docs/customer-360.md` - Durable cross-repo Customer 360 contract: four separate identities (browser session, install/receipt evidence, sparse profile, and later verified account/contact), exact cookie/download/mobile-handoff/one-time-claim continuity, deterministic paid/anonymous/email attribution, private list/detail/funnel fields, usage semantics, TLS-safe guarded sync/rescan commands, privacy/no-delete rules, environment-variable names, and the human-gated Preview/Test then Production migration/configuration/rescan/scheduler/deploy/release/rollback/smoke sequence. It authorizes and claims no external operation; Production remains inactive and unverified until those gates are separately approved and observed.
 - `thank-you.html` - Minimal noindex Checkout success page on a solid black background. Stripe success URLs land here after purchase with a direct return-to-Premiere instruction and one concise recovery path if the panel still shows Free.
 - `paid-thank-you.html` - Phone-first noindex success page used only by verified paid-acquisition Checkout. It tells the buyer to find the separate Sidestream setup email on their Premiere computer, install from its receipt-gated platform link, and authenticate with the same Google email used at Checkout. The original `thank-you.html` remains the ordinary Upgrade/Restore destination.
 - `data/release-manifest.json` and `data/release-manifest.windows.json` - Sidestream-owned stable release manifests. The default file keeps the public Mac artifact; the Windows file is selected by the explicit `win32-x64` platform query used by the public Windows download CTA. Private Blob pathnames are never returned by the public manifest API.
-- `api/download.ts` - Vercel Node Function for installer fulfillment. `HEAD` returns attachment metadata for the manifest-configured private Vercel Blob installer, and `GET` validates the Blob then redirects to a short-lived signed private Blob URL. Successful Gmail campaign `GET`s are recorded only after the redirect response ends. Bare requests remain Mac; `?platform=win32-x64` selects the Windows artifact. Supports `GET` and `HEAD` only.
+- `api/download.ts` - Vercel Node Function for installer fulfillment. `HEAD` returns attachment metadata for the manifest-configured private Vercel Blob installer, and `GET` validates the Blob then redirects to a short-lived signed private Blob URL. A valid anonymous first-touch cookie is reused, or a bounded direct/UTM cookie is created; session/first-installer-request persistence happens best-effort after the redirect and cannot block delivery. Successful Gmail campaign `GET`s are also recorded only after the redirect response ends. Bare requests remain Mac; `?platform=win32-x64` selects the Windows artifact. Supports `GET` and `HEAD` only.
 - `api/_lib/installer-referral.ts` - Server-only Gmail installer-request attribution. It validates bounded UTM tags, accepts only `pilot` or `main` batch content, creates a campaign/day-scoped HMAC from request identity, discards the raw IP and user agent, flags likely link scanners, and inserts the privacy-limited event into Postgres without delaying installer delivery.
 - `api/referral-visit.ts` and `api/_lib/referral-visits.ts` - First-party landing-referral attribution for the dedicated `https://sidestream.tv/manychat-instagram` organic Instagram ManyChat link and the legacy generic ManyChat routes. A real page load posts the allowlisted `manychat-instagram` or `manychat` source, receives `204` without waiting for storage, and writes at most one private Blob record per anonymous request fingerprint/day/classification. Daily HMACs reuse the installer-analytics secret; raw IP and user-agent values are never stored.
 - `api/releases/latest.ts` and `api/_lib/release-manifest.ts` - Sidestream-owned update manifest endpoint for the CEP panel. It selects the Mac or Windows manifest by platform and serves public metadata without exposing the private Blob pathname.
 - `api/download-lead.ts`, `api/_lib/download-leads.ts`, and `api/_lib/download-lead-blob.ts` - Bounded JSON lead ingestion, canonical `(email, cta_source)` convergence, idempotency receipts, atomic Postgres email/IP rate limits, deterministic private-Blob fallback, and the private compare-and-swap Blob limiter used by the mobile email handoff. `api/internal/download-leads/replay.ts` replays mapped fallback records and deletes only after a committed database write plus ETag match.
-- `api/send-download-links.ts` and `api/_lib/download-link-email.ts` - Mobile-only computer handoff. The public POST route requires an idempotency key, stores the `mobile-download-handoff` lead plus bounded UTM context in the existing private replay queue, enforces a durable hashed 3/email and 10/IP per-hour Blob limit, and sends one transactional Resend message from `downloads@alexg.mov` with direct Mac and Windows installer links plus the `STREAM20` Sidestream Unlimited discount code. The email uses the screenshot-matched white platform capsules inside a dark panel with a red hover state; the Windows mark is embedded as a CID PNG so Gmail renders it. Provider errors and logs never return or print the recipient address.
+- `api/send-download-links.ts`, `api/_lib/acquisition-handoff.ts`, and `api/_lib/download-link-email.ts` - Mobile computer continuity. The email path requires idempotency, stores the bounded `mobile-download-handoff` lead, enforces durable hashed 3/email and 10/IP per-hour limits, and sends separate signed Mac/Windows links. The no-email path accepts only `{"handoffOnly":true}` and returns one shareable secure link. Both links contain exactly one opaque encrypted/signed seven-day `handoff`; computer GET restores the acquisition cookie and redirects to the unchanged installer route. Forged, expired, duplicated, or identity-augmented handoffs return `404`. Provider errors and logs never return or print the recipient address.
+- `api/_lib/acquisition-cookie.ts`, `api/_lib/anonymous-acquisition.ts`, `api/_lib/anonymous-install-claim.ts`, `api/installation/claim*.ts`, and `db/migrations/20260731120000_add_anonymous_acquisition_sessions.sql` - Private anonymous browser-to-install continuity. The server stores only a browser-token digest and bounded immutable first touch, optional signed experiment, first installer request, claim/quarantine state, and append-only conflict digest. After local receipt verification, the panel posts only `installIdHash` plus `installerReceiptIdHash`, receives a 15-minute opaque browser nonce, and connects the signed browser session to a sparse Customer 360 profile exactly once. Missing configuration fails association closed without blocking the page or installer.
 - `api/_lib/postgres.ts` and `api/_lib/rate-limit.ts` - Shared attached runtime Postgres pool/transaction ownership and atomic HMAC-dimension rate limiting. Production runtime requires a pooled URL; direct URLs are reserved for reviewed migrations/backfills and development/test fallback.
 - `api/_lib/customer-profiles.ts` and `tests/customer-360/core*.test.mjs` - Server-only Customer 360 identity/profile primitives, transactional merge planning, privacy-contract proof, and disposable-Postgres coverage. Merge survivors follow the database's immutable `(created_at, id)` total order within one license namespace.
 - `api/_lib/customer-commerce.ts`, `db/migrations/20260715122000_add_customer_commerce_ledger.sql`, and `tests/customer-360/commerce*.test.mjs` - Stripe-verified Customer 360 money projection. A settled PaymentIntent, or a captured standalone Charge without one, is canonical when present. Until then, paid Checkout and Invoice facts remain fallbacks; a paid InvoicePayment edge suppresses only the Checkout fallback for the same absent instrument, namespace, profile, and currency, preferring the related Invoice without collapsing their payment keys. Both fallbacks are atomically suppressed when the related instrument arrives. Gross includes all settled customer money, while `off_stripe_paid_minor` is an explicit subset in each profile/namespace/currency total. Current InvoicePayment objects persist as many-to-many allocation edges without unioning invoices and instruments into one payment key. Namespace-locked reconciliation attaches or quarantines a whole canonical payment group before currency totals refresh and never reads or mutates entitlement/device state.
 - `api/_lib/customer-usage.ts`, `api/_lib/customer-query.ts`, `api/_lib/customer-admin.ts`, `api/internal/customer-usage/sync.ts`, and `api/internal/customers/*` - Once-daily privacy-limited telemetry aggregation plus private Customer 360 list/detail reads. The aggregate layer retains complete first/last use and attempt timestamps, outcome counts, activity/frequency, coarse client summaries, and freshness/materialization state; the compact API intentionally omits total accepted attempts and current subscription status. `SIDESTREAM_TELEMETRY_POSTGRES_URL` is a separate read-only source, while `SIDESTREAM_CRM_ADMIN_SECRET` protects POST-only non-browser reads and signs namespace/filter-bound cursors. Raw telemetry, identity values, `installIdHash`, Stripe IDs, search text, and merged tombstones stay excluded.
-- `api/_lib/acquisition-funnel.ts` and `api/internal/customers/funnel.ts` - Protected, read-only acquisition and retention report for first-install cohorts observed through a separately selected completed UTC-day boundary. It reports complete attributed and unknown groups, auditable first-open/activation/return/one-and-done ratios, and bounded privacy-safe journeys without exposing email, install hashes, receipt hashes, assignment hashes, Stripe IDs, or identity-link values.
+- `api/_lib/acquisition-funnel.ts` and `api/internal/customers/funnel.ts` - Protected, read-only acquisition and retention report for first-install cohorts observed through a separately selected completed UTC-day boundary. Deterministic precedence is exact paid Checkout, exact anonymous claim, exact verified email, then unattributed. It reports complete attributed and unknown groups, auditable first-open/activation/return/one-and-done ratios, coverage by confidence class, and bounded privacy-safe journeys without exposing email, browser tokens, install/receipt/assignment hashes, Stripe IDs, or identity-link values.
+- `scripts/sync-customer-usage.mjs` and `scripts/rescan-customer-usage.mjs` - Human-gated usage operators. Dry-run never connects; apply uses named selectors only, verified remote TLS, one connection, source/target fingerprints and collision rejection, source-freshness limits, append/update-only aggregate writes, and no deletes. Rescan persists a source/target/version-bound mode-`0600` checkpoint after committed batches and requires an additional exact confirmation for deliberate from-zero replay.
 - `scripts/backfill-customer-360.mjs`, `scripts/verify-customer-360-backfill.mjs`, and `tests/customer-360/backfill*.test.mjs` - Offline identity-only Customer 360 backfill planning. Dry-run never opens Postgres or writes a checkpoint; Production apply is disabled; Test apply is separately human-gated, append-only, batch-atomic, resumable, idempotent, conflict-preserving, and restricted to `SIDESTREAM_TEST_POSTGRES_URL`.
 - `scripts/check-customer-360-readiness.mjs` - Sanitized, read-only Customer 360 readiness report for repository source, non-Production configuration, optional unauthenticated HTTPS route probes, and optional disposable-Test database inspection. It loads no `.env` file, performs no network or database access by default, and cannot prove Production migration, backfill, customer data, or operational readiness.
 - `api/_lib/account.ts`, `api/_lib/entitlement.ts`, `api/_lib/device-policy.ts`, and `api/_lib/license-environment.ts` - Shared server-only account/Stripe/Postgres implementation plus dependency-free entitlement primitives. They own exact Checkout verification, account-device transactions, two-active-device decisions, unlimited confirmed moves, production/Test isolation from trusted deployment state, short-lived access tokens, rotating refresh credentials, legacy compatibility through 1.0.13, safe OAuth return paths, and restore CSRF validation. Account-session, activation-status, verification, refresh, and download-authorization reads tolerate the pre-entitlement-lifecycle Production schema through one fail-closed JSON-based lifecycle expression, granting legacy compatibility only to the same exact one-time paid rows that the pending migration would backfill. Serverless route imports intentionally use `.js` extensions so Vercel's Node ESM runtime resolves compiled helpers.
@@ -108,8 +110,9 @@ This repository owns the whole Sidestream web service: the public/account fronte
 - Closing panel - `.final` sits inside `#pricing` between the pricing cards and laptop mockup, with headline and supporting copy only; the paragraph has no obsolete CTA margin below it, and download actions remain in the hero and Free pricing card
 - Footer - `footer`, `.wordmark`, `.foot-top`, `.foot-bottom`
 - Hero rotating noun - bottom inline `<script>` with `[data-rotating-word]`
-- Download and upgrade actions - `[data-download]`, `[data-windows-download]`, `[data-purchase]`, `#mobile-download-handoff`, and `#toast`; desktop Mac/Windows CTAs retain their direct installers, while viewports at or below `900px` replace the hero platform choice with an email form whose helper reads "Enter your email and receive a download link" and route lower-page download taps back to that form. The form's empty `aria-live` status stays hidden until validation or delivery feedback is available. The Sidestream Unlimited sequence is: Upgrade button, Google authentication, Stripe payment.
+- Download and upgrade actions - `[data-download]`, `[data-windows-download]`, `[data-purchase]`, `#mobile-download-handoff`, and `#toast`; desktop Mac/Windows CTAs retain their direct installers, while viewports at or below `900px` replace the hero platform choice with an optional email form plus “Share a secure computer link instead” no-email continuity. Lower-page download taps return to that form. The empty `aria-live` status stays hidden until validation or delivery feedback is available. The Sidestream Unlimited sequence remains Upgrade button, Google authentication, Stripe payment.
 - Installer and update fulfillment - `data/release-manifest.json` is the default Mac release pointer and `data/release-manifest.windows.json` is the Windows release pointer. `api/download.ts` and `api/releases/latest.ts` resolve the same platform-specific manifest so artifact and update truth cannot drift. Bare requests remain Mac, `win32-x64` selects Windows, and unknown platforms return `404` instead of silently serving the wrong OS.
+- Anonymous acquisition continuity - `middleware.ts`, `api/_lib/acquisition-cookie.ts`, `api/_lib/acquisition-handoff.ts`, `api/_lib/anonymous-acquisition.ts`, `api/_lib/anonymous-install-claim.ts`, `api/download.ts`, `api/send-download-links.ts`, and `api/installation/claim*.ts` keep browser token, install/receipt hashes, Customer 360 profile, and later verified account/email separate. A signed 30-day first-touch cookie survives direct desktop download, optional email, or no-email seven-day mobile handoff; a locally verified installation connects it to a sparse profile through one 15-minute opaque claim. Missing configuration or tracking failures never block the page/static installer, but association fails closed.
 - Installer referral attribution - Gmail launch URLs use `utm_source=gmail`, `utm_medium=email`, a bounded campaign ID, and optional `utm_content=pilot` or `utm_content=main` batch ID. Only a successful tagged installer `GET` creates `public.sidestream_installer_requests`; `HEAD`, `304`, invalid tags, and failed fulfillment create nothing. The event stores no email, raw IP, or raw user agent. Scanner-like `GET`s remain visible with `likely_scanner = true` so reports can separate them instead of pretending they never happened.
 - Landing referral attribution - `/manychat-instagram` and `/manychat-instagram/` are the dedicated organic Instagram ManyChat routes and reach the canonical root with `utm_source=manychat-instagram`, `utm_medium=dm`, and `utm_campaign=organic-instagram`. Legacy `/m`, `/m/`, `/mc/`, and exact `/mc` when the paid experiment is default-off/control/ineligible retain the generic `utm_source=manychat` bucket. The loaded page POSTs either allowlisted source to `/api/referral-visit`; private Blob pathnames dedupe repeated visits from the same anonymous request fingerprint on the same UTC day and separate likely-human from likely-scanner traffic. This measures landing visitor-days, not downloads, installs, activations, purchases, or durable identities.
 - Download lead capture and replay - `api/download-lead.ts`, `api/_lib/download-leads.ts`, and `api/internal/download-leads/replay.ts` validate at most 8 KiB of JSON, converge repeated `(email, cta_source)` submissions, enforce 5/email and 20/IP per ten minutes, and fall back to deterministic private Blob records when Postgres fails. Scheduled replay processes 25 mapped records and deletes only after commit plus ETag match; manual replay is bounded to 100 and defaults to preserving records. Historical `windows-waitlist` rows remain queryable.
@@ -117,7 +120,7 @@ This repository owns the whole Sidestream web service: the public/account fronte
 - Paid mobile acquisition - Exact `/mc` is an unlinked, default-off experiment entry owned by `middleware.ts`; `/m`, `/m/`, and `/mc/` retain their existing redirects. Eligible paid-cohort navigation is internally rendered from deterministic `generated/mobile-paid-prototype.html`, generated from the current canonical root. Vite compiles that page as a dedicated entry so its shader and media use deployable hashed assets, then `scripts/stage-paid-landing-runtime.mjs` stages the compiled page at `runtime/mobile-paid-prototype.html` for the serverless bundle. The paid landing function injects its bounded Checkout token into that compiled runtime artifact. Paid Checkout uses the same trusted-country offer catalog and immutable snapshot as ordinary Checkout. Verified email, installer receipt, claim, artifact, and lifecycle records remain namespaced and cannot be selected by browser-supplied price, product, amount, currency, country, offer, cohort, or environment.
 - Customer 360 commerce ledger - `api/_lib/customer-commerce.ts`, `20260715122000_add_customer_commerce_ledger.sql`, and `tests/customer-360/commerce*.test.mjs`; settled money comes from one canonical PaymentIntent or standalone Charge per payment group. Before that instrument exists, a paid InvoicePayment edge makes the related Invoice the preferred fallback and suppresses only the Checkout view resolving to the same namespace/profile/currency payment key. Gross and its `off_stripe_paid_minor` subset stay currency-separated, unrelated Checkout fallbacks remain independent, paid InvoicePayment edges never collapse many-to-many allocations into alias equivalence, and contradictory live identity evidence triggers sticky whole-group quarantine.
 - Customer 360 usage and private reads - `api/_lib/customer-usage.ts`, `api/_lib/customer-query.ts`, `api/internal/customer-usage/sync.ts`, `api/internal/customers/index.ts`, and `api/internal/customers/[customerId].ts`; schema-versioned telemetry becomes replaceable UTC daily aggregates with exhaustive stored/derivable first/last use and attempt timestamps, outcome counts, lifetime and rolling activity, attempts-per-active-day frequency, coarse client summaries, and source/materialization freshness. The compact list/detail projection exposes only its documented subset, requires an authenticated admin body to select an authorized namespace, binds that namespace into signed keyset cursors, and exposes neither total accepted attempts nor current subscription status. The full cross-repo field/privacy/rollout contract is `docs/customer-360.md`.
-- Acquisition and retention report - `api/_lib/acquisition-funnel.ts` and `api/internal/customers/funnel.ts`; an authenticated non-browser caller selects a namespace, bounded first-install cohort, and later completed UTC-day observation boundary, then receives complete source/experiment groups plus ordered, capped journeys. Paid attribution requires exact verified paid-acquisition linkage, freemium attribution requires an exact verified-email match, both first touches must predate or equal first install, paid wins over freemium, and every unlinked anonymous install remains `unknown`. Overall stickiness continues to use all install IDs rather than only attributable profiles.
+- Acquisition and retention report - `api/_lib/acquisition-funnel.ts` and `api/internal/customers/funnel.ts`; an authenticated non-browser caller selects a namespace, bounded first-install cohort, and later completed UTC-day observation boundary, then receives complete source/experiment/confidence groups plus ordered, capped journeys. Precedence is exact paid Checkout, exact anonymous browser-to-install claim, exact verified email, then unattributed; candidates must predate or equal first install and every unlinked anonymous install remains `unknown`. Every first-open/activation/return/one-and-done and attribution-coverage value exposes its exact numerator and denominator. Overall stickiness continues to use all install IDs rather than only attributable profiles.
 - Customer 360 backfill - `scripts/backfill-customer-360.mjs` and `scripts/verify-customer-360-backfill.mjs`; reviewed offline identity exports become privacy-safe candidate/orphan/conflict plans. Dry-run is the default and Production apply is unavailable. Any Test apply requires separate approval after dry-run review.
 - API operations - `api/_lib/postgres.ts` owns the shared bounded runtime pool; checksummed migrations own schema changes; `api/_lib/stripe-events.ts` owns durable claimed Stripe work; `api/_lib/maintenance.ts` owns bounded cleanup/redaction; `vercel.json` schedules all four `CRON_SECRET`-protected internal routes. Customer reads never run migrations or drain event backlog.
 
@@ -191,7 +194,7 @@ operator response.
 | `/api/referral-visit` | `POST` | `204` after accepting the allowlisted `manychat-instagram` or legacy `manychat` source and scheduling a private, daily-deduped anonymous Blob write |
 | `/api/releases/latest` | `GET`, `HEAD`, `OPTIONS` | GET `200` public manifest, HEAD matching metadata without a body, OPTIONS `204` |
 | `/api/download-lead` | `POST` | `200 {"ok":true}` after Postgres or `200 {"ok":true,"queued":true}` after private-Blob fallback |
-| `/api/send-download-links` | `POST` | `200 {"ok":true}` after a durable private-Blob rate-limit/lead write and Resend acceptance; fails closed when Blob storage or email delivery is unavailable |
+| `/api/send-download-links` | `POST`, `GET` | Email POST returns `200 {"ok":true}` after durable lead/rate-limit storage and Resend acceptance and uses signed handoffs when anonymous continuity is configured; no-email `{"handoffOnly":true}` POST returns one opaque `handoffUrl`; GET accepts exactly that signed envelope, restores the acquisition cookie, and redirects to the same platform installer. Invalid handoffs return `404` |
 | `/api/auth/google/start`, `/api/auth/google/callback` | `GET` | Existing-session account redirect or Google OAuth redirect and server session creation |
 | `/api/auth/session` | `GET` | Read-only account/license session JSON; it never drains Stripe events |
 | `/api/auth/logout` | `POST` | Clears the server session |
@@ -209,6 +212,8 @@ operator response.
 | `/api/activation/start`, `/api/activation/status` | `POST` | Start returns activation key/expiry/URLs; status returns a stable activation/device state |
 | `/api/activation/claim` | `GET`, `POST` | Authentication and Free-account Checkout routing; CSRF/same-origin restore or transfer POST for active owners |
 | `/api/activation/paid-claim` | `GET`, `POST` | Exact-source paid onboarding authentication plus active-entitlement reconnect or confirmed transfer; inactive accounts receive a noindex support-only page with no purchase action |
+| `/api/installation/claim` | `POST` | After local receipt verification, accepts exactly `installIdHash` and `installerReceiptIdHash` and returns a 15-minute opaque `browserUrl`/`expiresAt`; missing configuration is `503 claim_unavailable` |
+| `/api/installation/claim-complete` | `GET` | Combines the single `nonce` parameter with the signed browser cookie once, attaches/creates the sparse profile, and always returns minimal private noindex HTML; missing/forged browser state does not consume the claim |
 | `/api/account/device` | `GET` | `200 {"active":boolean,"device":object|null}` |
 | `/api/license/verify`, `/api/license/refresh`, `/api/license/authorize-download`, `/api/license/deactivate` | `POST` | Credential verification/rotation, exact `{"active":true}` download authorization, or explicit device deactivation |
 | `/api/internal/stripe-events/process` | `GET` | Protected summary `{ok,claimed,processed,ignored,retryable,deadLetter}` |
@@ -226,11 +231,13 @@ malformed JSON and body-read failures. None of those cases is a documented `400`
 response. Changing that behavior requires a separately owned handler fix and
 regression test.
 
-All internal routes require `Authorization: Bearer <CRON_SECRET>`. The one shared
+The four scheduled internal routes require `Authorization: Bearer
+<CRON_SECRET>`. The protected Customer 360 list/detail/funnel routes instead
+require `Authorization: Bearer <SIDESTREAM_CRM_ADMIN_SECRET>`. The shared cron
 token must be 16-512 printable, non-space ASCII characters (`U+0021`-`U+007E`)
-so all four route validators accept the same header; generate 32 random bytes
-as 64 hexadecimal characters in the approved secret manager. A missing or weak
-length configuration returns `503`; missing/wrong auth returns `401`.
+so all four scheduled route validators accept the same header; generate 32
+random bytes as 64 hexadecimal characters in the approved secret manager. A
+missing or weak configuration returns `503`; missing/wrong auth returns `401`.
 `vercel.json` schedules Stripe processing every five minutes, lead replay every
 ten minutes, maintenance daily at `04:13` UTC, and Customer 360 usage sync once
 daily at `05:27` UTC.
@@ -280,20 +287,17 @@ the known pre-20260713 Production baseline: refresh rotation, entitlement
 lifecycle, and single-device transfer still require their separately reviewed
 migrations or an explicit compatibility implementation.
 
-The only rollout path is the human-gated Preview/Test-first sequence in
-`docs/customer-360.md`: review and merge, approve a non-Production target, apply
-checksummed migrations there, configure secrets and reviewed invocation/scheduling,
-deploy Preview/Test,
-dry-run and verify backfill, separately approve any Test apply, verify protected
-APIs and source freshness, then run live FlowState integration/QA. Local or
-fixture-backed FlowState implementation may proceed against the contract before
-that live gate. Vercel cron scheduling remains project-wide across all four jobs,
-so rollout must use an approved protected manual/separate non-Production scheduler
-or separately approve all four before enabling scheduling. That document also owns
-every list/detail field and nullability, cursor/auth behavior, conflict and
-retention rules, rolling-window decay, disposable harness, observability, and
-non-Production rollback. It authorizes no Production deployment, migration, or
-backfill apply.
+The only rollout path is the human-gated sequence in `docs/customer-360.md`:
+complete Preview/Test migration/configuration, dry-run and separately approved
+backfill, guarded sync/rescan with complete checkpoints, protected API and real
+FlowState QA; then obtain new Production authorization for migration, Vercel
+configuration, canonical `origin/main` Git deployment, real-product smoke,
+one-time rescan, one guarded sync, the four-job scheduler decision, and only then
+the separately signed FlowState release. Every stage has explicit failure-stop,
+no-delete rollback, and canonical-surface evidence. Vercel cron control remains
+project-wide across all four jobs. The documented future sequence authorizes and
+claims no Production migration, secret change, scheduler change, deployment,
+rescan, or product release.
 
 #### Measurable acquisition and retention funnel
 
@@ -348,58 +352,50 @@ add explicit return eligibility and returned/one-and-done state, remain ordered
 by `firstInstallAt` then customer UUID, and state whether the bounded sample was
 truncated.
 
-Attribution is deterministic and deliberately narrow. `verified_paid` is the
-highest-precedence source and requires an active, completed paid-acquisition
-Checkout joined to its exact server record, then linked to the profile by exact
-installer receipt, verified Checkout Session, or claimed activation/account
-evidence. Its source is `manychat`; medium, campaign, experiment, and cohort
-come from the verified paid entry. `verified_email` is considered only when a
-`mobile-download-handoff` lead's normalized email exactly equals both the
-verified account email and the profile contact email. Its source/medium/campaign
-come from the lead, while experiment dimensions are accepted only from a valid
-server-signed assignment: experiment `mc-mobile-paid-v1` and cohort
-`mc-control-v1` or `mc-paid-v1`.
+Attribution is deterministic and deliberately narrow. Precedence is:
 
-Both candidate classes require `firstAttributedAt <= firstInstallAt`. A paid
-entry first captured after installation is not an acquisition candidate. A
-canonical verified-email lead must have both its first and last capture no
-later than first install, because the stored row has no per-field capture
-timestamps; this conservatively excludes a row revisited after install instead
-of allowing its later-filled fields to rewrite acquisition.
+1. `exact_paid_checkout`: an active completed paid-acquisition Checkout joined
+   to its exact server record and exact receipt, Checkout Session, or claimed
+   activation/account profile edge.
+2. `exact_anonymous_claim`: an immutable browser first touch with a recorded
+   installer request, completed one-time install/receipt claim, and exact
+   claimed profile.
+3. `exact_verified_email`: a `mobile-download-handoff` lead whose normalized
+   email exactly equals both verified account and profile contact email.
+4. `unattributed`: the complete remaining `source=unknown` cohort.
 
-Paid attribution wins over verified email even when the email capture happened
-earlier. Within each class, the earliest exact candidate wins. Repeated mobile
-lead capture preserves each earliest non-null UTM field and the earliest valid
-signed experiment assignment instead of letting a later submission overwrite
-first touch. There is no matching by timing, IP, user agent, referrer, fuzzy
-email, or approximate identity.
+Paid wins over anonymous claim and verified email; anonymous claim wins over
+verified email. Every candidate first touch must be at or before first install,
+and a verified-email row's first and last capture must both predate/equal
+install. Within each class, earliest exact evidence wins with stable database
+tie-breakers. Repeated leads may fill only a previously null UTM field and may
+retain only a valid signed `mc-mobile-paid-v1` assignment. There is no matching
+by timing, IP, user agent, referrer, fuzzy email, or approximate identity.
 
-Source-segmented retention therefore covers only profiles with an exact paid
-link or verified-email match. Every anonymous unlinked install remains
-`source=unknown`, `attributionConfidence=unattributed`; it is not guessed into a
-campaign. `attributionCoverage` reports attributed profiles divided by all
-cohort profiles plus paid, freemium, and unattributed counts. Overall
-stickiness/open-day totals still use all install IDs, so low attribution
-coverage limits source comparisons without removing unknown installs from the
-product-wide retention denominator.
+`attributionCoverage` divides all three exact confidence classes by every
+profile in the first-install cohort and reports paid, anonymous, freemium, and
+unattributed counts. The parallel `coverage` object exposes total
+attributed/unknown and each exact class against that same cohort denominator.
+Unknown installs remain in product-wide install/open/return denominators.
 
-Installer packages remain static and are never personalized with an
-`acquisition_request_id` or another browser attribution token. The panel may
-send a locally generated installer receipt hash only after receipt verification
-passes; that hash is an exact profile-to-paid-record association edge, not an
-acquisition source by itself. Anonymous installs without an exact server-side
-paid or verified-email link remain `source=unknown`.
+Installer packages remain static and are never personalized. The locally
+generated receipt hash is association evidence only; the exact anonymous claim
+is what joins immutable browser first touch to the profile. Unlinked sessions
+remain `source=unknown`.
 
 The exact `session_started` rule replaced historical broad non-installer
 activity buckets. The normal sync rereads only its bounded overlap, so a
 one-time full append/update rescan of the source telemetry history is required
 to replace older daily aggregate buckets before historical retention is
-trusted. That rescan must upsert aggregate rows without deleting raw telemetry
-or canonical Customer 360 identity/commerce facts. The repository currently
-provides no approved Production rescan command: Preview/Test needs a separately
-reviewed, human-approved operator mechanism, and Production remains subject to
-every existing migration, backfill, configuration, deployment, and runtime
-verification gate.
+trusted. `scripts/rescan-customer-usage.mjs` now provides dry-run plus guarded
+Test/Production-capable apply forms with verified remote TLS, source/target
+fingerprint collision checks, source freshness, append/update-only aggregate
+writes, no deletes, and a versioned source/target-bound mode-`0600` checkpoint.
+`scripts/sync-customer-usage.mjs` provides the matching guarded one-run sync.
+Their presence is not approval: exact commands, required Vercel variable names,
+human migration/configuration/rescan/scheduler/deploy/release order, failure
+stops, rollback, and the real-product smoke checklist live in
+`docs/customer-360.md`. No external operation was performed by this docs change.
 
 Use the readiness command for a sanitized, read-only status report:
 
@@ -878,7 +874,7 @@ Use the narrowest relevant check after edits:
 - Confirm the final CTA panel stays clean above the pricing MacBook mockup and does not render the old top-right red radial glow.
 - Confirm the pricing MacBook Pro mockup video autoplays, loops, stays muted, sits centered below the two pricing panels plus final CTA, and does not create horizontal overflow. If browser autoplay is fussy, confirm the inline `.macbook-mockup-video` playback helper kicks it after load or visibility return.
 - Confirm the desktop hero copy still uses the wider left-anchored first-fold shell while staying aligned with the fixed Sidestream wordmark, sitting near the bottom-left corner of the first viewport, and rendering the "in Premiere Pro" subline in italic.
-- Confirm both desktop hero platform links use the visible label `Download`, matching white pills, and their respective Apple and Windows marks; expose explicit platform-specific accessible names, start the correct installers without opening either historical modal, and retain the shared red hover treatment. At `900px` and below, confirm those links are replaced by the mobile email handoff instead of stacked installer buttons.
+- Confirm both desktop hero platform links use the visible label `Download`, matching white pills, and their respective Apple and Windows marks; expose explicit platform-specific accessible names, start the correct installers without opening either historical modal, and retain the shared red hover treatment. At `900px` and below, confirm those links are replaced by the optional email handoff plus the no-email secure computer-link action instead of stacked installer buttons.
 - Watch the pricing MacBook rotation long enough to confirm the laptop stays centered and the alpha edges are not clipped by the pricing wrapper.
 - Confirm the Search demo group starts below the first fold with a deliberate gap between the hero download CTAs and the "Search for YouTube videos." heading on desktop and mobile.
 - Confirm the "Start free. Unlock when you need more." headline sits centered in the vertical space between the bottom of the `.feature-glass` band and the pricing cards.
@@ -924,8 +920,9 @@ Use the narrowest relevant check after edits:
 - Customer 360 currently has no deletion or aggregate-expiry job. Daily usage buckets, canonical profiles/identity, and commerce materializations persist; merge and identity-review audits are immutable. Do not claim a retention period until a separately reviewed implementation enforces one. Stripe payload redaction and the 90-day installer-referral policy are separate domains.
 - Customer 360 route code is present in the canonical website deployment, but Production is operationally inactive and unconfigured. The live dashboard database contains the required schema and materialized identity/commerce rows, while Production runtime database selection, backfill completeness, protected API behavior, and usage sync remain unverified. The repository contract allows only the human-gated Preview/Test-first sequence in `docs/customer-360.md`; no route response, database row, dry-run, local test, build, or documentation result is Production approval.
 - Customer 360 local or fixture-backed FlowState consumers may implement the audited contract before website deployment, but live upstream Preview/Test integration and QA remain gated on separately approved migration, configuration, deployment, protected API, freshness, and scheduling evidence. Vercel cannot enable only the usage job: use a separately approved protected manual/non-Production scheduler or review all four jobs before the project-wide switch.
-- Source-segmented retention is an attribution subset, not the overall customer base. Only exact verified paid links and exact verified-account/profile-email matches receive source dimensions; every anonymous unlinked install must remain unknown. Never infer source from timing, IP, user agent, referrer, nearby events, or approximate identity, and never remove unknown installs from overall stickiness, which uses all install IDs.
-- Historical usage rows created under the former broad non-installer activity rule do not become exact merely because the code changed. The normal overlap cannot rewrite all of them. Historical retention remains unqualified until a separately reviewed, human-approved full append/update rescan replaces those aggregate buckets without deleting raw telemetry; this documentation supplies no Production rescan, migration, backfill, configuration, or deployment authority.
+- Source-segmented retention is an attribution subset, not the overall customer base. Exact paid Checkout wins over exact anonymous browser-to-install claim, which wins over exact verified-account/profile-email evidence; every other install remains unknown. Never infer source from timing, IP, user agent, referrer, nearby events, or approximate identity, and never remove unknown installs from overall stickiness, which uses all install IDs.
+- Historical usage rows created under the former broad non-installer activity rule do not become exact merely because the code changed. The normal overlap cannot rewrite all of them. Historical retention remains unqualified until the guarded full append/update rescan completes with its source/target-bound checkpoint and no-delete evidence. The repository's TLS-safe sync/rescan tools are capabilities, not authority; `docs/customer-360.md` owns the exact commands and human gate, and no migration, configuration, rescan, scheduler change, deployment, or release occurred in this documentation step.
+- Anonymous acquisition has four distinct identities: signed browser token, locally verified install/receipt hashes, sparse Customer 360 profile, and later verified account/contact. Do not put UTM/email/hashes into handoff or claim URLs, personalize packages, treat email as merge authority, or let tracking failure block installer delivery. Missing Production configuration must remain fail-closed for association and protected reads.
 - The project root was missing a README before this restoration.
 - The page uses the local Apple/SF Pro system font stack and does not request external web fonts.
 - Several screenshot files are duplicates or alternate experiments. Prefer the numbered scan series for the restored hero state.
@@ -1010,6 +1007,7 @@ Use the narrowest relevant check after edits:
 
 - 2026-08-01: Published the standard Windows `1.0.16` installer to its immutable private Blob pathname and advanced the `win32-x64` manifest to `Sidestream-1.0.16-Windows-Installer.exe` at 100% rollout; the Mac manifest and bare download route remain unchanged.
 - 2026-07-31: Reduced the ordinary Checkout thank-you page to the payment confirmation, return-to-Premiere instruction, and one no-second-charge recovery path. Device limits, receipt storage, and billing-history explanations remain available in the account experience instead of competing with the immediate next action.
+- 2026-07-31: Consolidated the anonymous acquisition contract around four separate identities and the exact signed-cookie -> static download/mobile handoff -> one-time install claim -> sparse profile -> optional later account flow. Documented bounded source/experiment rules, paid-over-anonymous-over-email attribution, protected funnel denominators/coverage, privacy and nonblocking failure behavior, TLS-safe sync/rescan commands with no-delete checkpoints, required Vercel variable names, and the remaining human migration/configuration/rescan/scheduler/deploy/release/rollback/smoke gates. This documentation change performed no external operation.
 - 2026-07-31: Increased the global Sidestream Unlimited one-time offer from `$14.99` to `$19.99` through the canonical pricing contract and a new immutable Stripe Price. India remains `₹499`, Brazil remains `R$25`, both ordinary Free-account Upgrade and paid acquisition continue through the same server-owned catalog, and already-open Checkout intent snapshots keep their original prices.
 
 - 2026-07-31: Changed new global Sidestream Unlimited intents to `$14.99`, India intents to `₹499`, and added trusted-country Brazil pricing at `R$25`. The canonical contract now owns all three offers; India and Brazil require new immutable regional Stripe Prices through `SIDESTREAM_PRO_INDIA_PRICE_ID` and `SIDESTREAM_PRO_BRAZIL_PRICE_ID`, while already-open Checkout intents preserve their stored prior snapshots.

@@ -31,8 +31,12 @@ history or tickets.
   webhook backlog.
 - Download leads converge on one Postgres identity. Private Blob is a bounded
   fallback, not a second source of truth, and replay is explicit and observable.
-- Three `CRON_SECRET`-protected jobs process Stripe events, replay fallback leads,
-  and run retention maintenance.
+- Four `CRON_SECRET`-protected jobs process Stripe events, replay fallback leads,
+  run retention maintenance, and materialize Customer 360 usage once daily.
+- Anonymous acquisition keeps signed browser token, verified install/receipt
+  hashes, sparse Customer 360 profile, and later verified account/contact
+  separate. Tracking is nonblocking, installer bytes remain static, and missing
+  configuration fails association and protected reads closed.
 - The repository does not currently contain a production maintenance rule,
   operator WAF bypass, per-job cron kill switch, Stripe dead-letter reset/replay
   tool, qualified runtime-distinct rollback artifact, failed-refund recovery
@@ -55,6 +59,7 @@ and JSON responses are `no-store`.
 | `/api/releases/latest` | `HEAD` | `200` with the GET metadata headers and no body | Same selection failures as GET |
 | `/api/releases/latest` | `OPTIONS` | `204` CORS preflight | — |
 | `/api/download-lead` | `POST` | `200 {"ok":true}` after Postgres commit or `200 {"ok":true,"queued":true}` after Blob fallback | `400` validation, `409` idempotency conflict, `413` body over 8 KiB, `415` non-JSON, `429` rate limit, `503` no durable destination |
+| `/api/send-download-links` | `POST` / `GET` | Email POST sends signed Mac/Windows handoffs when anonymous continuity is configured and otherwise preserves its direct static-link fallback; `{"handoffOnly":true}` POST returns one no-email secure URL; GET accepts exactly one valid `handoff`, restores the acquisition cookie, and redirects to the canonical platform download | `400`/`413`/`415` request failures, `429` email rate limit, `502` provider failure, `503` storage/configuration failure; forged/expired/duplicated/augmented handoff is `404` |
 | `/api/auth/google/start` | `GET` | Sets bounded OAuth cookies and `302` redirects to Google | Invalid server configuration fails as a server error; unsafe `next` values collapse to `/account.html` |
 | `/api/auth/google/callback` | `GET` | Creates the server session and `303` redirects to the allowlisted next path | `400` invalid state/code, `500` exchange/account/session failure |
 | `/api/auth/session` | `GET` | Always `200`: `{"authenticated":false}` or authenticated `user`, `license`, and `billing.hasCustomer` | Dependency failure is a server `500`; this read never processes Stripe events |
@@ -68,6 +73,8 @@ and JSON responses are `no-store`.
 | `/api/activation/status` | `POST` | `200` state payload: `pending`, `pending_payment`, `active`, `completed`, `not_found`, `device_mismatch`, `expired`, `transfer_required`, `transfer_limit_reached`, `device_replaced`, or `device_deactivated` | A parsed non-null JSON value missing valid `activationKey` or `deviceId` returns `400 invalid_request`; valid JSON `null`, malformed JSON, and body-read failures currently escape as an unshaped platform `5xx`, not `400`; `503` environment unavailable |
 | `/api/activation/claim` | `GET` / `POST` | GET authenticates and routes Free accounts to Checkout; active owners receive the restore/transfer decision; same-origin CSRF-valid POST restores/reconnects/transfers | `400` invalid/transfer intent; `401` sign-in required; `403` inactive or CSRF; `409` unavailable, binding changed, or claim conflict; `503` environment unavailable |
 | `/api/activation/paid-claim` | `GET` / `POST` | Exact `paid-acquisition-mc-v1` activation source authenticates through Google; active owners use the same CSRF-bound reconnect/confirmed-transfer engine; inactive owners receive support-only noindex HTML | No Checkout fallback; nonmatching/expired/conflicting activation is unavailable; existing claim CSRF, device, transfer-limit, and environment failures remain unchanged |
+| `/api/installation/claim` | `POST` | Accepts exactly lowercase hex64 `installIdHash` and `installerReceiptIdHash` after panel-side receipt verification; returns a 15-minute opaque `browserUrl` and `expiresAt` | `400 invalid_request` / `invalid_customer_identity`; `503 claim_unavailable` when namespace, secret, schema, or database association is unavailable |
+| `/api/installation/claim-complete` | `GET` | Uses only one opaque `nonce` plus the signed acquisition cookie, consumes the exact claim once, and returns minimal private noindex HTML | `400` invalid nonce, `409` conflict, `410` expired, `503` unavailable; missing/forged browser state returns the same minimal `200` without consuming the claim |
 | `/api/license/verify` | `POST` | `200` current credential result | `400 invalid_request`; `401 invalid_token`, `revoked`, `device_mismatch`, `device_replaced`, or `device_deactivated`; `403 license_inactive`; `503` retryable environment failure |
 | `/api/license/refresh` | `POST` | `200` atomically rotated access/refresh pair; predecessor replay is deterministic for two minutes | Same stable `400`/`401`/`403`/`503` classes as verify |
 | `/api/license/authorize-download` | `POST` | Exactly `200 {"active":true}` for the active device | `401` revoked/replaced/deactivated device; `403` inactive; `503 {"code":"authorization_unavailable"}` is retryable |
@@ -76,11 +83,31 @@ and JSON responses are `no-store`.
 | `/api/internal/stripe-events/process` | `GET` | `200 {"ok":true,"claimed":n,"processed":n,"ignored":n,"retryable":n,"deadLetter":n}` | `401 unauthorized`, `503 processor_unavailable`, `500 processing_failed` |
 | `/api/internal/download-leads/replay` | `GET` / `POST` | `200 {"ok":true,"summary":{...},"nextCursor":string|null,"hasMore":boolean}` | `400` invalid controls/JSON, `401 unauthorized`, `415` non-JSON POST, `503 replay_unavailable`, `blob_unavailable`, or `invalid_blob_page`; per-record failures stay in the summary |
 | `/api/internal/maintenance` | `GET` | `200 {"ok":true,"outcome":"completed"|"locked","durationMs":n,"batchSize":n,"hasMore":boolean,"counts":{...}}` | `401 unauthorized`, `503 maintenance_unavailable`, `500 maintenance_failed` |
+| `/api/internal/customer-usage/sync` | `GET` | Once-daily protected aggregate summary with namespace, batches, source rows, daily buckets, refreshed profiles, and source freshness | `401 unauthorized`, `503 customer_usage_unavailable`, `500 customer_usage_sync_failed`; concurrent/daily duplicate invocation reports a non-error locked/skipped outcome |
+| `/api/internal/customers`, `/api/internal/customers/{customerId}`, `/api/internal/customers/funnel` | `POST` | `SIDESTREAM_CRM_ADMIN_SECRET`-protected, no-browser, no-store compact reads and first-install funnel report | `400` bounded validation, `401` unauthorized, `404` absent/tombstoned detail, `503 customer_admin_unavailable`, shaped `500` read failure |
 
 Browser/account behavior and device support facts are expanded in
 `docs/single-device-entitlements.md`. Its former Production cutover prose is
 removed, and the API runbook records blockers rather than an executable
 replacement. None of those reads processes the Stripe event queue.
+
+### Anonymous acquisition and one-time installation claim
+
+The exact privacy, identity, attribution, and rollout contract is
+`docs/customer-360.md`. Operationally, `SIDESTREAM_ANONYMOUS_ACQUISITION_SECRET`
+signs/encrypts the 30-day browser cookie, seven-day computer handoff, and
+15-minute installation claim envelope. The browser token is 256-bit random and
+only its SHA-256 digest is persisted. URLs expose only `handoff` or `nonce`,
+never UTM fields, email, install/receipt hashes, profile IDs, payment, device, or
+entitlement evidence.
+
+The browser cookie write and post-redirect acquisition persistence are best
+effort. Missing/weak secret, invalid cookie, database failure, or scheduling
+failure cannot block a valid page or static installer response. The claim and
+Customer 360 surfaces do fail closed when unconfigured. Exact same-profile
+claim replay is idempotent; contradictory evidence is quarantined with an
+append-only digest. No acquisition path changes manifest selection or package
+pathname/SHA/size.
 
 ### Dedicated paid onboarding claim boundary
 
@@ -327,8 +354,9 @@ An existing non-empty schema without the ledger is not automatically assumed to
 be current. `--status` reports that a baseline is required; `--baseline` checks
 the known pre-hardening schema and records only migrations it can prove. Applying
 refuses an unbaselined non-empty schema. The chain currently ends with
-`20260714200000_remove_redundant_download_lead_key_unique.sql`: canonical lead
-uniqueness is `(email, cta_source)` and `lead_key` remains a non-unique lookup
+`20260731120000_add_anonymous_acquisition_sessions.sql`; the earlier
+`20260714200000_remove_redundant_download_lead_key_unique.sql` keeps canonical
+lead uniqueness on `(email, cta_source)` and `lead_key` as a non-unique lookup
 index. Runtime DDL is prohibited and checked by
 `node scripts/assert-no-runtime-ddl.mjs`.
 
@@ -462,10 +490,12 @@ Never paste values into this document, tickets, chat, browser code, or CEP code.
 
 | Area | Variables and bounded contract |
 | --- | --- |
-| Scheduler | `CRON_SECRET`: one stable random value, 16-512 printable non-space ASCII characters (`U+0021`-`U+007E`), sent as `Authorization: Bearer ...` to every internal route. Generate 32 random bytes as a 64-character hexadecimal token in the approved secret manager; spaces, tabs, newlines, and non-ASCII are outside the shared contract because lead replay rejects them even though the other two validators do not enforce this character class. |
+| Scheduler | `CRON_SECRET`: one stable random value, 16-512 printable non-space ASCII characters (`U+0021`-`U+007E`), sent as `Authorization: Bearer ...` to every scheduled internal route. Customer 360 read routes use `SIDESTREAM_CRM_ADMIN_SECRET` instead. Generate 32 random bytes as a 64-character hexadecimal token in the approved secret manager; spaces, tabs, newlines, and non-ASCII are outside the shared cron contract because lead replay rejects them even though the other three scheduled validators do not enforce this character class. |
 | Runtime database | Pooled URL precedence above; `POSTGRES_POOL_MAX` default 4, range 2-20; `POSTGRES_POOL_IDLE_TIMEOUT_MS` 10000, 1000-60000; `POSTGRES_CONNECTION_TIMEOUT_MS` 5000, 250-30000; `POSTGRES_QUERY_TIMEOUT_MS` and `POSTGRES_STATEMENT_TIMEOUT_MS` 10000, 250-60000; `POSTGRES_SSL=0` only for a known local target |
 | Migration database | `SIDESTREAM_POSTGRES_URL_NON_POOLING` preferred; `POSTGRES_MIGRATION_STATEMENT_TIMEOUT_MS` defaults to 300000 and is bounded 1000-1800000; runner pool max is 1 |
 | Test database | `SIDESTREAM_TEST_POSTGRES_URL` is mandatory for integration tests, must be disposable, and must not normalize to any runtime host/port/database target |
+| Anonymous acquisition | `SIDESTREAM_ANONYMOUS_ACQUISITION_SECRET` is stable server-only secret material for cookie, handoff, and claim continuity; `SIDESTREAM_PAID_ACQUISITION_ASSIGNMENT_SECRET` is separately required only for signed `/mc` experiment dimensions. Missing/invalid values never become browser-selected fallbacks. Optional email-later uses existing `RESEND_API_KEY`, `BLOB_READ_WRITE_TOKEN`, `SIDESTREAM_LEAD_HASH_SECRET`, and `SIDESTREAM_RATE_LIMIT_HASH_SECRET` (or Vercel-managed `VERCEL_OIDC_TOKEN` plus `BLOB_STORE_ID` for Blob access); no-email secure sharing remains available without a recipient. |
+| Customer 360 | `SIDESTREAM_CRM_ADMIN_SECRET` protects non-browser reads and cursor signing; `SIDESTREAM_TELEMETRY_POSTGRES_URL` selects a separate read-only telemetry source; `SIDESTREAM_LICENSE_NAMESPACE` is trusted server state. Human-only guarded usage operations select Production target through `SIDESTREAM_POSTGRES_URL_NON_POOLING` or Test through `SIDESTREAM_TEST_POSTGRES_URL`. Never expose values. |
 | Rate limiter | `SIDESTREAM_RATE_LIMIT_HASH_SECRET`, at least 32 characters and stable; no production fallback. Checkout is fixed at 8/intent and 20/IP per 15 minutes; lead capture is fixed at 5/email and 20/IP per 10 minutes |
 | Checkout intent | Database intent TTL 24 hours; fixed code constant. Product/Price variables are `SIDESTREAM_PRO_PRODUCT_ID`, `SIDESTREAM_PRO_PRICE_ID`, and legacy `SIDESTREAM_UNLIMITED_PRICE_ID` |
 | Stripe retries | Batch/lease/backoff and caught-failure attempt-8 behavior are described above. Crash/lease-reclaim attempts are currently unbounded because the claim query has no total-attempt cap; that is a Production blocker. Legacy allowlists are `SIDESTREAM_LEGACY_SUBSCRIPTION_PRODUCT_IDS` and `SIDESTREAM_LEGACY_SUBSCRIPTION_PRICE_IDS` |
@@ -504,6 +534,8 @@ tokens, device IDs, full Stripe payloads, or lead email addresses.
 | Lead fallback backlog | Private Blob count and oldest age under the configured prefix | Warning if nonzero for 15 minutes after Postgres recovers or oldest exceeds 30 minutes; critical over 2 hours or growth across two replay intervals. |
 | Unmapped Blob records | Replay `summary.unmapped` and path sample without lead contents | Critical on any new unmapped record. Quarantine/preserve it; do not auto-delete. |
 | Maintenance | Missing run, `maintenance_failed`, `hasMore`, duration, and every deletion/redaction count | Critical on any failed run or no completed/locked run in 26 hours; warning when `hasMore` or a count reaches batch size for 3 runs, or a count exceeds 4x its rolling seven-day median. |
+| Anonymous acquisition | First visits, installer requests, claimed/quarantined sessions, and exact confidence coverage as aggregate counts only | Stop rollout on unexpected quarantine growth, claim conflicts, privacy leakage, or a material drop in installer delivery. Tracking failure must not be counted as installer failure. |
+| Customer usage/funnel | Last sync outcome, source freshness/lag, rescan checkpoint completeness, attributed/unknown coverage, and each exposed numerator/denominator | Stop on stale/null freshness beyond the approved threshold, incomplete/mismatched checkpoint, unknown coverage disappearance, or any numerator above its defined denominator. Do not trust historical retention before rescan `complete=true`. |
 | DB pool saturation | Provider connections, pool waiters/acquisition timeouts, query/statement timeouts | Warning at 80% provider connections for 5 minutes or waiters for 1 minute; critical at 90% or any sustained acquisition timeout. Reduce concurrency/pool, do not switch to direct runtime URLs. |
 | Release-platform mismatch | Compare manifest and download HEAD platform/version/SHA/filename/size for Mac and Windows aliases | Critical on any mismatch or an unknown platform that does not return `404`; stop promotion and use only the pre-qualified schema-compatible manifests/application artifact. |
 
@@ -552,9 +584,10 @@ The exact `counts` fields are `credentialRowsDeleted`,
 | `*/5 * * * *` | `GET /api/internal/stripe-events/process` | 25 events, ten-minute leases |
 | `*/10 * * * *` | `GET /api/internal/download-leads/replay` | 25 Blobs, delete only after commit and ETag match |
 | `13 4 * * *` | `GET /api/internal/maintenance` | Configured batch per retention category, advisory locked |
+| `27 5 * * *` | `GET /api/internal/customer-usage/sync` | Once per namespace/UTC day, 250-row default source batches, advisory locked |
 
 Vercel exposes a project-level **Disable Cron Jobs** control. It does not expose
-an operator control that pauses or resumes these three declared schedules one at
+an operator control that pauses or resumes these four declared schedules one at
 a time; changing one schedule requires configuration plus a new deployment. The
 repository also has no per-job kill switch. A future plan would need either a
 reviewed project-wide pause/invoke/re-enable sequence or separately reviewed
@@ -567,6 +600,46 @@ Any future protected invocation capability must validate `CRON_SECRET` as
 diagnostic output, authenticate the operator bypass, and constrain its route and
 method scope. Scheduled/manual GET lead replay is delete-after-commit; a future
 maintenance bypass must not permit the manual replay POST surface.
+
+### Guarded Customer 360 sync and historical rescan
+
+`scripts/sync-customer-usage.mjs` and
+`scripts/rescan-customer-usage.mjs` are separate operator paths; they do not
+forge the cron route. Dry-run performs no network or database access. Apply uses
+only named environment selectors, one connection per database, remote
+certificate verification, source/target fingerprint collision rejection, and a
+bounded source-freshness check. Remote URLs that request weakened TLS are
+rejected, and URLs/secrets are never printed.
+
+```bash
+node scripts/sync-customer-usage.mjs --dry-run --target test
+node scripts/rescan-customer-usage.mjs --dry-run --target test
+node scripts/sync-customer-usage.mjs --apply --target test --batch-size 250
+node scripts/rescan-customer-usage.mjs --apply --target test \
+  --checkpoint /restricted/path/customer-usage-rescan.json
+
+node scripts/sync-customer-usage.mjs --apply --target production \
+  --confirm-production APPLY_PRODUCTION_CUSTOMER_USAGE \
+  --confirm-target pg-<reviewed-fingerprint>
+node scripts/rescan-customer-usage.mjs --apply --target production \
+  --checkpoint /restricted/path/customer-usage-rescan.json \
+  --confirm-production APPLY_PRODUCTION_CUSTOMER_USAGE \
+  --confirm-target pg-<reviewed-fingerprint>
+```
+
+The Production forms are capabilities, not authorization. Test target is only
+`SIDESTREAM_TEST_POSTGRES_URL`; Production target is only
+`SIDESTREAM_POSTGRES_URL_NON_POOLING`; source is only
+`SIDESTREAM_TELEMETRY_POSTGRES_URL`. Raw telemetry is read-only, target writes
+are append/update-only usage aggregates, and deletes plus canonical acquisition,
+profile/identity, commerce/payment, entitlement/device, audit, and raw-telemetry
+mutation are forbidden. Rescan checkpoints are mode `0600`, atomically replaced
+after each committed batch, and bound to version/source/target. Deliberate
+from-zero replay also requires `--replay --confirm-replay
+REPLAY_SESSION_STARTED_AGGREGATES`. `docs/customer-360.md` owns the remaining
+human migration/configuration/rescan/scheduler/deploy/release order, rollback,
+failure stops, and real-product smoke checklist. No such external operation was
+performed by this documentation change.
 
 ### Production device support and backfill
 
