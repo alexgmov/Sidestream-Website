@@ -1059,7 +1059,7 @@ Use the narrowest relevant check after edits:
 
 ## Recent Change Log
 
-- 2026-08-01: Preserved PostgreSQL microseconds in Customer 360 usage high-water cursors so bulk telemetry sharing one millisecond cannot repeat a terminal rescan batch. Checkpoint normalization/resume now retains fixed-width six-digit UTC precision, and the guarded manual normal-sync batch ceiling is 10,000 for large overlap catch-up while its default remains 250.
+- 2026-08-01: Preserved PostgreSQL microseconds in Customer 360 usage high-water cursors so bulk telemetry sharing one millisecond cannot repeat a terminal rescan batch. Checkpoint normalization/resume now retains fixed-width six-digit UTC precision, and the guarded manual normal-sync batch ceiling is 5,000 for large overlap catch-up while its default remains 250; Production measurement showed 10,000-row overlap batches were slower.
 
 - 2026-08-01: Completed the authorized Customer 360 Production rollout: protected Neon backup and 29-migration verification, least-privilege runtime/operator/telemetry roles, idempotent identity backfills, full version-2 historical usage rescan plus normal sync, protected API/privacy checks, the daily four-job schedule, rendered live FlowState dashboard, and a signed/notarized/published 1.0.17 Mac install and real-Premiere one-time claim. Raw telemetry was read-only and no canonical identity, commerce, entitlement, device, audit, or telemetry row was deleted.
 

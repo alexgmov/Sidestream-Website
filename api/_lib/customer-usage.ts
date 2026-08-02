@@ -397,7 +397,7 @@ export async function runCustomerUsageSync(
   const now = options.now ? new Date(options.now) : new Date();
   if (!Number.isFinite(now.getTime())) throw new TypeError("Sync time is invalid");
   const overlapMs = boundedNumber(configuration.overlapMs, 3_600_000, 7 * 86_400_000);
-  const batchSize = Math.trunc(boundedNumber(configuration.batchSize, 1, 10_000));
+  const batchSize = Math.trunc(boundedNumber(configuration.batchSize, 1, 5_000));
   const licenseNamespace = configuration.licenseNamespace;
   const targetClient = await targetPool.connect();
   let locked = false;

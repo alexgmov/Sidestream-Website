@@ -273,15 +273,15 @@ test("offline sync is dry-run by default and Production requires two exact confi
     /only SIDESTREAM_TEST_POSTGRES_URL/,
   );
   assert.equal(
-    parseCustomerUsageSyncArgs(["--apply", "--target", "test", "--batch-size", "10000"])
+    parseCustomerUsageSyncArgs(["--apply", "--target", "test", "--batch-size", "5000"])
       .batchSize,
-    10_000,
+    5_000,
   );
   assert.throws(
     () => parseCustomerUsageSyncArgs([
-      "--apply", "--target", "test", "--batch-size", "10001",
+      "--apply", "--target", "test", "--batch-size", "5001",
     ]),
-    /between 25 and 10000/,
+    /between 25 and 5000/,
   );
 });
 
