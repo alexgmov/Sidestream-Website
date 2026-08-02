@@ -111,7 +111,6 @@ export type CustomerQueryResult = Readonly<{
   customerId: string;
   licenseNamespace: LicenseNamespace;
   name: string | null;
-  email: string | null;
   profileLifecycle: Readonly<{
     createdAt: string;
     updatedAt: string;
@@ -515,7 +514,6 @@ function formatCustomer(
     customerId: row.customer_id,
     licenseNamespace: row.license_namespace,
     name: row.display_name,
-    email: row.contact_email,
     profileLifecycle: {
       createdAt: toIsoString(row.profile_created_at),
       updatedAt: toIsoString(row.profile_updated_at),

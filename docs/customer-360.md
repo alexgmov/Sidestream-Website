@@ -686,7 +686,6 @@ strings. Counts and money are decimal strings to avoid JavaScript integer loss.
 | `customerId` | UUID string, never null | Stable live profile root |
 | `licenseNamespace` | `production` or `test`, never null | Trusted isolation boundary |
 | `name` | string or null | Verified account display name |
-| `email` | string or null | Verified account contact email |
 | `profileLifecycle` | object, never null | Profile lifecycle group |
 | `profileLifecycle.createdAt` | ISO string, never null | Immutable profile creation time |
 | `profileLifecycle.updatedAt` | ISO string, never null | Latest profile materialization change |

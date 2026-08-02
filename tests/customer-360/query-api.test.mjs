@@ -230,9 +230,13 @@ test("NULL-heavy profiles and currency partitions map without raw source fields"
   );
   assert.deepEqual(result.customers[0].money.map((entry) => entry.currency), ["eur", "usd"]);
   assert.equal(result.customers[0].name, null);
+  assert.equal(Object.hasOwn(result.customers[0], "email"), false);
   assert.equal(result.customers[0].usage.firstDownloadAttemptAt, null);
   assert.equal(result.customers[0].usage.firstDownloadSucceededAt, null);
-  assert.doesNotMatch(JSON.stringify(result), /must-not-cross|install_id_hash|payload/);
+  assert.doesNotMatch(
+    JSON.stringify(result),
+    /must-not-cross|install_id_hash|payload|one@example\.com/,
+  );
 
   const source = await readFile(
     new URL("../../api/_lib/customer-query.ts", import.meta.url),

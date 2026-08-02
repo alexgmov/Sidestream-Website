@@ -151,7 +151,7 @@ test("Customer 360 list/detail stay private, compact, stable, and currency-separ
       );
       assert.equal(customer.customerId, PROFILE_NULL);
       assert.equal(customer.name, null);
-      assert.equal(customer.email, null);
+      assert.equal(Object.hasOwn(customer, "email"), false);
       assert.equal(customer.billingModel, null);
       assert.deepEqual(customer.money, []);
       assert.equal(customer.usage.firstDownloadAttemptAt, null);
@@ -190,7 +190,10 @@ test("Customer 360 list/detail stay private, compact, stable, and currency-separ
       assert.deepEqual(customer.money.map((money) => money.netPaidMinor), ["500", "700"]);
       assert.ok(customer.dataQualityFlags.includes("pending_download_outcomes"));
       assert.ok(customer.dataQualityFlags.includes("pending_identity_review"));
-      assert.doesNotMatch(JSON.stringify(customer), /install_id_hash|stripe_|payload|data_points/);
+      assert.doesNotMatch(
+        JSON.stringify(customer),
+        /install_id_hash|stripe_|payload|data_points|b@example\.com/,
+      );
     });
 
     await t.test("keyset pages are stable and cursors bind namespace, limit, and filters", async () => {
