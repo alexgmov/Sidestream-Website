@@ -1,15 +1,24 @@
 #!/usr/bin/env node
 
-import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
-import { Pool } from "pg";
-import ts from "typescript";
-import { requireSafeTestDatabaseUrl } from "./run-postgres-integration.mjs";
+import {
+  CUSTOMER_360_DATABASE_SELECTORS,
+  Customer360OperatorGuardError,
+  authenticatedOperatorPoolOptions,
+  connectAndFingerprintOperatorDatabase,
+  exactTargetSelector,
+  loadOperatorPackage,
+  rejectConnectedCollision,
+  requireProductionConfirmations,
+  resolveOperatorDatabase,
+  safeOperatorCliError,
+} from "./customer-360-operator-guards.mjs";
 
 export const CUSTOMER_USAGE_BATCH_SIZE = 250;
 export const CUSTOMER_USAGE_SCHEMA_VERSIONS = Object.freeze(["0.2.0"]);
 export const PRODUCTION_CONFIRMATION = "APPLY_PRODUCTION_CUSTOMER_USAGE";
+export const CUSTOMER_USAGE_SYNC_OPERATION = "customer_usage_sync";
 export const CUSTOMER_USAGE_OPERATOR_INVARIANTS = Object.freeze({
   rawTelemetry: "read_only",
   targetWrites: "append_or_update_only",
@@ -33,6 +42,7 @@ export function parseCustomerUsageSyncArgs(argv) {
   const options = {
     apply: false,
     dryRun: true,
+    status: false,
     target: "",
     targetUrlEnv: "",
     telemetryUrlEnv: "SIDESTREAM_TELEMETRY_POSTGRES_URL",
@@ -48,6 +58,9 @@ export function parseCustomerUsageSyncArgs(argv) {
     if (argument === "--apply") {
       options.apply = true;
       options.dryRun = false;
+    } else if (argument === "--status") {
+      options.status = true;
+      options.dryRun = false;
     } else if (argument === "--dry-run") {
       sawDryRun = true;
       options.dryRun = true;
@@ -61,6 +74,8 @@ export function parseCustomerUsageSyncArgs(argv) {
       [options.telemetryUrlEnv, index] = readOption(argv, index, "--telemetry-url-env");
     } else if (hasOption(argument, "--confirm-production")) {
       [options.confirmProduction, index] = readOption(argv, index, "--confirm-production");
+    } else if (hasOption(argument, "--confirm-operation")) {
+      [options.confirmProduction, index] = readOption(argv, index, "--confirm-operation");
     } else if (hasOption(argument, "--confirm-target")) {
       [options.confirmTarget, index] = readOption(argv, index, "--confirm-target");
     } else if (hasOption(argument, "--batch-size")) {
@@ -80,25 +95,25 @@ export function parseCustomerUsageSyncArgs(argv) {
       throw new CustomerUsageOperatorError(`Unknown option ${JSON.stringify(argument)}.`);
     }
   }
-  if (options.apply && sawDryRun) {
-    throw new CustomerUsageOperatorError("Choose either --apply or --dry-run.");
+  if ((options.apply && sawDryRun) || (options.apply && options.status) || (sawDryRun && options.status)) {
+    throw new CustomerUsageOperatorError("Choose exactly one of --apply, --status, or --dry-run.");
   }
   if (options.target && !["test", "production"].includes(options.target)) {
     throw new CustomerUsageOperatorError("--target must be test or production.");
   }
-  if (options.apply && !options.target) {
-    throw new CustomerUsageOperatorError("Apply requires an explicit --target.");
+  if ((options.apply || options.status) && !options.target) {
+    throw new CustomerUsageOperatorError("Connected operations require an explicit --target.");
   }
   if (options.target === "test") {
-    options.targetUrlEnv ||= "SIDESTREAM_TEST_POSTGRES_URL";
-    if (options.targetUrlEnv !== "SIDESTREAM_TEST_POSTGRES_URL") {
+    options.targetUrlEnv ||= exactTargetSelector("test");
+    if (options.targetUrlEnv !== exactTargetSelector("test")) {
       throw new CustomerUsageOperatorError(
         "Test apply may use only SIDESTREAM_TEST_POSTGRES_URL.",
       );
     }
   }
   if (options.target === "production") {
-    options.targetUrlEnv ||= "SIDESTREAM_POSTGRES_URL_NON_POOLING";
+    options.targetUrlEnv ||= exactTargetSelector("production");
     if (options.apply && options.confirmProduction !== PRODUCTION_CONFIRMATION) {
       throw new CustomerUsageOperatorError(
         `Production apply requires --confirm-production ${PRODUCTION_CONFIRMATION}.`,
@@ -110,34 +125,23 @@ export function parseCustomerUsageSyncArgs(argv) {
       );
     }
   }
+  if (options.telemetryUrlEnv !== CUSTOMER_360_DATABASE_SELECTORS.telemetry) {
+    throw new CustomerUsageOperatorError(
+      "Usage sync may use only SIDESTREAM_TELEMETRY_POSTGRES_URL as its source.",
+    );
+  }
   return Object.freeze(options);
 }
 
-export function sanitizedTargetFingerprint(connectionString) {
-  const url = safePostgresUrl(connectionString);
-  const database = decodeURIComponent(url.pathname.replace(/^\/+/, ""));
-  const identity = `${url.hostname.toLowerCase()}:${url.port || "5432"}/${database}`;
-  return `pg-${createHash("sha256").update(identity).digest("hex").slice(0, 16)}`;
-}
-
 export function authenticatedPostgresPoolOptions(connectionString, { readOnly = false } = {}) {
-  const url = safePostgresUrl(connectionString);
-  const local = ["localhost", "127.0.0.1", "::1"].includes(url.hostname.toLowerCase());
-  const sslMode = (url.searchParams.get("sslmode") || "").toLowerCase();
-  if (!local && ["disable", "false", "allow", "prefer"].includes(sslMode)) {
-    throw new CustomerUsageOperatorError("Remote Postgres requires authenticated TLS.");
+  try {
+    return authenticatedOperatorPoolOptions(connectionString, { readOnly });
+  } catch (error) {
+    if (error instanceof Customer360OperatorGuardError) {
+      throw new CustomerUsageOperatorError(error.message);
+    }
+    throw error;
   }
-  url.searchParams.delete("sslmode");
-  return {
-    connectionString: url.toString(),
-    max: 1,
-    connectionTimeoutMillis: 5_000,
-    idleTimeoutMillis: 10_000,
-    query_timeout: 30_000,
-    statement_timeout: 30_000,
-    options: readOnly ? "-c default_transaction_read_only=on" : undefined,
-    ssl: local ? false : { rejectUnauthorized: true },
-  };
 }
 
 export async function readCustomerUsageSourceFreshness({
@@ -180,39 +184,83 @@ export async function runCustomerUsageSyncOperator({
   options,
   environment = process.env,
   now = new Date(),
-  createPool = (poolOptions) => new Pool(poolOptions),
+  createPool = null,
   runSync = null,
 } = {}) {
   const parsed = options || parseCustomerUsageSyncArgs([]);
-  const targetUrl = parsed.targetUrlEnv ? environment[parsed.targetUrlEnv] : "";
-  const telemetryUrl = environment[parsed.telemetryUrlEnv];
-  const targetFingerprint = targetUrl ? sanitizedTargetFingerprint(targetUrl) : null;
   const planned = {
-    mode: parsed.apply ? "apply" : "dry_run",
+    mode: parsed.apply ? "apply" : parsed.status ? "status" : "dry_run",
     target: parsed.target || null,
-    targetFingerprint,
+    targetFingerprint: null,
+    sourceFingerprint: null,
     batchSize: parsed.batchSize,
     maxSourceLagHours: parsed.maxSourceLagHours,
     invariants: CUSTOMER_USAGE_OPERATOR_INVARIANTS,
   };
-  if (!parsed.apply) return Object.freeze({ ...planned, connected: false, writes: 0 });
-  if (!targetUrl || !telemetryUrl) {
-    throw new CustomerUsageOperatorError("Required Postgres environment selector is not configured.");
-  }
-  if (parsed.target === "test") requireSafeTestDatabaseUrl(environment);
-  if (parsed.target === "production" && parsed.confirmTarget !== targetFingerprint) {
-    throw new CustomerUsageOperatorError("Production target fingerprint confirmation does not match.");
-  }
-  if (sanitizedTargetFingerprint(telemetryUrl) === targetFingerprint) {
-    throw new CustomerUsageOperatorError("Telemetry source and aggregate target must be separate.");
-  }
-
-  const targetPool = createPool(authenticatedPostgresPoolOptions(targetUrl));
-  const telemetryPool = createPool(authenticatedPostgresPoolOptions(
-    telemetryUrl,
-    { readOnly: true },
-  ));
+  if (parsed.dryRun) return Object.freeze({ ...planned, connected: false, writes: 0 });
+  let targetDescriptor;
+  let sourceDescriptor;
   try {
+    targetDescriptor = resolveOperatorDatabase({
+      environment,
+      namespace: parsed.target,
+      selector: parsed.targetUrlEnv,
+    });
+    sourceDescriptor = resolveOperatorDatabase({
+      environment,
+      namespace: parsed.target,
+      selector: parsed.telemetryUrlEnv,
+      role: "source",
+    });
+  } catch (error) {
+    throw new CustomerUsageOperatorError(
+      error instanceof Customer360OperatorGuardError ? error.message : "Database selection failed.",
+    );
+  }
+  if (!createPool) {
+    const { Pool } = await loadOperatorPackage("pg");
+    createPool = (poolOptions) => new Pool(poolOptions);
+  }
+  const targetPool = createPool(authenticatedPostgresPoolOptions(targetDescriptor.connectionString));
+  const telemetryPool = createPool(authenticatedPostgresPoolOptions(
+    sourceDescriptor.connectionString, { readOnly: true },
+  ));
+  let targetAttestation;
+  let sourceAttestation;
+  try {
+    targetAttestation = await connectAndFingerprintOperatorDatabase({
+      pool: targetPool,
+      descriptor: targetDescriptor,
+      namespace: parsed.target,
+      operation: CUSTOMER_USAGE_SYNC_OPERATION,
+    });
+    targetAttestation.client.release();
+    sourceAttestation = await connectAndFingerprintOperatorDatabase({
+      pool: telemetryPool,
+      descriptor: sourceDescriptor,
+      namespace: parsed.target,
+      operation: CUSTOMER_USAGE_SYNC_OPERATION,
+      role: "source",
+    });
+    sourceAttestation.client.release();
+    rejectConnectedCollision(sourceAttestation.fingerprint, targetAttestation.fingerprint);
+    if (parsed.status) {
+      return Object.freeze({
+        ...planned,
+        connected: true,
+        targetFingerprint: targetAttestation.fingerprint,
+        sourceFingerprint: sourceAttestation.fingerprint,
+        writes: 0,
+      });
+    }
+    requireProductionConfirmations({
+      namespace: parsed.target,
+      operation: CUSTOMER_USAGE_SYNC_OPERATION,
+      expectedConfirmation: PRODUCTION_CONFIRMATION,
+      fingerprint: targetAttestation.fingerprint,
+      confirmOperation: parsed.confirmProduction,
+      confirmTarget: parsed.confirmTarget,
+    });
     const freshness = await readCustomerUsageSourceFreshness({
       telemetryPool,
       target: parsed.target,
@@ -227,7 +275,20 @@ export async function runCustomerUsageSyncOperator({
       batchSize: parsed.batchSize,
       now,
     });
-    return Object.freeze({ ...planned, connected: true, freshness, summary });
+    return Object.freeze({
+      ...planned,
+      connected: true,
+      targetFingerprint: targetAttestation.fingerprint,
+      sourceFingerprint: sourceAttestation.fingerprint,
+      freshness,
+      summary,
+    });
+  } catch (error) {
+    if (error instanceof CustomerUsageOperatorError) throw error;
+    if (error instanceof Customer360OperatorGuardError) {
+      throw new CustomerUsageOperatorError(error.message);
+    }
+    throw new CustomerUsageOperatorError("Customer usage sync operation failed.");
   } finally {
     await Promise.allSettled([targetPool.end(), telemetryPool.end()]);
   }
@@ -236,6 +297,7 @@ export async function runCustomerUsageSyncOperator({
 let customerUsageRuntimePromise;
 export function loadCustomerUsageRuntime() {
   customerUsageRuntimePromise ||= (async () => {
+    const ts = await loadOperatorPackage("typescript");
     const sourceUrl = new URL("../api/_lib/customer-usage.ts", import.meta.url);
     const source = await readFile(sourceUrl, "utf8");
     const transpiled = ts.transpileModule(source, {
@@ -254,18 +316,6 @@ export function loadCustomerUsageRuntime() {
     return import(`data:text/javascript;charset=utf-8,${encodeURIComponent(executable)}`);
   })();
   return customerUsageRuntimePromise;
-}
-
-function safePostgresUrl(connectionString) {
-  try {
-    const url = new URL(connectionString);
-    if (!["postgres:", "postgresql:"].includes(url.protocol) || !url.hostname || !url.pathname.slice(1)) {
-      throw new Error("invalid");
-    }
-    return url;
-  } catch {
-    throw new CustomerUsageOperatorError("Postgres selector is invalid.");
-  }
 }
 
 function hasOption(argument, name) {
@@ -294,9 +344,10 @@ function boundedInteger(raw, minimum, maximum, label) {
 function usage() {
   return `Usage:
   node scripts/sync-customer-usage.mjs --dry-run [--target test|production]
+  node scripts/sync-customer-usage.mjs --status --target test|production
   node scripts/sync-customer-usage.mjs --apply --target test --batch-size 250
   node scripts/sync-customer-usage.mjs --apply --target production \\
-    --confirm-production ${PRODUCTION_CONFIRMATION} --confirm-target pg-...
+    --confirm-operation ${PRODUCTION_CONFIRMATION} --confirm-target pg-...
 
 URLs are accepted only through named environment selectors. Dry-run performs no
 network or database access. Production apply requires both exact confirmations.`;
@@ -313,7 +364,7 @@ async function main() {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   main().catch((error) => {
-    console.error(error instanceof CustomerUsageOperatorError ? error.message : "Customer usage sync failed.");
+    console.error(safeOperatorCliError(error, "Customer usage sync failed."));
     process.exitCode = 1;
   });
 }

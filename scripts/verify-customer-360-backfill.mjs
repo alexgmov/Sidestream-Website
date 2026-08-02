@@ -6,6 +6,7 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   BACKFILL_CHECKPOINT_VERSION,
+  CUSTOMER_360_BACKFILL_PRODUCTION_CONFIRMATION,
   DURABLE_EVIDENCE_FIELDS,
   IGNORED_NON_IDENTITY_FIELDS,
   buildBackfillPlan,
@@ -91,16 +92,16 @@ export async function verifyCustomer360Backfill() {
 
   assert.throws(
     () => parseBackfillArgs(["--apply", "--namespace", "production"]),
-    /Production --apply is disabled/,
+    /reviewed offline --input/,
   );
-  await assert.rejects(
-    runCustomer360Backfill({
-      input: [],
-      namespace: "production",
-      apply: true,
-      pool: { connect: () => Promise.reject(new Error("must not connect")) },
-    }),
-    /Production --apply is disabled/,
+  const productionOptions = parseBackfillArgs([
+    "--apply", "--namespace", "production", "--input", "reviewed.json",
+    "--checkpoint", "checkpoint.json", "--confirm-operation",
+    CUSTOMER_360_BACKFILL_PRODUCTION_CONFIRMATION, "--confirm-target", "pg-reviewed",
+  ]);
+  assert.equal(
+    productionOptions.targetUrlEnv,
+    "SIDESTREAM_POSTGRES_URL_NON_POOLING",
   );
 
   const ignoredSecrets = Object.freeze({

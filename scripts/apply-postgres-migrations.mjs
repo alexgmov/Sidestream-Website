@@ -1,9 +1,18 @@
 import { createHash } from "node:crypto";
-import fs from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { Pool } from "pg";
+import {
+  Customer360OperatorGuardError,
+  authenticatedOperatorPoolOptions,
+  connectAndFingerprintOperatorDatabase,
+  connectedDatabaseFingerprint,
+  exactTargetSelector,
+  loadOperatorPackage,
+  requireProductionConfirmations,
+  resolveOperatorDatabase,
+  safeOperatorCliError,
+} from "./customer-360-operator-guards.mjs";
 import {
   ACTIVATION_ROTATION_MIGRATION,
   KNOWN_PRE_20260713_MIGRATION_CHECKSUMS,
@@ -16,17 +25,12 @@ const MIGRATION_FILENAME_PATTERN = /^\d{14}_[a-z0-9_]+\.sql$/;
 const OPERATIONAL_MIGRATION = "20260713200000_add_api_operational_controls.sql";
 const MIGRATION_LEDGER = "public.sidestream_schema_migrations";
 const MIGRATION_LOCK_KEY = "sidestream:schema-migrations:v1";
-const DIRECT_DATABASE_ENV_NAMES = [
-  "SIDESTREAM_POSTGRES_URL_NON_POOLING",
-  "POSTGRES_URL_NON_POOLING",
-];
-const POOLED_DATABASE_ENV_NAMES = [
-  "SIDESTREAM_TEST_POSTGRES_URL",
-  "SIDESTREAM_POSTGRES_URL",
-  "POSTGRES_URL",
-  "SIDESTREAM_POSTGRES_PRISMA_URL",
-  "POSTGRES_PRISMA_URL",
-];
+export const MIGRATION_OPERATION = "postgres_migration_apply";
+export const MIGRATION_BASELINE_OPERATION = "postgres_migration_baseline";
+export const MIGRATION_STATUS_OPERATION = "postgres_migration_status";
+export const MIGRATION_PRODUCTION_CONFIRMATION = "APPLY_PRODUCTION_POSTGRES_MIGRATIONS";
+export const MIGRATION_BASELINE_PRODUCTION_CONFIRMATION =
+  "BASELINE_PRODUCTION_POSTGRES_MIGRATIONS";
 
 const CREATE_LEDGER_SQL = `
   create table if not exists ${MIGRATION_LEDGER} (
@@ -125,21 +129,87 @@ export function migrationSqlForTransaction(sql) {
   return wrapped ? `${wrapped[1].trim()}\n` : sql;
 }
 
-export function selectMigrationDatabase(environment = process.env) {
-  for (const environmentVariable of [
-    ...DIRECT_DATABASE_ENV_NAMES,
-    ...POOLED_DATABASE_ENV_NAMES,
-  ]) {
-    const connectionString = configuredValue(environment[environmentVariable]);
-    if (connectionString) {
-      return Object.freeze({
-        environmentVariable,
-        connectionString,
-        direct: DIRECT_DATABASE_ENV_NAMES.includes(environmentVariable),
-      });
+export function selectMigrationDatabase(
+  environment = process.env,
+  target = "",
+  selector = target ? exactTargetSelector(target) : "",
+) {
+  if (!target) return null;
+  const descriptor = resolveOperatorDatabase({
+    environment,
+    namespace: target,
+    selector,
+  });
+  return Object.freeze({
+    environmentVariable: descriptor.selector,
+    connectionString: descriptor.connectionString,
+    direct: target === "production",
+    descriptor,
+  });
+}
+
+export function parseMigrationOperatorArguments(argv) {
+  const valueOptions = new Set([
+    "--target", "--target-url-env", "--confirm-operation", "--confirm-target",
+  ]);
+  const core = [];
+  const options = {
+    target: "",
+    targetUrlEnv: "",
+    confirmOperation: "",
+    confirmTarget: "",
+  };
+  for (let index = 0; index < argv.length; index += 1) {
+    const argument = argv[index];
+    const name = [...valueOptions].find(
+      (candidate) => argument === candidate || argument.startsWith(`${candidate}=`),
+    );
+    if (!name) {
+      core.push(argument);
+      continue;
+    }
+    const inline = argument.startsWith(`${name}=`);
+    const value = inline ? argument.slice(name.length + 1) : argv[index + 1];
+    if (!value || (!inline && value.startsWith("--"))) {
+      throw new Error(`${name} requires a value`);
+    }
+    if (!inline) index += 1;
+    if (name === "--target") options.target = value;
+    if (name === "--target-url-env") options.targetUrlEnv = value;
+    if (name === "--confirm-operation") options.confirmOperation = value;
+    if (name === "--confirm-target") options.confirmTarget = value;
+  }
+  const mode = parseMigrationArguments(core);
+  if (options.target && !["test", "production"].includes(options.target)) {
+    throw new Error("--target must be test or production");
+  }
+  if (!["help", "validate", "dry-run"].includes(mode) && !options.target) {
+    throw new Error("Connected migration operations require an explicit --target");
+  }
+  if (options.target) {
+    options.targetUrlEnv ||= exactTargetSelector(options.target);
+    if (options.targetUrlEnv !== exactTargetSelector(options.target)) {
+      throw new Error(
+        `Migration target may use only ${exactTargetSelector(options.target)}`,
+      );
     }
   }
-  return null;
+  const confirmation = mode === "baseline"
+    ? MIGRATION_BASELINE_PRODUCTION_CONFIRMATION
+    : MIGRATION_PRODUCTION_CONFIRMATION;
+  if (
+    options.target === "production" && ["apply", "baseline"].includes(mode) &&
+    options.confirmOperation !== confirmation
+  ) {
+    throw new Error(`Production ${mode} requires --confirm-operation ${confirmation}`);
+  }
+  if (
+    options.target === "production" && ["apply", "baseline"].includes(mode) &&
+    !options.confirmTarget
+  ) {
+    throw new Error(`Production ${mode} requires the connected --confirm-target fingerprint`);
+  }
+  return Object.freeze({ ...options, mode });
 }
 
 export function parseMigrationArguments(argv) {
@@ -160,7 +230,8 @@ export function parseMigrationArguments(argv) {
 }
 
 async function main() {
-  const mode = parseMigrationArguments(process.argv.slice(2));
+  const operator = parseMigrationOperatorArguments(process.argv.slice(2));
+  const { mode } = operator;
   if (mode === "help") {
     printHelp();
     return;
@@ -177,23 +248,57 @@ async function main() {
     return;
   }
 
-  loadEnvFile(process.env.SIDESTREAM_ENV_FILE);
-  loadEnvFile(process.env.SIDESTREAM_DB_ENV_FILE);
-  const target = selectMigrationDatabase();
+  const target = selectMigrationDatabase(
+    process.env,
+    operator.target,
+    operator.targetUrlEnv,
+  );
   if (!target) {
-    throw new Error(
-      `Missing Postgres connection. Set one of: ${[
-        ...DIRECT_DATABASE_ENV_NAMES,
-        ...POOLED_DATABASE_ENV_NAMES,
-      ].join(", ")}`,
-    );
+    throw new Error("Missing exact named Postgres target selector");
   }
-  console.log(`Using migration database from ${target.environmentVariable}${
-    target.direct ? " (direct/non-pooling preferred)" : " (pooled fallback)"
-  }.`);
-
+  const { Pool } = await loadOperatorPackage("pg");
   const pool = new Pool(createMigrationPoolOptions(target.connectionString));
-  const client = await pool.connect();
+  const operation = mode === "status"
+    ? MIGRATION_STATUS_OPERATION
+    : mode === "baseline"
+      ? MIGRATION_BASELINE_OPERATION
+      : MIGRATION_OPERATION;
+  const attestation = await connectAndFingerprintOperatorDatabase({
+    pool,
+    descriptor: target.descriptor,
+    namespace: operator.target,
+    operation,
+  });
+  const { client } = attestation;
+  if (["apply", "baseline"].includes(mode)) {
+    requireProductionConfirmations({
+      namespace: operator.target,
+      operation,
+      expectedConfirmation: mode === "baseline"
+        ? MIGRATION_BASELINE_PRODUCTION_CONFIRMATION
+        : MIGRATION_PRODUCTION_CONFIRMATION,
+      fingerprint: attestation.fingerprint,
+      confirmOperation: operator.confirmOperation,
+      confirmTarget: operator.confirmTarget,
+    });
+  }
+  console.log(`target-fingerprint: ${attestation.fingerprint}`);
+  if (mode === "status") {
+    console.log(`apply-target-fingerprint: ${connectedDatabaseFingerprint({
+      hostname: target.descriptor.hostname,
+      port: target.descriptor.port,
+      databaseName: attestation.databaseName,
+      namespace: operator.target,
+      operation: MIGRATION_OPERATION,
+    })}`);
+    console.log(`baseline-target-fingerprint: ${connectedDatabaseFingerprint({
+      hostname: target.descriptor.hostname,
+      port: target.descriptor.port,
+      databaseName: attestation.databaseName,
+      namespace: operator.target,
+      operation: MIGRATION_BASELINE_OPERATION,
+    })}`);
+  }
   let lockHeld = false;
   try {
     await client.query("select pg_advisory_lock(hashtext($1))", [MIGRATION_LOCK_KEY]);
@@ -414,25 +519,8 @@ function printStatuses(statuses) {
 }
 
 function createMigrationPoolOptions(connectionString) {
-  let url;
-  try {
-    url = new URL(connectionString);
-  } catch {
-    throw new Error("Migration Postgres connection string is invalid");
-  }
-  if (url.protocol !== "postgres:" && url.protocol !== "postgresql:") {
-    throw new Error("Migration connection must use postgres: or postgresql:");
-  }
-  if (!url.hostname || !url.pathname.replace(/^\/+/, "")) {
-    throw new Error("Migration connection must identify a host and database");
-  }
-  if (/^(prefer|require)$/i.test(url.searchParams.get("sslmode") || "")) {
-    url.searchParams.delete("sslmode");
-  }
-  const local = ["localhost", "127.0.0.1", "::1"].includes(url.hostname.toLowerCase());
   return {
-    connectionString: url.toString(),
-    max: 1,
+    ...authenticatedOperatorPoolOptions(connectionString),
     connectionTimeoutMillis: boundedInteger(
       "POSTGRES_CONNECTION_TIMEOUT_MS", 10_000, 250, 30_000,
     ),
@@ -440,9 +528,6 @@ function createMigrationPoolOptions(connectionString) {
     statement_timeout: boundedInteger(
       "POSTGRES_MIGRATION_STATEMENT_TIMEOUT_MS", 300_000, 1_000, 1_800_000,
     ),
-    ssl: process.env.POSTGRES_SSL === "0" || local
-      ? false
-      : { rejectUnauthorized: false },
   };
 }
 
@@ -457,53 +542,24 @@ function boundedInteger(name, defaultValue, minimum, maximum) {
   return value;
 }
 
-function loadEnvFile(filePath) {
-  if (!filePath) return;
-  const absolutePath = path.resolve(filePath);
-  let text = "";
-  try {
-    text = fs.readFileSync(absolutePath, "utf8");
-  } catch {
-    throw new Error(`Could not read configured migration env file: ${absolutePath}`);
-  }
-  for (const line of text.split(/\r?\n/)) {
-    const match = line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)=(.*)\s*$/);
-    if (!match) continue;
-    const [, key, rawValue] = match;
-    if (process.env[key]) continue;
-    process.env[key] = rawValue.trim().replace(/^['"]|['"]$/g, "");
-  }
-}
-
-function configuredValue(value) {
-  const normalized = value?.trim() || "";
-  if (!normalized || normalized.includes("[YOUR-") || normalized === "changeme") return "";
-  return normalized;
-}
-
 function printHelp() {
   console.log(`Usage: node scripts/apply-postgres-migrations.mjs [operation]
 
 Operations:
-  (none)       Apply pending migrations using the checksum ledger
-  --status     Read migration/ledger state without changing it
+  (none)       Apply pending migrations; requires --target test|production
+  --status     Read state; requires --target test|production
   --validate   Validate local ordering and checksums without a database
-  --baseline   Verify the known pre-20260713 schema, then record only proven files
+  --baseline   Verify the known schema, then record only proven files
   --dry-run    List local files without connecting or mutating a database
 
-Direct *_URL_NON_POOLING variables are preferred for migration operations.`);
+URLs are accepted only through SIDESTREAM_TEST_POSTGRES_URL or
+SIDESTREAM_POSTGRES_URL_NON_POOLING. Production mutations also require exact
+--confirm-operation and connected --confirm-target values.`);
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] || "").href) {
   main().catch((error) => {
-    console.error(safeCliErrorMessage(error, "Migration operation failed"));
+    console.error(safeOperatorCliError(error, "Migration operation failed."));
     process.exitCode = 1;
   });
-}
-
-function safeCliErrorMessage(error, fallback) {
-  const message = error instanceof Error ? error.message : fallback;
-  return message
-    .replace(/postgres(?:ql)?:\/\/[^\s]+/gi, "[redacted-postgres-url]")
-    .replace(/\bpassword\s*=\s*[^\s]+/gi, "password=[redacted]");
 }

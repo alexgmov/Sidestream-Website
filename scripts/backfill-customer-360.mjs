@@ -4,9 +4,23 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import {
+  Customer360OperatorGuardError,
+  authenticatedOperatorPoolOptions,
+  connectAndFingerprintOperatorDatabase,
+  exactTargetSelector,
+  loadOperatorPackage,
+  requireProductionConfirmations,
+  resolveOperatorDatabase,
+  safeOperatorCliError,
+  writeMode600JsonAtomic,
+} from "./customer-360-operator-guards.mjs";
 
 export const BACKFILL_CHECKPOINT_VERSION = 3;
 export const DEFAULT_BACKFILL_BATCH_SIZE = 100;
+export const CUSTOMER_360_BACKFILL_OPERATION = "customer_360_identity_backfill";
+export const CUSTOMER_360_BACKFILL_PRODUCTION_CONFIRMATION =
+  "APPLY_PRODUCTION_CUSTOMER_360_BACKFILL";
 
 export const DURABLE_EVIDENCE_FIELDS = Object.freeze({
   accountId: "account_identity",
@@ -83,12 +97,16 @@ export function parseBackfillArgs(argv) {
   const options = {
     apply: false,
     dryRun: true,
+    status: false,
     selfTest: false,
     help: false,
     namespace: "test",
     namespaceExplicit: false,
     inputPath: "",
     checkpointPath: "",
+    targetUrlEnv: "",
+    confirmOperation: "",
+    confirmTarget: "",
     batchSize: DEFAULT_BACKFILL_BATCH_SIZE,
   };
   let sawDryRun = false;
@@ -97,6 +115,9 @@ export function parseBackfillArgs(argv) {
     const argument = argv[index];
     if (argument === "--apply") {
       options.apply = true;
+      options.dryRun = false;
+    } else if (argument === "--status") {
+      options.status = true;
       options.dryRun = false;
     } else if (argument === "--dry-run") {
       sawDryRun = true;
@@ -122,6 +143,18 @@ export function parseBackfillArgs(argv) {
     ) {
       [options.checkpointPath, index] = readOption(argv, index, "--checkpoint");
     } else if (
+      argument === "--target-url-env" || argument.startsWith("--target-url-env=")
+    ) {
+      [options.targetUrlEnv, index] = readOption(argv, index, "--target-url-env");
+    } else if (
+      argument === "--confirm-operation" || argument.startsWith("--confirm-operation=")
+    ) {
+      [options.confirmOperation, index] = readOption(argv, index, "--confirm-operation");
+    } else if (
+      argument === "--confirm-target" || argument.startsWith("--confirm-target=")
+    ) {
+      [options.confirmTarget, index] = readOption(argv, index, "--confirm-target");
+    } else if (
       argument === "--batch-size" ||
       argument.startsWith("--batch-size=")
     ) {
@@ -135,25 +168,46 @@ export function parseBackfillArgs(argv) {
     }
   }
 
-  if (options.apply && sawDryRun) {
-    throw new Customer360BackfillError("Choose either --apply or --dry-run, not both.");
+  if ((options.apply && sawDryRun) || (options.apply && options.status) || (sawDryRun && options.status)) {
+    throw new Customer360BackfillError(
+      "Choose exactly one of --apply, --status, or --dry-run.",
+    );
   }
   assertNamespace(options.namespace);
-  if (options.apply && options.namespace === "production") {
-    throw new Customer360BackfillError(
-      "Production --apply is disabled. Customer 360 cutover requires a later human-gated action.",
-    );
-  }
   if (options.apply && !options.namespaceExplicit) {
     throw new Customer360BackfillError(
-      "Apply requires an explicit --namespace test; the default is never apply authority.",
+      "Apply requires an explicit --namespace; the default is never apply authority.",
     );
+  }
+  if (options.status && !options.namespaceExplicit) {
+    throw new Customer360BackfillError("Status requires an explicit --namespace.");
   }
   if (options.apply && !options.inputPath) {
     throw new Customer360BackfillError("Apply requires a reviewed offline --input file.");
   }
   if (options.apply && !options.checkpointPath) {
     throw new Customer360BackfillError("Apply requires an explicit --checkpoint file.");
+  }
+  if (options.apply || options.status) {
+    options.targetUrlEnv ||= exactTargetSelector(options.namespace);
+    if (options.targetUrlEnv !== exactTargetSelector(options.namespace)) {
+      throw new Customer360BackfillError(
+        `Backfill ${options.namespace} apply may use only ${exactTargetSelector(options.namespace)}.`,
+      );
+    }
+  }
+  if (
+    options.apply && options.namespace === "production" &&
+    options.confirmOperation !== CUSTOMER_360_BACKFILL_PRODUCTION_CONFIRMATION
+  ) {
+    throw new Customer360BackfillError(
+      `Production apply requires --confirm-operation ${CUSTOMER_360_BACKFILL_PRODUCTION_CONFIRMATION}.`,
+    );
+  }
+  if (options.apply && options.namespace === "production" && !options.confirmTarget) {
+    throw new Customer360BackfillError(
+      "Production apply requires the connected --confirm-target fingerprint.",
+    );
   }
   return Object.freeze(options);
 }
@@ -328,13 +382,8 @@ export async function runCustomer360Backfill({
   if (!apply) {
     return buildDryRunReport(input || [], { namespace, checkpoint: normalizedCheckpoint });
   }
-  if (namespace === "production") {
-    throw new Customer360BackfillError(
-      "Production --apply is disabled. Customer 360 cutover requires a later human-gated action.",
-    );
-  }
   if (!pool || typeof pool.connect !== "function") {
-    throw new Customer360BackfillError("Test apply requires an injected disposable Postgres pool.");
+    throw new Customer360BackfillError("Apply requires an injected guarded Postgres pool.");
   }
   if (writeCheckpoint !== undefined && typeof writeCheckpoint !== "function") {
     throw new TypeError("writeCheckpoint must be a function when provided");
@@ -473,6 +522,124 @@ export async function loadPostgresModule(worktreeRoot = process.cwd()) {
   return requireFromBase("pg");
 }
 
+export async function runCustomer360BackfillOperator({
+  options,
+  input,
+  checkpoint = null,
+  environment = process.env,
+  createPool = null,
+  afterBatchCommitted,
+  writeCheckpoint = async () => {},
+} = {}) {
+  const parsed = options || parseBackfillArgs([]);
+  if (parsed.dryRun) {
+    return Object.freeze({
+      mode: "dry_run",
+      connected: false,
+      targetFingerprint: null,
+      report: buildDryRunReport(input || [], {
+        namespace: parsed.namespace,
+        checkpoint: checkpoint?.backfill || checkpoint,
+      }),
+    });
+  }
+  let descriptor;
+  try {
+    descriptor = resolveOperatorDatabase({
+      environment,
+      namespace: parsed.namespace,
+      selector: parsed.targetUrlEnv,
+    });
+  } catch (error) {
+    throw new Customer360BackfillError(
+      error instanceof Customer360OperatorGuardError ? error.message : "Database selection failed.",
+    );
+  }
+  if (!createPool) {
+    const { Pool } = await loadOperatorPackage("pg", repositoryRootFromScript());
+    createPool = (poolOptions) => new Pool(poolOptions);
+  }
+  const pool = createPool(authenticatedOperatorPoolOptions(descriptor.connectionString));
+  try {
+    const attestation = await connectAndFingerprintOperatorDatabase({
+      pool,
+      descriptor,
+      namespace: parsed.namespace,
+      operation: CUSTOMER_360_BACKFILL_OPERATION,
+    });
+    attestation.client.release();
+    if (parsed.status) {
+      return Object.freeze({
+        mode: "status",
+        connected: true,
+        namespace: parsed.namespace,
+        targetFingerprint: attestation.fingerprint,
+        writes: 0,
+      });
+    }
+    requireProductionConfirmations({
+      namespace: parsed.namespace,
+      operation: CUSTOMER_360_BACKFILL_OPERATION,
+      expectedConfirmation: CUSTOMER_360_BACKFILL_PRODUCTION_CONFIRMATION,
+      fingerprint: attestation.fingerprint,
+      confirmOperation: parsed.confirmOperation,
+      confirmTarget: parsed.confirmTarget,
+    });
+    const backfillCheckpoint = normalizeBackfillOperatorCheckpoint(checkpoint, {
+      namespace: parsed.namespace,
+      targetFingerprint: attestation.fingerprint,
+    });
+    const report = await runCustomer360Backfill({
+      input,
+      namespace: parsed.namespace,
+      apply: true,
+      pool,
+      checkpoint: backfillCheckpoint,
+      batchSize: parsed.batchSize,
+      afterBatchCommitted,
+      writeCheckpoint(next) {
+        return writeCheckpoint(Object.freeze({
+          version: 1,
+          operation: CUSTOMER_360_BACKFILL_OPERATION,
+          namespace: parsed.namespace,
+          targetFingerprint: attestation.fingerprint,
+          backfill: next,
+        }));
+      },
+    });
+    return Object.freeze({
+      mode: "apply",
+      connected: true,
+      targetFingerprint: attestation.fingerprint,
+      report,
+    });
+  } catch (error) {
+    if (error instanceof Customer360BackfillError) throw error;
+    if (error instanceof Customer360OperatorGuardError) {
+      throw new Customer360BackfillError(error.message);
+    }
+    throw new Customer360BackfillError("Customer 360 backfill operation failed.");
+  } finally {
+    await pool.end();
+  }
+}
+
+export function normalizeBackfillOperatorCheckpoint(value, identity) {
+  if (value === null || value === undefined) return null;
+  if (
+    !isRecord(value) || value.version !== 1 ||
+    value.operation !== CUSTOMER_360_BACKFILL_OPERATION ||
+    value.namespace !== identity.namespace ||
+    value.targetFingerprint !== identity.targetFingerprint ||
+    !isRecord(value.backfill)
+  ) {
+    throw new Customer360BackfillError(
+      "Checkpoint does not match the connected target, namespace, or backfill operation.",
+    );
+  }
+  return value.backfill;
+}
+
 export async function runBackfillSelfTest() {
   const sharedIgnored = {
     email: "same-person@example.com",
@@ -505,7 +672,7 @@ export async function runBackfillSelfTest() {
 
   assert.throws(
     () => parseBackfillArgs(["--apply", "--namespace", "production"]),
-    /Production --apply is disabled/,
+    /reviewed offline --input/,
   );
 
   let poolCalls = 0;
@@ -1191,25 +1358,24 @@ async function readCheckpointFile(filename) {
 }
 
 async function writeCheckpointFile(filename, checkpoint) {
-  const { rename, writeFile } = await import("node:fs/promises");
-  const temporaryPath = `${filename}.tmp-${process.pid}`;
-  await writeFile(temporaryPath, `${JSON.stringify(checkpoint)}\n`, {
-    encoding: "utf8",
-    mode: 0o600,
-  });
-  await rename(temporaryPath, filename);
+  await writeMode600JsonAtomic(filename, checkpoint);
 }
 
 function printHelp() {
   console.log(`Usage:
   node scripts/backfill-customer-360.mjs [--dry-run] [--input FILE]
+  node scripts/backfill-customer-360.mjs --status --namespace test|production
   node scripts/backfill-customer-360.mjs --apply --namespace test \\
     --input FILE --checkpoint FILE [--batch-size N]
+  node scripts/backfill-customer-360.mjs --apply --namespace production \\
+    --input FILE --checkpoint FILE \\
+    --confirm-operation ${CUSTOMER_360_BACKFILL_PRODUCTION_CONFIRMATION} \\
+    --confirm-target pg-...
   node scripts/backfill-customer-360.mjs --self-test --dry-run
 
 Dry-run is the default and never opens a database connection or writes a
-checkpoint. Apply is restricted to the disposable test database selected by
-SIDESTREAM_TEST_POSTGRES_URL. Production apply is intentionally unavailable.
+checkpoint. Apply accepts only the exact namespace-owned named selector.
+Production additionally requires exact operation and connected-target confirmations.
 
 Input is a reviewed JSON array (or {"version":1,"records":[]}). Each record
 requires an opaque UUID or lowercase hex64 recordId and may contain only the
@@ -1230,7 +1396,7 @@ async function main() {
   }
 
   const input = options.inputPath ? await readJsonFile(options.inputPath) : [];
-  if (!options.apply) {
+  if (options.dryRun) {
     const checkpoint = options.checkpointPath
       ? await readCheckpointFile(options.checkpointPath)
       : null;
@@ -1241,28 +1407,17 @@ async function main() {
     return;
   }
 
-  const { createTestPoolOptions, requireSafeTestDatabaseUrl } = await import(
-    "./run-postgres-integration.mjs"
-  );
-  const { Pool } = await loadPostgresModule(repositoryRootFromScript());
-  const databaseUrl = requireSafeTestDatabaseUrl(process.env);
-  const pool = new Pool(createTestPoolOptions(databaseUrl));
-  try {
-    const checkpoint = await readCheckpointFile(options.checkpointPath);
-    const result = await runCustomer360Backfill({
-      input,
-      namespace: options.namespace,
-      apply: true,
-      pool,
-      checkpoint,
-      batchSize: options.batchSize,
-      writeCheckpoint: (nextCheckpoint) =>
-        writeCheckpointFile(options.checkpointPath, nextCheckpoint),
-    });
-    console.log(JSON.stringify(result, null, 2));
-  } finally {
-    await pool.end();
-  }
+  const checkpoint = options.checkpointPath
+    ? await readCheckpointFile(options.checkpointPath)
+    : null;
+  const result = await runCustomer360BackfillOperator({
+    options,
+    input,
+    checkpoint,
+    writeCheckpoint: (nextCheckpoint) =>
+      writeCheckpointFile(options.checkpointPath, nextCheckpoint),
+  });
+  console.log(JSON.stringify(result, null, 2));
 }
 
 function repositoryRootFromScript() {
@@ -1274,7 +1429,7 @@ const invokedUrl = process.argv[1]
   : "";
 if (import.meta.url === invokedUrl) {
   main().catch((error) => {
-    console.error(error instanceof Error ? error.message : "Customer 360 backfill failed");
+    console.error(safeOperatorCliError(error, "Customer 360 backfill failed."));
     process.exitCode = 1;
   });
 }

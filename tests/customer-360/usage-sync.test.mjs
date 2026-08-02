@@ -1,16 +1,23 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
-import { Pool } from "pg";
-import { loadInjectedModule } from "../helpers/handler-loader.mjs";
+import {
+  connectedDatabaseFingerprint,
+  loadOperatorPackage,
+} from "../../scripts/customer-360-operator-guards.mjs";
 import {
   CUSTOMER_USAGE_OPERATOR_INVARIANTS,
   PRODUCTION_CONFIRMATION,
   authenticatedPostgresPoolOptions,
   parseCustomerUsageSyncArgs,
   runCustomerUsageSyncOperator,
-  sanitizedTargetFingerprint,
 } from "../../scripts/sync-customer-usage.mjs";
+
+const worktreeRoot = new URL("../..", import.meta.url).pathname;
+const [{ Pool }, ts] = await Promise.all([
+  loadOperatorPackage("pg", worktreeRoot),
+  loadOperatorPackage("typescript", worktreeRoot),
+]);
 
 const {
   CUSTOMER_USAGE_JSON_PATH_ALLOWLIST,
@@ -20,7 +27,7 @@ const {
   normalizeCustomerUsageAggregateRow,
   resolveDownloadOutcome,
   utcUsageWindow,
-} = await loadInjectedModule(
+} = await loadCustomerUsageTestModule(
   new URL("../../api/_lib/customer-usage.ts", import.meta.url),
   {
     pg: { Pool },
@@ -39,6 +46,34 @@ const {
     },
   },
 );
+
+async function loadCustomerUsageTestModule(sourceUrl, injectedModules) {
+  const source = await readFile(sourceUrl, "utf8");
+  const transpiled = ts.transpileModule(source, {
+    compilerOptions: {
+      module: ts.ModuleKind.ESNext,
+      target: ts.ScriptTarget.ES2022,
+      verbatimModuleSyntax: true,
+    },
+  }).outputText;
+  let executable = transpiled;
+  for (const [specifier, bindings] of Object.entries(injectedModules)) {
+    executable = executable.replaceAll(
+      `from ${JSON.stringify(specifier)}`,
+      `from ${JSON.stringify(injectedModuleUrl(bindings))}`,
+    );
+  }
+  return import(`data:text/javascript;charset=utf-8,${encodeURIComponent(executable)}`);
+}
+
+function injectedModuleUrl(bindings) {
+  const key = `sidestream.usage.test.${Math.random()}`;
+  globalThis[key] = bindings;
+  const exports = Object.keys(bindings).map(
+    (name) => `export const ${name} = globalThis[${JSON.stringify(key)}][${JSON.stringify(name)}];`,
+  );
+  return `data:text/javascript;charset=utf-8,${encodeURIComponent(exports.join("\n"))}`;
+}
 
 test("telemetry configuration is read-only, separate, bounded, and namespace-scoped", () => {
   const configuration = loadCustomerUsageSyncConfiguration({
@@ -228,16 +263,31 @@ test("offline sync is dry-run by default and Production requires two exact confi
   );
 });
 
-test("operator fingerprints omit credentials and remote pools authenticate TLS", () => {
-  const first = sanitizedTargetFingerprint(
-    "postgres://private-user:private-password@db.example.com:5432/sidestream?sslmode=require",
-  );
-  const second = sanitizedTargetFingerprint(
-    "postgres://different:different@db.example.com:5432/sidestream?sslmode=verify-full",
-  );
+test("connected fingerprints bind operation and namespace while remote pools authenticate TLS", () => {
+  const first = connectedDatabaseFingerprint({
+    hostname: "db.example.com",
+    port: "5432",
+    databaseName: "sidestream",
+    namespace: "production",
+    operation: "customer_usage_sync",
+  });
+  const second = connectedDatabaseFingerprint({
+    hostname: "db.example.com",
+    port: "5432",
+    databaseName: "sidestream",
+    namespace: "production",
+    operation: "customer_usage_sync",
+  });
   assert.equal(first, second);
-  assert.match(first, /^pg-[0-9a-f]{16}$/);
+  assert.match(first, /^pg-[0-9a-f]{20}$/);
   assert.doesNotMatch(first, /private|password|example|sidestream/);
+  assert.notEqual(first, connectedDatabaseFingerprint({
+    hostname: "db.example.com",
+    port: "5432",
+    databaseName: "sidestream",
+    namespace: "test",
+    operation: "customer_usage_sync",
+  }));
   const remote = authenticatedPostgresPoolOptions(
     "postgres://private-user:private-password@db.example.com/sidestream?sslmode=require",
     { readOnly: true },
@@ -246,7 +296,7 @@ test("operator fingerprints omit credentials and remote pools authenticate TLS",
   assert.equal(remote.options, "-c default_transaction_read_only=on");
   assert.throws(
     () => authenticatedPostgresPoolOptions(
-      "postgres://private@db.example.com/sidestream?sslmode=disable",
+      "postgres://private:secret@db.example.com/sidestream?sslmode=disable",
     ),
     /authenticated TLS/,
   );

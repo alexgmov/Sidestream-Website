@@ -1,10 +1,8 @@
 #!/usr/bin/env node
 
-import { readFile, rename, writeFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { Pool } from "pg";
-import { requireSafeTestDatabaseUrl } from "./run-postgres-integration.mjs";
 import {
   CUSTOMER_USAGE_BATCH_SIZE,
   CUSTOMER_USAGE_OPERATOR_INVARIANTS,
@@ -13,16 +11,29 @@ import {
   authenticatedPostgresPoolOptions,
   loadCustomerUsageRuntime,
   readCustomerUsageSourceFreshness,
-  sanitizedTargetFingerprint,
 } from "./sync-customer-usage.mjs";
+import {
+  CUSTOMER_360_DATABASE_SELECTORS,
+  Customer360OperatorGuardError,
+  connectAndFingerprintOperatorDatabase,
+  exactTargetSelector,
+  loadOperatorPackage,
+  rejectConnectedCollision,
+  requireProductionConfirmations,
+  resolveOperatorDatabase,
+  safeOperatorCliError,
+  writeMode600JsonAtomic,
+} from "./customer-360-operator-guards.mjs";
 
 export const RESCAN_CHECKPOINT_VERSION = 1;
 export const REPLAY_CONFIRMATION = "REPLAY_SESSION_STARTED_AGGREGATES";
+export const CUSTOMER_USAGE_RESCAN_OPERATION = "customer_usage_historical_rescan";
 
 export function parseCustomerUsageRescanArgs(argv) {
   const options = {
     apply: false,
     dryRun: true,
+    status: false,
     target: "",
     targetUrlEnv: "",
     telemetryUrlEnv: "SIDESTREAM_TELEMETRY_POSTGRES_URL",
@@ -42,6 +53,9 @@ export function parseCustomerUsageRescanArgs(argv) {
     if (argument === "--apply") {
       options.apply = true;
       options.dryRun = false;
+    } else if (argument === "--status") {
+      options.status = true;
+      options.dryRun = false;
     } else if (argument === "--dry-run") {
       sawDryRun = true;
       options.dryRun = true;
@@ -59,6 +73,8 @@ export function parseCustomerUsageRescanArgs(argv) {
       [options.checkpointPath, index] = readOption(argv, index, "--checkpoint");
     } else if (hasOption(argument, "--confirm-production")) {
       [options.confirmProduction, index] = readOption(argv, index, "--confirm-production");
+    } else if (hasOption(argument, "--confirm-operation")) {
+      [options.confirmProduction, index] = readOption(argv, index, "--confirm-operation");
     } else if (hasOption(argument, "--confirm-target")) {
       [options.confirmTarget, index] = readOption(argv, index, "--confirm-target");
     } else if (hasOption(argument, "--confirm-replay")) {
@@ -79,8 +95,8 @@ export function parseCustomerUsageRescanArgs(argv) {
       throw new CustomerUsageOperatorError(`Unknown option ${JSON.stringify(argument)}.`);
     }
   }
-  if (options.apply && sawDryRun) {
-    throw new CustomerUsageOperatorError("Choose either --apply or --dry-run.");
+  if ((options.apply && sawDryRun) || (options.apply && options.status) || (sawDryRun && options.status)) {
+    throw new CustomerUsageOperatorError("Choose exactly one of --apply, --status, or --dry-run.");
   }
   if (options.target && !["test", "production"].includes(options.target)) {
     throw new CustomerUsageOperatorError("--target must be test or production.");
@@ -90,16 +106,19 @@ export function parseCustomerUsageRescanArgs(argv) {
       "Apply requires explicit --target and --checkpoint values.",
     );
   }
+  if (options.status && !options.target) {
+    throw new CustomerUsageOperatorError("Status requires an explicit --target.");
+  }
   if (options.target === "test") {
-    options.targetUrlEnv ||= "SIDESTREAM_TEST_POSTGRES_URL";
-    if (options.targetUrlEnv !== "SIDESTREAM_TEST_POSTGRES_URL") {
+    options.targetUrlEnv ||= exactTargetSelector("test");
+    if (options.targetUrlEnv !== exactTargetSelector("test")) {
       throw new CustomerUsageOperatorError(
         "Test apply may use only SIDESTREAM_TEST_POSTGRES_URL.",
       );
     }
   }
   if (options.target === "production") {
-    options.targetUrlEnv ||= "SIDESTREAM_POSTGRES_URL_NON_POOLING";
+    options.targetUrlEnv ||= exactTargetSelector("production");
     if (options.apply && options.confirmProduction !== PRODUCTION_CONFIRMATION) {
       throw new CustomerUsageOperatorError(
         `Production apply requires --confirm-production ${PRODUCTION_CONFIRMATION}.`,
@@ -110,6 +129,11 @@ export function parseCustomerUsageRescanArgs(argv) {
         "Production apply requires the sanitized --confirm-target fingerprint.",
       );
     }
+  }
+  if (options.telemetryUrlEnv !== CUSTOMER_360_DATABASE_SELECTORS.telemetry) {
+    throw new CustomerUsageOperatorError(
+      "Usage rescan may use only SIDESTREAM_TELEMETRY_POSTGRES_URL as its source.",
+    );
   }
   if (options.replay && options.confirmReplay !== REPLAY_CONFIRMATION) {
     throw new CustomerUsageOperatorError(
@@ -160,55 +184,106 @@ export async function runCustomerUsageRescanOperator({
   checkpoint = null,
   environment = process.env,
   now = new Date(),
-  createPool = (poolOptions) => new Pool(poolOptions),
+  createPool = null,
   runRescan = null,
   writeCheckpoint = async () => {},
 } = {}) {
   const parsed = options || parseCustomerUsageRescanArgs([]);
-  const targetUrl = parsed.targetUrlEnv ? environment[parsed.targetUrlEnv] : "";
-  const telemetryUrl = environment[parsed.telemetryUrlEnv];
-  const targetFingerprint = targetUrl ? sanitizedTargetFingerprint(targetUrl) : null;
-  const sourceFingerprint = telemetryUrl ? sanitizedTargetFingerprint(telemetryUrl) : null;
   const planned = {
-    mode: parsed.apply ? "apply" : "dry_run",
+    mode: parsed.apply ? "apply" : parsed.status ? "status" : "dry_run",
     operation: "full_historical_session_started_rescan",
     target: parsed.target || null,
-    targetFingerprint,
-    sourceFingerprint,
+    targetFingerprint: null,
+    sourceFingerprint: null,
     batchSize: parsed.batchSize,
     maxBatches: parsed.maxBatches,
     replay: parsed.replay,
     invariants: CUSTOMER_USAGE_OPERATOR_INVARIANTS,
   };
-  if (!parsed.apply) {
+  if (parsed.dryRun) {
     return Object.freeze({ ...planned, connected: false, checkpointWrites: 0, writes: 0 });
   }
-  if (!targetUrl || !telemetryUrl) {
-    throw new CustomerUsageOperatorError("Required Postgres environment selector is not configured.");
+  let targetDescriptor;
+  let sourceDescriptor;
+  try {
+    targetDescriptor = resolveOperatorDatabase({
+      environment,
+      namespace: parsed.target,
+      selector: parsed.targetUrlEnv,
+    });
+    sourceDescriptor = resolveOperatorDatabase({
+      environment,
+      namespace: parsed.target,
+      selector: parsed.telemetryUrlEnv,
+      role: "source",
+    });
+  } catch (error) {
+    throw new CustomerUsageOperatorError(
+      error instanceof Customer360OperatorGuardError ? error.message : "Database selection failed.",
+    );
   }
-  if (parsed.target === "test") requireSafeTestDatabaseUrl(environment);
-  if (parsed.target === "production" && parsed.confirmTarget !== targetFingerprint) {
-    throw new CustomerUsageOperatorError("Production target fingerprint confirmation does not match.");
+  if (!createPool) {
+    const { Pool } = await loadOperatorPackage("pg");
+    createPool = (poolOptions) => new Pool(poolOptions);
   }
-  if (sourceFingerprint === targetFingerprint) {
-    throw new CustomerUsageOperatorError("Telemetry source and aggregate target must be separate.");
-  }
-  const normalized = normalizeRescanCheckpoint(checkpoint, {
-    target: parsed.target,
-    targetFingerprint,
-    sourceFingerprint,
-  });
-  if (normalized?.complete && !parsed.replay) {
-    return Object.freeze({ ...planned, connected: false, checkpoint: normalized, complete: true });
-  }
-  const startingCheckpoint = parsed.replay ? null : normalized?.next || null;
-  const targetPool = createPool(authenticatedPostgresPoolOptions(targetUrl));
+  const targetPool = createPool(authenticatedPostgresPoolOptions(targetDescriptor.connectionString));
   const telemetryPool = createPool(authenticatedPostgresPoolOptions(
-    telemetryUrl,
-    { readOnly: true },
+    sourceDescriptor.connectionString, { readOnly: true },
   ));
   let checkpointWrites = 0;
   try {
+    const targetAttestation = await connectAndFingerprintOperatorDatabase({
+      pool: targetPool,
+      descriptor: targetDescriptor,
+      namespace: parsed.target,
+      operation: CUSTOMER_USAGE_RESCAN_OPERATION,
+    });
+    targetAttestation.client.release();
+    const sourceAttestation = await connectAndFingerprintOperatorDatabase({
+      pool: telemetryPool,
+      descriptor: sourceDescriptor,
+      namespace: parsed.target,
+      operation: CUSTOMER_USAGE_RESCAN_OPERATION,
+      role: "source",
+    });
+    sourceAttestation.client.release();
+    const targetFingerprint = targetAttestation.fingerprint;
+    const sourceFingerprint = sourceAttestation.fingerprint;
+    rejectConnectedCollision(sourceFingerprint, targetFingerprint);
+    if (parsed.status) {
+      return Object.freeze({
+        ...planned,
+        connected: true,
+        targetFingerprint,
+        sourceFingerprint,
+        checkpointWrites: 0,
+        writes: 0,
+      });
+    }
+    requireProductionConfirmations({
+      namespace: parsed.target,
+      operation: CUSTOMER_USAGE_RESCAN_OPERATION,
+      expectedConfirmation: PRODUCTION_CONFIRMATION,
+      fingerprint: targetFingerprint,
+      confirmOperation: parsed.confirmProduction,
+      confirmTarget: parsed.confirmTarget,
+    });
+    const normalized = normalizeRescanCheckpoint(checkpoint, {
+      target: parsed.target,
+      targetFingerprint,
+      sourceFingerprint,
+    });
+    if (normalized?.complete && !parsed.replay) {
+      return Object.freeze({
+        ...planned,
+        connected: true,
+        targetFingerprint,
+        sourceFingerprint,
+        checkpoint: normalized,
+        complete: true,
+      });
+    }
+    const startingCheckpoint = parsed.replay ? null : normalized?.next || null;
     const freshness = await readCustomerUsageSourceFreshness({
       telemetryPool,
       target: parsed.target,
@@ -255,11 +330,19 @@ export async function runCustomerUsageRescanOperator({
     return Object.freeze({
       ...planned,
       connected: true,
+      targetFingerprint,
+      sourceFingerprint,
       freshness,
       checkpointWrites,
       checkpoint: finalCheckpoint,
       summary,
     });
+  } catch (error) {
+    if (error instanceof CustomerUsageOperatorError) throw error;
+    if (error instanceof Customer360OperatorGuardError) {
+      throw new CustomerUsageOperatorError(error.message);
+    }
+    throw new CustomerUsageOperatorError("Customer usage rescan operation failed.");
   } finally {
     await Promise.allSettled([targetPool.end(), telemetryPool.end()]);
   }
@@ -275,12 +358,7 @@ async function readCheckpointFile(filename) {
 }
 
 async function writeCheckpointFile(filename, checkpoint) {
-  const temporary = `${filename}.tmp`;
-  await writeFile(temporary, `${JSON.stringify(checkpoint)}\n`, {
-    encoding: "utf8",
-    mode: 0o600,
-  });
-  await rename(temporary, filename);
+  await writeMode600JsonAtomic(filename, checkpoint);
 }
 
 function hasOption(argument, name) {
@@ -309,9 +387,10 @@ function boundedInteger(raw, minimum, maximum, label) {
 function usage() {
   return `Usage:
   node scripts/rescan-customer-usage.mjs --dry-run --target test
+  node scripts/rescan-customer-usage.mjs --status --target test|production
   node scripts/rescan-customer-usage.mjs --apply --target test --checkpoint FILE
   node scripts/rescan-customer-usage.mjs --apply --target production --checkpoint FILE \\
-    --confirm-production ${PRODUCTION_CONFIRMATION} --confirm-target pg-...
+    --confirm-operation ${PRODUCTION_CONFIRMATION} --confirm-target pg-...
 
 Use --replay --confirm-replay ${REPLAY_CONFIRMATION} to deliberately replay
 from the beginning. Replays are idempotent aggregate upserts and never delete.`;
@@ -336,7 +415,7 @@ async function main() {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   main().catch((error) => {
-    console.error(error instanceof CustomerUsageOperatorError ? error.message : "Customer usage rescan failed.");
+    console.error(safeOperatorCliError(error, "Customer usage rescan failed."));
     process.exitCode = 1;
   });
 }

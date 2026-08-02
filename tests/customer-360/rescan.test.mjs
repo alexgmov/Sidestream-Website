@@ -3,9 +3,10 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import {
   PRODUCTION_CONFIRMATION,
-  sanitizedTargetFingerprint,
 } from "../../scripts/sync-customer-usage.mjs";
+import { connectedDatabaseFingerprint } from "../../scripts/customer-360-operator-guards.mjs";
 import {
+  CUSTOMER_USAGE_RESCAN_OPERATION,
   REPLAY_CONFIRMATION,
   normalizeRescanCheckpoint,
   parseCustomerUsageRescanArgs,
@@ -94,7 +95,13 @@ test("checkpoint resume binds to the sanitized source and target fingerprints", 
 test("committed batches checkpoint for resume and replay remains idempotent", async () => {
   const targetUrl = "postgres://writer:secret@target.example.com/sidestream?sslmode=require";
   const sourceUrl = "postgres://reader:secret@source.example.com/telemetry?sslmode=require";
-  const targetFingerprint = sanitizedTargetFingerprint(targetUrl);
+  const targetFingerprint = connectedDatabaseFingerprint({
+    hostname: "target.example.com",
+    port: "5432",
+    databaseName: "sidestream",
+    namespace: "production",
+    operation: CUSTOMER_USAGE_RESCAN_OPERATION,
+  });
   const options = parseCustomerUsageRescanArgs([
     "--apply", "--target", "production", "--checkpoint", "state.json",
     "--confirm-production", PRODUCTION_CONFIRMATION,
@@ -110,8 +117,23 @@ test("committed batches checkpoint for resume and replay remains idempotent", as
     },
     now: new Date("2026-07-31T13:00:00Z"),
     createPool(poolOptions) {
+      const databaseName = new URL(poolOptions.connectionString).pathname.slice(1);
       const pool = {
         options: poolOptions,
+        async connect() {
+          return {
+            async query(sql) {
+              if (sql.includes("current_database()")) {
+                return { rows: [{ database_name: databaseName, server_port: "5432" }] };
+              }
+              if (sql.includes("to_regclass")) {
+                return { rows: [{ profiles: false, usage: false }] };
+              }
+              throw new Error("unexpected identity query");
+            },
+            release() {},
+          };
+        },
         async query() {
           return { rows: [{ source_freshness_at: "2026-07-31T12:00:00Z" }] };
         },
@@ -162,12 +184,26 @@ test("committed batches checkpoint for resume and replay remains idempotent", as
       SIDESTREAM_POSTGRES_URL_NON_POOLING: targetUrl,
       SIDESTREAM_TELEMETRY_POSTGRES_URL: sourceUrl,
     },
-    createPool() {
-      throw new Error("completed checkpoint reconnected");
+    createPool(poolOptions) {
+      const databaseName = new URL(poolOptions.connectionString).pathname.slice(1);
+      return {
+        async connect() {
+          return {
+            async query(sql) {
+              if (sql.includes("current_database()")) {
+                return { rows: [{ database_name: databaseName, server_port: "5432" }] };
+              }
+              return { rows: [{ profiles: false, usage: false }] };
+            },
+            release() {},
+          };
+        },
+        async end() {},
+      };
     },
   });
   assert.equal(completed.complete, true);
-  assert.equal(completed.connected, false);
+  assert.equal(completed.connected, true);
 });
 
 test("rescan implementation is aggregate-only and contains no delete capability", async () => {
