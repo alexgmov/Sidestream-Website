@@ -2,10 +2,12 @@
 
 ## Status and authority
 
-Customer 360 route code is present in the canonical website deployment, but the
-Production service is inactive. The protected admin and usage-sync
-configuration are absent, and no operational Customer 360 claim is justified.
-A read-only 2026-07-29 operator inspection of the live dashboard database found
+The repository now contains guarded, connected-target operator paths for
+Customer 360 migration status/apply, identity backfill, usage sync, and
+historical rescan. Their presence is capability, not authority or Production
+evidence: every external stage remains human-approved, Preview/Test-first, and
+verified on the requested surface. A read-only 2026-07-29 operator inspection of
+the live dashboard database found
 all required tables and read functions plus materialized identity and commerce
 rows, so the earlier "unmigrated and unbackfilled" description is no longer
 supportable. That inspection did not prove backfill completeness or that the
@@ -14,8 +16,9 @@ sync state or daily usage rows. Source presence, a successful build, database
 rows, or an unauthenticated protected-route response is not evidence of
 operational readiness or authenticated behavior.
 This file documents the repository contract and a human-gated Preview/Test-first
-rollout; it contains no Production deployment, migration, or backfill-apply
-claim. The anonymous-acquisition migration, secrets, historical rescan,
+rollout; this code-only revision contains no Production deployment, migration,
+backfill, sync, rescan, provider, or release claim. The
+anonymous-acquisition migration, secrets, historical rescan,
 scheduler decision, website deployment, and FlowState release described below
 remain human-authorized external work; this documentation change performed none
 of them.
@@ -557,7 +560,19 @@ node scripts/sync-customer-usage.mjs --dry-run --target production
 node scripts/rescan-customer-usage.mjs --dry-run --target production
 ```
 
-The only Test apply forms are:
+Before apply, run connected status with the same named target/source selectors.
+Status performs no writes and returns operation-bound target and source
+fingerprints only after the selected database name, port, namespace, and
+source/target separation have been attested:
+
+```bash
+node scripts/sync-customer-usage.mjs --status --target test
+node scripts/rescan-customer-usage.mjs --status --target test
+node scripts/sync-customer-usage.mjs --status --target production
+node scripts/rescan-customer-usage.mjs --status --target production
+```
+
+The exact Test apply forms are:
 
 ```bash
 node scripts/sync-customer-usage.mjs --apply --target test --batch-size 250
@@ -567,16 +582,16 @@ node scripts/rescan-customer-usage.mjs --apply --target test \
 
 They accept the target only from `SIDESTREAM_TEST_POSTGRES_URL` and the source
 only from `SIDESTREAM_TELEMETRY_POSTGRES_URL`; the disposable-target collision
-guard remains active. The Production-capable forms exist for a later explicit
-human gate, but their presence is not authorization:
+guard remains active. The exact Production apply forms exist behind a separate
+human gate; their presence is not authorization:
 
 ```bash
 node scripts/sync-customer-usage.mjs --apply --target production \
-  --confirm-production APPLY_PRODUCTION_CUSTOMER_USAGE \
+  --confirm-operation APPLY_PRODUCTION_CUSTOMER_USAGE \
   --confirm-target pg-<reviewed-fingerprint>
 node scripts/rescan-customer-usage.mjs --apply --target production \
   --checkpoint /restricted/path/customer-usage-rescan.json \
-  --confirm-production APPLY_PRODUCTION_CUSTOMER_USAGE \
+  --confirm-operation APPLY_PRODUCTION_CUSTOMER_USAGE \
   --confirm-target pg-<reviewed-fingerprint>
 ```
 
@@ -585,9 +600,11 @@ Production target selection is only through
 `SIDESTREAM_TELEMETRY_POSTGRES_URL`. Both tools reject a source/target
 fingerprint collision, reject remote TLS weakening modes, remove the URL's
 `sslmode` option, enable certificate verification for remote Postgres, use one
-connection, and never print a connection string. The reviewed
-`pg-<fingerprint>` binds only hostname, port, and database name; it is safe to
-record but is not connected-target evidence by itself.
+connection per database, and never print a connection string. Each
+`pg-<fingerprint>` binds the connected hostname, port, database name, selected
+namespace, and operation. Copy only the target fingerprint from the matching
+status operation into `--confirm-target`; a fingerprint for another operation
+cannot authorize this one.
 
 The sync and rescan share code-enforced invariants: raw telemetry is read-only;
 target writes are append/update only; historical rescan writes are limited to
@@ -602,8 +619,8 @@ REPLAY_SESSION_STARTED_AGGREGATES`; replay is idempotent and never deletes.
 
 No apply command may run until the target, source, secret launcher, source-lag
 threshold, checkpoint path, replay/failure plan, and rollback have separate
-human approval. Production remains blocked behind the migration-tooling and
-other Production blockers in `docs/api-hardening-runbook.md` plus every
+human approval. Production remains blocked behind the other Production
+blockers in `docs/api-hardening-runbook.md` plus every
 human-gated configuration, deployment, scheduling, and verification rule below.
 
 ## Private Customer 360 APIs
@@ -875,6 +892,59 @@ deterministic journey ordering, and privacy exclusions. The complete
 pipeline proves Stripe/Vercel/network isolation and verifies that Customer 360
 leaves entitlement and device-seat state unchanged.
 
+## Guarded migration contract
+
+Local migration validation and dry-run never connect:
+
+```bash
+npm run db:migrate -- --validate
+npm run db:migrate -- --dry-run
+```
+
+Connected Test status/apply use only `SIDESTREAM_TEST_POSTGRES_URL`:
+
+```bash
+npm run db:migrate -- --status --target test
+npm run db:migrate -- --target test
+```
+
+Connected Production status uses only
+`SIDESTREAM_POSTGRES_URL_NON_POOLING`. It writes nothing and prints separate
+operation-bound fingerprints for status, apply, and the exceptional baseline
+path:
+
+```bash
+npm run db:migrate -- --status --target production
+```
+
+If status reports an empty database or an existing valid ledger, do not run
+baseline. If and only if status reports a recognized non-empty legacy schema
+without a ledger and that state receives separate review, use the printed
+baseline fingerprint:
+
+```bash
+npm run db:migrate -- --baseline --target production \
+  --confirm-operation BASELINE_PRODUCTION_POSTGRES_MIGRATIONS \
+  --confirm-target pg-<baseline-target-fingerprint>
+```
+
+After status/baseline evidence and a separate Production mutation approval,
+apply the pending checksummed chain with the printed apply fingerprint:
+
+```bash
+npm run db:migrate -- --target production \
+  --confirm-operation APPLY_PRODUCTION_POSTGRES_MIGRATIONS \
+  --confirm-target pg-<apply-target-fingerprint>
+```
+
+Connected modes require authenticated URLs, reject weak remote TLS, attest the
+selected database name, port, and namespace after connecting, use one
+connection plus the global advisory lock, and never print a URL. Each pending
+SQL file and its SHA-256 ledger row commit atomically. Re-run connected status
+afterward and stop on any pending file, checksum drift, unexpected baseline
+shape, wrong namespace, or target mismatch. Runtime handlers never run DDL, and
+these command shapes do not claim that a migration was applied.
+
 ## Dry-run backfill contract
 
 Backfill is dry-run by default. It must consume a reviewed offline JSON file,
@@ -902,10 +972,40 @@ after commit. A commit can survive a following checkpoint-write failure, so
 reruns must rely on idempotent inserts and reviewed checkpoint evidence. Older or
 mismatched checkpoints fail closed.
 
-Production apply is disabled in code. Even in Test, any apply mode requires a
-separate human approval after reviewing the dry-run digest, every orphan and
-conflict, target identity, migration state, checkpoint path, and rollback plan.
-This document intentionally provides no apply command.
+Connected status is read-only and returns the operation-bound target
+fingerprint after database-name, port, and namespace attestation:
+
+```bash
+node scripts/backfill-customer-360.mjs --status --namespace test
+node scripts/backfill-customer-360.mjs --status --namespace production
+```
+
+After a separate approval of the dry-run digest, every orphan/conflict,
+migration state, target fingerprint, restricted checkpoint path, and rollback
+plan, the exact apply shapes are:
+
+```bash
+node scripts/backfill-customer-360.mjs --apply --namespace test \
+  --input /restricted/path/reviewed-input.json \
+  --checkpoint /restricted/path/customer-360-backfill.json \
+  --batch-size 100
+
+node scripts/backfill-customer-360.mjs --apply --namespace production \
+  --input /restricted/path/reviewed-input.json \
+  --checkpoint /restricted/path/customer-360-backfill.json \
+  --batch-size 100 \
+  --confirm-operation APPLY_PRODUCTION_CUSTOMER_360_BACKFILL \
+  --confirm-target pg-<reviewed-fingerprint>
+```
+
+Test uses only `SIDESTREAM_TEST_POSTGRES_URL`; Production uses only
+`SIDESTREAM_POSTGRES_URL_NON_POOLING`. The versioned mode-`0600` checkpoint is
+atomically replaced after each committed batch and binds the operation,
+namespace, connected target fingerprint, input digest, and processed plan
+prefix. Apply is append-only, batch-atomic, resumable, and idempotent. Conflicts
+write nothing; rerun the same reviewed input/checkpoint to recover from a commit
+that survives a checkpoint-write failure. No apply is implied by these command
+shapes.
 
 ## Required Vercel configuration names
 
@@ -921,7 +1021,7 @@ storage.
 | Signed `/mc` experiment metadata | `SIDESTREAM_PAID_ACQUISITION_ASSIGNMENT_SECRET` when the paid/freemium experiment is enabled; absent/invalid configuration keeps `/mc` on its existing safe fallback and adds no signed experiment dimension |
 | Optional email-later path | Existing `RESEND_API_KEY`, `BLOB_READ_WRITE_TOKEN`, `SIDESTREAM_LEAD_HASH_SECRET`, and `SIDESTREAM_RATE_LIMIT_HASH_SECRET`, plus optional `SIDESTREAM_DOWNLOAD_EMAIL_FROM` and `SIDESTREAM_DOWNLOAD_EMAIL_REPLY_TO` overrides; Vercel-managed Blob access may instead use its existing `VERCEL_OIDC_TOKEN` plus `BLOB_STORE_ID`, and the no-email secure share path does not require a recipient |
 
-Production must fail closed while unconfigured. Without the anonymous secret,
+Production must fail closed if unconfigured. Without the anonymous secret,
 middleware and installer delivery continue without acquisition persistence and
 claim creation returns `503`. Without the admin secret, protected Customer 360
 reads return `503`. Without `CRON_SECRET` or the telemetry selector, usage sync
@@ -987,8 +1087,8 @@ This is the only rollout sequence:
 After every Preview/Test gate passes, the exact remaining Production sequence
 still requires a new human authorization for each external stage:
 
-1. Close the Production blockers in `docs/api-hardening-runbook.md`, including
-   authenticated migration status/apply tooling, then freeze the reviewed
+1. Review the guarded migration/backfill/sync/rescan tooling and close the
+   remaining Production blockers in `docs/api-hardening-runbook.md`; then freeze the reviewed
    website commit, FlowState commit, migration chain, manifests, environment
    inventory, alert owners, source-lag threshold, and rollback artifacts. A
    local gate or dry-run is not this approval.
@@ -1092,9 +1192,11 @@ recreate only the approved staging database from its snapshot. Preserve failure
 evidence, backfill reports, and checkpoints, but do not copy them into
 Production.
 
-The Production sequence and rollback above are a required future human gate,
-not present authorization or evidence that any step occurred. Until separately
-approved and observed, Customer 360 remains operationally inactive and its
-anonymous migration, backfill completeness, runtime database selection,
-protected API behavior, historical rescan, usage sync, scheduling, and
-real-product claim path remain unverified.
+The Production sequence and rollback above are a required human gate, not
+present authorization or evidence that any step occurred. This code-only run
+did not contact a provider or database, apply a migration or backfill, run a
+sync or rescan, deploy, change scheduling, or publish a release. Until those
+surfaces are separately approved and observed, the anonymous migration,
+backfill completeness, runtime database selection, protected API behavior,
+historical rescan, usage sync, scheduling, and real-product claim path remain
+unverified.
