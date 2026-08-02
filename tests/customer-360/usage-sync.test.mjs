@@ -212,6 +212,17 @@ test("high-water ordering preserves equal timestamps with the telemetry event id
   ), 0);
 });
 
+test("high-water ordering preserves PostgreSQL microseconds within one millisecond", () => {
+  assert.equal(compareCustomerUsageHighWater(
+    { receivedAt: "2026-08-02T06:00:32.330001Z", telemetryEventId: "event-z" },
+    { receivedAt: "2026-08-02T06:00:32.330002Z", telemetryEventId: "event-a" },
+  ), -1);
+  assert.equal(compareCustomerUsageHighWater(
+    { receivedAt: "2026-08-02T06:00:32.330999Z", telemetryEventId: "event-a" },
+    { receivedAt: "2026-08-02T06:00:32.330001Z", telemetryEventId: "event-z" },
+  ), 1);
+});
+
 test("rolling boundaries are UTC across Los Angeles spring-forward and fall-back", () => {
   assert.deepEqual(utcUsageWindow(new Date("2026-03-08T09:30:00.000Z")), {
     today: "2026-03-08",
@@ -260,6 +271,17 @@ test("offline sync is dry-run by default and Production requires two exact confi
       "--apply", "--target", "test", "--target-url-env", "POSTGRES_URL",
     ]),
     /only SIDESTREAM_TEST_POSTGRES_URL/,
+  );
+  assert.equal(
+    parseCustomerUsageSyncArgs(["--apply", "--target", "test", "--batch-size", "10000"])
+      .batchSize,
+    10_000,
+  );
+  assert.throws(
+    () => parseCustomerUsageSyncArgs([
+      "--apply", "--target", "test", "--batch-size", "10001",
+    ]),
+    /between 25 and 10000/,
   );
 });
 

@@ -81,11 +81,11 @@ test("checkpoint resume binds to the sanitized source and target fingerprints", 
     ...identity,
     complete: false,
     next: {
-      receivedAt: "2026-07-31T12:00:00Z",
+      receivedAt: "2026-07-31T12:00:00.123456Z",
       telemetryEventId: "event-100",
     },
   }, identity);
-  assert.equal(checkpoint.next.receivedAt, "2026-07-31T12:00:00.000Z");
+  assert.equal(checkpoint.next.receivedAt, "2026-07-31T12:00:00.123456Z");
   assert.throws(
     () => normalizeRescanCheckpoint(checkpoint, {
       ...identity,

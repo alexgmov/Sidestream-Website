@@ -81,7 +81,7 @@ export function parseCustomerUsageSyncArgs(argv) {
     } else if (hasOption(argument, "--batch-size")) {
       let raw;
       [raw, index] = readOption(argv, index, "--batch-size");
-      options.batchSize = boundedInteger(raw, 25, 1_000, "batch size");
+      options.batchSize = boundedInteger(raw, 25, 10_000, "batch size");
     } else if (hasOption(argument, "--max-source-lag-hours")) {
       let raw;
       [raw, index] = readOption(argv, index, "--max-source-lag-hours");

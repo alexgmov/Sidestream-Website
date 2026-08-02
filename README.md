@@ -20,7 +20,7 @@ This repository owns the whole Sidestream web service: the public/account fronte
 - `account.html` - Minimal noindex account bridge on a plain near-black background. Signed-out visits immediately enter Google OAuth, while the server auth session shows returning users their plan status, coarse active-production-device status, explicit device deactivation, latest installer, sign out, and a Manage Billing button that creates a Stripe Customer Portal session.
 - `docs/single-device-entitlements.md` - Device-domain and support reference for the two-active-device contract, privacy boundary, API/page states, and conceptual support decisions. Its obsolete Production command surface has been removed; it authorizes no Production action and points to the API runbook only for blocker/capability status.
 - `docs/api-hardening-runbook.md` - Exact hardened API/release contract, shared Postgres and migration model, Stripe/lead/maintenance facts, bounded configuration, metrics, alerts, guarded Customer 360 operator commands, and the remaining full-service Production blockers. It does not claim Production was changed.
-- `docs/customer-360.md` - Durable cross-repo Customer 360 contract: four separate identities (browser session, install/receipt evidence, sparse profile, and later verified account/contact), exact cookie/download/mobile-handoff/one-time-claim continuity, deterministic paid/anonymous/email attribution, private list/detail/funnel fields, usage semantics, TLS-safe guarded migration/backfill/sync/rescan commands, privacy/no-delete rules, environment-variable names, and the human-gated Preview/Test then Production configuration/deploy/scheduler/release/rollback/smoke sequence. It authorizes and claims no external operation; current Production behavior remains unverified until those gates are separately approved and observed.
+- `docs/customer-360.md` - Durable cross-repo Customer 360 contract: four separate identities (browser session, install/receipt evidence, sparse profile, and later verified account/contact), exact cookie/download/mobile-handoff/one-time-claim continuity, deterministic paid/anonymous/email attribution, private list/detail/funnel fields, usage semantics, TLS-safe guarded migration/backfill/sync/rescan commands, privacy/no-delete rules, environment-variable names, the reusable Preview/Test-first rollout sequence, and the 2026-08-01 Production qualification record.
 - `thank-you.html` - Minimal noindex Checkout success page on a solid black background. Stripe success URLs land here after purchase with a direct return-to-Premiere instruction and one concise recovery path if the panel still shows Free.
 - `paid-thank-you.html` - Phone-first noindex success page used only by verified paid-acquisition Checkout. It tells the buyer to find the separate Sidestream setup email on their Premiere computer, install from its receipt-gated platform link, and authenticate with the same Google email used at Checkout. The original `thank-you.html` remains the ordinary Upgrade/Restore destination.
 - `data/release-manifest.json` and `data/release-manifest.windows.json` - Sidestream-owned stable release manifests. The default file keeps the public Mac artifact; the Windows file is selected by the explicit `win32-x64` platform query used by the public Windows download CTA. Private Blob pathnames are never returned by the public manifest API.
@@ -244,15 +244,23 @@ daily at `05:27` UTC.
 
 ### Customer 360 contract and rollout status
 
-Customer 360 route code and guarded migration/backfill/sync/rescan operators are
-present in the repository. This code-only run did not inspect or change live
-configuration, so current Production operational state is not claimed.
-A read-only 2026-07-29 operator inspection found all required tables and read
-functions plus materialized identity and commerce rows in the live dashboard
-database. It did not prove backfill completeness or that the Production website
-runtime selects that database, and it found no usage sync state or daily usage
-rows. Source presence, a successful build, database rows, or an unauthenticated
-protected-route response does not prove operational readiness. Money is Stripe-verified,
+Customer 360 completed its human-authorized Production qualification on
+2026-08-01. A protected pre-change Neon branch was retained; all 29 checksummed
+migrations were applied to the attested Production target; runtime, direct
+operator, and read-only telemetry roles were kept separate; both identity
+backfills completed and no-op reruns proved idempotency; and the complete
+version-2 history rescan processed `1,403,633` eligible source rows into
+`2,673` UTC daily rows for `802` installs. A guarded
+normal sync followed the rescan, and the source remained read-only while target
+writes stayed limited to append/update-only Customer 360 aggregates.
+
+The Git-linked Production deployment exposes authenticated, `no-store`
+list/detail/funnel reads, while unauthenticated calls remain `401`. The rendered
+FlowState Customers view was verified against the live Production API without
+email addresses, raw hashes, Stripe IDs, search text, or provider payloads. A
+public 1.0.17 Mac installation then completed the one-time browser claim and
+attached the installation to its existing profile without changing Checkout,
+entitlement, device, or payment ownership. Money remains Stripe-verified,
 currency-separated minor units but is not entitlement truth; the separately
 documented lifecycle blockers still prevent describing Production entitlement
 enforcement as complete. `installIdHash` is a Customer 360 association key, not
@@ -287,17 +295,15 @@ the known pre-20260713 Production baseline: refresh rotation, entitlement
 lifecycle, and single-device transfer still require their separately reviewed
 migrations or an explicit compatibility implementation.
 
-The only rollout path is the human-gated sequence in `docs/customer-360.md`:
-complete Preview/Test migration/configuration, dry-run and separately approved
-backfill, guarded sync/rescan with complete checkpoints, protected API and real
-FlowState QA; then obtain new Production authorization for migration, Vercel
-configuration, canonical `origin/main` Git deployment, real-product smoke,
-one-time rescan, one guarded sync, the four-job scheduler decision, and only then
-the separately signed FlowState release. Every stage has explicit failure-stop,
-no-delete rollback, and canonical-surface evidence. Vercel cron control remains
-project-wide across all four jobs. The documented future sequence authorizes and
-claims no Production migration, secret change, scheduler change, deployment,
-rescan, or product release.
+The reusable rollout path remains the human-gated sequence in
+`docs/customer-360.md`: Preview/Test qualification, protected backup and target
+attestation, migration/configuration, idempotent backfills, guarded rescan and
+sync, authenticated API/privacy checks, canonical `origin/main` deployment,
+real-product smoke, four-job scheduler review, and signed release. The
+2026-08-01 run executed that sequence with explicit failure stops, no-delete
+evidence, and canonical-surface verification. Vercel cron control remains
+project-wide across all four declared jobs; Customer 360 usage sync is scheduled
+once daily at `05:27` UTC.
 
 #### Measurable acquisition and retention funnel
 
@@ -966,10 +972,10 @@ Use the narrowest relevant check after edits:
 - Customer 360 identity safety is a payment-group invariant. If any retained alias, trusted identity evidence, or already-safe owner resolves one canonical payment group to different live profiles, the namespace advisory lock must clear `profile_id` and set `identity_conflict=true` on every materialization in that group before totals refresh. This whole-group quarantine is sticky across replay, later one-owner rows, and identity-link triggers; only an explicit group-wide recomputation after a deterministic profile merge may clear it. A Stripe customer link alone never scopes unrelated product money.
 - Customer 360 database `created_at` values reach TypeScript as fixed-width six-microsecond UTC timestamps without a timezone suffix. Compare two canonical values lexically before `Date.parse`; parsing first treats them as local time, can reverse order across a DST gap, and violates the database trigger's `(created_at, id)` total-order contract. ISO inputs from pure callers still use parsed instant ordering, and equal timestamps still use the UUID tie-breaker.
 - Customer 360 currently has no deletion or aggregate-expiry job. Daily usage buckets, canonical profiles/identity, and commerce materializations persist; merge and identity-review audits are immutable. Do not claim a retention period until a separately reviewed implementation enforces one. Stripe payload redaction and the 90-day installer-referral policy are separate domains.
-- Customer 360 route code and guarded operators are present, but this code-only run did not establish current Production configuration or behavior. The live dashboard database was previously observed with the required schema and materialized identity/commerce rows, while Production runtime database selection, backfill completeness, protected API behavior, historical rescan, and usage sync remain unverified. The repository contract allows only the human-gated Preview/Test-first sequence in `docs/customer-360.md`; no route response, database row, dry-run, local test, build, or documentation result is Production approval.
-- Customer 360 local or fixture-backed FlowState consumers may implement the audited contract before website deployment, but live upstream Preview/Test integration and QA remain gated on separately approved migration, configuration, deployment, protected API, freshness, and scheduling evidence. Vercel cannot enable only the usage job: use a separately approved protected manual/non-Production scheduler or review all four jobs before the project-wide switch.
+- Customer 360 Production qualification is current as of 2026-08-01 and is recorded in `docs/customer-360.md`. Future changes still require the same Preview/Test-first, protected-backup, fingerprinted-operator, no-delete, authenticated-API, rendered-dashboard, and canonical-deployment proof; a route response, row, dry-run, build, or Ready Preview alone is never enough.
+- FlowState's live Customers tab consumes the protected Production API only through its loopback Node proxy. Vercel cannot enable only the usage job: the deployed schedule is a reviewed four-job set, with Customer 360 usage sync at `05:27` UTC.
 - Source-segmented retention is an attribution subset, not the overall customer base. Exact paid Checkout wins over exact anonymous browser-to-install claim, which wins over exact verified-account/profile-email evidence; every other install remains unknown. Never infer source from timing, IP, user agent, referrer, nearby events, or approximate identity, and never remove unknown installs from overall stickiness, which uses all install IDs.
-- Historical usage rows created under the former broad non-installer activity rule do not become exact merely because the code changed. The normal overlap cannot rewrite all of them. Historical retention remains unqualified until the guarded full append/update rescan completes with its source/target-bound checkpoint and no-delete evidence. The repository's TLS-safe sync/rescan tools are capabilities, not authority; `docs/customer-360.md` owns the exact commands and human gate, and no migration, configuration, rescan, scheduler change, deployment, or release occurred in this documentation step.
+- Historical usage rows created under the former broad non-installer activity rule do not become exact merely because code changed. The 2026-08-01 version-2 full rescan is the qualification baseline; future aggregator changes must run the same source/target-bound, mode-`0600`, append/update-only replay and prove its no-op rerun before historical retention is trusted again.
 - Anonymous acquisition has four distinct identities: signed browser token, locally verified install/receipt hashes, sparse Customer 360 profile, and later verified account/contact. Do not put UTM/email/hashes into handoff or claim URLs, personalize packages, treat email as merge authority, or let tracking failure block installer delivery. Missing Production configuration must remain fail-closed for association and protected reads.
 - The project root was missing a README before this restoration.
 - The page uses the local Apple/SF Pro system font stack and does not request external web fonts.
@@ -1052,6 +1058,10 @@ Use the narrowest relevant check after edits:
 - `llms.txt` is useful as an AI-readable summary, but it is not a substitute for crawlable HTML, normal metadata, structured data, sitemap hygiene, or external citations/backlinks.
 
 ## Recent Change Log
+
+- 2026-08-01: Preserved PostgreSQL microseconds in Customer 360 usage high-water cursors so bulk telemetry sharing one millisecond cannot repeat a terminal rescan batch. Checkpoint normalization/resume now retains fixed-width six-digit UTC precision, and the guarded manual normal-sync batch ceiling is 10,000 for large overlap catch-up while its default remains 250.
+
+- 2026-08-01: Completed the authorized Customer 360 Production rollout: protected Neon backup and 29-migration verification, least-privilege runtime/operator/telemetry roles, idempotent identity backfills, full version-2 historical usage rescan plus normal sync, protected API/privacy checks, the daily four-job schedule, rendered live FlowState dashboard, and a signed/notarized/published 1.0.17 Mac install and real-Premiere one-time claim. Raw telemetry was read-only and no canonical identity, commerce, entitlement, device, audit, or telemetry row was deleted.
 
 - 2026-08-01: Published the signed, notarized, and stapled standard Mac `1.0.17` installer to `sidestream/1.0.17/Sidestream-1.0.17-Mac-Installer.dmg` and advanced the shared public download/update manifest at 100% rollout; the Windows manifest remains on its independently qualified `1.0.16` artifact.
 

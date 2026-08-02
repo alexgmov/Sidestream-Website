@@ -2,26 +2,30 @@
 
 ## Status and authority
 
-The repository now contains guarded, connected-target operator paths for
-Customer 360 migration status/apply, identity backfill, usage sync, and
-historical rescan. Their presence is capability, not authority or Production
-evidence: every external stage remains human-approved, Preview/Test-first, and
-verified on the requested surface. A read-only 2026-07-29 operator inspection of
-the live dashboard database found
-all required tables and read functions plus materialized identity and commerce
-rows, so the earlier "unmigrated and unbackfilled" description is no longer
-supportable. That inspection did not prove backfill completeness or that the
-Production website runtime selects the same database; it also found no usage
-sync state or daily usage rows. Source presence, a successful build, database
-rows, or an unauthenticated protected-route response is not evidence of
-operational readiness or authenticated behavior.
-This file documents the repository contract and a human-gated Preview/Test-first
-rollout; this code-only revision contains no Production deployment, migration,
-backfill, sync, rescan, provider, or release claim. The
-anonymous-acquisition migration, secrets, historical rescan,
-scheduler decision, website deployment, and FlowState release described below
-remain human-authorized external work; this documentation change performed none
-of them.
+The repository contains guarded, connected-target operator paths for Customer
+360 migration status/apply, identity backfill, usage sync, and historical
+rescan. Their presence remains capability rather than standing authority: every
+external stage is human-approved, Preview/Test-first, and verified on the
+requested surface.
+
+The authorized 2026-08-01 Production qualification retained a protected Neon
+backup, attested separate target and read-only telemetry sources, applied and
+verified all 29 checksummed migrations, configured least-privilege runtime and
+operator roles, completed both identity backfills with no-op reruns, and
+processed `1,403,633` eligible telemetry rows into `2,673` UTC daily rows for
+`802` installs through the version-2 historical
+rescan. A normal guarded sync followed. Raw telemetry remained read-only and
+canonical identity, commerce, entitlement, device, audit, and telemetry rows
+were not deleted.
+
+The Git-linked Production site then passed canonical SHA, signed-out Checkout,
+authenticated list/detail/funnel, `401` unauthenticated boundary, `no-store`,
+and privacy verification. FlowState 1.0.17 was signed, notarized, stapled,
+published, installed from the public bytes, loaded from the canonical system CEP
+root in real Premiere, and completed the one-time first-open claim. The local
+Customers dashboard rendered live Production data through its loopback proxy.
+This is the qualification baseline; future changes must repeat the applicable
+human-gated stages below rather than treating this record as standing approval.
 
 The website repository owns the Customer 360 database, Stripe money projection,
 telemetry aggregate import, and private read API. FlowState may provide durable
@@ -1194,11 +1198,10 @@ recreate only the approved staging database from its snapshot. Preserve failure
 evidence, backfill reports, and checkpoints, but do not copy them into
 Production.
 
-The Production sequence and rollback above are a required human gate, not
-present authorization or evidence that any step occurred. This code-only run
-did not contact a provider or database, apply a migration or backfill, run a
-sync or rescan, deploy, change scheduling, or publish a release. Until those
-surfaces are separately approved and observed, the anonymous migration,
-backfill completeness, runtime database selection, protected API behavior,
-historical rescan, usage sync, scheduling, and real-product claim path remain
-unverified.
+The Production sequence and rollback above remain the required gate for future
+material changes, not standing authorization. The 2026-08-01 qualification
+executed and observed the migration, backfill, rescan, sync, configuration,
+scheduling, deployment, protected API, release, loaded-Premiere, and real claim
+surfaces described in the status record above. Preserve its stop-first,
+no-delete rollback rules and re-establish canonical proof whenever any of those
+inputs changes.

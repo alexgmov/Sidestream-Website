@@ -173,10 +173,19 @@ export function normalizeRescanCheckpoint(
     sourceFingerprint,
     complete: value.complete,
     next: Object.freeze({
-      receivedAt: new Date(value.next.receivedAt).toISOString(),
+      receivedAt: preciseCheckpointTimestamp(value.next.receivedAt),
       telemetryEventId: value.next.telemetryEventId,
     }),
   });
+}
+
+function preciseCheckpointTimestamp(value) {
+  const raw = value instanceof Date ? value.toISOString() : String(value || "");
+  const exact = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,6}))?Z$/.exec(raw);
+  if (!exact || !Number.isFinite(Date.parse(raw))) {
+    throw new CustomerUsageOperatorError("Checkpoint timestamp is invalid.");
+  }
+  return `${exact[1]}.${(exact[2] || "").padEnd(6, "0")}Z`;
 }
 
 export async function runCustomerUsageRescanOperator({
@@ -298,9 +307,7 @@ export async function runCustomerUsageRescanOperator({
         sourceFingerprint,
         complete,
         next: Object.freeze({
-          receivedAt: next.receivedAt instanceof Date
-            ? next.receivedAt.toISOString()
-            : new Date(next.receivedAt).toISOString(),
+          receivedAt: preciseCheckpointTimestamp(next.receivedAt),
           telemetryEventId: next.telemetryEventId,
         }),
       });
@@ -315,7 +322,7 @@ export async function runCustomerUsageRescanOperator({
       telemetryPool,
       licenseNamespace: parsed.target,
       checkpoint: startingCheckpoint ? {
-        receivedAt: new Date(startingCheckpoint.receivedAt),
+        receivedAt: startingCheckpoint.receivedAt,
         telemetryEventId: startingCheckpoint.telemetryEventId,
       } : null,
       batchSize: parsed.batchSize,

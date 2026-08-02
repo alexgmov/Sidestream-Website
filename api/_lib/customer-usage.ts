@@ -62,7 +62,7 @@ type ConnectableQueryRunner = QueryRunner & Readonly<{
 }>;
 
 export type CustomerUsageHighWater = Readonly<{
-  receivedAt: Date;
+  receivedAt: Date | string;
   telemetryEventId: string;
 }>;
 
@@ -248,8 +248,9 @@ export function compareCustomerUsageHighWater(
   left: CustomerUsageHighWater,
   right: CustomerUsageHighWater,
 ) {
-  const timestampDifference = left.receivedAt.getTime() - right.receivedAt.getTime();
-  if (timestampDifference !== 0) return timestampDifference < 0 ? -1 : 1;
+  const leftTimestamp = preciseUtcTimestamp(left.receivedAt, "received_at");
+  const rightTimestamp = preciseUtcTimestamp(right.receivedAt, "received_at");
+  if (leftTimestamp !== rightTimestamp) return leftTimestamp < rightTimestamp ? -1 : 1;
   return left.telemetryEventId.localeCompare(right.telemetryEventId);
 }
 
@@ -396,7 +397,7 @@ export async function runCustomerUsageSync(
   const now = options.now ? new Date(options.now) : new Date();
   if (!Number.isFinite(now.getTime())) throw new TypeError("Sync time is invalid");
   const overlapMs = boundedNumber(configuration.overlapMs, 3_600_000, 7 * 86_400_000);
-  const batchSize = Math.trunc(boundedNumber(configuration.batchSize, 1, 1_000));
+  const batchSize = Math.trunc(boundedNumber(configuration.batchSize, 1, 10_000));
   const licenseNamespace = configuration.licenseNamespace;
   const targetClient = await targetPool.connect();
   let locked = false;
@@ -424,7 +425,7 @@ export async function runCustomerUsageSync(
 
     const checkpoint = start.checkpoint;
     const lowerReceivedAt = new Date(
-      (checkpoint?.receivedAt.getTime() ?? now.getTime()) - overlapMs,
+      (checkpoint ? requiredDate(checkpoint.receivedAt, "usage checkpoint").getTime() : now.getTime()) - overlapMs,
     );
     const upper = await readSourceUpperHighWater(
       sourcePool,
@@ -469,7 +470,7 @@ export async function runCustomerUsageSync(
             targetSchema,
             licenseNamespace,
             batchCheckpoint,
-            upper.receivedAt,
+            requiredDate(upper.receivedAt, "source freshness"),
             now,
           );
         });
@@ -488,7 +489,9 @@ export async function runCustomerUsageSync(
         targetSchema,
         licenseNamespace,
         now,
-        sourceFreshnessAt: upper?.receivedAt || start.sourceFreshnessDate,
+        sourceFreshnessAt: upper
+          ? requiredDate(upper.receivedAt, "source freshness")
+          : start.sourceFreshnessDate,
       });
       await completeCustomerUsageRun(
         targetClient,
@@ -506,7 +509,9 @@ export async function runCustomerUsageSync(
       sourceRowsScanned,
       dailyBucketsWritten,
       profilesRefreshed,
-      sourceFreshnessAt: (upper?.receivedAt || start.sourceFreshnessDate)?.toISOString() || null,
+      sourceFreshnessAt: upper
+        ? preciseUtcTimestamp(upper.receivedAt, "source freshness")
+        : start.sourceFreshnessDate?.toISOString() || null,
     };
   } finally {
     if (locked) {
@@ -579,7 +584,7 @@ export async function runCustomerUsageSessionRescan(
       options.licenseNamespace,
       new Date(0),
     );
-    let cursor = checkpoint || {
+    let cursor: CustomerUsageHighWater = checkpoint || {
       receivedAt: new Date(0),
       telemetryEventId: "",
     };
@@ -634,7 +639,7 @@ export async function runCustomerUsageSessionRescan(
           targetSchema,
           licenseNamespace: options.licenseNamespace,
           now,
-          sourceFreshnessAt: cursor.receivedAt,
+          sourceFreshnessAt: requiredDate(cursor.receivedAt, "rescan checkpoint"),
         });
       });
     }
@@ -645,7 +650,9 @@ export async function runCustomerUsageSessionRescan(
       sourceEventsScanned,
       dailyBucketsWritten,
       profilesRefreshed,
-      sourceFreshnessAt: upper ? cursor.receivedAt.toISOString() : null,
+      sourceFreshnessAt: upper
+        ? preciseUtcTimestamp(cursor.receivedAt, "rescan checkpoint")
+        : null,
       checkpoint: upper || checkpoint ? serializeHighWater(cursor) : null,
       complete,
     };
@@ -858,7 +865,7 @@ async function readSourceUpperHighWater(
   lowerReceivedAt: Date,
 ) {
   const result = await source.query(
-    `select received_at, telemetry_event_id
+    `select ${preciseTimestampSql("received_at")} as received_at, telemetry_event_id
      from ${schema}.${CUSTOMER_USAGE_SOURCE_TABLE}
      where received_at >= $1
        and schema_version = any($2::text[])
@@ -930,7 +937,7 @@ async function readSessionStartedUpperHighWater(
   licenseNamespace: LicenseNamespace,
 ) {
   const result = await source.query(
-    `select received_at, telemetry_event_id
+    `select ${preciseTimestampSql("received_at")} as received_at, telemetry_event_id
      from ${schema}.${CUSTOMER_USAGE_SOURCE_TABLE}
      where event_name = 'session_started'
        and schema_version = any($1::text[])
@@ -1028,7 +1035,7 @@ async function readSessionStartedAggregateBatch(
          projected.app_version
          order by projected.occurred_at desc, projected.telemetry_event_id desc
        ) filter (where projected.app_version is not null))[1] as app_version,
-       checkpoint.received_at as checkpoint_received_at,
+       ${preciseTimestampSql("checkpoint.received_at")} as checkpoint_received_at,
        checkpoint.telemetry_event_id as checkpoint_telemetry_event_id,
        (select count(*)::bigint from batch_events) as source_event_count
      from projected
@@ -1376,7 +1383,7 @@ function buildSourceAggregateSql(schema: string) {
     coalesce(downloads.download_pending_count, 0)::bigint as download_pending_count,
     coalesce(downloads.download_unknown_count, 0)::bigint as download_unknown_count,
     activity.platform, activity.app_version,
-    checkpoint.received_at as checkpoint_received_at,
+    ${preciseTimestampSql("checkpoint.received_at")} as checkpoint_received_at,
     checkpoint.telemetry_event_id as checkpoint_telemetry_event_id,
     (select count(*)::bigint from batch_events) as source_event_count
   from days
@@ -1784,16 +1791,38 @@ async function runClientTransaction<T>(client: PoolClient, callback: () => Promi
 
 function highWaterFromRow(row: QueryRow): CustomerUsageHighWater {
   return Object.freeze({
-    receivedAt: requiredDate(row.received_at, "received_at"),
+    receivedAt: preciseUtcTimestamp(row.received_at, "received_at"),
     telemetryEventId: requiredString(row.telemetry_event_id, "telemetry_event_id", 200),
   });
 }
 
 function serializeHighWater(value: CustomerUsageHighWater) {
   return Object.freeze({
-    receivedAt: value.receivedAt.toISOString(),
+    receivedAt: preciseUtcTimestamp(value.receivedAt, "received_at"),
     telemetryEventId: value.telemetryEventId,
   });
+}
+
+function preciseTimestampSql(column: string) {
+  return `to_char(${column} at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`;
+}
+
+function preciseUtcTimestamp(value: unknown, label: string) {
+  if (value instanceof Date) {
+    const milliseconds = value.toISOString();
+    return `${milliseconds.slice(0, -1)}000Z`;
+  }
+  const raw = String(value || "");
+  const exact = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,6}))?Z$/.exec(raw);
+  if (exact && Number.isFinite(Date.parse(raw))) {
+    return `${exact[1]}.${(exact[2] || "").padEnd(6, "0")}Z`;
+  }
+  const parsed = new Date(raw);
+  if (!Number.isFinite(parsed.getTime())) {
+    throw new Error(`Telemetry aggregate ${label} is invalid`);
+  }
+  const milliseconds = parsed.toISOString();
+  return `${milliseconds.slice(0, -1)}000Z`;
 }
 
 function sourceChannels(namespace: LicenseNamespace) {
