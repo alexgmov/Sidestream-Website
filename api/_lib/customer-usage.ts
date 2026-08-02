@@ -536,7 +536,7 @@ export async function runCustomerUsageSessionRescan(
   const batchSize = Math.trunc(boundedNumber(
     options.batchSize ?? CUSTOMER_USAGE_BATCH_SIZE,
     25,
-    1_000,
+    10_000,
   ));
   const maxBatches = Math.trunc(boundedNumber(options.maxBatches ?? 100, 1, 10_000));
   const checkpoint = options.checkpoint

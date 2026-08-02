@@ -61,6 +61,9 @@ test("rescan apply, Production, and replay require explicit bounded controls", (
   assert.equal(replay.replay, true);
   assert.equal(replay.batchSize, 25);
   assert.equal(replay.maxBatches, 1);
+  assert.equal(parseCustomerUsageRescanArgs([
+    "--dry-run", "--batch-size", "5000",
+  ]).batchSize, 5000);
   assert.throws(
     () => parseCustomerUsageRescanArgs(["--max-batches", "10001"]),
     /between 1 and 10000/,
