@@ -493,7 +493,7 @@ and `s%20table` currently resolve to `stable`, while any other final value retur
 `/api/download` serves the private Vercel Blob object named by the selected manifest at `artifact.pathname`, with `SIDESTREAM_INSTALLER_BLOB_PATHNAME` left only as a local fallback for the default Mac manifest. `HEAD /api/download` returns attachment metadata without exposing the private Blob URL. `GET /api/download` first verifies the Blob metadata, honors a matching `If-None-Match` with `304`, then returns a temporary redirect to a 5-minute signed private Blob URL so the browser downloads from Blob/CDN instead of proxying the full installer through the serverless function. After a tagged Gmail redirect is sent, Vercel `waitUntil()` gives the route's bounded writer at most one second to save a privacy-limited request event; a missing secret, database failure, or timeout is logged but cannot change delivery. Set the stable server-only `SIDESTREAM_INSTALLER_ANALYTICS_HASH_SECRET` to at least 32 characters in every deployed environment that records referrals. `/api/releases/latest` serves the same selected manifest's public update metadata at `https://sidestream.tv/api/releases/latest`, omitting the private Blob pathname. Bare and Mac-platform requests use `data/release-manifest.json`; `platform=win32-x64` uses `data/release-manifest.windows.json`; unknown platforms return `404`. The Mac manifest keeps `1.0.12` as the minimum supported version, so v1.0.11 and older clients treat the latest release as a non-dismissible critical update while v1.0.12 and newer remain on the normal rollout path. Future manifest publishing defaults to the same floor unless `--min-supported-version` is explicitly supplied. The current public Mac pathname is:
 
 ```text
-sidestream/1.0.16/Sidestream-1.0.16-Mac-Installer.dmg
+sidestream/1.0.17/Sidestream-1.0.17-Mac-Installer.dmg
 ```
 
 The current public Windows pathname is:
@@ -508,7 +508,7 @@ The Blob store is the private `sidestream-release-105` store in Vercel project `
 
 Limits and the live team plan were rechecked on 2026-07-13; re-check [Vercel pricing](https://vercel.com/docs/pricing), [Vercel Blob pricing](https://vercel.com/docs/vercel-blob/usage-and-pricing), and [CDN usage](https://vercel.com/docs/manage-cdn-usage) before making quota-sensitive changes. Production currently runs on Vercel Pro with usage billing active. The private store held about 1.406 GiB before the Windows `1.0.13` upload, so it was already beyond the old Hobby allowance without being blocked.
 
-The current public Mac artifact, `Sidestream-1.0.16-Mac-Installer.dmg`, is 224,597,835 bytes, about 214 MiB. The current Windows artifact, `Sidestream-1.0.16-Windows-Installer.exe`, is 61,707,154 bytes, about 59 MiB. Use the live Vercel Usage view rather than stale Hobby math before adding artifacts or estimating a launch's transfer cost.
+The current public Mac artifact, `Sidestream-1.0.17-Mac-Installer.dmg`, is 226,540,711 bytes, about 216 MiB. The current Windows artifact, `Sidestream-1.0.16-Windows-Installer.exe`, is 61,707,154 bytes, about 59 MiB. Use the live Vercel Usage view rather than stale Hobby math before adding artifacts or estimating a launch's transfer cost.
 
 Flag any change that increases installer size, stores multiple release DMGs, uploads raw demo/video assets, makes `/api/download` easier for bots to hit, removes attachment/cache safeguards, proxies the installer through extra functions, or changes the email gate/CTA flow in a way that materially increases downloads. Estimate `artifact bytes * expected downloads` and verify Vercel Usage after publish.
 
@@ -1052,6 +1052,8 @@ Use the narrowest relevant check after edits:
 - `llms.txt` is useful as an AI-readable summary, but it is not a substitute for crawlable HTML, normal metadata, structured data, sitemap hygiene, or external citations/backlinks.
 
 ## Recent Change Log
+
+- 2026-08-01: Published the signed, notarized, and stapled standard Mac `1.0.17` installer to `sidestream/1.0.17/Sidestream-1.0.17-Mac-Installer.dmg` and advanced the shared public download/update manifest at 100% rollout; the Windows manifest remains on its independently qualified `1.0.16` artifact.
 
 - 2026-08-01: Shortened the expanded mobile email handoff button from “Send me the links” to “Email it to me.”
 
