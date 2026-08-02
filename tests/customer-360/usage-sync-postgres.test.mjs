@@ -4,14 +4,17 @@ import { readFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { Pool } from "pg";
-import { loadInjectedModule } from "../helpers/handler-loader.mjs";
+import { loadOperatorPackage } from "../../scripts/customer-360-operator-guards.mjs";
 import {
   createTestPoolOptions,
   requireSafeTestDatabaseUrl,
 } from "../../scripts/run-postgres-integration.mjs";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
+const [{ Pool }, ts] = await Promise.all([
+  loadOperatorPackage("pg", repositoryRoot),
+  loadOperatorPackage("typescript", repositoryRoot),
+]);
 const targetMigrations = [
   "20260715120000_add_customer_360_core.sql",
   "20260715123000_add_customer_usage_aggregates.sql",
@@ -25,7 +28,7 @@ const {
   buildTelemetryPoolOptions,
   runCustomerUsageSync,
   runCustomerUsageSessionRescan,
-} = await loadInjectedModule(
+} = await loadCustomerUsageTestModule(
   new URL("../../api/_lib/customer-usage.ts", import.meta.url),
   {
     pg: { Pool },
@@ -37,6 +40,34 @@ const {
     },
   },
 );
+
+async function loadCustomerUsageTestModule(sourceUrl, injectedModules) {
+  const source = await readFile(sourceUrl, "utf8");
+  const transpiled = ts.transpileModule(source, {
+    compilerOptions: {
+      module: ts.ModuleKind.ESNext,
+      target: ts.ScriptTarget.ES2022,
+      verbatimModuleSyntax: true,
+    },
+  }).outputText;
+  let executable = transpiled;
+  for (const [specifier, bindings] of Object.entries(injectedModules)) {
+    executable = executable.replaceAll(
+      `from ${JSON.stringify(specifier)}`,
+      `from ${JSON.stringify(injectedModuleUrl(bindings))}`,
+    );
+  }
+  return import(`data:text/javascript;charset=utf-8,${encodeURIComponent(executable)}`);
+}
+
+function injectedModuleUrl(bindings) {
+  const key = `sidestream.usage.postgres.test.${Math.random()}`;
+  globalThis[key] = bindings;
+  const exports = Object.keys(bindings).map(
+    (name) => `export const ${name} = globalThis[${JSON.stringify(key)}][${JSON.stringify(name)}];`,
+  );
+  return `data:text/javascript;charset=utf-8,${encodeURIComponent(exports.join("\n"))}`;
+}
 
 test("daily usage sync is read-only, resumable, idempotent, and UTC-windowed", {
   timeout: 180_000,

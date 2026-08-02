@@ -2,10 +2,12 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import {
+  MIGRATION_PRODUCTION_CONFIRMATION,
   classifyMigrationState,
   loadMigrationFiles,
   migrationSqlForTransaction,
   parseMigrationArguments,
+  parseMigrationOperatorArguments,
   selectMigrationDatabase,
   validateMigrationFiles,
 } from "../scripts/apply-postgres-migrations.mjs";
@@ -36,7 +38,7 @@ function knownBaselineSnapshot(rowSecurityEnabled = false) {
 
 test("migration files are ordered, checksummed, and append-only baseline files are pinned", async () => {
   const migrations = validateMigrationFiles(await loadMigrationFiles());
-  assert.equal(migrations.length, 28);
+  assert.equal(migrations.length, 29);
   assert.deepEqual(
     migrations.map((migration) => migration.filename),
     [...migrations.map((migration) => migration.filename)].sort(),
@@ -254,7 +256,7 @@ test("baseline refuses unknown tables, columns, missing constraints, and unknown
   assert.throws(() => verifyMigrationBaselineSnapshot(mixedRls), /Row-level-security state/);
 });
 
-test("CLI operations are mutually exclusive and migration URLs prefer direct endpoints", () => {
+test("CLI operations are mutually exclusive and migration URLs use exact named selectors", () => {
   assert.equal(parseMigrationArguments([]), "apply");
   assert.equal(parseMigrationArguments(["--status"]), "status");
   assert.equal(parseMigrationArguments(["--validate"]), "validate");
@@ -262,11 +264,34 @@ test("CLI operations are mutually exclusive and migration URLs prefer direct end
   assert.throws(() => parseMigrationArguments(["--status", "--baseline"]), /only one/);
   assert.throws(() => parseMigrationArguments(["--mystery"]), /Unknown migration option/);
 
+  assert.throws(
+    () => parseMigrationOperatorArguments(["--status"]),
+    /explicit --target/,
+  );
+  const status = parseMigrationOperatorArguments(["--status", "--target", "production"]);
+  assert.equal(status.targetUrlEnv, "SIDESTREAM_POSTGRES_URL_NON_POOLING");
+  assert.throws(
+    () => parseMigrationOperatorArguments(["--target", "production"]),
+    /confirm-operation/,
+  );
+  assert.throws(
+    () => parseMigrationOperatorArguments([
+      "--target", "production", "--confirm-operation", MIGRATION_PRODUCTION_CONFIRMATION,
+    ]),
+    /confirm-target/,
+  );
+  assert.throws(
+    () => parseMigrationOperatorArguments([
+      "--status", "--target", "production", "--target-url-env", "POSTGRES_URL_NON_POOLING",
+    ]),
+    /may use only SIDESTREAM_POSTGRES_URL_NON_POOLING/,
+  );
+
   const selected = selectMigrationDatabase({
-    SIDESTREAM_POSTGRES_URL: "postgres://pooled:secret@pool.invalid/app",
-    POSTGRES_URL_NON_POOLING: "postgres://direct:secret@db.invalid/app",
-  });
-  assert.equal(selected.environmentVariable, "POSTGRES_URL_NON_POOLING");
+    SIDESTREAM_POSTGRES_URL_NON_POOLING:
+      "postgres://direct:secret@db.invalid/app?sslmode=require",
+  }, "production", "SIDESTREAM_POSTGRES_URL_NON_POOLING");
+  assert.equal(selected.environmentVariable, "SIDESTREAM_POSTGRES_URL_NON_POOLING");
   assert.equal(selected.direct, true);
 });
 

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  CUSTOMER_360_BACKFILL_PRODUCTION_CONFIRMATION,
   Customer360BackfillError,
   buildBackfillPlan,
   buildDryRunReport,
@@ -241,12 +242,12 @@ test("dry-run performs no database, checkpoint, or batch-callback side effects",
   assert.equal(batchCallbacks, 0);
 });
 
-test("Production apply is rejected before any connection and CLI apply is explicit", async () => {
+test("Production backfill is supported only with explicit input, checkpoint, and confirmations", () => {
   assert.equal(parseBackfillArgs([]).dryRun, true);
   assert.equal(parseBackfillArgs(["--self-test", "--dry-run"]).selfTest, true);
   assert.throws(
     () => parseBackfillArgs(["--apply", "--target", "production"]),
-    /Production --apply is disabled/,
+    /reviewed offline --input/,
   );
   assert.throws(
     () => parseBackfillArgs(["--apply", "--namespace", "test"]),
@@ -263,22 +264,27 @@ test("Production apply is rejected before any connection and CLI apply is explic
     /explicit --checkpoint/,
   );
 
-  let connections = 0;
-  await assert.rejects(
-    runCustomer360Backfill({
-      input: [{ recordId: opaqueRecordId(60), accountId: ACCOUNT_A }],
-      namespace: "production",
-      apply: true,
-      pool: {
-        connect() {
-          connections += 1;
-          throw new Error("Production connection attempted");
-        },
-      },
-    }),
-    /Production --apply is disabled/,
+  assert.throws(
+    () => parseBackfillArgs([
+      "--apply", "--namespace", "production", "--input", "fixture.json",
+      "--checkpoint", "state.json",
+    ]),
+    /confirm-operation/,
   );
-  assert.equal(connections, 0);
+  assert.throws(
+    () => parseBackfillArgs([
+      "--apply", "--namespace", "production", "--input", "fixture.json",
+      "--checkpoint", "state.json", "--confirm-operation",
+      CUSTOMER_360_BACKFILL_PRODUCTION_CONFIRMATION,
+    ]),
+    /confirm-target/,
+  );
+  const production = parseBackfillArgs([
+    "--apply", "--namespace", "production", "--input", "fixture.json",
+    "--checkpoint", "state.json", "--confirm-operation",
+    CUSTOMER_360_BACKFILL_PRODUCTION_CONFIRMATION, "--confirm-target", "pg-confirmed",
+  ]);
+  assert.equal(production.targetUrlEnv, "SIDESTREAM_POSTGRES_URL_NON_POOLING");
 });
 
 test("deterministic profile IDs and checkpoints bind resume to exact normalized input", () => {
