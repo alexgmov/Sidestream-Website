@@ -1,17 +1,19 @@
 # Sidestream API hardening operations runbook
 
 This is the operator reference for the hardened Sidestream API. It documents the
-reviewed implementation, current contracts, and unresolved release blockers. No
-executable Production cutover procedure exists. This document is not evidence
-that a Production migration, Stripe configuration change, Vercel WAF rule,
+reviewed implementation, current contracts, guarded Customer 360
+migration/backfill/sync/rescan invocation shapes, and unresolved release
+blockers. The guarded commands require Preview/Test-first evidence and a
+separate human authorization for each external stage. This document is not
+evidence that a Production migration, Stripe configuration change, Vercel WAF rule,
 deployment, secret change, cron change, traffic change, query, or cutover has
 occurred. The documentation-remediation worker that wrote this revision ran
 local checks only; it did not call live Stripe or Vercel endpoints or read or
 mutate Production data.
 
 This document records API, HTTP, data-model, telemetry, and operational facts,
-plus the capabilities that a future separately reviewed Production plan would
-need. `docs/single-device-entitlements.md` remains limited to device-domain
+plus the capabilities that a separately reviewed Production plan needs.
+`docs/single-device-entitlements.md` remains limited to device-domain
 behavior, privacy, and conceptual support decisions. Neither document authorizes
 Production staging or mutation. Do not reconstruct retired procedures from Git
 history or tickets.
@@ -41,7 +43,7 @@ history or tickets.
   operator WAF bypass, per-job cron kill switch, Stripe dead-letter reset/replay
   tool, qualified runtime-distinct rollback artifact, failed-refund recovery
   transition, complete current-dispute-status mapping, a claim-side total-attempt
-  cap, authenticated-transport support in the migration/legacy/device/reporting
+  cap, authenticated-transport support in the remaining legacy/device/reporting
   tools, or historical lifecycle repair tool.
   Every one remains an explicit Production blocker, never an existing
   capability.
@@ -327,10 +329,12 @@ installer referrals, and maintenance. Production URL precedence is:
 3. `POSTGRES_URL`
 4. `POSTGRES_PRISMA_URL`
 
-`SIDESTREAM_POSTGRES_URL_NON_POOLING` and `POSTGRES_URL_NON_POOLING` are permitted
-as development/test fallback and for operator tools. A production runtime with
-only a direct URL fails closed. Do not give direct migration credentials to a
-browser, CEP build, or normal serverless runtime.
+The guarded Customer 360 migration/backfill operators accept only
+`SIDESTREAM_TEST_POSTGRES_URL` for Test or
+`SIDESTREAM_POSTGRES_URL_NON_POOLING` for Production; generic and runtime
+selectors are rejected. A production runtime with only a direct URL fails
+closed. Do not give direct migration credentials to a browser, CEP build, or
+normal serverless runtime.
 
 The ordered SQL chain is checksummed in
 `public.sidestream_schema_migrations`. The runner takes a global advisory lock,
@@ -344,11 +348,36 @@ npm run db:migrate -- --validate
 npm run db:migrate -- --dry-run
 ```
 
-Database-backed `--status`, `--baseline`, and apply require a connection. Use the
-current implementation only with a loopback disposable database. Never run those
-three current modes, or `verify-migration-baseline.mjs`, against Production. No
-reviewed authenticated Production status or migration tool exists, so those
-operations remain blocked.
+Database-backed `--status`, `--baseline`, and apply use exact named selectors:
+`SIDESTREAM_TEST_POSTGRES_URL` for Test and
+`SIDESTREAM_POSTGRES_URL_NON_POOLING` for Production. They reject weak remote
+TLS, use one connection, attest the selected database name, port, and namespace
+after connecting, and emit only operation-bound `pg-...` fingerprints. Status
+writes nothing and is the only source for the apply/baseline target
+fingerprints:
+
+```bash
+npm run db:migrate -- --status --target test
+npm run db:migrate -- --target test
+
+npm run db:migrate -- --status --target production
+npm run db:migrate -- --target production \
+  --confirm-operation APPLY_PRODUCTION_POSTGRES_MIGRATIONS \
+  --confirm-target pg-<apply-target-fingerprint>
+```
+
+Baseline is not routine apply. Use it only when connected status reports a
+recognized non-empty legacy schema without a ledger and a separate review
+approves that exact state:
+
+```bash
+npm run db:migrate -- --baseline --target production \
+  --confirm-operation BASELINE_PRODUCTION_POSTGRES_MIGRATIONS \
+  --confirm-target pg-<baseline-target-fingerprint>
+```
+
+The Production command shapes are guarded capabilities, not standing
+authorization. This code-only run did not execute them.
 
 An existing non-empty schema without the ledger is not automatically assumed to
 be current. `--status` reports that a baseline is required; `--baseline` checks
@@ -360,14 +389,14 @@ lead uniqueness on `(email, cta_source)` and `lead_key` as a non-unique lookup
 index. Runtime DDL is prohibited and checked by
 `node scripts/assert-no-runtime-ddl.mjs`.
 
-`npm run db:migrate -- --status` is the authoritative read-only applied/pending
+`npm run db:migrate -- --status --target test|production` is the authoritative read-only applied/pending
 filename inventory for the complete checksummed chain. When a ledger exists it
 loads every ledger checksum and fails on any local mismatch, but `printStatuses`
 emits only `<status>: <filename>`; it does not print retainable checksum values.
 `--validate` checks only local ordering/checksums and `--dry-run` lists local
-files; both exit before env-file loading or database selection. Retain future
-authenticated status plus a separate local-and-ledger checksum export before and
-after any future mutation. `scripts/verify-migration-baseline.mjs` is narrower.
+files; both exit before database selection. Retain connected status before and
+after mutation and preserve the reviewed local migration SHA-256 evidence.
+`scripts/verify-migration-baseline.mjs` is narrower.
 It recognizes a known pre-20260713 catalog, verifies its conditional RLS state,
 and reports only the baseline-era/activation-rotation guard it understands. It
 neither loads `SIDESTREAM_DB_ENV_FILE` nor enumerates every later hardening
@@ -589,11 +618,13 @@ The exact `counts` fields are `credentialRowsDeleted`,
 Vercel exposes a project-level **Disable Cron Jobs** control. It does not expose
 an operator control that pauses or resumes these four declared schedules one at
 a time; changing one schedule requires configuration plus a new deployment. The
-repository also has no per-job kill switch. A future plan would need either a
+repository also has no per-job kill switch. A reviewed scheduler plan needs either a
 reviewed project-wide pause/invoke/re-enable sequence or separately reviewed
 per-job kill switches. The repository also has no approved maintenance WAF
-bypass or secret-safe invocation launcher, so no Production invocation is
-authorized here. See Vercel's primary [cron management contract](https://vercel.com/docs/cron-jobs/manage-cron-jobs).
+bypass or secret-safe launcher for manually forging these protected HTTP cron
+routes. The guarded direct Customer 360 sync/rescan operators below are the
+approved command shapes for separately authorized manual runs; they do not
+authorize or invoke any other cron job. See Vercel's primary [cron management contract](https://vercel.com/docs/cron-jobs/manage-cron-jobs).
 
 Any future protected invocation capability must validate `CRON_SECRET` as
 16-512 printable non-space ASCII characters, keep it out of shell history and
@@ -614,23 +645,29 @@ rejected, and URLs/secrets are never printed.
 ```bash
 node scripts/sync-customer-usage.mjs --dry-run --target test
 node scripts/rescan-customer-usage.mjs --dry-run --target test
+node scripts/sync-customer-usage.mjs --status --target test
+node scripts/rescan-customer-usage.mjs --status --target test
 node scripts/sync-customer-usage.mjs --apply --target test --batch-size 250
 node scripts/rescan-customer-usage.mjs --apply --target test \
   --checkpoint /restricted/path/customer-usage-rescan.json
 
 node scripts/sync-customer-usage.mjs --apply --target production \
-  --confirm-production APPLY_PRODUCTION_CUSTOMER_USAGE \
+  --confirm-operation APPLY_PRODUCTION_CUSTOMER_USAGE \
   --confirm-target pg-<reviewed-fingerprint>
 node scripts/rescan-customer-usage.mjs --apply --target production \
   --checkpoint /restricted/path/customer-usage-rescan.json \
-  --confirm-production APPLY_PRODUCTION_CUSTOMER_USAGE \
+  --confirm-operation APPLY_PRODUCTION_CUSTOMER_USAGE \
   --confirm-target pg-<reviewed-fingerprint>
 ```
 
 The Production forms are capabilities, not authorization. Test target is only
 `SIDESTREAM_TEST_POSTGRES_URL`; Production target is only
 `SIDESTREAM_POSTGRES_URL_NON_POOLING`; source is only
-`SIDESTREAM_TELEMETRY_POSTGRES_URL`. Raw telemetry is read-only, target writes
+`SIDESTREAM_TELEMETRY_POSTGRES_URL`. Run matching Production `--status` first;
+it returns read-only source and target fingerprints after connection and
+collision checks. Each fingerprint binds hostname, port, database, namespace,
+and operation, so only the matching target fingerprint belongs in
+`--confirm-target`. Raw telemetry is read-only, target writes
 are append/update-only usage aggregates, and deletes plus canonical acquisition,
 profile/identity, commerce/payment, entitlement/device, audit, and raw-telemetry
 mutation are forbidden. Rescan checkpoints are mode `0600`, atomically replaced
@@ -640,6 +677,46 @@ REPLAY_SESSION_STARTED_AGGREGATES`. `docs/customer-360.md` owns the remaining
 human migration/configuration/rescan/scheduler/deploy/release order, rollback,
 failure stops, and real-product smoke checklist. No such external operation was
 performed by this documentation change.
+
+### Guarded Customer 360 identity backfill
+
+The identity backfill reads only a reviewed offline JSON file. Dry-run opens no
+database and writes no checkpoint; connected status writes nothing and emits an
+operation-bound target fingerprint:
+
+```bash
+node scripts/backfill-customer-360.mjs --dry-run --namespace test \
+  --input /restricted/path/reviewed-input.json
+node scripts/backfill-customer-360.mjs --status --namespace test
+node scripts/backfill-customer-360.mjs --status --namespace production
+```
+
+After separate approval of the input digest, orphan/conflict disposition,
+target, migration state, checkpoint path, and rollback plan, use only these
+apply shapes:
+
+```bash
+node scripts/backfill-customer-360.mjs --apply --namespace test \
+  --input /restricted/path/reviewed-input.json \
+  --checkpoint /restricted/path/customer-360-backfill.json \
+  --batch-size 100
+
+node scripts/backfill-customer-360.mjs --apply --namespace production \
+  --input /restricted/path/reviewed-input.json \
+  --checkpoint /restricted/path/customer-360-backfill.json \
+  --batch-size 100 \
+  --confirm-operation APPLY_PRODUCTION_CUSTOMER_360_BACKFILL \
+  --confirm-target pg-<reviewed-fingerprint>
+```
+
+Test accepts only `SIDESTREAM_TEST_POSTGRES_URL`; Production accepts only
+`SIDESTREAM_POSTGRES_URL_NON_POOLING`. The mode-`0600` checkpoint is atomically
+replaced after committed batches and binds operation, namespace, connected
+target, input digest, and processed prefix. Writes are append-only,
+batch-atomic, resumable, conflict-preserving, and idempotent; a conflict writes
+nothing. Email, names, IP, timing, behavior, search text, and campaign HMACs are
+discarded before planning, hashing, reporting, checkpointing, or database
+access. These exact forms are capabilities, not evidence that a backfill ran.
 
 ### Production device support and backfill
 
@@ -673,19 +750,19 @@ tools implement clean selection, strict endpoint/TLS-option rejection, pinned
 provider-CA and hostname validation, and connected-target evidence without
 printing a URL or customer data to uncontrolled output.
 
-## Production cutover status: blocked
-<!-- BLOCKER: PRODUCTION-CUTOVER-NOT-EXECUTABLE -->
+## Full-service Production cutover status: blocked
 
-Production cutover is blocked. No Production staging, mutation, migration,
-traffic change, promotion, fallback, billing or entitlement change,
-customer-state change, or reopening is authorized by this runbook. The retained
-sections record current API/HTTP/data-model/telemetry facts and blockers only;
-any such action is not authorized, and they are not an executable Production
-sequence. No Production action was performed by this documentation change.
+The full Sidestream service cutover remains blocked by the non-Customer-360
+release issues below. The guarded migration, identity-backfill, usage-sync, and
+historical-rescan command shapes above are executable capabilities only after
+the Preview/Test-first evidence and separate human approvals in
+`docs/customer-360.md`; they do not authorize traffic, promotion, billing,
+entitlement, WAF, scheduler, or release changes. No Production action was
+performed by this documentation change.
 
 The existing blockers remain open: unresolved refund/dispute policy and tested
 customer recovery, Stripe dead-letter recovery, a total crash/reclaim attempt
-cap, authenticated Production database tooling, safe device support/backfill,
+cap, safe device support/backfill,
 historical lifecycle repair, license-secret continuity, a runtime-distinct
 qualified fallback, reviewed WAF maintenance controls, and safe cron control.
 

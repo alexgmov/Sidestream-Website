@@ -19,8 +19,8 @@ This repository owns the whole Sidestream web service: the public/account fronte
 - `components/ui/background-paper-shaders.tsx` - Exact pasted React Three Fiber shader primitives from the provided reference. They are kept as optional reference code and are not mounted by default.
 - `account.html` - Minimal noindex account bridge on a plain near-black background. Signed-out visits immediately enter Google OAuth, while the server auth session shows returning users their plan status, coarse active-production-device status, explicit device deactivation, latest installer, sign out, and a Manage Billing button that creates a Stripe Customer Portal session.
 - `docs/single-device-entitlements.md` - Device-domain and support reference for the two-active-device contract, privacy boundary, API/page states, and conceptual support decisions. Its obsolete Production command surface has been removed; it authorizes no Production action and points to the API runbook only for blocker/capability status.
-- `docs/api-hardening-runbook.md` - Exact hardened API/release contract, shared Postgres and migration model, Stripe/lead/maintenance facts, bounded configuration, metrics, alerts, and the current fail-closed Production blocker/capability inventory. Production cutover is blocked; this file contains no executable Production cutover or fallback recipe and does not claim Production was changed.
-- `docs/customer-360.md` - Durable cross-repo Customer 360 contract: four separate identities (browser session, install/receipt evidence, sparse profile, and later verified account/contact), exact cookie/download/mobile-handoff/one-time-claim continuity, deterministic paid/anonymous/email attribution, private list/detail/funnel fields, usage semantics, TLS-safe guarded sync/rescan commands, privacy/no-delete rules, environment-variable names, and the human-gated Preview/Test then Production migration/configuration/rescan/scheduler/deploy/release/rollback/smoke sequence. It authorizes and claims no external operation; Production remains inactive and unverified until those gates are separately approved and observed.
+- `docs/api-hardening-runbook.md` - Exact hardened API/release contract, shared Postgres and migration model, Stripe/lead/maintenance facts, bounded configuration, metrics, alerts, guarded Customer 360 operator commands, and the remaining full-service Production blockers. It does not claim Production was changed.
+- `docs/customer-360.md` - Durable cross-repo Customer 360 contract: four separate identities (browser session, install/receipt evidence, sparse profile, and later verified account/contact), exact cookie/download/mobile-handoff/one-time-claim continuity, deterministic paid/anonymous/email attribution, private list/detail/funnel fields, usage semantics, TLS-safe guarded migration/backfill/sync/rescan commands, privacy/no-delete rules, environment-variable names, and the human-gated Preview/Test then Production configuration/deploy/scheduler/release/rollback/smoke sequence. It authorizes and claims no external operation; current Production behavior remains unverified until those gates are separately approved and observed.
 - `thank-you.html` - Minimal noindex Checkout success page on a solid black background. Stripe success URLs land here after purchase with a direct return-to-Premiere instruction and one concise recovery path if the panel still shows Free.
 - `paid-thank-you.html` - Phone-first noindex success page used only by verified paid-acquisition Checkout. It tells the buyer to find the separate Sidestream setup email on their Premiere computer, install from its receipt-gated platform link, and authenticate with the same Google email used at Checkout. The original `thank-you.html` remains the ordinary Upgrade/Restore destination.
 - `data/release-manifest.json` and `data/release-manifest.windows.json` - Sidestream-owned stable release manifests. The default file keeps the public Mac artifact; the Windows file is selected by the explicit `win32-x64` platform query used by the public Windows download CTA. Private Blob pathnames are never returned by the public manifest API.
@@ -37,7 +37,7 @@ This repository owns the whole Sidestream web service: the public/account fronte
 - `api/_lib/customer-usage.ts`, `api/_lib/customer-query.ts`, `api/_lib/customer-admin.ts`, `api/internal/customer-usage/sync.ts`, and `api/internal/customers/*` - Once-daily privacy-limited telemetry aggregation plus private Customer 360 list/detail reads. The aggregate layer retains complete first/last use and attempt timestamps, outcome counts, activity/frequency, coarse client summaries, and freshness/materialization state; the compact API intentionally omits total accepted attempts and current subscription status. `SIDESTREAM_TELEMETRY_POSTGRES_URL` is a separate read-only source, while `SIDESTREAM_CRM_ADMIN_SECRET` protects POST-only non-browser reads and signs namespace/filter-bound cursors. Raw telemetry, identity values, `installIdHash`, Stripe IDs, search text, and merged tombstones stay excluded.
 - `api/_lib/acquisition-funnel.ts` and `api/internal/customers/funnel.ts` - Protected, read-only acquisition and retention report for first-install cohorts observed through a separately selected completed UTC-day boundary. Deterministic precedence is exact paid Checkout, exact anonymous claim, exact verified email, then unattributed. It reports complete attributed and unknown groups, auditable first-open/activation/return/one-and-done ratios, coverage by confidence class, and bounded privacy-safe journeys without exposing email, browser tokens, install/receipt/assignment hashes, Stripe IDs, or identity-link values.
 - `scripts/sync-customer-usage.mjs` and `scripts/rescan-customer-usage.mjs` - Human-gated usage operators. Dry-run never connects; apply uses named selectors only, verified remote TLS, one connection, source/target fingerprints and collision rejection, source-freshness limits, append/update-only aggregate writes, and no deletes. Rescan persists a source/target/version-bound mode-`0600` checkpoint after committed batches and requires an additional exact confirmation for deliberate from-zero replay.
-- `scripts/backfill-customer-360.mjs`, `scripts/verify-customer-360-backfill.mjs`, and `tests/customer-360/backfill*.test.mjs` - Offline identity-only Customer 360 backfill planning. Dry-run never opens Postgres or writes a checkpoint; Production apply is disabled; Test apply is separately human-gated, append-only, batch-atomic, resumable, idempotent, conflict-preserving, and restricted to `SIDESTREAM_TEST_POSTGRES_URL`.
+- `scripts/backfill-customer-360.mjs`, `scripts/verify-customer-360-backfill.mjs`, and `tests/customer-360/backfill*.test.mjs` - Offline identity-only Customer 360 backfill planning. Dry-run never opens Postgres or writes a checkpoint; connected status emits an operation-bound fingerprint; Test and separately confirmed Production apply are append-only, batch-atomic, resumable, idempotent, conflict-preserving, checkpointed, and restricted to their exact named selectors.
 - `scripts/check-customer-360-readiness.mjs` - Sanitized, read-only Customer 360 readiness report for repository source, non-Production configuration, optional unauthenticated HTTPS route probes, and optional disposable-Test database inspection. It loads no `.env` file, performs no network or database access by default, and cannot prove Production migration, backfill, customer data, or operational readiness.
 - `api/_lib/account.ts`, `api/_lib/entitlement.ts`, `api/_lib/device-policy.ts`, and `api/_lib/license-environment.ts` - Shared server-only account/Stripe/Postgres implementation plus dependency-free entitlement primitives. They own exact Checkout verification, account-device transactions, two-active-device decisions, unlimited confirmed moves, production/Test isolation from trusted deployment state, short-lived access tokens, rotating refresh credentials, legacy compatibility through 1.0.13, safe OAuth return paths, and restore CSRF validation. Account-session, activation-status, verification, refresh, and download-authorization reads tolerate the pre-entitlement-lifecycle Production schema through one fail-closed JSON-based lifecycle expression, granting legacy compatibility only to the same exact one-time paid rows that the pending migration would backfill. Serverless route imports intentionally use `.js` extensions so Vercel's Node ESM runtime resolves compiled helpers.
 - `api/_lib/checkout-offers.ts` - Server-owned regional Checkout catalog, trusted-country selector, and formatted presentation helper. It allowlists the global USD `$19.99`, India INR `₹499`, and Brazil BRL `R$25` offers, reads only Vercel's server-side `x-vercel-ip-country` signal, and ignores browser query/body price, currency, country, and offer values. India and Brazil activate only when their matching regional Price IDs are configured; otherwise the approved global offer remains the fallback.
@@ -71,7 +71,7 @@ This repository owns the whole Sidestream web service: the public/account fronte
 - `tests/entitlement.test.mjs` - Focused Node test harness for exact paid-Session verification, attacker-link/pre-bind regressions, device/account binding, restore CSRF/origin checks, safe OAuth return paths, and deterministic lost-response credential replay.
 - `tests/download-referral.test.mjs` - Focused Node integration and helper tests for tagged redirects, non-blocking database failures, `HEAD`/`304` exclusions, UTM validation, anonymous HMACs, and likely-scanner detection.
 - `tests/license-environment.test.mjs` and `tests/single-device-*.test.mjs` - Static and disposable-Postgres proof for the complete migration chain, including installer-referral RLS, namespace isolation, policy states, database races, transfers/revocation, support tooling, account pages, download authorization, legacy compatibility, and Checkout preservation. `npm run test:single-device` is the aggregate command and requires a safe `SIDESTREAM_TEST_POSTGRES_URL`.
-- `scripts/apply-postgres-migrations.mjs` - Checksummed, advisory-locked migration runner for all SQL files under `db/migrations/`, with database-backed `--status`/`--baseline`/apply, local-only `--validate`/`--dry-run`, and atomic migration-plus-ledger transactions. Its current remote TLS configuration is not Production-safe; the canonical runbook records the implementation blocker.
+- `scripts/apply-postgres-migrations.mjs` - Checksummed, advisory-locked migration runner for all SQL files under `db/migrations/`, with database-backed `--status`/`--baseline`/apply, local-only `--validate`/`--dry-run`, exact Test/Production selectors, authenticated remote TLS, connected namespace/target fingerprints, explicit Production confirmations, and atomic migration-plus-ledger transactions.
 - `scripts/verify-migration-baseline.mjs` - Read-only exact catalog/RLS verifier for recognized pre-20260713 profiles. Its current remote TLS path is not Production-safe, so Production use is blocked until the canonical runbook's authenticated-tooling prerequisite is implemented; never use it to bless unexplained drift.
 - `scripts/run-api-tests.mjs`, `scripts/run-postgres-integration.mjs`, `scripts/validate-vercel-contract.mjs`, `scripts/verify-production-source.mjs`, `scripts/generate-production-version.mjs`, `scripts/promote-canonical-production.mjs`, `scripts/verify-production-live.mjs`, and `scripts/verify-vercel-build.mjs` - Aggregate handler/state-machine test discovery, disposable-Postgres concurrency proof with runtime-target rejection, static Vercel route/cron validation, clean remote-main/project/checkout/live-ancestry deployment validation, build-time `version.json` generation, verified custom-domain promotion, canonical post-deploy verification, and the post-`vercel build` bundle verifier.
 - `scripts/audit-legacy-subscriptions.mjs` - Read-only-by-default Stripe/Product/Price inventory plus explicitly confirmed direct-database backfill/quarantine for exact allowlisted legacy subscriptions. Its current remote database connection is not Production-safe, so neither audit nor apply is authorized there.
@@ -121,7 +121,7 @@ This repository owns the whole Sidestream web service: the public/account fronte
 - Customer 360 commerce ledger - `api/_lib/customer-commerce.ts`, `20260715122000_add_customer_commerce_ledger.sql`, and `tests/customer-360/commerce*.test.mjs`; settled money comes from one canonical PaymentIntent or standalone Charge per payment group. Before that instrument exists, a paid InvoicePayment edge makes the related Invoice the preferred fallback and suppresses only the Checkout view resolving to the same namespace/profile/currency payment key. Gross and its `off_stripe_paid_minor` subset stay currency-separated, unrelated Checkout fallbacks remain independent, paid InvoicePayment edges never collapse many-to-many allocations into alias equivalence, and contradictory live identity evidence triggers sticky whole-group quarantine.
 - Customer 360 usage and private reads - `api/_lib/customer-usage.ts`, `api/_lib/customer-query.ts`, `api/internal/customer-usage/sync.ts`, `api/internal/customers/index.ts`, and `api/internal/customers/[customerId].ts`; schema-versioned telemetry becomes replaceable UTC daily aggregates with exhaustive stored/derivable first/last use and attempt timestamps, outcome counts, lifetime and rolling activity, attempts-per-active-day frequency, coarse client summaries, and source/materialization freshness. The compact list/detail projection exposes only its documented subset, requires an authenticated admin body to select an authorized namespace, binds that namespace into signed keyset cursors, and exposes neither total accepted attempts nor current subscription status. The full cross-repo field/privacy/rollout contract is `docs/customer-360.md`.
 - Acquisition and retention report - `api/_lib/acquisition-funnel.ts` and `api/internal/customers/funnel.ts`; an authenticated non-browser caller selects a namespace, bounded first-install cohort, and later completed UTC-day observation boundary, then receives complete source/experiment/confidence groups plus ordered, capped journeys. Precedence is exact paid Checkout, exact anonymous browser-to-install claim, exact verified email, then unattributed; candidates must predate or equal first install and every unlinked anonymous install remains `unknown`. Every first-open/activation/return/one-and-done and attribution-coverage value exposes its exact numerator and denominator. Overall stickiness continues to use all install IDs rather than only attributable profiles.
-- Customer 360 backfill - `scripts/backfill-customer-360.mjs` and `scripts/verify-customer-360-backfill.mjs`; reviewed offline identity exports become privacy-safe candidate/orphan/conflict plans. Dry-run is the default and Production apply is unavailable. Any Test apply requires separate approval after dry-run review.
+- Customer 360 backfill - `scripts/backfill-customer-360.mjs` and `scripts/verify-customer-360-backfill.mjs`; reviewed offline identity exports become privacy-safe candidate/orphan/conflict plans. Dry-run is the default; connected status and separately confirmed Test/Production apply use exact selectors, operation-bound fingerprints, append-only idempotent batches, and mode-`0600` checkpoints.
 - API operations - `api/_lib/postgres.ts` owns the shared bounded runtime pool; checksummed migrations own schema changes; `api/_lib/stripe-events.ts` owns durable claimed Stripe work; `api/_lib/maintenance.ts` owns bounded cleanup/redaction; `vercel.json` schedules all four `CRON_SECRET`-protected internal routes. Customer reads never run migrations or drain event backlog.
 
 ## Routes and Assets
@@ -244,15 +244,15 @@ daily at `05:27` UTC.
 
 ### Customer 360 contract and rollout status
 
-Customer 360 route code is present in the canonical website deployment, but the
-Production service is inactive. Its protected admin and usage-sync
-configuration are absent, and no operational Customer 360 claim is justified.
+Customer 360 route code and guarded migration/backfill/sync/rescan operators are
+present in the repository. This code-only run did not inspect or change live
+configuration, so current Production operational state is not claimed.
 A read-only 2026-07-29 operator inspection found all required tables and read
 functions plus materialized identity and commerce rows in the live dashboard
 database. It did not prove backfill completeness or that the Production website
 runtime selects that database, and it found no usage sync state or daily usage
 rows. Source presence, a successful build, database rows, or an unauthenticated
-protected-route response does not change that status. Money is Stripe-verified,
+protected-route response does not prove operational readiness. Money is Stripe-verified,
 currency-separated minor units but is not entitlement truth; the separately
 documented lifecycle blockers still prevent describing Production entitlement
 enforcement as complete. `installIdHash` is a Customer 360 association key, not
@@ -397,6 +397,42 @@ human migration/configuration/rescan/scheduler/deploy/release order, failure
 stops, rollback, and the real-product smoke checklist live in
 `docs/customer-360.md`. No external operation was performed by this docs change.
 
+The operator sequence is dry-run, connected status, then separately approved
+apply. Status writes nothing and emits operation-bound fingerprints after
+database/port/namespace attestation. Test uses only
+`SIDESTREAM_TEST_POSTGRES_URL`; Production uses only
+`SIDESTREAM_POSTGRES_URL_NON_POOLING`; usage operators additionally require the
+separate read-only `SIDESTREAM_TELEMETRY_POSTGRES_URL`:
+
+```bash
+node scripts/backfill-customer-360.mjs --dry-run --namespace test \
+  --input /restricted/path/reviewed-input.json
+node scripts/backfill-customer-360.mjs --status --namespace production
+node scripts/backfill-customer-360.mjs --apply --namespace production \
+  --input /restricted/path/reviewed-input.json \
+  --checkpoint /restricted/path/customer-360-backfill.json \
+  --confirm-operation APPLY_PRODUCTION_CUSTOMER_360_BACKFILL \
+  --confirm-target pg-<reviewed-fingerprint>
+
+node scripts/sync-customer-usage.mjs --status --target production
+node scripts/sync-customer-usage.mjs --apply --target production \
+  --confirm-operation APPLY_PRODUCTION_CUSTOMER_USAGE \
+  --confirm-target pg-<reviewed-fingerprint>
+node scripts/rescan-customer-usage.mjs --status --target production
+node scripts/rescan-customer-usage.mjs --apply --target production \
+  --checkpoint /restricted/path/customer-usage-rescan.json \
+  --confirm-operation APPLY_PRODUCTION_CUSTOMER_USAGE \
+  --confirm-target pg-<reviewed-fingerprint>
+```
+
+Test apply uses the same backfill/sync/rescan shapes with `test` and omits both
+Production confirmations. Backfill and rescan atomically replace mode-`0600`
+checkpoints after committed batches; resume relies on idempotent inserts/upserts
+when a commit survives a checkpoint-write failure. Rescan replay from zero also
+requires `--replay --confirm-replay REPLAY_SESSION_STARTED_AGGREGATES`. These
+operators never delete raw telemetry or canonical Customer 360 identity,
+commerce, audit, entitlement, or device state.
+
 Use the readiness command for a sanitized, read-only status report:
 
 ```bash
@@ -502,9 +538,9 @@ Plugin activation rows are device-bound. `/api/activation/status` issues one det
 
 ### API data ownership and migration model
 
-`api/_lib/postgres.ts` owns one attached pool for every runtime API feature. Production chooses a pooled URL in this order: `SIDESTREAM_POSTGRES_URL`, `SIDESTREAM_POSTGRES_PRISMA_URL`, `POSTGRES_URL`, then `POSTGRES_PRISMA_URL`; direct/non-pooling fallback is forbidden in production runtime. `POSTGRES_POOL_MAX` defaults to 4 and is bounded 2-20, with bounded idle, connection, query, and statement timeouts. Reviewed migrations and backfills use `SIDESTREAM_POSTGRES_URL_NON_POOLING` or `POSTGRES_URL_NON_POOLING` outside the runtime.
+`api/_lib/postgres.ts` owns one attached pool for every runtime API feature. Production chooses a pooled URL in this order: `SIDESTREAM_POSTGRES_URL`, `SIDESTREAM_POSTGRES_PRISMA_URL`, `POSTGRES_URL`, then `POSTGRES_PRISMA_URL`; direct/non-pooling fallback is forbidden in production runtime. `POSTGRES_POOL_MAX` defaults to 4 and is bounded 2-20, with bounded idle, connection, query, and statement timeouts. Guarded migration and Customer 360 backfill operators accept only `SIDESTREAM_TEST_POSTGRES_URL` for Test or `SIDESTREAM_POSTGRES_URL_NON_POOLING` for Production.
 
-`scripts/apply-postgres-migrations.mjs` owns an advisory-locked SHA-256 ledger in `public.sidestream_schema_migrations`. Database-backed `--status` is authoritative for every applied/pending filename in the complete chain and fails on a tracked ledger/local checksum mismatch, but its output does not print checksum values. `--validate` and `--dry-run` are strictly local file checks: both return before env-file loading or database selection and are not Production-state evidence. A future reviewed plan needs an authenticated status implementation plus a separate authenticated read-only export of local and ledger checksums. A non-empty legacy schema requires a verified explicit `--baseline`; `scripts/verify-migration-baseline.mjs` is only the narrower known-catalog/conditional-RLS guard and does not enumerate every later hardening migration. Applying commits each pending SQL file and ledger row together. Current database-backed runner/verifier modes are blocked against Production until they authenticate the server and selected endpoint. Runtime handlers never create or alter schema. The final migration removes the redundant unique `lead_key` constraint while preserving canonical `(email, cta_source)` uniqueness and a non-unique lookup index.
+`scripts/apply-postgres-migrations.mjs` owns an advisory-locked SHA-256 ledger in `public.sidestream_schema_migrations`. Database-backed `--status` is authoritative for every applied/pending filename in the complete chain and fails on tracked ledger/local checksum mismatch. Connected modes enforce exact named selectors, authenticated remote TLS, one connection, database/port/namespace attestation, and operation-bound fingerprints; Production baseline/apply also require exact operation and target confirmations. `--validate` and `--dry-run` are strictly local file checks and are not Production-state evidence. A non-empty legacy schema requires a separately reviewed explicit `--baseline`; `scripts/verify-migration-baseline.mjs` is only the narrower known-catalog/conditional-RLS guard. Applying commits each pending SQL file and ledger row together. Runtime handlers never create or alter schema. The final migration removes the redundant unique `lead_key` constraint while preserving canonical `(email, cta_source)` uniqueness and a non-unique lookup index.
 
 Key hardened environment/configuration ownership:
 
@@ -601,9 +637,9 @@ env -i PATH="$PATH" HOME="$HOME" \
 
 The client paginates the replay route and accepts `--delete-after-commit` only as
 an explicit disposition request to the server-owned ETag/commit protocol. It
-rejects `--apply-schema`; apply schema exclusively through the checksummed
-migration runner after the canonical runbook's Production transport/tooling
-blockers are closed. Do not aim this README example at Production, deployed Test,
+rejects `--apply-schema`; apply schema exclusively through the guarded,
+checksummed migration runner after the canonical runbook's human gates are
+satisfied. Do not aim this README example at Production, deployed Test,
 or a public endpoint.
 
 Validate local migration ordering/checksums and list the local chain without any
@@ -614,27 +650,37 @@ npm run db:migrate -- --validate
 npm run db:migrate -- --dry-run
 ```
 
-Those modes return before env-file loading and database selection. For local
-development only, database-backed status/apply may target a disposable loopback
-Postgres through a single clean selector:
+Those modes return before database selection. Connected Test status/apply use
+only `SIDESTREAM_TEST_POSTGRES_URL`:
 
 ```bash
-env -i PATH="$PATH" HOME="$HOME" \
-  SIDESTREAM_POSTGRES_URL_NON_POOLING='<loopback disposable Postgres URL>' \
-  npm run db:migrate -- --status
-env -i PATH="$PATH" HOME="$HOME" \
-  SIDESTREAM_POSTGRES_URL_NON_POOLING='<loopback disposable Postgres URL>' \
-  npm run db:migrate
+SIDESTREAM_TEST_POSTGRES_URL='<approved Test Postgres URL>' \
+  npm run db:migrate -- --status --target test
+SIDESTREAM_TEST_POSTGRES_URL='<approved Test Postgres URL>' \
+  npm run db:migrate -- --target test
 ```
 
-The runner takes a global advisory lock, verifies ledger SHA-256 values, and
-commits each migration plus its ledger row atomically. Never point these examples
-at Production or deployed Test. Current Production `--status`, `--baseline`,
-apply, and baseline verification remain blocked because their remote clients do
-not authenticate the server certificate/hostname and can inherit unsafe target
-selectors. `docs/api-hardening-runbook.md` records the missing capabilities but
-is not an executable Production procedure; local `--validate`/`--dry-run` do not
-close that blocker or prove Production state.
+Connected Production status is read-only and prints separate status, apply, and
+baseline fingerprints after attesting the connected database. If a separately
+approved migration stage is reached, use only the matching operation-bound
+fingerprint:
+
+```bash
+SIDESTREAM_POSTGRES_URL_NON_POOLING='<approved Production direct URL>' \
+  npm run db:migrate -- --status --target production
+SIDESTREAM_POSTGRES_URL_NON_POOLING='<approved Production direct URL>' \
+  npm run db:migrate -- --target production \
+    --confirm-operation APPLY_PRODUCTION_POSTGRES_MIGRATIONS \
+    --confirm-target pg-<apply-target-fingerprint>
+```
+
+Use `--baseline` only for a separately reviewed recognized legacy schema without
+a ledger, with `BASELINE_PRODUCTION_POSTGRES_MIGRATIONS` and the status command's
+baseline fingerprint. The runner rejects weak remote TLS and wrong/ambiguous
+namespaces, takes a global advisory lock, verifies ledger SHA-256 values, and
+commits each migration plus its ledger row atomically. The command shape is not
+authorization or evidence that a Production migration occurred; preserve
+before/after connected status and follow `docs/customer-360.md`.
 
 Exercise the installer-campaign report only against a loopback disposable/local
 database after its schema is applied:
@@ -918,7 +964,7 @@ Use the narrowest relevant check after edits:
 - Customer 360 identity safety is a payment-group invariant. If any retained alias, trusted identity evidence, or already-safe owner resolves one canonical payment group to different live profiles, the namespace advisory lock must clear `profile_id` and set `identity_conflict=true` on every materialization in that group before totals refresh. This whole-group quarantine is sticky across replay, later one-owner rows, and identity-link triggers; only an explicit group-wide recomputation after a deterministic profile merge may clear it. A Stripe customer link alone never scopes unrelated product money.
 - Customer 360 database `created_at` values reach TypeScript as fixed-width six-microsecond UTC timestamps without a timezone suffix. Compare two canonical values lexically before `Date.parse`; parsing first treats them as local time, can reverse order across a DST gap, and violates the database trigger's `(created_at, id)` total-order contract. ISO inputs from pure callers still use parsed instant ordering, and equal timestamps still use the UUID tie-breaker.
 - Customer 360 currently has no deletion or aggregate-expiry job. Daily usage buckets, canonical profiles/identity, and commerce materializations persist; merge and identity-review audits are immutable. Do not claim a retention period until a separately reviewed implementation enforces one. Stripe payload redaction and the 90-day installer-referral policy are separate domains.
-- Customer 360 route code is present in the canonical website deployment, but Production is operationally inactive and unconfigured. The live dashboard database contains the required schema and materialized identity/commerce rows, while Production runtime database selection, backfill completeness, protected API behavior, and usage sync remain unverified. The repository contract allows only the human-gated Preview/Test-first sequence in `docs/customer-360.md`; no route response, database row, dry-run, local test, build, or documentation result is Production approval.
+- Customer 360 route code and guarded operators are present, but this code-only run did not establish current Production configuration or behavior. The live dashboard database was previously observed with the required schema and materialized identity/commerce rows, while Production runtime database selection, backfill completeness, protected API behavior, historical rescan, and usage sync remain unverified. The repository contract allows only the human-gated Preview/Test-first sequence in `docs/customer-360.md`; no route response, database row, dry-run, local test, build, or documentation result is Production approval.
 - Customer 360 local or fixture-backed FlowState consumers may implement the audited contract before website deployment, but live upstream Preview/Test integration and QA remain gated on separately approved migration, configuration, deployment, protected API, freshness, and scheduling evidence. Vercel cannot enable only the usage job: use a separately approved protected manual/non-Production scheduler or review all four jobs before the project-wide switch.
 - Source-segmented retention is an attribution subset, not the overall customer base. Exact paid Checkout wins over exact anonymous browser-to-install claim, which wins over exact verified-account/profile-email evidence; every other install remains unknown. Never infer source from timing, IP, user agent, referrer, nearby events, or approximate identity, and never remove unknown installs from overall stickiness, which uses all install IDs.
 - Historical usage rows created under the former broad non-installer activity rule do not become exact merely because the code changed. The normal overlap cannot rewrite all of them. Historical retention remains unqualified until the guarded full append/update rescan completes with its source/target-bound checkpoint and no-delete evidence. The repository's TLS-safe sync/rescan tools are capabilities, not authority; `docs/customer-360.md` owns the exact commands and human gate, and no migration, configuration, rescan, scheduler change, deployment, or release occurred in this documentation step.
@@ -959,7 +1005,7 @@ Use the narrowest relevant check after edits:
 - Local account/billing testing requires Vercel dev plus local/test Postgres and Stripe configuration. `SIDESTREAM_LICENSE_HASH_SECRET` must be stable and server-only; when absent, device hashing falls back to the first configured runtime URL after selection and URL normalization. The repository has no byte-safe Production continuity launcher or canary procedure, so any URL/pool change remains blocked until a separately reviewed mechanism preserves those exact bytes and proves the same real device/token across promotion. `SIDESTREAM_PRO_PRODUCT_ID` defaults to `prod_UpwXh6oO1OmPyQ`; global runtime Price discovery treats `SIDESTREAM_PRO_PRICE_ID`, the empty code default, and compatible Unlimited ID as validated hints, then checks Product `default_price`, exact `sidestream_pro_once_1999` lookup key, and any other active matching Product Price against the catalog's exact USD `1999` amount. Stale/missing global hints fall through to discovery or idempotent creation instead of causing a customer-facing 500. Regional truth is explicit: `SIDESTREAM_PRO_INDIA_PRICE_ID` must be active one-time INR `49900`, and `SIDESTREAM_PRO_BRAZIL_PRICE_ID` must be active one-time BRL `2500`, both attached to the same Product. Invalid configured regional truth fails closed; absence safely uses the global fallback. Runtime compatibility is not Production approval. Use placeholders for local Stripe testing and rotate any secret pasted into chat.
 - Production currently lacks `sidestream_licenses.entitlement_status`. Customer-facing reads must use `LICENSE_ENTITLEMENT_STATUS_SQL`; a direct `l.entitlement_status` reference fails at PostgreSQL parse time before fallback logic can run. Do not repair that incident with runtime DDL, a manual column addition, or an unreviewed lifecycle migration. The compatibility expression prefers canonical stored state when present and otherwise recognizes only the exact one-time paid rows the pending migration would backfill.
 - License environment resolution fails closed unless deployment state, trusted host, and selected database agree. Production uses `SIDESTREAM_POSTGRES_URL`; preview/development/test require exact `SIDESTREAM_TEST_API_HOSTS` plus a distinct `SIDESTREAM_TEST_POSTGRES_URL`. Client `buildChannel` is diagnostic only and cannot select a namespace.
-- The Postgres migration runner has a checksummed ledger and advisory lock. Database-backed `npm run db:migrate -- --status` is authoritative for complete applied/pending filenames and rejects ledger/local checksum drift, but it prints no checksum values. `--validate` and `--dry-run` are local-only and cannot prove a Production target or state. The runner, baseline verifier, legacy audit/apply, device tools, campaign report, and lead dump currently permit remote TLS without authenticated certificate/hostname proof, so Production use is blocked until code-owned changes enforce clean selection, provider CA trust, verify-full-equivalent validation, and connected-target evidence. No authenticated Production status/checksum procedure or qualified runtime-distinct fallback currently exists.
+- The guarded Postgres migration runner has a checksummed ledger and advisory lock. Database-backed `npm run db:migrate -- --status --target test|production` is authoritative for complete applied/pending filenames and rejects ledger/local checksum drift. It enforces exact selectors, authenticated remote TLS, connected database/port/namespace attestation, and operation-bound fingerprints; Production baseline/apply require exact confirmations. `--validate` and `--dry-run` are local-only and cannot prove a Production target or state. The separate legacy audit/apply, device, campaign-report, lead-dump, and standalone baseline-verifier paths retain their documented restrictions and must not be treated as substitutes for the guarded runner.
 - Current env-file ingestion is not a Production-safe launcher: the migration runner loads `SIDESTREAM_ENV_FILE` before `SIDESTREAM_DB_ENV_FILE`, Node env files can apply startup options before inline validation, and inherited selectors survive. A future pinned and integrity-attested launcher must validate raw bytes and exact keys before Node, reject NUL/unknown/duplicate/empty/malformed entries, start from an empty environment, and keep secrets out of argv. No current command surface closes this blocker.
 - Migration `20260714200000_remove_redundant_download_lead_key_unique.sql` is not compatible with the pre-hardening `c34ef25` lead writer: that code uses `ON CONFLICT (lead_key)` after the required unique constraint has been removed, so an otherwise-valid capture that reaches Postgres fails and can enter Blob fallback without consuming the database limiter. No runtime-distinct, full-chain-qualified fallback artifact is recorded yet: `git diff --name-only c93bc09..HEAD` contains only these documentation files, so `c93bc09` is the same hardened runtime, not an application rollback. Production mutation is blocked until a different runtime artifact is built, preserved, and proved against the complete migration chain; never treat an arbitrary prior deployment or a docs-only commit difference as rollback-safe.
 - Vercel Preview/Test remains the only Stripe test-mode lifecycle proof. No staged Production artifact, actual-runtime-selector attestation, signed qualification, or promotion proof exists. A future reviewed plan needs pinned provider tooling or an owner-authenticated API that proves exact immutable release/fallback identities, project/team, target, commit/build, aliases, protection, metadata, and actual selector overrides including explicit empty values.
@@ -968,7 +1014,7 @@ Use the narrowest relevant check after edits:
 - Vercel cron scheduling is a project-wide disable/enable control for the four routes in `vercel.json`; the repo has no one-job toggle, per-job kill switch, approved operator bypass, or secret-safe launcher. That gap blocks Production operation until a separately reviewed control and invocation design exists.
 - Switching a deployment from sandbox/test Stripe keys to live Stripe keys can leave existing account rows with customer IDs from the old mode. `findOrCreateStripeCustomer()` validates a saved customer against the currently configured Stripe mode before Checkout reuse and creates a fresh customer if Stripe returns `resource_missing`.
 - Checkout Sessions currently pin `payment_method_types: ["card"]` so live Checkout works even before Stripe Dynamic Payment Methods are configured in the dashboard. Revisit this once the live Stripe account has the desired payment methods enabled.
-- If a successful purchase still shows Free in the account page or plugin, check `/api/stripe/webhook`, `/api/checkout/complete`, activation logs, and Stripe queue evidence; current migration `--status` is loopback-disposable only, and Production requires the future reviewed authenticated status procedure. Runtime routes intentionally do not execute DDL, account/session reads do not drain the queue, and the status fallback cannot repair a missing migration, unattached Session, refund, dispute, or poisoned event.
+- If a successful purchase still shows Free in the account page or plugin, check `/api/stripe/webhook`, `/api/checkout/complete`, activation logs, and Stripe queue evidence; use guarded connected migration status only under the documented target approval. Runtime routes intentionally do not execute DDL, account/session reads do not drain the queue, and status cannot repair a missing migration, unattached Session, refund, dispute, or poisoned event.
 - A complete zero-total Stripe order can have `payment_intent=null` while `payment_status` is either `paid` or `no_payment_required`. Preserve the exact-zero amount, valid-currency, completed Session, Price, Product, activation, and attachment checks together; never generalize this exception to a nonzero or incomplete Checkout.
 - Regional Checkout code requires `20260729120000_add_regional_checkout_offer_snapshots.sql` before it can create or fulfill one-time Checkout intents. Do not deploy the code ahead of that migration: the runtime inserts and selects the new snapshot columns and intentionally fails rather than falling back to today's catalog. The repository's current Production migration tooling remains blocked as documented above, so applying this migration needs a separately authorized, authenticated database procedure before `main` is pushed to the Git-linked Production deployment.
 - Hosted Checkout only accepts promotion codes that already exist in the same Stripe account and mode as `STRIPE_SECRET_KEY`. The repo utility `npm run billing:ensure-freedev` creates or verifies the sandbox `FREEDEV` 100% off promotion code and refuses live keys unless `--allow-live` is passed intentionally. If Stripe Checkout says `FREEDEV` is invalid, first confirm the Checkout page is in sandbox mode, then run the utility with the same env file that powers that deployment. Vercel protected env pulls can return `STRIPE_SECRET_KEY=""`; in that case, use an ignored local env file through `SIDESTREAM_STRIPE_ENV_FILE`.
@@ -1005,6 +1051,7 @@ Use the narrowest relevant check after edits:
 
 ## Recent Change Log
 
+- 2026-08-01: Registered the focused Customer 360 operator-safety suite and consolidated the guarded migration, identity-backfill, usage-sync, and historical-rescan contracts. Documented exact named selectors, connected operation-bound fingerprints, Production confirmations, mode-`0600` checkpoints, replay/idempotency, no-delete boundaries, protected APIs, and Preview/Test-first verification. This code-only run performed no provider call, migration, backfill, sync, rescan, deployment, scheduler change, or release.
 - 2026-08-01: Published the standard Windows `1.0.16` installer to its immutable private Blob pathname and advanced the `win32-x64` manifest to `Sidestream-1.0.16-Windows-Installer.exe` at 100% rollout; the Mac manifest and bare download route remain unchanged.
 - 2026-07-31: Reduced the ordinary Checkout thank-you page to the payment confirmation, return-to-Premiere instruction, and one no-second-charge recovery path. Device limits, receipt storage, and billing-history explanations remain available in the account experience instead of competing with the immediate next action.
 - 2026-07-31: Consolidated the anonymous acquisition contract around four separate identities and the exact signed-cookie -> static download/mobile handoff -> one-time install claim -> sparse profile -> optional later account flow. Documented bounded source/experiment rules, paid-over-anonymous-over-email attribution, protected funnel denominators/coverage, privacy and nonblocking failure behavior, TLS-safe sync/rescan commands with no-delete checkpoints, required Vercel variable names, and the remaining human migration/configuration/rescan/scheduler/deploy/release/rollback/smoke gates. This documentation change performed no external operation.
