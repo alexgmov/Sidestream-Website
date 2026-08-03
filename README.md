@@ -222,7 +222,7 @@ operator response.
 | `/api/internal/customer-usage/sync` | `GET` | `CRON_SECRET`-protected once daily aggregate summary `{ok,outcome,licenseNamespace,batches,sourceRowsScanned,dailyBucketsWritten,profilesRefreshed,sourceFreshnessAt}` |
 | `/api/internal/customers` | `POST` | `SIDESTREAM_CRM_ADMIN_SECRET`-protected `{customers,nextCursor}`; browser origins are forbidden |
 | `/api/internal/customers/[customerId]` | `POST` | Same protected compact shape as list, wrapped as `{customer}`; merged tombstones and cross-namespace IDs return `404` |
-| `/api/internal/customers/summary` | `POST` | Same protected non-browser boundary; returns deployment-matched decimal-string totals for current Unlimited access, paid users, their current overlap, and successful exact-plan payments |
+| `/api/internal/customer-summary` | `POST` | Same protected non-browser boundary; returns deployment-matched decimal-string totals for current Unlimited access, paid users, their current overlap, and successful exact-plan payments |
 | `/api/internal/customers/funnel` | `POST` | Same protected non-browser boundary; returns a read-only first-install cohort report through an explicit completed UTC-day observation end, with auditable first-open/activation/return/one-and-done and coverage ratios, complete groups, and bounded privacy-safe journeys |
 
 For `/api/activation/status`, a parsed non-null JSON value with missing or invalid
@@ -1065,7 +1065,7 @@ Use the narrowest relevant check after edits:
 
 ## Recent Change Log
 
-- 2026-08-03: Added a private license-backed Customer summary that separates current Unlimited access from unique paid users, exposes their overlap and successful-payment count, and reuses the production-safe pre-lifecycle entitlement expression instead of inferring access from Customer 360 money.
+- 2026-08-03: Added a private license-backed Customer summary at the unambiguous `/api/internal/customer-summary` route. It separates current Unlimited access from unique paid users, exposes their overlap and successful-payment count, and reuses the production-safe pre-lifecycle entitlement expression instead of inferring access from Customer 360 money.
 - 2026-08-03: Added the protected Customer 360 `paidCustomerPercentage` metric and auditable `totals.paidCustomers` count. A cohort profile counts once only when verified payment predates the observation boundary and its current materialized net paid remains positive after refunds and disputes; this is separate from activation and paid-attribution coverage.
 
 - 2026-08-01: Preserved PostgreSQL microseconds in Customer 360 usage high-water cursors so bulk telemetry sharing one millisecond cannot repeat a terminal rescan batch. Checkpoint normalization/resume now retains fixed-width six-digit UTC precision, and the guarded manual normal-sync batch ceiling is 5,000 for large overlap catch-up while its default remains 250; Production measurement showed 10,000-row overlap batches were slower.

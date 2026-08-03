@@ -16,9 +16,9 @@ const summaryModule = await loadInjectedModule(
   },
 );
 const routeModule = await loadInjectedModule(
-  new URL("../../api/internal/customers/summary.ts", import.meta.url),
+  new URL("../../api/internal/customer-summary.ts", import.meta.url),
   {
-    "../../_lib/customer-summary.js": summaryModule,
+    "../_lib/customer-summary.js": summaryModule,
   },
 );
 
@@ -96,7 +96,7 @@ test("summary route is private, POST-only, no-store, and returns the compact tot
   for (const method of ["GET", "PUT", "OPTIONS"]) {
     const result = await invokeHandler(handler, {
       method,
-      url: "/api/internal/customers/summary",
+      url: "/api/internal/customer-summary",
       headers: { authorization: `Bearer ${ADMIN_SECRET}` },
     });
     assert.equal(result.response.statusCode, 405);
@@ -105,7 +105,7 @@ test("summary route is private, POST-only, no-store, and returns the compact tot
 
   const browser = await invokeHandler(handler, {
     method: "POST",
-    url: "/api/internal/customers/summary",
+    url: "/api/internal/customer-summary",
     headers: {
       authorization: `Bearer ${ADMIN_SECRET}`,
       origin: "https://sidestream.tv",
@@ -116,7 +116,7 @@ test("summary route is private, POST-only, no-store, and returns the compact tot
 
   const accepted = await invokeHandler(handler, {
     method: "POST",
-    url: "/api/internal/customers/summary",
+    url: "/api/internal/customer-summary",
     headers: { authorization: `Bearer ${ADMIN_SECRET}` },
     body: { licenseNamespace: "production" },
   });

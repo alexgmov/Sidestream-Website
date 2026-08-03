@@ -640,7 +640,7 @@ The server-only routes are:
 
 - `POST /api/internal/customers`
 - `POST /api/internal/customers/{customerId}`
-- `POST /api/internal/customers/summary`
+- `POST /api/internal/customer-summary`
 - `POST /api/internal/customers/funnel`
 
 They require exactly one `Authorization: Bearer <SIDESTREAM_CRM_ADMIN_SECRET>`

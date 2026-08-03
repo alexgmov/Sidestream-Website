@@ -5,11 +5,11 @@ import {
   loadCustomerAdminSecret,
   readCustomerAdminJson,
   sendCustomerAdminJson,
-} from "../../_lib/customer-admin.js";
+} from "../_lib/customer-admin.js";
 import {
   CustomerSummaryValidationError,
   queryCustomerSummary,
-} from "../../_lib/customer-summary.js";
+} from "../_lib/customer-summary.js";
 
 type CustomerSummaryRouteDependencies = Readonly<{
   getAdminSecret: () => string;
