@@ -696,11 +696,14 @@ with at least one exact `sidestream_pro` or compatible `sidestream_unlimited`
 license whose compatibility-safe effective entitlement is currently `active`.
 `paidUsers` counts distinct exact-plan accounts with at least one fulfilled
 positive-payment PaymentIntent, whether or not access remains active;
-`paidUnlimitedAccessUsers` is the overlap. `successfulPayments` counts distinct
-fulfilled PaymentIntent IDs. A completed zero-total Checkout can grant Unlimited
-access without a PaymentIntent, so it contributes to access but not payment.
-These totals come from the deployment's authoritative license database, not the
-nullable Customer 360 entitlement snapshot or cohort funnel.
+`paidUnlimitedAccessUsers` is the overlap. `successfulPayments` is the all-time
+count of live Stripe PaymentIntents whose current status is `succeeded`, matching
+Stripe's Transactions > Succeeded total. A completed zero-total Checkout can
+grant Unlimited access without a PaymentIntent, so it contributes to access but
+not payment. Access and unique paid-user totals come from the deployment's
+authoritative license database; the transaction total comes directly from the
+same deployment's Stripe account. None comes from the nullable Customer 360
+entitlement snapshot or cohort funnel.
 
 Every customer field and nullability is listed here. Timestamps are UTC ISO
 strings. Counts and money are decimal strings to avoid JavaScript integer loss.
