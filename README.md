@@ -341,6 +341,10 @@ The report uses these definitions:
   `activation_record` identity link and completed before `observationEnd`.
   The activation numerator counts only first-opened profiles, so it is always a
   subset of its first-open denominator and cannot exceed 100 percent.
+- **Paid customer:** a cohort profile counts once when a verified payment
+  occurred before `observationEnd` and at least one current currency total has
+  positive net paid after refunds and disputes. This is distinct people, not
+  transactions, revenue, entitlement, or paid-acquisition attribution.
 - **Return / one-and-done:** `laterOpenDays` contains distinct UTC open dates
   after the first-open date and before `observationEnd`. A profile is return
   eligible only after first open and when at least one complete later UTC day
@@ -348,10 +352,11 @@ The report uses these definitions:
   later open day has `oneAndDone=true`; an immature profile is not labeled
   one-and-done.
 
-Top-level and per-group `firstOpenPercentage`, `activationPercentage`,
-`returnPercentage`, and `oneAndDonePercentage` each expose numerator,
-denominator, and percentage; zero denominators produce `percentage: null`.
-`totals` exposes the corresponding profile counts. `dateWindow` keeps the
+Top-level `paidCustomerPercentage` and top-level/per-group
+`firstOpenPercentage`, `activationPercentage`, `returnPercentage`, and
+`oneAndDonePercentage` expose numerator, denominator, and percentage; zero
+denominators produce `percentage: null`. `totals` exposes the corresponding
+profile counts. `dateWindow` keeps the
 inclusive/exclusive first-install selection window separate from the completed
 UTC-day observation boundary. `groups` cover the complete cohort. `journeys`
 add explicit return eligibility and returned/one-and-done state, remain ordered
@@ -1058,6 +1063,8 @@ Use the narrowest relevant check after edits:
 - `llms.txt` is useful as an AI-readable summary, but it is not a substitute for crawlable HTML, normal metadata, structured data, sitemap hygiene, or external citations/backlinks.
 
 ## Recent Change Log
+
+- 2026-08-03: Added the protected Customer 360 `paidCustomerPercentage` metric and auditable `totals.paidCustomers` count. A cohort profile counts once only when verified payment predates the observation boundary and its current materialized net paid remains positive after refunds and disputes; this is separate from activation and paid-attribution coverage.
 
 - 2026-08-01: Preserved PostgreSQL microseconds in Customer 360 usage high-water cursors so bulk telemetry sharing one millisecond cannot repeat a terminal rescan batch. Checkpoint normalization/resume now retains fixed-width six-digit UTC precision, and the guarded manual normal-sync batch ceiling is 5,000 for large overlap catch-up while its default remains 250; Production measurement showed 10,000-row overlap batches were slower.
 

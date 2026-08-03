@@ -19,6 +19,7 @@ const migrations = [
   "20260713205000_harden_download_leads.sql",
   "20260715120000_add_customer_360_core.sql",
   "20260715121000_add_customer_identity_links.sql",
+  "20260715122000_add_customer_commerce_ledger.sql",
   "20260715123000_add_customer_usage_aggregates.sql",
   "20260727010000_add_paid_acquisition_experiment.sql",
   "20260731120000_add_anonymous_acquisition_sessions.sql",
@@ -119,6 +120,7 @@ test("acquisition funnel keeps attribution exact and retention UTC-day based", {
       profiles: "4",
       firstOpenedProfiles: "3",
       completedActivations: "1",
+      paidCustomers: "1",
       returnEligibleProfiles: "2",
       returnedProfiles: "1",
       oneAndDoneProfiles: "1",
@@ -132,6 +134,11 @@ test("acquisition funnel keeps attribution exact and retention UTC-day based", {
       numerator: "1",
       denominator: "3",
       percentage: "33.33",
+    });
+    assert.deepEqual(report.paidCustomerPercentage, {
+      numerator: "1",
+      denominator: "4",
+      percentage: "25.00",
     });
     assert.deepEqual(report.returnPercentage, {
       numerator: "1",
@@ -338,6 +345,23 @@ async function seedFunnel(pool, schema) {
       [profileId, installHash(profileId), firstInstallAt],
     );
   }
+
+  await pool.query(
+    `insert into ${schema}.sidestream_customer_money_totals (
+       profile_id, license_namespace, currency, commerce_model,
+       gross_paid_minor, off_stripe_paid_minor, discount_minor, tax_minor,
+       refunded_minor, disputed_minor, inquiry_minor, net_paid_minor,
+       paid_transaction_count, comped_transaction_count,
+       first_paid_at, last_paid_at
+     ) values
+       ($1, 'test', 'usd', 'one_time', 1999, 0, 0, 0, 0, 0, 0, 1999,
+        1, 0, '2026-07-03T12:00:00Z', '2026-07-03T12:00:00Z'),
+       ($2, 'test', 'usd', 'one_time', 1999, 0, 0, 0, 1999, 0, 0, 0,
+        1, 0, '2026-07-06T12:00:00Z', '2026-07-06T12:00:00Z'),
+       ($3, 'test', 'usd', 'one_time', 1999, 0, 0, 0, 0, 0, 0, 1999,
+        1, 0, '2026-08-02T12:00:00Z', '2026-08-02T12:00:00Z')`,
+    [PROFILE_PAID, PROFILE_FREEMIUM, PROFILE_UNVERIFIED_EMAIL],
+  );
 
   await pool.query(
     `insert into ${schema}.sidestream_anonymous_acquisition_sessions (

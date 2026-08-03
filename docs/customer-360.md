@@ -414,6 +414,7 @@ observation boundary. Cohort selection never expands when an analyst moves
 | Download attempt | First accepted, non-speculative `download_requested`, deduplicated by install/session/download identity when present and telemetry event identity otherwise. Speculative requests count only when terminal facts are linked to a real user request. |
 | Day-zero downloads | Accepted download attempts whose UTC activity date equals the first-open UTC date. A download attempt does not itself create an open day. |
 | Activation | Earliest non-null `completed_at` before `observationEnd` on a `sidestream_activation_sessions` row reached through the profile's exact `activation_record` identity link. Pending or merely created activation rows do not count. The metric numerator includes only profiles that also have a first open. |
+| Paid customer | A distinct cohort profile with at least one currency total whose verified `first_paid_at` is before `observationEnd` and whose current materialized `net_paid_minor` remains positive after refunds and disputes. This counts customers, not transactions, revenue, entitlements, or paid-attribution matches. |
 | Return eligibility | A first-opened profile with at least one complete later UTC calendar day available before `observationEnd`. If first open occurs on the last completed day before the boundary, the profile is immature and excluded from return and one-and-done denominators. |
 | Return day | Distinct UTC active/open date after the first-open date and before `observationEnd`. |
 | One-and-done | A return-eligible profile with no later open date before `observationEnd`. An unopened or immature profile is never one-and-done. This is an observation-window result, not a lifetime prediction. |
@@ -425,6 +426,7 @@ objects:
 | --- | --- | --- |
 | `firstOpenPercentage` | First-opened profiles | All cohort profiles |
 | `activationPercentage` | First-opened profiles with a completed linked activation before `observationEnd` | First-opened profiles |
+| `paidCustomerPercentage` | Distinct cohort profiles with verified payment before `observationEnd` and current positive net paid | All cohort profiles |
 | `returnPercentage` | Return-eligible profiles with at least one later open day | Return-eligible profiles |
 | `oneAndDonePercentage` | Return-eligible profiles with no later open day | Return-eligible profiles |
 
@@ -434,7 +436,7 @@ denominator is zero. Completed activation numerators are defined as a subset of
 first-opened profiles, so activation percentage cannot exceed 100 percent. It
 is not activations divided by installs, clicks, downloads, attributed profiles,
 or paid customers. `totals` also exposes profiles, first-opened profiles,
-completed activations, return-eligible profiles, returned profiles, and
+completed activations, paid customers, return-eligible profiles, returned profiles, and
 one-and-done profiles so every ratio can be audited.
 
 ### Source precedence and experiment dimensions

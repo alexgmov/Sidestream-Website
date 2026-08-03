@@ -147,6 +147,7 @@ test("aggregate and journey output exposes all ratios without raw linkage", asyn
               profile_count: "2",
               first_opened_count: "2",
               completed_activation_count: "1",
+              paid_customer_count: "1",
               return_eligible_count: "2",
               returned_count: "1",
               one_and_done_count: "1",
@@ -161,6 +162,7 @@ test("aggregate and journey output exposes all ratios without raw linkage", asyn
               profile_count: "1",
               first_opened_count: "0",
               completed_activation_count: "0",
+              paid_customer_count: "0",
               return_eligible_count: "0",
               returned_count: "0",
               one_and_done_count: "0",
@@ -199,6 +201,12 @@ test("aggregate and journey output exposes all ratios without raw linkage", asyn
     denominator: "2",
     percentage: "50.00",
   });
+  assert.deepEqual(result.paidCustomerPercentage, {
+    numerator: "1",
+    denominator: "3",
+    percentage: "33.33",
+  });
+  assert.equal(result.totals.paidCustomers, "1");
   assert.deepEqual(result.firstOpenPercentage, {
     numerator: "2",
     denominator: "3",
@@ -258,6 +266,8 @@ test("aggregate and journey output exposes all ratios without raw linkage", asyn
     sqlCalls[0].sql,
     /where first_open_at is not null and activation_at is not null/,
   );
+  assert.match(sqlCalls[0].sql, /money\.net_paid_minor > 0/);
+  assert.match(sqlCalls[0].sql, /money\.first_paid_at < \$4::timestamptz/);
   assert.match(sqlCalls[0].sql, /order by[\s\S]*paid\.first_attributed_at[\s\S]*paid\.entry_id/);
   assert.match(sqlCalls[1].sql, /order by first_install_at, profile_id[\s\S]*limit \$5/);
   assert.deepEqual(sqlCalls[1].params, [
@@ -286,6 +296,7 @@ test("zero first-open denominator returns an explicit null percentage", async ()
           profile_count: "1",
           first_opened_count: "0",
           completed_activation_count: "0",
+          paid_customer_count: "0",
           return_eligible_count: "0",
           returned_count: "0",
           one_and_done_count: "0",

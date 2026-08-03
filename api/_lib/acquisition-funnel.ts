@@ -39,6 +39,7 @@ type FunnelGroupRow = QueryResultRow & Readonly<{
   profile_count: string | number | bigint;
   first_opened_count: string | number | bigint;
   completed_activation_count: string | number | bigint;
+  paid_customer_count: string | number | bigint;
   return_eligible_count: string | number | bigint;
   returned_count: string | number | bigint;
   one_and_done_count: string | number | bigint;
@@ -169,6 +170,15 @@ const FUNNEL_CTES = `
       and activation.completed_at < $4::timestamptz
     where link.license_namespace = $1
     group by link.profile_id
+  ),
+  paid_customers as (
+    select distinct money.profile_id
+    from public.sidestream_customer_money_totals money
+    join cohort_profiles cohort on cohort.profile_id = money.profile_id
+    where money.license_namespace = $1
+      and money.net_paid_minor > 0
+      and money.first_paid_at is not null
+      and money.first_paid_at < $4::timestamptz
   ),
   verified_paid_checkouts as (
     select
@@ -390,6 +400,7 @@ const FUNNEL_CTES = `
       usage.first_install_at,
       usage.first_open_at,
       activation.activation_at,
+      (paid_customer.profile_id is not null) as paid_customer,
       usage.day_zero_download_attempts,
       usage.later_open_days,
       usage.return_eligible,
@@ -413,6 +424,8 @@ const FUNNEL_CTES = `
       ) as first_installer_platform
     from usage_detail usage
     left join activations activation on activation.profile_id = usage.profile_id
+    left join paid_customers paid_customer
+      on paid_customer.profile_id = usage.profile_id
     left join selected_attribution attribution
       on attribution.profile_id = usage.profile_id
       and attribution.selected_order = 1
@@ -451,6 +464,7 @@ export async function queryAcquisitionFunnel(
         count(*) filter (
           where first_open_at is not null and activation_at is not null
         )::bigint as completed_activation_count,
+        count(*) filter (where paid_customer)::bigint as paid_customer_count,
         count(*) filter (where return_eligible)::bigint
           as return_eligible_count,
         count(*) filter (
@@ -542,6 +556,10 @@ export async function queryAcquisitionFunnel(
         totals.completedActivations,
         totals.firstOpenedProfiles,
       ),
+      paidCustomerPercentage: percentageMetric(
+        totals.paidCustomers,
+        totals.profiles,
+      ),
       returnPercentage: percentageMetric(
         totals.returnedProfiles,
         totals.returnEligibleProfiles,
@@ -574,6 +592,7 @@ export async function queryAcquisitionFunnel(
         profiles: totals.profiles.toString(),
         firstOpenedProfiles: totals.firstOpenedProfiles.toString(),
         completedActivations: totals.completedActivations.toString(),
+        paidCustomers: totals.paidCustomers.toString(),
         returnEligibleProfiles: totals.returnEligibleProfiles.toString(),
         returnedProfiles: totals.returnedProfiles.toString(),
         oneAndDoneProfiles: totals.oneAndDoneProfiles.toString(),
@@ -787,6 +806,8 @@ function sumGroupCounts(rows: readonly FunnelGroupRow[]) {
       totals.firstOpenedProfiles + toBigInt(row.first_opened_count),
     completedActivations:
       totals.completedActivations + toBigInt(row.completed_activation_count),
+    paidCustomers:
+      totals.paidCustomers + toBigInt(row.paid_customer_count),
     returnEligibleProfiles:
       totals.returnEligibleProfiles + toBigInt(row.return_eligible_count),
     returnedProfiles:
@@ -797,6 +818,7 @@ function sumGroupCounts(rows: readonly FunnelGroupRow[]) {
     profiles: 0n,
     firstOpenedProfiles: 0n,
     completedActivations: 0n,
+    paidCustomers: 0n,
     returnEligibleProfiles: 0n,
     returnedProfiles: 0n,
     oneAndDoneProfiles: 0n,

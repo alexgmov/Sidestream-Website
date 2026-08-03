@@ -210,6 +210,7 @@ test("anonymous acquisition survives download, claim, retention, and later verif
       profiles: "5",
       firstOpenedProfiles: "5",
       completedActivations: "0",
+      paidCustomers: "0",
       returnEligibleProfiles: "5",
       returnedProfiles: "1",
       oneAndDoneProfiles: "4",
