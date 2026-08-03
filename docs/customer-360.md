@@ -640,6 +640,7 @@ The server-only routes are:
 
 - `POST /api/internal/customers`
 - `POST /api/internal/customers/{customerId}`
+- `POST /api/internal/customers/summary`
 - `POST /api/internal/customers/funnel`
 
 They require exactly one `Authorization: Bearer <SIDESTREAM_CRM_ADMIN_SECRET>`
@@ -665,9 +666,10 @@ below apply only to the list route:
 | `dataQualityFlag` | One documented quality flag below |
 
 There is intentionally no search text, email substring, name substring, raw
-identity, Stripe-ID, or behavioral search filter. The detail body accepts only
-`licenseNamespace`; `{customerId}` must be a UUID. Namespace is required on all
-three routes so a caller cannot retrieve or aggregate another namespace.
+identity, Stripe-ID, or behavioral search filter. Detail and summary bodies
+accept only `licenseNamespace`; `{customerId}` must be a UUID. Namespace is
+required on all four routes, and summary additionally requires it to match the
+deployment/database namespace.
 
 ### Cursors and consistency
 
@@ -686,6 +688,19 @@ is `{"customer":{...}}`; a missing live root in the requested namespace returns
 success is the date window, activation percentage, attribution coverage,
 totals, complete groups, bounded journeys, and journey truncation metadata
 documented above; it does not use the compact customer object.
+
+Summary success is
+`{"licenseNamespace":"production|test","totals":{"unlimitedAccessUsers":"…","paidUsers":"…","paidUnlimitedAccessUsers":"…","successfulPayments":"…"}}`.
+All counts are decimal strings. `unlimitedAccessUsers` counts distinct accounts
+with at least one exact `sidestream_pro` or compatible `sidestream_unlimited`
+license whose compatibility-safe effective entitlement is currently `active`.
+`paidUsers` counts distinct exact-plan accounts with at least one fulfilled
+positive-payment PaymentIntent, whether or not access remains active;
+`paidUnlimitedAccessUsers` is the overlap. `successfulPayments` counts distinct
+fulfilled PaymentIntent IDs. A completed zero-total Checkout can grant Unlimited
+access without a PaymentIntent, so it contributes to access but not payment.
+These totals come from the deployment's authoritative license database, not the
+nullable Customer 360 entitlement snapshot or cohort funnel.
 
 Every customer field and nullability is listed here. Timestamps are UTC ISO
 strings. Counts and money are decimal strings to avoid JavaScript integer loss.

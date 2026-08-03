@@ -335,6 +335,7 @@ test("runtime wiring persists lifecycle facts and atomically clears both credent
     migrationSource,
     commerceSource,
     commerceMigrationSource,
+    entitlementSqlSource,
   ] = await Promise.all([
     readFile(new URL("../api/_lib/account.ts", import.meta.url), "utf8"),
     readFile(new URL("../api/_lib/stripe-events.ts", import.meta.url), "utf8"),
@@ -347,6 +348,7 @@ test("runtime wiring persists lifecycle facts and atomically clears both credent
       "../db/migrations/20260715122000_add_customer_commerce_ledger.sql",
       import.meta.url,
     ), "utf8"),
+    readFile(new URL("../api/_lib/license-entitlement-sql.ts", import.meta.url), "utf8"),
   ]);
   for (const field of [
     "stripe_charge_id",
@@ -375,9 +377,9 @@ test("runtime wiring persists lifecycle facts and atomically clears both credent
   ]) {
     assert.match(eventsSource, new RegExp(eventType.replaceAll(".", "\\.")));
   }
-  assert.match(accountSource, /to_jsonb\(l\) \? 'entitlement_status'/);
+  assert.match(entitlementSqlSource, /to_jsonb\(l\) \? 'entitlement_status'/);
   assert.match(
-    accountSource,
+    entitlementSqlSource,
     /l\.stripe_checkout_session_id is not null[\s\S]*l\.status in \('active', 'trialing'\)[\s\S]*l\.plan_key in/,
   );
   assert.match(
@@ -392,14 +394,15 @@ test("runtime wiring persists lifecycle facts and atomically clears both credent
 });
 
 test("every production license read tolerates the pre-lifecycle schema", async () => {
-  const accountSource = await readFile(
-    new URL("../api/_lib/account.ts", import.meta.url),
-    "utf8",
-  );
+  const [accountSource, entitlementSqlSource] = await Promise.all([
+    readFile(new URL("../api/_lib/account.ts", import.meta.url), "utf8"),
+    readFile(new URL("../api/_lib/license-entitlement-sql.ts", import.meta.url), "utf8"),
+  ]);
   assert.match(
-    accountSource,
-    /const LICENSE_ENTITLEMENT_STATUS_SQL = `[\s\S]*to_jsonb\(l\) \? 'entitlement_status'[\s\S]*stripe_checkout_session_id is not null[\s\S]*status in \('active', 'trialing'\)[\s\S]*plan_key in \('sidestream_pro', 'sidestream_unlimited'\)[\s\S]*else 'unknown'[\s\S]*`;/,
+    entitlementSqlSource,
+    /LICENSE_ENTITLEMENT_STATUS_SQL = `[\s\S]*to_jsonb\(l\) \? 'entitlement_status'[\s\S]*stripe_checkout_session_id is not null[\s\S]*status in \('active', 'trialing'\)[\s\S]*plan_key in \('sidestream_pro', 'sidestream_unlimited'\)[\s\S]*else 'unknown'[\s\S]*`;/,
   );
+  assert.match(accountSource, /license-entitlement-sql\.js/);
   assert.doesNotMatch(accountSource, /\bl\.entitlement_status\b/);
 
   for (const [name, nextName, expectedUses] of [

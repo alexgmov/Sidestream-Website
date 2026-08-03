@@ -25,6 +25,7 @@ export const CUSTOMER_360_NON_POSTGRES_TESTS = Object.freeze([
   "customer-360/query-api.test.mjs",
   "customer-360/readiness.test.mjs",
   "customer-360/rescan.test.mjs",
+  "customer-360/summary.test.mjs",
   "customer-360/usage-sync.test.mjs",
 ]);
 
