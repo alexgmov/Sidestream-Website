@@ -10,6 +10,9 @@ import {
 } from "./run-customer-360-tests.mjs";
 
 const TESTS_DIRECTORY = path.resolve("tests");
+const REQUIRED_ROOT_TESTS = Object.freeze([
+  "acquisition-journey-matrix.test.mjs",
+]);
 const ROOT_POSTGRES_ONLY_TESTS = new Set([
   "postgres-integration.test.mjs",
   "single-device-postgres.test.mjs",
@@ -28,6 +31,14 @@ export async function listApiTestFiles(directory = TESTS_DIRECTORY) {
   const customer360Files = relativeFiles.filter((filename) =>
     filename.startsWith("customer-360/")
   );
+  const missingRequiredRootTests = REQUIRED_ROOT_TESTS.filter((filename) =>
+    !relativeFiles.includes(filename)
+  );
+  if (missingRequiredRootTests.length > 0) {
+    throw new Error(
+      `Required API test suites are missing: ${missingRequiredRootTests.join(", ")}`,
+    );
+  }
   const unclassifiedCustomer360 = customer360Files.filter((filename) =>
     !CUSTOMER_360_CLASSIFIED_TESTS.has(filename)
   );

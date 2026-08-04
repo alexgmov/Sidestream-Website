@@ -38,7 +38,7 @@ function knownBaselineSnapshot(rowSecurityEnabled = false) {
 
 test("migration files are ordered, checksummed, and append-only baseline files are pinned", async () => {
   const migrations = validateMigrationFiles(await loadMigrationFiles());
-  assert.equal(migrations.length, 29);
+  assert.equal(migrations.length, 30);
   assert.deepEqual(
     migrations.map((migration) => migration.filename),
     [...migrations.map((migration) => migration.filename)].sort(),
@@ -66,9 +66,42 @@ test("migration files are ordered, checksummed, and append-only baseline files a
     "20260728093000_make_paid_price_constraint_amount_agnostic.sql",
     "20260729010000_allow_two_active_account_devices.sql",
     "20260729120000_add_regional_checkout_offer_snapshots.sql",
+    "20260803120000_add_acquisition_integrity.sql",
   ]) {
     assert.ok(migrations.some((migration) => migration.filename === filename));
   }
+});
+
+test("acquisition migration requires future Checkout linkage without inferring history", async () => {
+  const migration = await readFile(new URL(
+    "../db/migrations/20260803120000_add_acquisition_integrity.sql",
+    import.meta.url,
+  ), "utf8");
+  assert.match(migration, /create table public\.sidestream_acquisitions/);
+  assert.match(migration, /create table public\.sidestream_acquisition_stages/);
+  assert.match(migration, /create table public\.sidestream_acquisition_conflicts/);
+  assert.match(migration, /Historical intents deliberately stay null/);
+  assert.match(migration, /before insert on public\.sidestream_checkout_intents/i);
+  assert.match(migration, /New Checkout intents require a canonical acquisition/);
+  assert.match(migration, /unique \(license_namespace, stage, deduplication_key\)/);
+  for (const [stage, grain] of [
+    ["landing_observed", "acquisition"],
+    ["email_handoff_created", "delivery_handoff"],
+    ["installer_requested", "installer_request"],
+    ["installation_claimed", "installation"],
+    ["authentication_completed", "authentication"],
+    ["checkout_started", "checkout_intent"],
+    ["checkout_completed", "checkout_session"],
+    ["payment_settled", "payment"],
+    ["refunded", "refund"],
+    ["disputed", "dispute"],
+  ]) {
+    assert.match(migration, new RegExp(`stage = '${stage}' and counting_grain = '${grain}'`));
+  }
+  assert.doesNotMatch(
+    migration,
+    /\b(raw_ip|ip_address|user_agent|cookie|email|stripe_payload|telemetry_payload|install_hash|receipt_hash)\b/i,
+  );
 });
 
 test("regional checkout snapshots are all-null or structurally complete", async () => {

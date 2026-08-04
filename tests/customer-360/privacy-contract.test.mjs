@@ -24,6 +24,9 @@ import {
   toPublicReleaseManifest,
 } from "../../api/_lib/release-manifest.ts";
 import { createRequest, createResponse } from "../helpers/http.mjs";
+import {
+  assertNoProhibitedAcquisitionFields,
+} from "../../scripts/test-acquisition-journey-matrix.mjs";
 
 const SECRET = "anonymous-acquisition-privacy-contract-secret-2026";
 const NOW = Date.UTC(2026, 6, 31, 18, 0, 0);
@@ -159,6 +162,39 @@ test("Customer 360 remains unavailable before its admin secret is configured", (
     code: "customer_admin_unavailable",
   });
   assert.equal(response.getHeader("cache-control"), "no-store, max-age=0");
+});
+
+test("acquisition operator projections reject raw identity and provider references", () => {
+  assert.equal(assertNoProhibitedAcquisitionFields({
+    acquisition: {
+      id: "00000000-0000-4000-8000-000000000001",
+      source: "manychat",
+      channel: "email_handoff",
+      confidence: "exact_trusted_delivery",
+      namespace: "test",
+      stages: { payment_settled: { count: "1", occurredAt: "2026-08-03T12:00:00Z" } },
+      paymentState: { paid: true, refunded: false, disputed: false },
+    },
+  }), true);
+
+  for (const field of [
+    "email",
+    "ip_address",
+    "user_agent",
+    "browser_token",
+    "install_id_hash",
+    "receipt_hash",
+    "stripe_customer_id",
+    "checkout_session_id",
+    "payment_intent_id",
+    "charge_id",
+  ]) {
+    assert.throws(
+      () => assertNoProhibitedAcquisitionFields({ acquisition: { [field]: "private" } }),
+      /Prohibited acquisition field/,
+      field,
+    );
+  }
 });
 
 function packageIdentity(manifest) {
