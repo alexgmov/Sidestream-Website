@@ -1981,6 +1981,18 @@
       });
     }
 
+    function observeAcquisitionEntry() {
+      fetch("/api/acquisition/observe", {
+        method: "POST",
+        credentials: "same-origin",
+        cache: "no-store",
+        keepalive: true
+      }).catch(() => {
+        // Acquisition observation must never interrupt the landing page.
+      });
+    }
+
+    observeAcquisitionEntry();
     recordReferralVisit();
 
     function focusMobileDownloadForm() {

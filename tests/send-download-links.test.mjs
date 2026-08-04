@@ -9,9 +9,11 @@ import { pathToFileURL } from "node:url";
 import {
   ACQUISITION_COOKIE_NAME,
   createBrowserAcquisitionCookie,
+  verifyBrowserAcquisitionCookie,
 } from "../api/_lib/acquisition-cookie.ts";
 import {
   createAcquisitionHandoff,
+  createManyChatEmailDeliveryHandoff,
   verifyAcquisitionHandoff,
 } from "../api/_lib/acquisition-handoff.ts";
 import {
@@ -24,6 +26,8 @@ const NOW = new Date("2026-07-31T18:00:00.000Z");
 const originalNodeEnvironment = process.env.NODE_ENV;
 let compiledDirectory;
 let createDownloadLinkHandler;
+let createAcquisitionObservationHandler;
+let createServerOwnedDeliveryEntryHandler;
 
 before(async () => {
   process.env.NODE_ENV = "test";
@@ -39,6 +43,12 @@ before(async () => {
   ]);
   ({ createDownloadLinkHandler } = await import(
     pathToFileURL(path.join(compiledDirectory, "api", "send-download-links.js")).href
+  ));
+  ({ createAcquisitionObservationHandler } = await import(
+    pathToFileURL(path.join(compiledDirectory, "api", "acquisition", "observe.js")).href
+  ));
+  ({ createServerOwnedDeliveryEntryHandler } = await import(
+    pathToFileURL(path.join(compiledDirectory, "api", "acquisition", "entry.js")).href
   ));
 });
 
@@ -66,6 +76,28 @@ test("email-optional POST returns one opaque computer link and no identity-beari
   }
   assert.match(result.response.headers.get("set-cookie"), new RegExp(`^${ACQUISITION_COOKIE_NAME}=`));
   await result.handlerDone;
+});
+
+test("no-email handoff records the same opaque acquisition ID without browser-selected delivery truth", async () => {
+  const recorded = [];
+  const handler = handoffHandler({
+    recordHandoff: async (event) => recorded.push(event),
+  });
+  const result = await invoke(handler, {
+    method: "POST",
+    body: JSON.stringify({ handoffOnly: true }),
+  });
+  assert.equal(result.response.status, 200);
+  const setCookie = result.response.headers.get("set-cookie");
+  const cookieValue = setCookie.split(";", 1)[0].split("=").slice(1).join("=");
+  const browser = verifyBrowserAcquisitionCookie(cookieValue, { secret: SECRET, now: NOW });
+  await result.response.json();
+  await result.handlerDone;
+  assert.equal(recorded.length, 1);
+  assert.equal(recorded[0].cookie.acquisitionId, browser.acquisitionId);
+  assert.equal(recorded[0].kind, "secure_share_handoff");
+  assert.equal("email" in recorded[0], false);
+  assert.equal("entryChannel" in recorded[0], false);
 });
 
 test("email-optional POST rejects every identity or attribution field beside the exact handoff flag", async () => {
@@ -197,6 +229,72 @@ test("email template accepts only Sidestream installer or opaque-handoff URLs", 
   );
 });
 
+test("landing observation synchronously ensures valid state but every observation failure stays nonblocking", async () => {
+  const cookie = createBrowserAcquisitionCookie({}, {
+    secret: SECRET,
+    now: NOW,
+    randomBytes: () => new Uint8Array(32).fill(8),
+  });
+  const observed = [];
+  const handler = createAcquisitionObservationHandler({
+    getSecret: () => SECRET,
+    now: () => NOW,
+    observe: async (value) => observed.push(value.acquisitionId),
+  });
+  const accepted = await invoke(handler, {
+    method: "POST",
+    path: "/api/acquisition/observe",
+    headers: { cookie: `${ACQUISITION_COOKIE_NAME}=${cookie.value}` },
+  });
+  assert.equal(accepted.response.status, 204);
+  await accepted.handlerDone;
+  assert.deepEqual(observed, [cookie.acquisitionId]);
+
+  const failed = await invoke(createAcquisitionObservationHandler({
+    getSecret: () => SECRET,
+    now: () => NOW,
+    observe: async () => { throw new Error("database unavailable"); },
+  }), {
+    method: "POST",
+    path: "/api/acquisition/observe",
+    headers: { cookie: `${ACQUISITION_COOKIE_NAME}=${cookie.value}` },
+  });
+  assert.equal(failed.response.status, 204);
+  await failed.handlerDone;
+});
+
+test("ManyChat delivery entry accepts only its opaque server envelope and restores the same acquisition ID", async () => {
+  const acquisition = createBrowserAcquisitionCookie({}, {
+    secret: SECRET,
+    now: NOW,
+    randomBytes: () => new Uint8Array(32).fill(9),
+  });
+  const token = createManyChatEmailDeliveryHandoff({
+    acquisitionId: acquisition.acquisitionId,
+    intendedIdentity: "private@example.com",
+  }, { secret: SECRET, now: NOW });
+  const ensured = [];
+  const handler = createServerOwnedDeliveryEntryHandler({
+    getSecret: () => SECRET,
+    now: () => NOW,
+    ensure: async (handoff) => ensured.push(handoff),
+  });
+  const result = await invoke(handler, {
+    path: `/api/acquisition/entry?handoff=${encodeURIComponent(token)}`,
+  });
+  assert.equal(result.response.status, 302);
+  assert.equal(result.response.headers.get("location"), "/");
+  const setCookie = result.response.headers.get("set-cookie");
+  const value = setCookie.split(";", 1)[0].split("=").slice(1).join("=");
+  assert.equal(
+    verifyBrowserAcquisitionCookie(value, { secret: SECRET, now: NOW }).acquisitionId,
+    acquisition.acquisitionId,
+  );
+  assert.equal(ensured[0].entryChannel, "manychat_email");
+  assert.equal(JSON.stringify(ensured[0]).includes("private@example.com"), false);
+  await result.handlerDone;
+});
+
 function handoffHandler(overrides = {}) {
   return createDownloadLinkHandler({
     now: () => new Date(NOW),
@@ -210,6 +308,8 @@ function handoffHandler(overrides = {}) {
     }),
     storeLead: async () => {},
     sendEmail: async () => {},
+    recordHandoff: async () => {},
+    scheduleBackground: () => {},
     log: () => {},
     ...overrides,
   });

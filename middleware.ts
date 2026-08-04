@@ -22,12 +22,17 @@ const INTERNAL_ASSIGNMENT_HEADER =
 const INTERNAL_PROOF_HEADER = "x-sidestream-paid-acquisition-proof";
 const INTERNAL_ATTRIBUTION_HEADER =
   "x-sidestream-paid-acquisition-attribution";
-const ACQUISITION_COOKIE_NAME = "__Host-sidestream-acquisition-v1";
+const ACQUISITION_COOKIE_NAME = "__Host-sidestream-acquisition-v2";
+const LEGACY_ACQUISITION_COOKIE_NAME = "__Host-sidestream-acquisition-v1";
 const ACQUISITION_SECRET_NAME = "SIDESTREAM_ANONYMOUS_ACQUISITION_SECRET";
-const ACQUISITION_COOKIE_VERSION = 1;
+const ACQUISITION_COOKIE_VERSION = 2;
 const ACQUISITION_COOKIE_MAX_AGE_SECONDS = 2_592_000;
 const ACQUISITION_SIGNATURE_CONTEXT =
+  "sidestream-anonymous-acquisition-cookie-v2";
+const LEGACY_ACQUISITION_SIGNATURE_CONTEXT =
   "sidestream-anonymous-acquisition-cookie-v1";
+const LEGACY_ACQUISITION_PROMOTION_CONTEXT =
+  "sidestream-anonymous-acquisition-v1-promotion-v2";
 const BOT_SIGNATURES = [
   "bot",
   "crawler",
@@ -363,14 +368,30 @@ async function attachBrowserAcquisition(request, response, runtime, experiment) 
     if (existing && await verifyAcquisitionCookie(existing, key, nowSeconds)) {
       return response;
     }
+    const legacy = existing ? null : readSingleCookie(
+      request.headers.get("cookie"),
+      LEGACY_ACQUISITION_COOKIE_NAME,
+    );
+    if (legacy) {
+      const promoted = await promoteLegacyAcquisitionCookie(
+        legacy,
+        key,
+        nowSeconds,
+      );
+      if (promoted) {
+        response.headers.append("Set-Cookie", promoted);
+        return response;
+      }
+    }
     const tokenBytes = runtime.randomBytes(32);
     if (!(tokenBytes instanceof Uint8Array) || tokenBytes.length !== 32) {
       return response;
     }
     const issued = await createAcquisitionCookie(
       key,
-      bytesToBase64Url(tokenBytes),
+      uuidFromBytes(tokenBytes.slice(0, 16)),
       normalizeBrowserAttribution(new URL(request.url).searchParams),
+      normalizeReferrerCategory(request.headers.get("referer")),
       normalizeBrowserExperiment(experiment, nowSeconds),
       nowSeconds,
     );
@@ -444,20 +465,23 @@ function normalizeBrowserExperiment(value, nowSeconds) {
 
 async function createAcquisitionCookie(
   key,
-  token,
+  acquisitionId,
   attribution,
+  externalReferrerCategory,
   experiment,
   issuedAt,
+  suppliedExpiresAt,
 ) {
-  const expiresAt = issuedAt + ACQUISITION_COOKIE_MAX_AGE_SECONDS;
+  const expiresAt = suppliedExpiresAt || issuedAt + ACQUISITION_COOKIE_MAX_AGE_SECONDS;
   const payload = bytesToBase64Url(encoder.encode(JSON.stringify({
     v: ACQUISITION_COOKIE_VERSION,
-    token,
-    attribution: [
+    acquisitionId,
+    firstTouch: [
       attribution.source,
       attribution.medium,
       attribution.campaign,
       attribution.content,
+      externalReferrerCategory,
     ],
     experiment: experiment
       ? [experiment.experimentId, experiment.cohort, experiment.issuedAt, experiment.expiresAt]
@@ -483,6 +507,25 @@ async function createAcquisitionCookie(
 }
 
 async function verifyAcquisitionCookie(value, key, nowSeconds) {
+  const decoded = await verifyAcquisitionCookieEnvelope(
+    value,
+    key,
+    ACQUISITION_SIGNATURE_CONTEXT,
+  );
+  if (!decoded) return false;
+  const keys = Object.keys(decoded).sort().join(",");
+  return keys === "acquisitionId,experiment,expiresAt,firstTouch,issuedAt,v" &&
+    decoded.v === ACQUISITION_COOKIE_VERSION &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(decoded.acquisitionId || "") &&
+    Number.isSafeInteger(decoded.issuedAt) && decoded.issuedAt <= nowSeconds &&
+    Number.isSafeInteger(decoded.expiresAt) && decoded.expiresAt > nowSeconds &&
+    decoded.expiresAt - decoded.issuedAt === ACQUISITION_COOKIE_MAX_AGE_SECONDS &&
+    Array.isArray(decoded.firstTouch) && decoded.firstTouch.length === 5 &&
+    validStoredAttribution(decoded.firstTouch) &&
+    validStoredExperiment(decoded.experiment, decoded.issuedAt, decoded.expiresAt);
+}
+
+async function verifyAcquisitionCookieEnvelope(value, key, signatureContext) {
   if (value.length > 1024 || !/^[A-Za-z0-9_.-]+$/.test(value)) return false;
   const [payload, signatureValue, extra] = value.split(".");
   if (!payload || extra || !/^[A-Za-z0-9_-]{43}$/.test(signatureValue || "")) {
@@ -494,7 +537,7 @@ async function verifyAcquisitionCookie(value, key, nowSeconds) {
     "HMAC",
     key,
     signature,
-    encoder.encode(`${ACQUISITION_SIGNATURE_CONTEXT}:${payload}`),
+    encoder.encode(`${signatureContext}:${payload}`),
   );
   if (!valid) return false;
   let decoded;
@@ -503,12 +546,99 @@ async function verifyAcquisitionCookie(value, key, nowSeconds) {
   } catch {
     return false;
   }
-  return decoded?.v === ACQUISITION_COOKIE_VERSION &&
-    /^[A-Za-z0-9_-]{43}$/.test(decoded.token || "") &&
-    Number.isSafeInteger(decoded.issuedAt) && decoded.issuedAt <= nowSeconds &&
-    Number.isSafeInteger(decoded.expiresAt) && decoded.expiresAt > nowSeconds &&
-    decoded.expiresAt - decoded.issuedAt === ACQUISITION_COOKIE_MAX_AGE_SECONDS &&
-    Array.isArray(decoded.attribution) && decoded.attribution.length === 4;
+  return decoded;
+}
+
+async function promoteLegacyAcquisitionCookie(value, key, nowSeconds) {
+  const decoded = await verifyAcquisitionCookieEnvelope(
+    value,
+    key,
+    LEGACY_ACQUISITION_SIGNATURE_CONTEXT,
+  );
+  if (!decoded) return null;
+  const keys = Object.keys(decoded).sort().join(",");
+  if (
+    keys !== "attribution,expiresAt,experiment,issuedAt,token,v" ||
+    decoded.v !== 1 ||
+    !/^[A-Za-z0-9_-]{43}$/.test(decoded.token || "") ||
+    !Number.isSafeInteger(decoded.issuedAt) || decoded.issuedAt > nowSeconds ||
+    !Number.isSafeInteger(decoded.expiresAt) || decoded.expiresAt <= nowSeconds ||
+    decoded.expiresAt - decoded.issuedAt !== ACQUISITION_COOKIE_MAX_AGE_SECONDS ||
+    !Array.isArray(decoded.attribution) || decoded.attribution.length !== 4 ||
+    !validStoredAttribution([...decoded.attribution, null]) ||
+    !validStoredExperiment(decoded.experiment, decoded.issuedAt, decoded.expiresAt)
+  ) {
+    return null;
+  }
+  const digest = new Uint8Array(await crypto.subtle.sign(
+    "HMAC",
+    key,
+    encoder.encode(`${LEGACY_ACQUISITION_PROMOTION_CONTEXT}:${decoded.token}`),
+  ));
+  return createAcquisitionCookie(
+    key,
+    uuidFromBytes(digest.slice(0, 16)),
+    {
+      source: decoded.attribution[0],
+      medium: decoded.attribution[1],
+      campaign: decoded.attribution[2],
+      content: decoded.attribution[3],
+    },
+    null,
+    decoded.experiment
+      ? {
+          experimentId: decoded.experiment[0],
+          cohort: decoded.experiment[1],
+          issuedAt: decoded.experiment[2],
+          expiresAt: decoded.experiment[3],
+        }
+      : null,
+    decoded.issuedAt,
+    decoded.expiresAt,
+  );
+}
+
+function validStoredAttribution(firstTouch) {
+  return typeof firstTouch[0] === "string" && /^[a-z0-9][a-z0-9._-]{0,63}$/.test(firstTouch[0]) &&
+    (firstTouch[1] === null || typeof firstTouch[1] === "string" && /^[a-z0-9][a-z0-9._-]{0,63}$/.test(firstTouch[1])) &&
+    (firstTouch[2] === null || typeof firstTouch[2] === "string" && /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(firstTouch[2])) &&
+    (firstTouch[3] === null || typeof firstTouch[3] === "string" && /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(firstTouch[3])) &&
+    (firstTouch[4] === null || ["search", "social", "messaging", "video", "community", "publisher", "other_external"].includes(firstTouch[4]));
+}
+
+function validStoredExperiment(value, issuedAt, expiresAt) {
+  if (value === null) return true;
+  return Array.isArray(value) && value.length === 4 &&
+    typeof value[0] === "string" && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/.test(value[0]) &&
+    ["paid", "freemium"].includes(value[1]) &&
+    Number.isSafeInteger(value[2]) && Number.isSafeInteger(value[3]) &&
+    value[2] <= issuedAt && value[3] > issuedAt && value[3] <= expiresAt;
+}
+
+function normalizeReferrerCategory(value) {
+  if (!value || value.length > 2048) return null;
+  try {
+    const hostname = new URL(value).hostname.toLowerCase().replace(/^www\./, "");
+    if (!hostname || hostname === "sidestream.tv" || hostname.endsWith(".sidestream.tv")) return null;
+    if (/^(?:google|bing|search\.yahoo|duckduckgo|baidu|yandex)\./.test(hostname)) return "search";
+    if (/(?:^|\.)(?:facebook|instagram|linkedin|x|twitter|threads)\.com$/.test(hostname)) return "social";
+    if (/(?:^|\.)(?:manychat|messenger|whatsapp|telegram|discord|slack)\.(?:com|me|gg)$/.test(hostname)) return "messaging";
+    if (/(?:^|\.)(?:youtube|youtu\.be|vimeo|tiktok)\.(?:com|be)$/.test(hostname)) return "video";
+    if (/(?:^|\.)(?:reddit|quora)\.com$/.test(hostname)) return "community";
+    if (/(?:^|\.)(?:medium|substack)\.com$/.test(hostname)) return "publisher";
+    return "other_external";
+  } catch {
+    return null;
+  }
+}
+
+function uuidFromBytes(input) {
+  const bytes = new Uint8Array(input);
+  if (bytes.length !== 16) throw new Error("invalid acquisition UUID entropy");
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
 function validSecretBytes(secret) {
