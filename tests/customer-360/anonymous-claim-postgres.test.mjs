@@ -10,10 +10,17 @@ import {
   AnonymousInstallationClaimError,
   completeAnonymousInstallationClaim,
   createAnonymousInstallationClaim,
+  getAnonymousInstallationClaimStatus,
+  markAnonymousInstallationClaimBrowserOpened,
 } from "../../api/_lib/anonymous-install-claim.ts";
+import { createBrowserAcquisitionCookie } from "../../api/_lib/acquisition-cookie.ts";
+import {
+  addTrustedDeliveryEvidence,
+  createCanonicalAcquisitionRoot,
+  recordAcquisitionStage,
+} from "../../api/_lib/acquisition-integrity.ts";
 import {
   createAnonymousAcquisitionSession,
-  generateAnonymousAcquisitionToken,
   recordAnonymousAcquisitionInstallerRequest,
 } from "../../api/_lib/anonymous-acquisition.ts";
 import { attachCustomerIdentity } from "../../api/_lib/customer-identity.ts";
@@ -28,6 +35,10 @@ const migrations = [
   "20260715121000_add_customer_identity_links.sql",
   "20260731120000_add_anonymous_acquisition_sessions.sql",
 ];
+const acquisitionMigrations = [
+  "20260713203000_add_checkout_intents.sql",
+  "20260803120000_add_acquisition_integrity.sql",
+];
 const SECRET = "anonymous-install-claim-postgres-secret-minimum-32-bytes";
 const INSTALL = "1".repeat(64);
 const RECEIPT = "2".repeat(64);
@@ -37,6 +48,8 @@ const UNKNOWN_INSTALL = "5".repeat(64);
 const UNKNOWN_RECEIPT = "6".repeat(64);
 const EXPIRED_INSTALL = "7".repeat(64);
 const EXPIRED_RECEIPT = "8".repeat(64);
+const LOST_INSTALL = "9".repeat(64);
+const LOST_RECEIPT = "a".repeat(64);
 const PROFILE_A = "00000000-0000-4000-8000-00000000000a";
 const PROFILE_B = "00000000-0000-4000-8000-00000000000b";
 const ACCOUNT = "10000000-0000-4000-8000-000000000001";
@@ -45,6 +58,10 @@ const ACTIVATION = "30000000-0000-4000-8000-000000000001";
 const DEVICE = "40000000-0000-4000-8000-000000000001";
 const PAYMENT = "50000000-0000-4000-8000-000000000001";
 const ENVIRONMENT = Object.freeze({ namespace: "test" });
+const ACQUISITION_INTEGRITY = Object.freeze({
+  addTrustedDeliveryEvidence,
+  recordAcquisitionStage,
+});
 
 test("one-time anonymous installation claims are atomic, idempotent, private, and continuity-safe", {
   timeout: 120_000,
@@ -64,10 +81,25 @@ test("one-time anonymous installation claims are atomic, idempotent, private, an
       await pool.query(sql.replace(/\bpublic\./g, `${quotedSchema}.`));
     }
     await seedProtectedFixtures(pool, quotedSchema);
+    await pool.query(`create table ${quotedSchema}.sidestream_activation_sessions (id uuid primary key)`);
+    for (const filename of acquisitionMigrations) {
+      const sql = await readFile(join(repositoryRoot, "db/migrations", filename), "utf8");
+      await pool.query(sql.replace(/\bpublic\./g, `${quotedSchema}.`));
+    }
     const protectedBefore = await protectedState(pool, quotedSchema);
     const now = new Date();
 
-    const browserToken = generateAnonymousAcquisitionToken();
+    const browser = await createCanonicalBrowser({
+      transaction,
+      firstSeenAt: now,
+      attribution: {
+        source: "reddit",
+        medium: "social",
+        campaign: "continuity",
+      },
+      reference: "primary-browser",
+    });
+    const browserToken = browser.token;
     await createAnonymousAcquisitionSession({
       token: browserToken,
       attribution: {
@@ -94,27 +126,65 @@ test("one-time anonymous installation claims are atomic, idempotent, private, an
     });
     assert.equal(claim.nonce.includes(INSTALL), false);
     assert.equal(claim.nonce.includes(RECEIPT), false);
+    assert.equal(claim.acknowledgmentHandle.includes(claim.nonce), false);
+    assert.equal(claim.acknowledgmentHandle.includes(INSTALL), false);
+    assert.equal(claim.acknowledgmentHandle.includes(RECEIPT), false);
+    assert.deepEqual(await getAnonymousInstallationClaimStatus({
+      acknowledgmentHandle: claim.acknowledgmentHandle,
+    }, {
+      transaction,
+      namespace: "test",
+      secret: SECRET,
+      now: new Date(now.getTime() + 500),
+    }), { state: "pending" });
+
+    await markAnonymousInstallationClaimBrowserOpened({ nonce: claim.nonce }, {
+      transaction,
+      namespace: "test",
+      secret: SECRET,
+      now: new Date(now.getTime() + 1_000),
+    });
+    assert.deepEqual(await getAnonymousInstallationClaimStatus({
+      acknowledgmentHandle: claim.acknowledgmentHandle,
+    }, {
+      transaction,
+      namespace: "test",
+      secret: SECRET,
+      now: new Date(now.getTime() + 1_500),
+    }), { state: "browser_opened" });
 
     const completed = await completeAnonymousInstallationClaim({
       nonce: claim.nonce,
+      acquisitionId: browser.acquisitionId,
       acquisitionToken: browserToken,
     }, {
       transaction,
       namespace: "test",
       secret: SECRET,
+      acquisitionIntegrity: ACQUISITION_INTEGRITY,
       now: new Date(now.getTime() + 2_000),
     });
     assert.equal(completed.outcome, "connected");
     assert.equal(completed.idempotent, false);
     assert.match(completed.profileId, /^[0-9a-f-]{36}$/);
+    assert.deepEqual(await getAnonymousInstallationClaimStatus({
+      acknowledgmentHandle: claim.acknowledgmentHandle,
+    }, {
+      transaction,
+      namespace: "test",
+      secret: SECRET,
+      now: new Date(now.getTime() + 2_500),
+    }), { state: "claim_completed" });
 
     const duplicate = await completeAnonymousInstallationClaim({
       nonce: claim.nonce,
+      acquisitionId: browser.acquisitionId,
       acquisitionToken: browserToken,
     }, {
       transaction,
       namespace: "test",
       secret: SECRET,
+      acquisitionIntegrity: ACQUISITION_INTEGRITY,
       now: new Date(now.getTime() + 3_000),
     });
     assert.deepEqual(duplicate, {
@@ -122,6 +192,48 @@ test("one-time anonymous installation claims are atomic, idempotent, private, an
       profileId: completed.profileId,
       idempotent: true,
     });
+    assert.deepEqual(await Promise.all([
+      getAnonymousInstallationClaimStatus({
+        acknowledgmentHandle: claim.acknowledgmentHandle,
+      }, {
+        transaction,
+        namespace: "test",
+        secret: SECRET,
+        now: new Date(now.getTime() + 3_500),
+      }),
+      getAnonymousInstallationClaimStatus({
+        acknowledgmentHandle: claim.acknowledgmentHandle,
+      }, {
+        transaction,
+        namespace: "test",
+        secret: SECRET,
+        now: new Date(now.getTime() + 3_600),
+      }),
+    ]), [
+      { state: "claim_completed" },
+      { state: "claim_completed" },
+    ]);
+    const canonicalClaim = await pool.query(
+      `
+        select stage, counting_grain, count(*)::int as count
+        from ${quotedSchema}.sidestream_acquisition_stages
+        where acquisition_id = $1 and stage = 'installation_claimed'
+        group by stage, counting_grain
+      `,
+      [browser.acquisitionId],
+    );
+    assert.deepEqual(canonicalClaim.rows, [{
+      stage: "installation_claimed",
+      counting_grain: "installation",
+      count: 1,
+    }]);
+    const canonicalEvidence = await pool.query(
+      `select trusted_delivery_evidence from ${quotedSchema}.sidestream_acquisitions where id = $1`,
+      [browser.acquisitionId],
+    );
+    assert.ok(canonicalEvidence.rows[0].trusted_delivery_evidence.includes(
+      "verified_installation_claim",
+    ));
 
     const linked = await pool.query(
       `
@@ -142,35 +254,57 @@ test("one-time anonymous installation claims are atomic, idempotent, private, an
     );
     assert.deepEqual(anonymousProfile.rows[0], { contact_email: null, display_name: null });
 
-    const secondBrowserToken = generateAnonymousAcquisitionToken();
+    const secondBrowser = await createCanonicalBrowser({
+      transaction,
+      firstSeenAt: now,
+      reference: "second-browser",
+    });
+    const secondBrowserToken = secondBrowser.token;
     await createAnonymousAcquisitionSession({ token: secondBrowserToken, firstSeenAt: now }, {
       transaction,
       namespace: "test",
     });
     const reusedElsewhere = await completeAnonymousInstallationClaim({
       nonce: claim.nonce,
+      acquisitionId: secondBrowser.acquisitionId,
       acquisitionToken: secondBrowserToken,
     }, {
       transaction,
       namespace: "test",
       secret: SECRET,
+      acquisitionIntegrity: ACQUISITION_INTEGRITY,
       now: new Date(now.getTime() + 4_000),
     });
     assert.equal(reusedElsewhere.outcome, "conflict");
-    const secondBrowser = await acquisitionByToken(
+    const secondBrowserState = await acquisitionByToken(
       pool,
       quotedSchema,
       secondBrowserToken,
     );
-    assert.equal(secondBrowser.claim_state, "quarantined");
-    assert.equal(secondBrowser.claimed_profile_id, null);
+    assert.equal(secondBrowserState.claim_state, "quarantined");
+    assert.equal(secondBrowserState.claimed_profile_id, null);
+    assert.deepEqual(await getAnonymousInstallationClaimStatus({
+      acknowledgmentHandle: claim.acknowledgmentHandle,
+    }, {
+      transaction,
+      namespace: "test",
+      secret: SECRET,
+      now: new Date(now.getTime() + 4_500),
+    }), { state: "conflict" });
 
     const unknownClaim = await createAnonymousInstallationClaim({
       installIdHash: UNKNOWN_INSTALL,
       installerReceiptIdHash: UNKNOWN_RECEIPT,
-    }, { transaction, namespace: "test", secret: SECRET, now });
+    }, {
+      transaction,
+      namespace: "test",
+      secret: SECRET,
+      acquisitionIntegrity: ACQUISITION_INTEGRITY,
+      now,
+    });
     const unknown = await completeAnonymousInstallationClaim({
       nonce: unknownClaim.nonce,
+      acquisitionId: browser.acquisitionId,
       acquisitionToken: "C".repeat(43),
     }, { transaction, namespace: "test", secret: SECRET, now });
     assert.deepEqual(unknown, { outcome: "unknown", profileId: null, idempotent: false });
@@ -186,11 +320,13 @@ test("one-time anonymous installation claims are atomic, idempotent, private, an
     await assert.rejects(
       completeAnonymousInstallationClaim({
         nonce: expiredClaim.nonce,
+        acquisitionId: browser.acquisitionId,
         acquisitionToken: browserToken,
       }, {
         transaction,
         namespace: "test",
         secret: SECRET,
+        acquisitionIntegrity: ACQUISITION_INTEGRITY,
         now: new Date(now.getTime() + 15 * 60 * 1000),
       }),
       (error) => error instanceof AnonymousInstallationClaimError &&
@@ -200,9 +336,50 @@ test("one-time anonymous installation claims are atomic, idempotent, private, an
       (await claimRowByMarker(pool, quotedSchema, EXPIRED_INSTALL, EXPIRED_RECEIPT)).claim_state,
       "unclaimed",
     );
+    assert.deepEqual(await getAnonymousInstallationClaimStatus({
+      acknowledgmentHandle: expiredClaim.acknowledgmentHandle,
+    }, {
+      transaction,
+      namespace: "test",
+      secret: SECRET,
+      now: new Date(now.getTime() + 15 * 60 * 1000),
+    }), { state: "expired" });
+
+    const lostClaim = await createAnonymousInstallationClaim({
+      installIdHash: LOST_INSTALL,
+      installerReceiptIdHash: LOST_RECEIPT,
+    }, {
+      transaction,
+      namespace: "test",
+      secret: SECRET,
+      acquisitionIntegrity: ACQUISITION_INTEGRITY,
+      now,
+    });
+    await pool.query(`
+      delete from ${quotedSchema}.sidestream_anonymous_acquisition_sessions
+      where id = (
+        select id
+        from ${quotedSchema}.sidestream_anonymous_acquisition_sessions
+        where license_namespace = 'test'
+          and first_touch_medium = 'installation_claim'
+          and claim_state = 'unclaimed'
+        order by created_at desc, id desc
+        limit 1
+      )
+    `);
+    assert.deepEqual(await getAnonymousInstallationClaimStatus({
+      acknowledgmentHandle: lostClaim.acknowledgmentHandle,
+    }, { transaction, namespace: "test", secret: SECRET, now }), {
+      state: "terminal_unknown",
+    });
 
     await seedConflictingIdentityOwners(pool, quotedSchema);
-    const conflictBrowser = generateAnonymousAcquisitionToken();
+    const conflictCookie = await createCanonicalBrowser({
+      transaction,
+      firstSeenAt: now,
+      reference: "conflict-browser",
+    });
+    const conflictBrowser = conflictCookie.token;
     await createAnonymousAcquisitionSession({ token: conflictBrowser, firstSeenAt: now }, {
       transaction,
       namespace: "test",
@@ -213,10 +390,14 @@ test("one-time anonymous installation claims are atomic, idempotent, private, an
     }, { transaction, namespace: "test", secret: SECRET, now });
     const conflict = await completeAnonymousInstallationClaim({
       nonce: conflictClaim.nonce,
+      acquisitionId: conflictCookie.acquisitionId,
       acquisitionToken: conflictBrowser,
     }, { transaction, namespace: "test", secret: SECRET, now });
     assert.equal(conflict.outcome, "conflict");
     assert.equal((await acquisitionByToken(pool, quotedSchema, conflictBrowser)).claim_state, "quarantined");
+    assert.deepEqual(await getAnonymousInstallationClaimStatus({
+      acknowledgmentHandle: conflictClaim.acknowledgmentHandle,
+    }, { transaction, namespace: "test", secret: SECRET, now }), { state: "conflict" });
     const conflictEvidence = await pool.query(
       `select count(*)::int as count from ${quotedSchema}.sidestream_anonymous_acquisition_conflicts`,
     );
@@ -377,6 +558,31 @@ async function acquisitionByToken(pool, quotedSchema, token) {
     [tokenHash],
   );
   return result.rows[0];
+}
+
+async function createCanonicalBrowser({
+  transaction,
+  firstSeenAt,
+  reference,
+  attribution = undefined,
+}) {
+  const cookie = createBrowserAcquisitionCookie({ attribution }, {
+    secret: SECRET,
+    now: firstSeenAt,
+  });
+  const direct = !attribution || attribution.source === "direct";
+  await createCanonicalAcquisitionRoot({
+    acquisitionId: cookie.acquisitionId,
+    firstObservedAt: firstSeenAt,
+    landingDeduplicationReference: reference,
+    ...(direct ? {} : {
+      source: attribution.source,
+      medium: attribution.medium ?? null,
+      campaign: attribution.campaign ?? null,
+      externalReferrerCategory: "social",
+    }),
+  }, { transaction, namespace: "test" });
+  return cookie;
 }
 
 async function claimRowByMarker(pool, quotedSchema, installIdHash, receiptIdHash) {

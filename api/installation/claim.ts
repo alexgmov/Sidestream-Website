@@ -56,6 +56,7 @@ export default async function handler(
     });
     return sendJson(response, 200, {
       browserUrl: buildAnonymousInstallationClaimUrl(getBaseUrl(request), claim.nonce),
+      acknowledgmentHandle: claim.acknowledgmentHandle,
       expiresAt: claim.expiresAt,
     });
   } catch (error) {

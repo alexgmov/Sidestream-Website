@@ -8,9 +8,14 @@ import { Pool } from "pg";
 
 import {
   createAnonymousAcquisitionSession,
-  generateAnonymousAcquisitionToken,
   recordAnonymousAcquisitionInstallerRequest,
 } from "../../api/_lib/anonymous-acquisition.ts";
+import { createBrowserAcquisitionCookie } from "../../api/_lib/acquisition-cookie.ts";
+import {
+  addTrustedDeliveryEvidence,
+  createCanonicalAcquisitionRoot,
+  recordAcquisitionStage,
+} from "../../api/_lib/acquisition-integrity.ts";
 import {
   completeAnonymousInstallationClaim,
   createAnonymousInstallationClaim,
@@ -31,15 +36,21 @@ const migrations = [
   "20260713205000_harden_download_leads.sql",
   "20260715120000_add_customer_360_core.sql",
   "20260715121000_add_customer_identity_links.sql",
+  "20260715122000_add_customer_commerce_ledger.sql",
   "20260715123000_add_customer_usage_aggregates.sql",
   "20260727010000_add_paid_acquisition_experiment.sql",
   "20260729120000_add_regional_checkout_offer_snapshots.sql",
   "20260731120000_add_anonymous_acquisition_sessions.sql",
+  "20260803120000_add_acquisition_integrity.sql",
 ];
 const SECRET = "anonymous-acquisition-journey-postgres-secret-2026";
 const ACCOUNT = "10000000-0000-4000-8000-000000000001";
 const SOURCES = ["direct", "instagram", "facebook", "linkedin", "reddit"];
 const ENVIRONMENT = Object.freeze({ namespace: "test" });
+const ACQUISITION_INTEGRITY = Object.freeze({
+  addTrustedDeliveryEvidence,
+  recordAcquisitionStage,
+});
 
 const funnelModule = await loadInjectedModule(
   new URL("../../api/_lib/acquisition-funnel.ts", import.meta.url),
@@ -79,7 +90,27 @@ test("anonymous acquisition survives download, claim, retention, and later verif
       const firstOpenAt = new Date(firstSeenAt.getTime() + 2 * 60 * 60_000);
       const installIdHash = `${index + 1}`.repeat(64);
       const installerReceiptIdHash = "abcdef"[index].repeat(64);
-      const token = generateAnonymousAcquisitionToken();
+      const browser = createBrowserAcquisitionCookie({
+        attribution: source === "direct"
+          ? undefined
+          : { source, medium: "social", campaign: "anonymous-no-email" },
+      }, {
+        secret: SECRET,
+        now: firstSeenAt,
+      });
+      const token = browser.token;
+
+      await createCanonicalAcquisitionRoot({
+        acquisitionId: browser.acquisitionId,
+        firstObservedAt: firstSeenAt,
+        landingDeduplicationReference: `journey-${source}`,
+        ...(source === "direct" ? {} : {
+          source,
+          medium: "social",
+          campaign: "anonymous-no-email",
+          externalReferrerCategory: "social",
+        }),
+      }, { transaction, namespace: "test" });
 
       await createAnonymousAcquisitionSession({
         token,
@@ -106,11 +137,13 @@ test("anonymous acquisition survives download, claim, retention, and later verif
       });
       const completed = await completeAnonymousInstallationClaim({
         nonce: claim.nonce,
+        acquisitionId: browser.acquisitionId,
         acquisitionToken: token,
       }, {
         transaction,
         namespace: "test",
         secret: SECRET,
+        acquisitionIntegrity: ACQUISITION_INTEGRITY,
         now: new Date(claimNow.getTime() + 1_000),
       });
       assert.equal(completed.outcome, "connected", source);

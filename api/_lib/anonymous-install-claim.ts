@@ -18,6 +18,12 @@ export const ANONYMOUS_INSTALL_CLAIM_SECRET_NAME =
 const VERSION = "1";
 const ENCRYPTION_CONTEXT = "sidestream-anonymous-install-claim-encryption-v1";
 const SIGNATURE_CONTEXT = "sidestream-anonymous-install-claim-signature-v1";
+const ACKNOWLEDGMENT_ENCRYPTION_CONTEXT =
+  "sidestream-anonymous-install-claim-acknowledgment-encryption-v1";
+const ACKNOWLEDGMENT_SIGNATURE_CONTEXT =
+  "sidestream-anonymous-install-claim-acknowledgment-signature-v1";
+const COMPATIBILITY_TOKEN_CONTEXT =
+  "sidestream-anonymous-acquisition-compatibility-token-v2";
 const CONFLICT_CONTEXT = "sidestream-anonymous-install-claim-conflict-v1";
 const CLAIM_MARKER_MEDIUM = "installation_claim";
 const TOKEN = /^[A-Za-z0-9_-]{43}$/;
@@ -26,6 +32,21 @@ const BASE64URL = /^[A-Za-z0-9_-]+$/;
 
 type Namespace = "production" | "test";
 type Transaction = <T>(callback: (client: PoolClient) => Promise<T>) => Promise<T>;
+type AcquisitionIntegrity = Readonly<{
+  addTrustedDeliveryEvidence: (
+    input: Readonly<{ acquisitionId: string; evidence: "verified_installation_claim" }>,
+    dependencies: Readonly<{ transaction: Transaction; namespace: Namespace }>,
+  ) => Promise<unknown>;
+  recordAcquisitionStage: (
+    input: Readonly<{
+      acquisitionId: string;
+      stage: "installation_claimed";
+      stableServerReference: string;
+      occurredAt: Date;
+    }>,
+    dependencies: Readonly<{ transaction: Transaction; namespace: Namespace }>,
+  ) => Promise<Readonly<{ ownerConflict: boolean }>>;
+}>;
 
 type Dependencies = Readonly<{
   transaction?: Transaction;
@@ -34,6 +55,7 @@ type Dependencies = Readonly<{
   secret?: string;
   now?: number | Date;
   randomBytes?: (size: number) => Uint8Array;
+  acquisitionIntegrity?: AcquisitionIntegrity;
 }>;
 
 type ClaimIdentity = Readonly<{
@@ -42,6 +64,13 @@ type ClaimIdentity = Readonly<{
 }>;
 
 type ClaimEnvelope = ClaimIdentity & Readonly<{
+  claimToken: string;
+  namespace: Namespace;
+  issuedAt: number;
+  expiresAt: number;
+}>;
+
+type AcknowledgmentEnvelope = Readonly<{
   claimToken: string;
   namespace: Namespace;
   issuedAt: number;
@@ -58,11 +87,15 @@ type AcquisitionRow = Readonly<{
   first_installer_requested_at: Date | string | null;
   claim_state: "unclaimed" | "claimed" | "quarantined" | "expired";
   claimed_profile_id: string | null;
+  claimed_at: Date | string | null;
   expires_at: Date | string;
+  created_at: Date | string;
+  updated_at: Date | string;
 }>;
 
 export type AnonymousInstallationClaim = Readonly<{
   nonce: string;
+  acknowledgmentHandle: string;
   expiresAt: string;
 }>;
 
@@ -70,6 +103,16 @@ export type AnonymousInstallationClaimCompletion = Readonly<{
   outcome: "connected" | "unknown" | "expired" | "conflict";
   profileId: string | null;
   idempotent: boolean;
+}>;
+
+export type AnonymousInstallationClaimStatus = Readonly<{
+  state:
+    | "pending"
+    | "browser_opened"
+    | "claim_completed"
+    | "conflict"
+    | "expired"
+    | "terminal_unknown";
 }>;
 
 export class AnonymousInstallationClaimError extends Error {
@@ -242,6 +285,121 @@ export function verifyAnonymousInstallationClaimNonce(
   });
 }
 
+export function normalizeAnonymousInstallationClaimStatusRequest(
+  input: unknown,
+): Readonly<{ acknowledgmentHandle: string }> {
+  if (
+    !isPlainObject(input) ||
+    !hasExactKeys(input, ["acknowledgmentHandle"]) ||
+    typeof input.acknowledgmentHandle !== "string" ||
+    input.acknowledgmentHandle.length > 1024 ||
+    !/^[A-Za-z0-9_.-]+$/.test(input.acknowledgmentHandle)
+  ) {
+    fail("invalid_request", "Installation claim status request is invalid.");
+  }
+  return Object.freeze({ acknowledgmentHandle: input.acknowledgmentHandle });
+}
+
+function createAcknowledgmentHandle(
+  envelope: ClaimEnvelope,
+  options: Readonly<{
+    secret: string;
+    randomBytes?: (size: number) => Uint8Array;
+  }>,
+): string {
+  const secret = validSecret(options.secret);
+  const iv = Buffer.from((options.randomBytes || nodeRandomBytes)(12));
+  if (iv.length !== 12) fail("claim_unavailable", "Installation claim entropy is invalid.");
+  const plaintext = Buffer.from(JSON.stringify({
+    v: 1,
+    claimToken: envelope.claimToken,
+    namespace: envelope.namespace,
+    issuedAt: envelope.issuedAt,
+    expiresAt: envelope.expiresAt,
+  }), "utf8");
+  const cipher = createCipheriv(
+    "aes-256-gcm",
+    acknowledgmentEncryptionKey(secret),
+    iv,
+  );
+  cipher.setAAD(Buffer.from(ACKNOWLEDGMENT_ENCRYPTION_CONTEXT, "utf8"));
+  const ciphertext = Buffer.concat([cipher.update(plaintext), cipher.final()]);
+  const unsigned = [
+    VERSION,
+    iv.toString("base64url"),
+    ciphertext.toString("base64url"),
+    cipher.getAuthTag().toString("base64url"),
+  ].join(".");
+  const handle = `${unsigned}.${acknowledgmentSignature(unsigned, secret)}`;
+  if (handle.length > 1024) fail("claim_unavailable", "Installation claim status handle is too large.");
+  return handle;
+}
+
+function verifyAcknowledgmentHandle(
+  handle: string,
+  options: Readonly<{ secret: string; namespace: Namespace }>,
+): AcknowledgmentEnvelope {
+  const secret = validSecret(options.secret);
+  const namespace = assertNamespace(options.namespace);
+  const parts = handle.split(".");
+  if (parts.length !== 5 || parts[0] !== VERSION || parts.slice(1).some((part) => !BASE64URL.test(part))) {
+    fail("invalid_claim", "Installation claim status handle is invalid.");
+  }
+  const [version, ivValue, ciphertextValue, tagValue, signatureValue] = parts;
+  const unsigned = [version, ivValue, ciphertextValue, tagValue].join(".");
+  const expected = Buffer.from(acknowledgmentSignature(unsigned, secret), "base64url");
+  let supplied: Buffer;
+  try {
+    supplied = decodeCanonicalBase64Url(signatureValue);
+  } catch {
+    fail("invalid_claim", "Installation claim status handle is invalid.");
+  }
+  if (supplied.length !== expected.length || !timingSafeEqual(supplied, expected)) {
+    fail("invalid_claim", "Installation claim status handle is invalid.");
+  }
+
+  let decoded: unknown;
+  try {
+    const iv = decodeCanonicalBase64Url(ivValue);
+    const tag = decodeCanonicalBase64Url(tagValue);
+    if (iv.length !== 12 || tag.length !== 16) throw new Error("invalid envelope");
+    const decipher = createDecipheriv(
+      "aes-256-gcm",
+      acknowledgmentEncryptionKey(secret),
+      iv,
+    );
+    decipher.setAAD(Buffer.from(ACKNOWLEDGMENT_ENCRYPTION_CONTEXT, "utf8"));
+    decipher.setAuthTag(tag);
+    decoded = JSON.parse(Buffer.concat([
+      decipher.update(decodeCanonicalBase64Url(ciphertextValue)),
+      decipher.final(),
+    ]).toString("utf8"));
+  } catch {
+    fail("invalid_claim", "Installation claim status handle is invalid.");
+  }
+  if (!isPlainObject(decoded) || !hasExactKeys(decoded, [
+    "v", "claimToken", "namespace", "issuedAt", "expiresAt",
+  ])) {
+    fail("invalid_claim", "Installation claim status handle is invalid.");
+  }
+  const issuedAt = epochSeconds(decoded.issuedAt);
+  const expiresAt = epochSeconds(decoded.expiresAt);
+  if (
+    decoded.v !== 1 || decoded.namespace !== namespace ||
+    typeof decoded.claimToken !== "string" || !TOKEN.test(decoded.claimToken) ||
+    expiresAt <= issuedAt ||
+    expiresAt - issuedAt !== ANONYMOUS_INSTALL_CLAIM_TTL_SECONDS
+  ) {
+    fail("invalid_claim", "Installation claim status handle is invalid.");
+  }
+  return Object.freeze({
+    claimToken: decoded.claimToken,
+    namespace,
+    issuedAt,
+    expiresAt,
+  });
+}
+
 export function buildAnonymousInstallationClaimUrl(origin: string, nonce: string): string {
   if (typeof nonce !== "string" || nonce.length > 1024 || !/^[A-Za-z0-9_.-]+$/.test(nonce)) {
     fail("invalid_claim", "Installation claim is invalid.");
@@ -298,16 +456,103 @@ export async function createAnonymousInstallationClaim(
     if (!result.rows[0]) fail("claim_unavailable", "Installation claim could not be created.");
     return Object.freeze({
       nonce: envelope.nonce,
+      acknowledgmentHandle: createAcknowledgmentHandle(envelope, {
+        secret,
+        randomBytes: dependencies.randomBytes,
+      }),
       expiresAt: new Date(envelope.expiresAt * 1000).toISOString(),
     });
   });
 }
 
+export async function markAnonymousInstallationClaimBrowserOpened(
+  input: Readonly<{ nonce: string }>,
+  dependencies: Dependencies = {},
+): Promise<void> {
+  if (!isPlainObject(input) || !hasExactKeys(input, ["nonce"])) {
+    fail("invalid_request", "Installation claim browser request is invalid.");
+  }
+  const now = new Date(epochSeconds(dependencies.now ?? Date.now()) * 1000);
+  await withTransaction(dependencies, async (client, namespace, secret) => {
+    const envelope = verifyAnonymousInstallationClaimNonce(input.nonce, {
+      secret,
+      namespace,
+      now,
+    });
+    const tokenHash = sha256(envelope.claimToken);
+    await client.query("select pg_advisory_xact_lock(hashtext($1))", [
+      `sidestream_anonymous_install_claim:${namespace}:${tokenHash}`,
+    ]);
+    await client.query(
+      `
+        update public.sidestream_anonymous_acquisition_sessions
+        set updated_at = greatest(updated_at, transaction_timestamp())
+        where license_namespace = $1 and token_hash = $2
+          and first_touch_source = 'direct'
+          and first_touch_medium = $3
+          and first_touch_campaign = 'server_claim_v1'
+          and first_installer_requested_at is null
+          and claim_state = 'unclaimed'
+          and expires_at > $4
+      `,
+      [namespace, tokenHash, CLAIM_MARKER_MEDIUM, now],
+    );
+  });
+}
+
+export async function getAnonymousInstallationClaimStatus(
+  input: unknown,
+  dependencies: Dependencies = {},
+): Promise<AnonymousInstallationClaimStatus> {
+  const request = normalizeAnonymousInstallationClaimStatusRequest(input);
+  const nowSeconds = epochSeconds(dependencies.now ?? Date.now());
+  const now = new Date(nowSeconds * 1000);
+  return withTransaction(dependencies, async (client, namespace, secret) => {
+    const envelope = verifyAcknowledgmentHandle(request.acknowledgmentHandle, {
+      secret,
+      namespace,
+    });
+    if (envelope.issuedAt > nowSeconds) return claimStatus("terminal_unknown");
+    if (envelope.expiresAt <= nowSeconds) return claimStatus("expired");
+    const result = await client.query<AcquisitionRow>(
+      `
+        select id, token_hash, first_touch_source, first_touch_medium,
+          first_touch_campaign, first_seen_at, first_installer_requested_at,
+          claim_state, claimed_profile_id, claimed_at, expires_at, created_at, updated_at
+        from public.sidestream_anonymous_acquisition_sessions
+        where license_namespace = $1 and token_hash = $2
+      `,
+      [namespace, sha256(envelope.claimToken)],
+    );
+    const claim = result.rows[0];
+    if (!claim || !isClaimMarker(claim)) return claimStatus("terminal_unknown");
+    if (claim.claim_state === "quarantined") return claimStatus("conflict");
+    if (claim.claim_state === "claimed" && claim.claimed_profile_id) {
+      return claimStatus("claim_completed");
+    }
+    if (new Date(claim.expires_at).getTime() <= now.getTime()) {
+      return claimStatus("expired");
+    }
+    if (claim.claim_state !== "unclaimed") return claimStatus("terminal_unknown");
+    return claimStatus(
+      new Date(claim.updated_at).getTime() > new Date(claim.created_at).getTime()
+        ? "browser_opened"
+        : "pending",
+    );
+  });
+}
+
 export async function completeAnonymousInstallationClaim(
-  input: Readonly<{ nonce: string; acquisitionToken: string }>,
+  input: Readonly<{ nonce: string; acquisitionId: string; acquisitionToken: string }>,
   dependencies: Dependencies = {},
 ): Promise<AnonymousInstallationClaimCompletion> {
-  if (!isPlainObject(input) || !hasExactKeys(input, ["nonce", "acquisitionToken"])) {
+  if (
+    !isPlainObject(input) ||
+    !hasExactKeys(input, ["nonce", "acquisitionId", "acquisitionToken"]) ||
+    typeof input.acquisitionId !== "string" ||
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+      .test(input.acquisitionId)
+  ) {
     fail("invalid_request", "Installation claim completion is invalid.");
   }
   if (typeof input.acquisitionToken !== "string" || !TOKEN.test(input.acquisitionToken)) {
@@ -334,7 +579,7 @@ export async function completeAnonymousInstallationClaim(
         select id, token_hash, first_touch_source, first_touch_medium,
           first_touch_campaign, first_seen_at,
           first_installer_requested_at, claim_state, claimed_profile_id,
-          expires_at
+          claimed_at, expires_at, created_at, updated_at
         from public.sidestream_anonymous_acquisition_sessions
         where license_namespace = $1 and token_hash = any($2::text[])
         order by token_hash
@@ -354,6 +599,30 @@ export async function completeAnonymousInstallationClaim(
     if (claim.claim_state === "quarantined" || acquisition.claim_state === "quarantined") {
       return completion("conflict");
     }
+    const canonical = await client.query<{ id: string; integrity_state: string }>(
+      `
+        select id, integrity_state
+        from public.sidestream_acquisitions
+        where id = $1 and license_namespace = $2
+        for update
+      `,
+      [input.acquisitionId, namespace],
+    );
+    const expectedAcquisitionToken = createHmac("sha256", secret)
+      .update(`${COMPATIBILITY_TOKEN_CONTEXT}:${input.acquisitionId}`, "utf8")
+      .digest("base64url");
+    if (
+      canonical.rows[0]?.integrity_state !== "intact" ||
+      !sameOpaqueToken(expectedAcquisitionToken, input.acquisitionToken)
+    ) {
+      await quarantineSessions(
+        client,
+        namespace,
+        [claim, acquisition],
+        "acquisition_linkage_conflict",
+      );
+      return completion("conflict");
+    }
 
     await lockIdentityEvidence(client, namespace, envelope);
     const ownerIds = await findIdentityOwners(client, namespace, envelope);
@@ -369,12 +638,21 @@ export async function completeAnonymousInstallationClaim(
         (!existingOwner || existingOwner === claim.claimed_profile_id),
       );
       if (exactReplay) {
+        const canonicalConflict = await finalizeCanonicalInstallationClaim(
+          client,
+          namespace,
+          input.acquisitionId,
+          envelope,
+          new Date(claim.claimed_at || now),
+          dependencies.acquisitionIntegrity,
+        );
+        if (canonicalConflict) {
+          await quarantineSessions(client, namespace, [claim, acquisition], "acquisition_owner_conflict");
+          return completion("conflict");
+        }
         return completion("connected", claim.claimed_profile_id, true);
       }
-      await recordSessionConflict(client, namespace, claim, "nonce_reuse");
-      if (!acquisition.claimed_profile_id) {
-        await quarantineSessions(client, namespace, [acquisition], "nonce_reuse");
-      }
+      await quarantineSessions(client, namespace, [claim, acquisition], "nonce_reuse");
       return completion("conflict");
     }
     if (claim.claim_state !== "unclaimed") return completion("conflict");
@@ -419,6 +697,18 @@ export async function completeAnonymousInstallationClaim(
       "select transaction_timestamp() as claimed_at",
     )).rows[0]?.claimed_at;
     if (!claimedAt || !profileId) throw new Error("Installation claim timestamp was unavailable");
+    const canonicalConflict = await finalizeCanonicalInstallationClaim(
+      client,
+      namespace,
+      input.acquisitionId,
+      envelope,
+      new Date(claimedAt),
+      dependencies.acquisitionIntegrity,
+    );
+    if (canonicalConflict) {
+      await quarantineSessions(client, namespace, [claim, acquisition], "acquisition_owner_conflict");
+      return completion("conflict");
+    }
     const claimUpdate = await client.query(
       `
         update public.sidestream_anonymous_acquisition_sessions
@@ -450,12 +740,42 @@ export async function completeAnonymousInstallationClaim(
   });
 }
 
+async function finalizeCanonicalInstallationClaim(
+  client: PoolClient,
+  namespace: Namespace,
+  acquisitionId: string,
+  envelope: ClaimEnvelope,
+  occurredAt: Date,
+  injectedIntegrity?: AcquisitionIntegrity,
+): Promise<boolean> {
+  const integrity = injectedIntegrity || await import("./acquisition-integrity.js");
+  const transaction = <T>(callback: (nestedClient: PoolClient) => Promise<T>) => callback(client);
+  const stage = await integrity.recordAcquisitionStage({
+    acquisitionId,
+    stage: "installation_claimed",
+    stableServerReference: `installation:${envelope.installIdHash}`,
+    occurredAt,
+  }, { transaction, namespace });
+  if (stage.ownerConflict) return true;
+  await integrity.addTrustedDeliveryEvidence({
+    acquisitionId,
+    evidence: "verified_installation_claim",
+  }, { transaction, namespace });
+  return false;
+}
+
 function completion(
   outcome: AnonymousInstallationClaimCompletion["outcome"],
   profileId: string | null = null,
   idempotent = false,
 ): AnonymousInstallationClaimCompletion {
   return Object.freeze({ outcome, profileId, idempotent });
+}
+
+function claimStatus(
+  state: AnonymousInstallationClaimStatus["state"],
+): AnonymousInstallationClaimStatus {
+  return Object.freeze({ state });
 }
 
 function isClaimMarker(row: AcquisitionRow): boolean {
@@ -559,7 +879,7 @@ async function quarantineSessions(
 ): Promise<void> {
   for (const session of sessions) {
     await recordSessionConflict(client, namespace, session, reason);
-    if (session.claim_state !== "claimed") {
+    if (session.claim_state !== "quarantined") {
       await client.query(
         `
           update public.sidestream_anonymous_acquisition_sessions
@@ -639,10 +959,30 @@ function encryptionKey(secret: Buffer): Buffer {
   return createHash("sha256").update(ENCRYPTION_CONTEXT, "utf8").update(secret).digest();
 }
 
+function acknowledgmentEncryptionKey(secret: Buffer): Buffer {
+  return createHash("sha256")
+    .update(ACKNOWLEDGMENT_ENCRYPTION_CONTEXT, "utf8")
+    .update(secret)
+    .digest();
+}
+
 function sign(unsigned: string, secret: Buffer): string {
   return createHmac("sha256", secret)
     .update(`${SIGNATURE_CONTEXT}:${unsigned}`, "utf8")
     .digest("base64url");
+}
+
+function acknowledgmentSignature(unsigned: string, secret: Buffer): string {
+  return createHmac("sha256", secret)
+    .update(`${ACKNOWLEDGMENT_SIGNATURE_CONTEXT}:${unsigned}`, "utf8")
+    .digest("base64url");
+}
+
+function sameOpaqueToken(expected: string, supplied: string): boolean {
+  const expectedBytes = Buffer.from(expected, "base64url");
+  const suppliedBytes = Buffer.from(supplied, "base64url");
+  return suppliedBytes.length === expectedBytes.length &&
+    timingSafeEqual(suppliedBytes, expectedBytes);
 }
 
 function decodeCanonicalBase64Url(value: string): Buffer {
