@@ -9,6 +9,7 @@ import {
   getTrustedCheckoutCountry,
   methodNotAllowed,
   redirect,
+  resolveRequiredCheckoutAcquisition,
   sendJson,
   type AccountRequest,
 } from "../_lib/account.js";
@@ -29,19 +30,38 @@ export default async function handler(
   const baseUrl = getBaseUrl(request);
   const requestUrl = new URL(request.url || "/api/checkout/start", baseUrl);
   const activationKey = cleanString(requestUrl.searchParams.get("activation"), 160);
+  const handoffValues = requestUrl.searchParams.getAll("handoff");
+  const handoffToken = handoffValues.length === 1 ? handoffValues[0] : "";
 
   if (isLegacyVercelHost(request.headers.host)) {
     const canonicalCheckout = new URL("/api/checkout/start", baseUrl);
     if (!isLegacyVercelHost(canonicalCheckout.host)) {
       if (activationKey) canonicalCheckout.searchParams.set("activation", activationKey);
+      if (handoffToken) canonicalCheckout.searchParams.set("handoff", handoffToken);
       return redirect(response, canonicalCheckout.toString(), 302);
     }
+  }
+
+  let acquisition;
+  try {
+    acquisition = await resolveRequiredCheckoutAcquisition(request, response, {
+      handoffToken,
+    });
+  } catch (error) {
+    console.error("[sidestream checkout] acquisition resolution failed", error);
+    return sendJson(response, 503, {
+      error: "Checkout acquisition unavailable",
+      code: "acquisition_unavailable",
+    });
   }
 
   const session = await getSession(request);
   if (!session) {
     const nextUrl = new URL("/api/checkout/start", baseUrl);
     if (activationKey) nextUrl.searchParams.set("activation", activationKey);
+    if (acquisition.acceptedHandoffToken) {
+      nextUrl.searchParams.set("handoff", acquisition.acceptedHandoffToken);
+    }
     const signInUrl = new URL("/api/auth/google/start", baseUrl);
     signInUrl.searchParams.set("next", `${nextUrl.pathname}${nextUrl.search}`);
     return redirect(response, signInUrl.toString(), 302);
@@ -70,6 +90,7 @@ export default async function handler(
   applyRateLimitHeaders(response, rateLimit);
 
   const intent = await createCheckoutIntent({
+    acquisitionId: acquisition.acquisitionId,
     activationKey,
     buyerCountry: getTrustedCheckoutCountry(request.headers),
     session,

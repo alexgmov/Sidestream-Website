@@ -20,6 +20,9 @@ import {
   getCheckoutParametersFingerprint,
   getCheckoutSessionIdempotencyKey,
 } from "../api/_lib/entitlement.ts";
+import {
+  createManyChatEmailDeliveryHandoff,
+} from "../api/_lib/acquisition-handoff.ts";
 import { loadInjectedHandler } from "./helpers/handler-loader.mjs";
 import { invokeHandler } from "./helpers/http.mjs";
 
@@ -37,6 +40,7 @@ const CONTROLLED_ENVIRONMENT = [
   "POSTGRES_PRISMA_URL",
   "POSTGRES_URL_NON_POOLING",
   "SIDESTREAM_LICENSE_HASH_SECRET",
+  "SIDESTREAM_ANONYMOUS_ACQUISITION_SECRET",
   "SIDESTREAM_RATE_LIMIT_HASH_SECRET",
   "SIDESTREAM_PRO_PRODUCT_ID",
   "SIDESTREAM_PRO_PRICE_ID",
@@ -94,6 +98,14 @@ test("Upgrade authenticates and then redirects the signed-in buyer to Stripe", a
         },
         methodNotAllowed,
         redirect,
+        async resolveRequiredCheckoutAcquisition() {
+          return {
+            acquisitionId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            browserCookieValue: "signed-browser-cookie",
+            acceptedHandoffToken: "",
+            origin: "browser_cookie",
+          };
+        },
         sendJson,
       },
       "../_lib/entitlement.js": {
@@ -236,10 +248,98 @@ test("database-backed intents serialize retries, rotate deliberately, and fulfil
       email: buyer.email,
       active: false,
     });
+    const acquisition = await createRuntimeAcquisition(account);
+    const deliveryToken = createManyChatEmailDeliveryHandoff({
+      intendedIdentity: buyer.email,
+    }, {
+      secret: TEST_SECRET,
+      now: new Date("2026-08-03T12:00:00.000Z"),
+    });
+    const deliveryResponse = createHeaderResponse();
+    const deliveryAcquisition = await account.resolveRequiredCheckoutAcquisition(
+      { headers: {} },
+      deliveryResponse,
+      {
+        handoffToken: deliveryToken,
+        now: new Date("2026-08-03T12:01:00.000Z"),
+      },
+    );
+    assert.equal(deliveryAcquisition.origin, "server_delivery_handoff");
+    const forwarded = await account.completeGoogleAuthenticationAcquisition({
+      oauthAcquisitionCookieValue: deliveryAcquisition.browserCookieValue,
+      nextPath: `/api/checkout/start?handoff=${encodeURIComponent(deliveryToken)}`,
+      exactVerifiedEmail: "forwarded-buyer@example.com",
+      accountId: buyer.accountId,
+      response: createHeaderResponse(),
+      now: new Date("2026-08-03T12:02:00.000Z"),
+    });
+    assert.equal(forwarded.possibleForwardedHandoff, true);
+    const authenticationReplay = await account.completeGoogleAuthenticationAcquisition({
+      oauthAcquisitionCookieValue: deliveryAcquisition.browserCookieValue,
+      nextPath: `/api/checkout/start?handoff=${encodeURIComponent(deliveryToken)}`,
+      exactVerifiedEmail: buyer.email,
+      accountId: buyer.accountId,
+      response: createHeaderResponse(),
+      now: new Date("2026-08-03T12:03:00.000Z"),
+    });
+    assert.equal(authenticationReplay.possibleForwardedHandoff, false);
+    const forgedChannelAcquisition = await account.resolveRequiredCheckoutAcquisition(
+      { headers: {} },
+      createHeaderResponse(),
+      {
+        handoffToken: "manychat_email",
+        now: new Date("2026-08-03T12:04:00.000Z"),
+      },
+    );
+    assert.equal(forgedChannelAcquisition.origin, "website_direct_or_unknown");
+    const forgedChannelRoot = await databasePool.query(
+      `select first_observed_source, entry_channel, attribution_confidence
+       from public.sidestream_acquisitions where id = $1`,
+      [forgedChannelAcquisition.acquisitionId],
+    );
+    assert.deepEqual(forgedChannelRoot.rows[0], {
+      first_observed_source: "website_direct_or_unknown",
+      entry_channel: "website",
+      attribution_confidence: "exact_sidestream_entry",
+    });
+    const authenticationStages = await databasePool.query(
+      `select count(*)::integer as count
+       from public.sidestream_acquisition_stages
+       where acquisition_id = $1 and stage = 'authentication_completed'`,
+      [deliveryAcquisition.acquisitionId],
+    );
+    assert.equal(authenticationStages.rows[0].count, 1);
+    await assert.rejects(
+      account.createCheckoutIntent({ session: buyerSession }),
+      /canonical acquisition is required/i,
+    );
     const intent = await account.createCheckoutIntent({
+      acquisitionId: acquisition.acquisitionId,
       session: buyerSession,
     });
     assert.ok(intent);
+    await databasePool.query(
+      "update public.sidestream_checkout_intents set acquisition_id = null where id = $1",
+      [intent.intentId],
+    );
+    assert.deepEqual(
+      await account.createOrReuseCheckoutSession({
+        intentId: intent.intentId,
+        browserToken: intent.browserToken,
+        session: buyerSession,
+        baseUrl: BASE_URL,
+      }),
+      {
+        ok: false,
+        statusCode: 503,
+        error: "Checkout acquisition linkage is unavailable",
+        code: "acquisition_linkage_missing",
+      },
+    );
+    await databasePool.query(
+      "update public.sidestream_checkout_intents set acquisition_id = $2 where id = $1",
+      [intent.intentId, acquisition.acquisitionId],
+    );
 
     const [first, second] = await Promise.all([
       account.createOrReuseCheckoutSession({
@@ -260,6 +360,24 @@ test("database-backed intents serialize retries, rotate deliberately, and fulfil
     assert.equal(first.url, second.url);
     assert.equal(stripe.countWrites("customers.create"), 1);
     assert.equal(stripe.countWrites("checkout.sessions.create"), 1);
+    const initialIntent = await databasePool.query(
+      "select acquisition_id from public.sidestream_checkout_intents where id = $1",
+      [intent.intentId],
+    );
+    assert.equal(initialIntent.rows[0].acquisition_id, acquisition.acquisitionId);
+    const initialWrite = stripe.sessionCreateWrites[0];
+    assert.equal(
+      initialWrite.params.metadata.sidestream_acquisition_id,
+      acquisition.acquisitionId,
+    );
+    assert.equal(
+      initialWrite.params.invoice_creation.invoice_data.metadata.sidestream_acquisition_id,
+      acquisition.acquisitionId,
+    );
+    assert.equal(
+      initialWrite.params.payment_intent_data.metadata.sidestream_acquisition_id,
+      acquisition.acquisitionId,
+    );
 
     process.env.SIDESTREAM_PRO_PRICE_ID = "price_checkout_changed_after_open";
     const stillOpen = await account.createOrReuseCheckoutSession({
@@ -334,6 +452,7 @@ test("database-backed intents serialize retries, rotate deliberately, and fulfil
     const activationKey = "activation-checkout-intent-exact";
     await seedActivation(databasePool, activationKey);
     const activationIntent = await account.createCheckoutIntent({
+      acquisitionId: acquisition.acquisitionId,
       activationKey,
       session: buyerSession,
     });
@@ -398,6 +517,15 @@ test("database-backed intents serialize retries, rotate deliberately, and fulfil
       email: buyerSession.email,
       name: "Activation Buyer",
     });
+    stripe.setAcquisitionId(
+      activationWrite.session.id,
+      "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+    );
+    assert.deepEqual(
+      await account.fulfillCheckoutSession(activationWrite.session.id, activationKey),
+      { fulfilled: false, reason: "acquisition_mismatch" },
+    );
+    stripe.setAcquisitionId(activationWrite.session.id, acquisition.acquisitionId);
     const deliveries = await Promise.all([
       account.fulfillCheckoutSession(activationWrite.session.id, activationKey),
       account.upsertLicenseFromCheckoutSession({ id: activationWrite.session.id }),
@@ -430,13 +558,14 @@ test("database-backed intents serialize retries, rotate deliberately, and fulfil
     );
     const fulfilledIntent = await databasePool.query(
       `
-        select state, stripe_customer_id
+        select acquisition_id, state, stripe_customer_id
         from public.sidestream_checkout_intents
         where id = $1
       `,
       [activationIntent.intentId],
     );
     assert.deepEqual(fulfilledIntent.rows[0], {
+      acquisition_id: acquisition.acquisitionId,
       state: "completed",
       stripe_customer_id: activationWrite.session.customer,
     });
@@ -451,6 +580,7 @@ test("database-backed intents serialize retries, rotate deliberately, and fulfil
       "price_checkout_india_wrong_amount";
     await assert.rejects(
       account.createCheckoutIntent({
+        acquisitionId: acquisition.acquisitionId,
         buyerCountry: "IN",
         session: indiaBuyerSession,
       }),
@@ -459,6 +589,7 @@ test("database-backed intents serialize retries, rotate deliberately, and fulfil
 
     process.env.SIDESTREAM_PRO_INDIA_PRICE_ID = "price_checkout_india";
     const indiaIntent = await account.createCheckoutIntent({
+      acquisitionId: acquisition.acquisitionId,
       buyerCountry: "IN",
       session: indiaBuyerSession,
     });
@@ -513,6 +644,7 @@ test("database-backed intents serialize retries, rotate deliberately, and fulfil
     });
     process.env.SIDESTREAM_PRO_BRAZIL_PRICE_ID = "price_checkout_brazil";
     const brazilIntent = await account.createCheckoutIntent({
+      acquisitionId: acquisition.acquisitionId,
       buyerCountry: "BR",
       session: brazilBuyerSession,
     });
@@ -548,6 +680,7 @@ test("database-backed intents serialize retries, rotate deliberately, and fulfil
     process.env.SIDESTREAM_PRO_SOUTH_KOREA_PRICE_ID =
       "price_checkout_south_korea";
     const southKoreaIntent = await account.createCheckoutIntent({
+      acquisitionId: acquisition.acquisitionId,
       buyerCountry: "KR",
       session: southKoreaBuyerSession,
     });
@@ -575,10 +708,28 @@ test("database-backed intents serialize retries, rotate deliberately, and fulfil
       email: southKoreaBuyer.email,
       name: "South Korea Buyer",
     });
+    stripe.completeZeroTotal(southKoreaWrite.session.id, "no_payment_required");
     assert.deepEqual(
       await account.fulfillCheckoutSession(southKoreaWrite.session.id),
       { fulfilled: true, activationBound: false, paidAcquisition: false },
     );
+
+    const stages = await databasePool.query(
+      `
+        select stage, count(*)::integer as count
+        from public.sidestream_acquisition_stages
+        where acquisition_id = $1
+          and stage in ('checkout_started', 'checkout_completed', 'payment_settled')
+        group by stage
+        order by stage
+      `,
+      [acquisition.acquisitionId],
+    );
+    assert.deepEqual(stages.rows, [
+      { stage: "checkout_completed", count: 4 },
+      { stage: "checkout_started", count: 5 },
+      { stage: "payment_settled", count: 4 },
+    ]);
 
   } finally {
     if (runtimeModules) {
@@ -662,6 +813,7 @@ class RecordingStripe {
           amount_received: session.amount_total,
           currency: session.currency,
           status: "succeeded",
+          metadata: { ...session.metadata },
           latest_charge: `ch_${paymentIntentId.slice(3)}`,
         };
       },
@@ -773,6 +925,21 @@ class RecordingStripe {
     session.payment_status = "paid";
     session.customer_details = { email: profile.email, name: profile.name };
     session.customer_email = profile.email;
+  }
+
+  setAcquisitionId(sessionId, acquisitionId) {
+    const session = this.#sessions.get(sessionId);
+    if (!session) throw new Error(`Unknown Stripe test Session ${sessionId}`);
+    session.metadata.sidestream_acquisition_id = acquisitionId;
+  }
+
+  completeZeroTotal(sessionId, paymentStatus = "no_payment_required") {
+    const session = this.#sessions.get(sessionId);
+    if (!session) throw new Error(`Unknown Stripe test Session ${sessionId}`);
+    session.payment_status = paymentStatus;
+    session.payment_intent = null;
+    session.amount_total = 0;
+    session.total_details.amount_discount = session.amount_subtotal;
   }
 
   expireExternally(sessionId) {
@@ -922,6 +1089,15 @@ async function loadRuntimeModules() {
       "./license-environment.js": pathToFileURL(
         join(repositoryRoot, "api", "_lib", "license-environment.ts"),
       ).href,
+      "./license-entitlement-sql.js": pathToFileURL(
+        join(repositoryRoot, "api", "_lib", "license-entitlement-sql.ts"),
+      ).href,
+      "./acquisition-cookie.js": pathToFileURL(
+        join(repositoryRoot, "api", "_lib", "acquisition-cookie.ts"),
+      ).href,
+      "./acquisition-handoff.js": pathToFileURL(
+        join(repositoryRoot, "api", "_lib", "acquisition-handoff.ts"),
+      ).href,
       "./customer-identity.js": pathToFileURL(
         join(repositoryRoot, "api", "_lib", "customer-identity.ts"),
       ).href,
@@ -940,6 +1116,15 @@ async function loadRuntimeModules() {
       "paid-acquisition",
       join(repositoryRoot, "api", "_lib", "paid-acquisition.ts"),
       { "./postgres.js": imports["./postgres.js"] },
+    )).href;
+    imports["./acquisition-integrity.js"] = pathToFileURL(await writeAdaptedModule(
+      temporaryModuleDirectory,
+      "acquisition-integrity",
+      join(repositoryRoot, "api", "_lib", "acquisition-integrity.ts"),
+      {
+        "./license-environment.js": imports["./license-environment.js"],
+        "./postgres.js": imports["./postgres.js"],
+      },
     )).href;
     let source = await readFile(
       join(repositoryRoot, "api", "_lib", "account.ts"),
@@ -981,6 +1166,7 @@ function configureRuntime(connectionString) {
   for (const name of CONTROLLED_ENVIRONMENT) delete process.env[name];
   process.env.SIDESTREAM_POSTGRES_URL = connectionString;
   process.env.SIDESTREAM_LICENSE_HASH_SECRET = TEST_SECRET;
+  process.env.SIDESTREAM_ANONYMOUS_ACQUISITION_SECRET = TEST_SECRET;
   process.env.SIDESTREAM_RATE_LIMIT_HASH_SECRET = TEST_SECRET;
   process.env.SIDESTREAM_PRO_PRODUCT_ID = "prod_checkout_test";
   process.env.SIDESTREAM_PRO_PRICE_ID = "price_checkout_test";
@@ -989,6 +1175,26 @@ function configureRuntime(connectionString) {
   process.env.VERCEL_ENV = "production";
   process.env.POSTGRES_SSL = "0";
   process.env.POSTGRES_POOL_MAX = "12";
+}
+
+async function createRuntimeAcquisition(account) {
+  return account.resolveRequiredCheckoutAcquisition(
+    { headers: {} },
+    createHeaderResponse(),
+    { now: new Date("2026-08-03T12:00:00.000Z") },
+  );
+}
+
+function createHeaderResponse() {
+  const headers = new Map();
+  return {
+    getHeader(name) {
+      return headers.get(String(name).toLowerCase());
+    },
+    setHeader(name, value) {
+      headers.set(String(name).toLowerCase(), value);
+    },
+  };
 }
 
 async function startEphemeralPostgres() {

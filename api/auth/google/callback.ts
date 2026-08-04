@@ -1,9 +1,11 @@
 import type { ServerResponse } from "node:http";
 import {
   clearOAuthCookies,
+  completeGoogleAuthenticationAcquisition,
   createWebSession,
   exchangeGoogleCode,
   getOAuthNextPath,
+  getOAuthAcquisitionCookie,
   getOAuthState,
   methodNotAllowed,
   redirect,
@@ -24,6 +26,7 @@ export default async function handler(
   const returnedState = callbackUrl.searchParams.get("state") || "";
   const code = callbackUrl.searchParams.get("code") || "";
   const nextPath = getOAuthNextPath(request);
+  const oauthAcquisitionCookieValue = getOAuthAcquisitionCookie(request);
 
   clearOAuthCookies(request, response);
 
@@ -34,6 +37,18 @@ export default async function handler(
   try {
     const profile = await exchangeGoogleCode(request, code);
     const accountId = await upsertGoogleAccount(profile);
+    const acquisition = await completeGoogleAuthenticationAcquisition({
+      oauthAcquisitionCookieValue,
+      nextPath,
+      exactVerifiedEmail: profile.email,
+      accountId,
+      response,
+    });
+    if (acquisition.possibleForwardedHandoff) {
+      console.warn("[sidestream auth] possible forwarded acquisition handoff", {
+        acquisitionId: acquisition.acquisitionId,
+      });
+    }
     await createWebSession(request, response, accountId);
     return redirect(response, nextPath, 303);
   } catch (error) {
