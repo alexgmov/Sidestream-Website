@@ -52,8 +52,10 @@ export const ACQUISITION_PRIVACY_EXCLUSIONS = Object.freeze([
 ]);
 
 type Namespace = "production" | "test";
-type AcquisitionStage = (typeof ACQUISITION_STAGES)[number];
-type CountingGrain = (typeof ACQUISITION_STAGE_COUNTING_GRAINS)[AcquisitionStage];
+export type AcquisitionStage = (typeof ACQUISITION_STAGES)[number];
+export type AcquisitionCountingGrain =
+  (typeof ACQUISITION_STAGE_COUNTING_GRAINS)[AcquisitionStage];
+type CountingGrain = AcquisitionCountingGrain;
 type TrustedDeliveryEvidence = (typeof ACQUISITION_TRUSTED_DELIVERY_EVIDENCE)[number];
 type EntryChannel = "website" | "email_handoff" | "installer" | "account" | "checkout";
 type ExternalReferrerCategory =
@@ -123,6 +125,48 @@ export type AcquisitionStageRecord = Readonly<{
   recordedAt: string;
   ownerConflict: boolean;
 }>;
+
+export type AcquisitionStageSummary = Readonly<{
+  timestamps: Readonly<Record<AcquisitionStage, string | null>>;
+  counts: Readonly<Record<AcquisitionStage, string>>;
+  missingStages: readonly AcquisitionStage[];
+  conflictingStages: readonly string[];
+}>;
+
+/** Builds the privacy-safe operator projection without exposing dedupe keys. */
+export function summarizeAcquisitionStages(
+  stages: readonly Readonly<{
+    stage: AcquisitionStage;
+    occurredAt: Date | string;
+  }>[],
+  conflictTypes: readonly string[] = [],
+): AcquisitionStageSummary {
+  const timestamps = Object.fromEntries(
+    ACQUISITION_STAGES.map((stage) => [stage, null]),
+  ) as Record<AcquisitionStage, string | null>;
+  const counts = Object.fromEntries(
+    ACQUISITION_STAGES.map((stage) => [stage, "0"]),
+  ) as Record<AcquisitionStage, string>;
+
+  for (const record of stages) {
+    const stage = assertStage(record.stage);
+    const occurredAt = iso(timestamp(record.occurredAt, "occurredAt"));
+    const current = timestamps[stage];
+    if (current === null || occurredAt < current) timestamps[stage] = occurredAt;
+    counts[stage] = (BigInt(counts[stage]) + 1n).toString();
+  }
+
+  return Object.freeze({
+    timestamps: Object.freeze(timestamps),
+    counts: Object.freeze(counts),
+    missingStages: Object.freeze(
+      ACQUISITION_STAGES.filter((stage) => timestamps[stage] === null),
+    ),
+    conflictingStages: Object.freeze([...new Set(conflictTypes.map((type) =>
+      type === "stage_deduplication_owner" ? "stage_owner_conflict" : type
+    ))].sort()),
+  });
+}
 
 export class AcquisitionIntegrityError extends Error {
   readonly code: string;

@@ -12,6 +12,7 @@ const VALID_BODY = {
   observationEnd: "2026-09-01T00:00:00Z",
   journeyLimit: 2,
 };
+const CURSOR_SECRET = "acquisition-funnel-cursor-secret-2026";
 
 const funnelModule = await loadInjectedModule(
   new URL("../../api/_lib/acquisition-funnel.ts", import.meta.url),
@@ -115,6 +116,8 @@ test("request contract rejects unknown keys and unbounded or non-UTC windows", a
     }, "invalid_cohort_window"],
     [{ ...VALID_BODY, journeyLimit: 101 }, "invalid_journey_limit"],
     [{ ...VALID_BODY, journeyLimit: 1.5 }, "invalid_journey_limit"],
+    [{ ...VALID_BODY, cohortBasis: "payment_time_guess" }, "invalid_cohort_basis"],
+    [{ ...VALID_BODY, journeyCursor: "forged.cursor" }, "invalid_journey_cursor"],
   ];
 
   for (const [request, code] of invalidRequests) {
@@ -144,6 +147,7 @@ test("aggregate and journey output exposes all ratios without raw linkage", asyn
               experiment: "mc-mobile-paid-v1",
               cohort: "mc-paid-v1",
               attribution_confidence: "exact_paid_checkout",
+              integrity_state: "historical_unlinked",
               profile_count: "2",
               first_opened_count: "2",
               completed_activation_count: "1",
@@ -159,6 +163,7 @@ test("aggregate and journey output exposes all ratios without raw linkage", asyn
               experiment: null,
               cohort: null,
               attribution_confidence: "unattributed",
+              integrity_state: "missing_internal_linkage",
               profile_count: "1",
               first_opened_count: "0",
               completed_activation_count: "0",
@@ -170,6 +175,19 @@ test("aggregate and journey output exposes all ratios without raw linkage", asyn
           ],
         };
       }
+      if (sql.includes("from public.sidestream_acquisition_stages")) {
+        return { rows: [{
+          stage: "payment_settled",
+          counting_grain: "payment",
+          distinct_count: "1",
+        }] };
+      }
+      if (sql.includes("select integrity_state, count(distinct id)")) {
+        return { rows: [
+          { integrity_state: "missing_internal_linkage", acquisition_count: "2" },
+          { integrity_state: "historical_unlinked", acquisition_count: "1" },
+        ] };
+      }
       return {
         rows: [{
           customer_id: "00000000-0000-4000-8000-000000000001",
@@ -179,15 +197,19 @@ test("aggregate and journey output exposes all ratios without raw linkage", asyn
           experiment: "mc-mobile-paid-v1",
           cohort: "mc-paid-v1",
           attribution_confidence: "exact_paid_checkout",
+          integrity_state: "historical_unlinked",
           first_attributed_at: "2026-07-01T12:00:00Z",
           first_installer_requested_at: null,
           first_installer_platform: null,
           first_install_at: "2026-07-02T12:00:00Z",
+          first_purchase_at: "2026-07-03T12:00:00Z",
+          cohort_at: "2026-07-02T12:00:00Z",
           first_open_at: "2026-07-02T13:00:00Z",
           activation_at: "2026-07-03T12:00:00Z",
           day_zero_download_attempts: "3",
           later_open_days: ["2026-07-05"],
           return_eligible: true,
+          paid_customer: true,
           email: "must-not-cross@example.com",
           link_value: "must-not-cross",
         }],
@@ -195,7 +217,11 @@ test("aggregate and journey output exposes all ratios without raw linkage", asyn
     },
   });
 
-  const result = await funnelModule.queryAcquisitionFunnel(VALID_BODY, { transaction });
+  const result = await funnelModule.queryAcquisitionFunnel(
+    VALID_BODY,
+    CURSOR_SECRET,
+    { transaction },
+  );
   assert.deepEqual(result.activationPercentage, {
     numerator: "1",
     denominator: "2",
@@ -237,11 +263,21 @@ test("aggregate and journey output exposes all ratios without raw linkage", asyn
     percentage: "33.33",
   });
   assert.equal(result.groups[0].activationPercentage.percentage, "50.00");
+  assert.equal(result.groups[0].paidCustomers, "1");
+  assert.equal(result.sourceTotals[0].paidCustomers, "1");
+  assert.equal(result.stageCounts.length, 10);
+  assert.equal(
+    result.stageCounts.find((stage) => stage.stage === "payment_settled").count,
+    "1",
+  );
+  assert.equal(result.integrityAlerts.missingInternalLinkage.acquisitionCount, "2");
+  assert.equal(result.integrityAlerts.historicalUnlinked.acquisitionCount, "1");
   assert.equal(result.journeys[0].dayZeroDownloadAttempts, "3");
   assert.equal(result.journeys[0].returnEligible, true);
   assert.equal(result.journeys[0].returned, true);
   assert.equal(result.journeys[0].oneAndDone, false);
   assert.equal(result.journeys[0].completedActivation, true);
+  assert.equal(result.journeys[0].paidCustomer, true);
   assert.equal(result.journeys[0].firstVisitAt, "2026-07-01T12:00:00.000Z");
   assert.equal(result.journeysTruncated, true);
   assert.doesNotMatch(
@@ -249,7 +285,7 @@ test("aggregate and journey output exposes all ratios without raw linkage", asyn
     /must-not-cross|"email"\s*:|link_value|install_id_hash|assignmentIdHash/i,
   );
 
-  assert.equal(sqlCalls.length, 2);
+  assert.equal(sqlCalls.length, 4);
   assert.match(sqlCalls[0].sql, /payment_state = 'active'/);
   assert.match(sqlCalls[0].sql, /claim\.claim_state = 'claimed'/);
   assert.match(sqlCalls[0].sql, /lead\.cta_source = 'mobile-download-handoff'/);
@@ -258,9 +294,9 @@ test("aggregate and journey output exposes all ratios without raw linkage", asyn
   assert.match(sqlCalls[0].sql, /'exact_anonymous_claim'/);
   assert.match(sqlCalls[0].sql, /'exact_verified_email'/);
   assert.match(sqlCalls[0].sql, /first_touch_medium is distinct from 'installation_claim'/);
-  assert.match(sqlCalls[0].sql, /paid\.first_attributed_at <= cohort\.first_install_at/);
-  assert.match(sqlCalls[0].sql, /lead\.first_captured_at <= cohort\.first_install_at/);
-  assert.match(sqlCalls[0].sql, /lead\.last_captured_at <= cohort\.first_install_at/);
+  assert.match(sqlCalls[0].sql, /paid\.first_attributed_at <= cohort\.cohort_at/);
+  assert.match(sqlCalls[0].sql, /lead\.first_captured_at <= cohort\.cohort_at/);
+  assert.match(sqlCalls[0].sql, /lead\.last_captured_at <= cohort\.cohort_at/);
   assert.match(sqlCalls[0].sql, /account\.email = profile\.contact_email/);
   assert.match(
     sqlCalls[0].sql,
@@ -269,14 +305,83 @@ test("aggregate and journey output exposes all ratios without raw linkage", asyn
   assert.match(sqlCalls[0].sql, /money\.net_paid_minor > 0/);
   assert.match(sqlCalls[0].sql, /money\.first_paid_at < \$4::timestamptz/);
   assert.match(sqlCalls[0].sql, /order by[\s\S]*paid\.first_attributed_at[\s\S]*paid\.entry_id/);
-  assert.match(sqlCalls[1].sql, /order by first_install_at, profile_id[\s\S]*limit \$5/);
+  assert.match(sqlCalls[1].sql, /order by cohort_at, profile_id[\s\S]*limit \$6/);
   assert.deepEqual(sqlCalls[1].params, [
     "test",
     "2026-07-01T00:00:00.000Z",
     "2026-08-01T00:00:00.000Z",
     "2026-09-01T00:00:00.000Z",
-    2,
+    "first_install",
+    3,
+    null,
+    null,
   ]);
+});
+
+test("journey cursors are deterministic and bind namespace, basis, limit, and window", async () => {
+  const rows = [1, 2].map((value) => ({
+    customer_id: `00000000-0000-4000-8000-00000000000${value}`,
+    source: "website_direct_or_unknown",
+    medium: null,
+    campaign: null,
+    experiment: null,
+    cohort: null,
+    attribution_confidence: "exact_sidestream_entry",
+    integrity_state: "intact",
+    first_attributed_at: "2026-07-01T00:00:00Z",
+    first_installer_requested_at: null,
+    first_installer_platform: null,
+    cohort_at: `2026-07-0${value}T00:00:00Z`,
+    first_install_at: `2026-07-0${value}T00:00:00Z`,
+    first_purchase_at: null,
+    first_open_at: null,
+    activation_at: null,
+    day_zero_download_attempts: "0",
+    later_open_days: [],
+    return_eligible: false,
+    paid_customer: false,
+  }));
+  const group = {
+    source: "website_direct_or_unknown",
+    medium: null,
+    campaign: null,
+    experiment: null,
+    cohort: null,
+    attribution_confidence: "exact_sidestream_entry",
+    integrity_state: "intact",
+    profile_count: "2",
+    first_opened_count: "0",
+    completed_activation_count: "0",
+    paid_customer_count: "0",
+    return_eligible_count: "0",
+    returned_count: "0",
+    one_and_done_count: "0",
+  };
+  const transaction = async (callback) => callback({
+    query: async (sql) => ({
+      rows: sql.includes("group by\n        source") ? [group]
+        : sql.includes("from attributed_profiles") ? rows
+          : [],
+    }),
+  });
+  const request = { ...VALID_BODY, journeyLimit: 1 };
+  const first = await funnelModule.queryAcquisitionFunnel(
+    request,
+    CURSOR_SECRET,
+    { transaction },
+  );
+  const repeated = await funnelModule.queryAcquisitionFunnel(
+    request,
+    CURSOR_SECRET,
+    { transaction },
+  );
+  assert.equal(first.nextJourneyCursor, repeated.nextJourneyCursor);
+  assert.ok(first.nextJourneyCursor);
+  await assert.rejects(funnelModule.queryAcquisitionFunnel({
+    ...request,
+    cohortBasis: "first_purchase",
+    journeyCursor: first.nextJourneyCursor,
+  }, CURSOR_SECRET, { transaction }), (error) => error?.code === "invalid_journey_cursor");
 });
 
 test("zero first-open denominator returns an explicit null percentage", async () => {
