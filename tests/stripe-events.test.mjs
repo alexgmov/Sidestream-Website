@@ -69,6 +69,57 @@ test("Stripe events use a durable claimed queue with bounded retry and protected
       await pool.query(await readFile(migrationPath, "utf8"));
     }
 
+    await t.test("refund and dispute webhook replays converge on canonical acquisition grains", () => {
+      const facts = { chargeId: "ch_acquisition", amountRefunded: 500 };
+      const refundCreated = runtime.account.getStripeAcquisitionLifecycleStages(
+        "refund.created",
+        { id: "re_acquisition" },
+        facts,
+      );
+      const refundUpdated = runtime.account.getStripeAcquisitionLifecycleStages(
+        "refund.updated",
+        { id: "re_acquisition" },
+        facts,
+      );
+      assert.deepEqual(refundCreated, refundUpdated);
+      assert.deepEqual(refundCreated, [{
+        stage: "refunded",
+        stableServerReference: "stripe-refund:re_acquisition",
+      }]);
+      assert.deepEqual(
+        runtime.account.getStripeAcquisitionLifecycleStages(
+          "charge.refunded",
+          { refunds: { data: [{ id: "re_acquisition" }] } },
+          facts,
+        ),
+        refundCreated,
+      );
+
+      const disputeCreated = runtime.account.getStripeAcquisitionLifecycleStages(
+        "charge.dispute.created",
+        { id: "dp_acquisition" },
+        facts,
+      );
+      const disputeUpdated = runtime.account.getStripeAcquisitionLifecycleStages(
+        "charge.dispute.updated",
+        { id: "dp_acquisition" },
+        facts,
+      );
+      assert.deepEqual(disputeCreated, disputeUpdated);
+      assert.deepEqual(disputeCreated, [{
+        stage: "disputed",
+        stableServerReference: "stripe-dispute:dp_acquisition",
+      }]);
+      assert.deepEqual(
+        runtime.account.getStripeAcquisitionLifecycleStages(
+          "charge.updated",
+          { id: "ch_acquisition" },
+          facts,
+        ),
+        [],
+      );
+    });
+
     await t.test("migration models every state and exposes a partial pending index", async () => {
       const columns = await pool.query(
         `
@@ -1160,6 +1211,9 @@ export function waitUntil() {}
 
 async function loadAccountRuntime(directory) {
   const postgresUrl = pathToFileURL(join(repositoryRoot, "api/_lib/postgres.ts")).href;
+  const licenseEnvironmentUrl = pathToFileURL(
+    join(repositoryRoot, "api/_lib/license-environment.ts"),
+  ).href;
   const maintenanceUrl = await writeAdaptedModule(
     directory,
     "account-maintenance",
@@ -1171,6 +1225,15 @@ async function loadAccountRuntime(directory) {
     "paid-acquisition",
     join(repositoryRoot, "api/_lib/paid-acquisition.ts"),
     { "./postgres.js": postgresUrl },
+  );
+  const acquisitionIntegrityUrl = await writeAdaptedModule(
+    directory,
+    "account-acquisition-integrity",
+    join(repositoryRoot, "api/_lib/acquisition-integrity.ts"),
+    {
+      "./license-environment.js": licenseEnvironmentUrl,
+      "./postgres.js": postgresUrl,
+    },
   );
   const accountUrl = await writeAdaptedModule(
     directory,
@@ -1187,6 +1250,16 @@ async function loadAccountRuntime(directory) {
       "./license-environment.js": pathToFileURL(
         join(repositoryRoot, "api/_lib/license-environment.ts"),
       ).href,
+      "./license-entitlement-sql.js": pathToFileURL(
+        join(repositoryRoot, "api/_lib/license-entitlement-sql.ts"),
+      ).href,
+      "./acquisition-cookie.js": pathToFileURL(
+        join(repositoryRoot, "api/_lib/acquisition-cookie.ts"),
+      ).href,
+      "./acquisition-handoff.js": pathToFileURL(
+        join(repositoryRoot, "api/_lib/acquisition-handoff.ts"),
+      ).href,
+      "./acquisition-integrity.js": acquisitionIntegrityUrl,
       "./customer-identity.js": pathToFileURL(
         join(repositoryRoot, "api/_lib/customer-identity.ts"),
       ).href,

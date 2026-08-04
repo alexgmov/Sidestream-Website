@@ -339,6 +339,7 @@ export function verifyApprovedCheckoutPurchase(
   expected: {
     sessionId: string;
     activationKey?: string;
+    acquisitionId: string;
     intentId: string;
     accountId: string;
     offerId: string;
@@ -366,6 +367,7 @@ export function verifyApprovedCheckoutPurchase(
 
   const metadata = session.metadata || {};
   const exactMetadata = [
+    ["sidestream_acquisition_id", expected.acquisitionId],
     ["sidestream_checkout_intent_id", expected.intentId],
     ["sidestream_account_id", expected.accountId],
     ["sidestream_offer_id", expected.offerId],
@@ -605,7 +607,7 @@ function inactiveOneTimeTransition(
 
 export function sanitizeAccountNextPath(value: unknown) {
   const raw = typeof value === "string" ? value.trim() : "";
-  if (!raw || raw.length > 500 || /[\\\r\n]/.test(raw)) return "/account.html";
+  if (!raw || raw.length > 2_600 || /[\\\r\n]/.test(raw)) return "/account.html";
 
   let decoded = "";
   try {
@@ -620,10 +622,24 @@ export function sanitizeAccountNextPath(value: unknown) {
     if (parsed.origin !== "https://sidestream.invalid") return "/account.html";
     if (parsed.pathname === "/account.html") return `${parsed.pathname}${parsed.search}`;
     if (parsed.pathname === "/api/checkout/start") {
-      const activationKey = parsed.searchParams.get("activation");
-      if (parsed.search && !activationKey) return "/account.html";
-      return activationKey
-        ? `/api/checkout/start?activation=${encodeURIComponent(activationKey)}`
+      if ([...parsed.searchParams.keys()].some(
+        (key) => key !== "activation" && key !== "handoff",
+      )) return "/account.html";
+      const activationValues = parsed.searchParams.getAll("activation");
+      const handoffValues = parsed.searchParams.getAll("handoff");
+      if (activationValues.length > 1 || handoffValues.length > 1) {
+        return "/account.html";
+      }
+      const activationKey = activationValues[0] || "";
+      const handoff = handoffValues[0] || "";
+      if (handoff && (
+        handoff.length > 2_048 || !/^[A-Za-z0-9_.-]+$/.test(handoff)
+      )) return "/account.html";
+      const next = new URLSearchParams();
+      if (activationKey) next.set("activation", activationKey);
+      if (handoff) next.set("handoff", handoff);
+      return next.size
+        ? `/api/checkout/start?${next.toString()}`
         : "/api/checkout/start";
     }
     if (

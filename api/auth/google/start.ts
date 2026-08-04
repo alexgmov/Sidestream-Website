@@ -5,6 +5,7 @@ import {
   methodNotAllowed,
   randomToken,
   redirect,
+  resolveRequiredCheckoutAcquisition,
   sanitizeNextPath,
   sendGoogleSignInError,
   setOAuthCookies,
@@ -26,6 +27,20 @@ export default async function handler(
   const session = await getSession(request);
   if (session) return redirect(response, nextPath, 303);
 
+  let acquisition;
+  try {
+    const nextUrl = new URL(nextPath, "https://sidestream.tv");
+    const handoffs = nextUrl.pathname === "/api/checkout/start"
+      ? nextUrl.searchParams.getAll("handoff")
+      : [];
+    acquisition = await resolveRequiredCheckoutAcquisition(request, response, {
+      handoffToken: handoffs.length === 1 ? handoffs[0] : "",
+    });
+  } catch (error) {
+    console.error("[sidestream auth] acquisition resolution failed", error);
+    return sendGoogleSignInError(response, 503, "acquisition_unavailable");
+  }
+
   const state = randomToken(24);
   let authUrl = "";
 
@@ -36,6 +51,10 @@ export default async function handler(
     return sendGoogleSignInError(response, 503, "unavailable");
   }
 
-  setOAuthCookies(request, response, { state, nextPath });
+  setOAuthCookies(request, response, {
+    state,
+    nextPath,
+    acquisitionCookieValue: acquisition.browserCookieValue,
+  });
   return redirect(response, authUrl, 302);
 }

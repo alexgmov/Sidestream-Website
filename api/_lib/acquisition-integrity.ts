@@ -289,6 +289,35 @@ export async function addTrustedDeliveryEvidence(input: Readonly<{
   });
 }
 
+export async function findCanonicalAcquisition(
+  acquisitionId: string,
+  dependencies: Dependencies = {},
+): Promise<CanonicalAcquisition | null> {
+  const normalizedId = assertUuid(acquisitionId, "acquisitionId");
+  return withTransaction(dependencies, async (client, namespace) => {
+    const result = await client.query<StoredAcquisition>(`
+      select * from public.sidestream_acquisitions
+      where id = $1 and license_namespace = $2
+      for share
+    `, [normalizedId, namespace]);
+    return result.rows[0] ? mapAcquisition(result.rows[0]) : null;
+  });
+}
+
+export async function requireCanonicalAcquisition(
+  acquisitionId: string,
+  dependencies: Dependencies = {},
+): Promise<CanonicalAcquisition> {
+  const acquisition = await findCanonicalAcquisition(acquisitionId, dependencies);
+  if (!acquisition) {
+    fail(
+      "acquisition_not_found",
+      "Canonical acquisition was not found in the trusted namespace.",
+    );
+  }
+  return acquisition;
+}
+
 export async function recordAcquisitionStage(input: Readonly<{
   acquisitionId: string;
   stage: AcquisitionStage;

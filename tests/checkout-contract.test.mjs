@@ -25,7 +25,27 @@ test("ordinary Upgrade remains Google authentication followed by shared Stripe C
   assert.match(checkoutStart, /\/api\/auth\/google\/start/);
   assert.match(checkoutStart, /createCheckoutIntent/);
   assert.match(checkoutStart, /createOrReuseCheckoutSession/);
+  assert.match(checkoutStart, /resolveRequiredCheckoutAcquisition/);
   assert.doesNotMatch(checkoutStart, /anonymous-acquisition|installation\/claim/);
+});
+
+test("OAuth, locked intents, Stripe metadata, and fulfillment share one acquisition UUID", async () => {
+  const [accountSource, authStart, authCallback] = await Promise.all([
+    source("api/_lib/account.ts"),
+    source("api/auth/google/start.ts"),
+    source("api/auth/google/callback.ts"),
+  ]);
+  assert.match(authStart, /acquisitionCookieValue/);
+  assert.match(authCallback, /completeGoogleAuthenticationAcquisition/);
+  assert.match(accountSource, /stage:\s*"authentication_completed"/);
+  assert.match(accountSource, /id, acquisition_id, intent_kind/);
+  assert.match(accountSource, /sidestream_acquisition_id:\s*row\.acquisition_id/);
+  assert.match(accountSource, /invoice_data:\s*\{ metadata \}/);
+  assert.match(accountSource, /payment_intent_data:\s*\{ metadata \}/);
+  assert.match(accountSource, /reason:\s*"acquisition_mismatch"/);
+  for (const stage of ["checkout_started", "checkout_completed", "payment_settled"] ) {
+    assert.match(accountSource, new RegExp(`stage:\\s*"${stage}"`));
+  }
 });
 
 test("paid Checkout stays on the shared server-owned Checkout worker", async () => {

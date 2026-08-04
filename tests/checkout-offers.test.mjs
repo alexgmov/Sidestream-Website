@@ -12,6 +12,7 @@ import {
 
 const GLOBAL = {
   sessionId: "cs_global",
+  acquisitionId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
   intentId: "11111111-1111-4111-8111-111111111111",
   accountId: "22222222-2222-4222-8222-222222222222",
   offerId: "sidestream-unlimited-global",
@@ -195,6 +196,25 @@ test("forged regional metadata and cross-region Prices fail closed", () => {
     false,
   );
 
+  const forgedAcquisition = {
+    ...indiaSession,
+    metadata: {
+      ...indiaSession.metadata,
+      sidestream_acquisition_id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+    },
+  };
+  assert.deepEqual(
+    verifyApprovedCheckoutPurchase(
+      forgedAcquisition,
+      { amountPaid: 49900, currency: "inr" },
+      INDIA,
+    ),
+    {
+      isApprovedPurchase: false,
+      reason: "acquisition_id_mismatch",
+    },
+  );
+
   const crossRegionPrice = {
     ...indiaSession,
     line_items: {
@@ -279,6 +299,7 @@ function checkoutSession(offer) {
       amount_tax: 0,
     },
     metadata: {
+      sidestream_acquisition_id: offer.acquisitionId,
       sidestream_plan: "sidestream_pro",
       sidestream_price_id: offer.priceId,
       sidestream_product_id: offer.productId,

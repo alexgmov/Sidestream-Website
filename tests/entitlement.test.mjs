@@ -372,6 +372,24 @@ test("OAuth next paths allow account, Checkout, and activation claim routes", ()
     "/api/checkout/start?activation=abc",
   );
   assert.equal(
+    sanitizeAccountNextPath("/api/checkout/start?handoff=d1.opaque.signed.handoff.value"),
+    "/api/checkout/start?handoff=d1.opaque.signed.handoff.value",
+  );
+  assert.equal(
+    sanitizeAccountNextPath(
+      "/api/checkout/start?handoff=d1.opaque.signed.handoff.value&activation=abc",
+    ),
+    "/api/checkout/start?activation=abc&handoff=d1.opaque.signed.handoff.value",
+  );
+  assert.equal(
+    sanitizeAccountNextPath("/api/checkout/start?handoff=manychat_email"),
+    "/api/checkout/start?handoff=manychat_email",
+  );
+  assert.equal(
+    sanitizeAccountNextPath("/api/checkout/start?handoff=one&handoff=two"),
+    "/account.html",
+  );
+  assert.equal(
     sanitizeAccountNextPath("/api/checkout/start?checkout=cancelled"),
     "/account.html",
   );

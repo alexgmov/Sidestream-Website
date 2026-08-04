@@ -80,10 +80,33 @@ import {
   completePaidAcquisitionCheckout,
   recordPaidAcquisitionLifecycle,
 } from "./paid-acquisition.js";
+import {
+  ACQUISITION_SECRET_NAME,
+  createBrowserAcquisitionCookie,
+  readBrowserAcquisitionCookie,
+  resolveBrowserAcquisitionCookie,
+  serializeBrowserAcquisitionCookie,
+  type BrowserAcquisitionCookie,
+} from "./acquisition-cookie.js";
+import {
+  evaluateForwardedDeliveryHandoff,
+  verifyServerOwnedDeliveryHandoff,
+  type ServerOwnedDeliveryHandoff,
+} from "./acquisition-handoff.js";
+import {
+  AcquisitionIntegrityError,
+  addTrustedDeliveryEvidence,
+  createCanonicalAcquisitionRoot,
+  findCanonicalAcquisition,
+  recordAcquisitionStage,
+  requireCanonicalAcquisition,
+  type CanonicalAcquisition,
+} from "./acquisition-integrity.js";
 
 const SESSION_COOKIE = "sidestream_session";
 const OAUTH_STATE_COOKIE = "sidestream_oauth_state";
 const OAUTH_NEXT_COOKIE = "sidestream_oauth_next";
+const OAUTH_ACQUISITION_COOKIE = "sidestream_oauth_acquisition";
 const SESSION_MAX_AGE_SECONDS = 60 * 60 * 24 * 30;
 const OAUTH_MAX_AGE_SECONDS = 60 * 10;
 const ACTIVATION_TTL_HOURS = 24;
@@ -98,6 +121,8 @@ const ACTIVATION_TOKEN_REPLAY_SECONDS = 10 * 60;
 const MAX_BODY_BYTES = 64 * 1024;
 const DEVICE_POLICY_MODE_ENV = "SIDESTREAM_DEVICE_POLICY_MODE";
 const ACCOUNT_DEVICE_LOCK_PREFIX = "sidestream:device-support";
+const ACQUISITION_ID =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 export const DEVICE_DEACTIVATION_INTENT = "deactivate_active_device";
 export const SIDESTREAM_PRO_PLAN_KEY = "sidestream_pro";
 const SIDESTREAM_LEGACY_UNLIMITED_PLAN_KEY = "sidestream_unlimited";
@@ -354,6 +379,229 @@ export function resolveRequestLicenseEnvironment(request: IncomingMessage) {
   });
 }
 
+export type RequiredCheckoutAcquisition = Readonly<{
+  acquisitionId: string;
+  browserCookieValue: string;
+  acceptedHandoffToken: string;
+  origin: "browser_cookie" | "server_delivery_handoff" | "website_direct_or_unknown";
+}>;
+
+/**
+ * Checkout is a fail-closed acquisition boundary. Browser attribution is used
+ * only after its server signature verifies; delivery attribution is used only
+ * after its encrypted server envelope verifies. Everything else becomes a new
+ * truthful Sidestream website entry before any Checkout intent is inserted.
+ */
+export async function resolveRequiredCheckoutAcquisition(
+  request: IncomingMessage,
+  response: ServerResponse,
+  options: Readonly<{ handoffToken?: unknown; now?: Date }> = {},
+): Promise<RequiredCheckoutAcquisition> {
+  const secret = process.env[ACQUISITION_SECRET_NAME]?.trim() || "";
+  const now = options.now || new Date();
+  const cookieValue = readBrowserAcquisitionCookie(request.headers.cookie);
+  if (cookieValue) {
+    let resolved: ReturnType<typeof resolveBrowserAcquisitionCookie> | null = null;
+    try {
+      resolved = resolveBrowserAcquisitionCookie(cookieValue, { secret, now });
+    } catch {
+      // A forged, expired, duplicated, or malformed browser value has no
+      // authority. A valid server handoff may still restore exact continuity.
+    }
+    if (resolved) {
+      await ensureBrowserCheckoutAcquisition(resolved.cookie);
+      if (resolved.promoted) {
+        appendSetCookies(response, [serializeBrowserAcquisitionCookie(resolved.cookie)]);
+      }
+      return Object.freeze({
+        acquisitionId: resolved.cookie.acquisitionId,
+        browserCookieValue: resolved.cookie.value,
+        acceptedHandoffToken: "",
+        origin: "browser_cookie" as const,
+      });
+    }
+  }
+
+  if (typeof options.handoffToken === "string" && options.handoffToken) {
+    let handoff: ServerOwnedDeliveryHandoff | null = null;
+    try {
+      handoff = verifyServerOwnedDeliveryHandoff(options.handoffToken, {
+        secret,
+        now,
+      });
+    } catch {
+      // Browser input never selects a trusted delivery channel. Invalid
+      // envelopes fall through to a new direct/unknown website root.
+    }
+    if (handoff) {
+      await ensureDeliveryCheckoutAcquisition(handoff, now);
+      const restoredCookie = createBrowserAcquisitionCookie({
+        acquisitionId: handoff.acquisitionId,
+        attribution: {
+          source: handoff.source,
+          medium: "email",
+          campaign: handoff.campaign,
+          content: null,
+        },
+        externalReferrerCategory: handoff.externalReferrerCategory,
+      }, { secret, now });
+      appendSetCookies(response, [serializeBrowserAcquisitionCookie(restoredCookie)]);
+      return Object.freeze({
+        acquisitionId: handoff.acquisitionId,
+        browserCookieValue: restoredCookie.value,
+        acceptedHandoffToken: options.handoffToken,
+        origin: "server_delivery_handoff" as const,
+      });
+    }
+  }
+
+  const directCookie = createBrowserAcquisitionCookie({}, { secret, now });
+  await ensureBrowserCheckoutAcquisition(directCookie);
+  appendSetCookies(response, [serializeBrowserAcquisitionCookie(directCookie)]);
+  return Object.freeze({
+    acquisitionId: directCookie.acquisitionId,
+    browserCookieValue: directCookie.value,
+    acceptedHandoffToken: "",
+    origin: "website_direct_or_unknown" as const,
+  });
+}
+
+export async function completeGoogleAuthenticationAcquisition(options: Readonly<{
+  oauthAcquisitionCookieValue: string;
+  nextPath: string;
+  exactVerifiedEmail: string;
+  accountId: string;
+  response: ServerResponse;
+  now?: Date;
+}>) {
+  const secret = process.env[ACQUISITION_SECRET_NAME]?.trim() || "";
+  const now = options.now || new Date();
+  const resolved = resolveBrowserAcquisitionCookie(
+    options.oauthAcquisitionCookieValue,
+    { secret, now },
+  );
+  await ensureBrowserCheckoutAcquisition(resolved.cookie);
+  await addTrustedDeliveryEvidence({
+    acquisitionId: resolved.cookie.acquisitionId,
+    evidence: "authenticated_account",
+  });
+  const stage = await recordAcquisitionStage({
+    acquisitionId: resolved.cookie.acquisitionId,
+    stage: "authentication_completed",
+    stableServerReference:
+      `google-account:${resolved.cookie.acquisitionId}:${options.accountId}`,
+    occurredAt: now,
+  });
+  if (stage.ownerConflict) {
+    throw new AcquisitionIntegrityError(
+      "authentication_acquisition_conflict",
+      "Authentication acquisition ownership conflicted.",
+    );
+  }
+
+  let possibleForwardedHandoff = false;
+  const handoffToken = readCheckoutHandoffFromNextPath(options.nextPath);
+  if (handoffToken) {
+    try {
+      const handoff = verifyServerOwnedDeliveryHandoff(handoffToken, { secret, now });
+      if (handoff.acquisitionId === resolved.cookie.acquisitionId) {
+        possibleForwardedHandoff = evaluateForwardedDeliveryHandoff(
+          handoff,
+          options.exactVerifiedEmail,
+          { secret },
+        ).possibleForwardedHandoff;
+      }
+    } catch {
+      // The verified OAuth acquisition remains authoritative. An invalid query
+      // envelope cannot select or rewrite its first-touch channel.
+    }
+  }
+  appendSetCookies(options.response, [serializeBrowserAcquisitionCookie(resolved.cookie)]);
+  return Object.freeze({
+    acquisitionId: resolved.cookie.acquisitionId,
+    possibleForwardedHandoff,
+  });
+}
+
+function readCheckoutHandoffFromNextPath(nextPath: string) {
+  try {
+    const url = new URL(nextPath, "https://sidestream.tv");
+    if (url.pathname !== "/api/checkout/start") return "";
+    const values = url.searchParams.getAll("handoff");
+    return values.length === 1 ? values[0] : "";
+  } catch {
+    return "";
+  }
+}
+
+async function ensureBrowserCheckoutAcquisition(cookie: BrowserAcquisitionCookie) {
+  const existing = await findCanonicalAcquisition(cookie.acquisitionId);
+  if (existing) return assertCheckoutAcquisitionIntact(existing);
+  const hasExternalReferrer = cookie.externalReferrerCategory !== null;
+  return assertCheckoutAcquisitionIntact(await createCanonicalAcquisitionRoot({
+    acquisitionId: cookie.acquisitionId,
+    firstObservedAt: new Date(cookie.issuedAt * 1_000),
+    landingDeduplicationReference: `browser-entry:${cookie.acquisitionId}`,
+    source: cookie.attribution.source === "direct"
+      ? hasExternalReferrer ? "external_referrer" : "website_direct_or_unknown"
+      : cookie.attribution.source,
+    medium: cookie.attribution.source === "direct" && hasExternalReferrer
+      ? cookie.externalReferrerCategory
+      : cookie.attribution.medium,
+    campaign: cookie.attribution.campaign,
+    contentCreative: cookie.attribution.content,
+    entryChannel: "website",
+    externalReferrerCategory: cookie.externalReferrerCategory,
+    experiment: cookie.experiment
+      ? {
+          id: cookie.experiment.experimentId.toLowerCase(),
+          cohort: cookie.experiment.cohort,
+        }
+      : null,
+    attributionConfidence: "exact_sidestream_entry",
+    integrityState: "intact",
+    trustedDeliveryEvidence: ["website_entry"],
+  }));
+}
+
+async function ensureDeliveryCheckoutAcquisition(
+  handoff: ServerOwnedDeliveryHandoff,
+  landingObservedAt: Date,
+) {
+  const acquisition = await createCanonicalAcquisitionRoot({
+    acquisitionId: handoff.acquisitionId,
+    firstObservedAt: new Date(handoff.issuedAt * 1_000),
+    landingDeduplicationReference:
+      `delivery-entry:${handoff.entryChannel}:${handoff.acquisitionId}`,
+    source: handoff.source,
+    medium: "email",
+    campaign: handoff.campaign,
+    contentCreative: null,
+    entryChannel: handoff.canonicalEntryChannel,
+    externalReferrerCategory: handoff.externalReferrerCategory,
+    attributionConfidence: "exact_trusted_delivery",
+    integrityState: "intact",
+    trustedDeliveryEvidence: ["signed_email_handoff"],
+    recordLandingObserved: false,
+  });
+  assertCheckoutAcquisitionIntact(acquisition);
+  await recordAcquisitionStage({
+    acquisitionId: handoff.acquisitionId,
+    stage: "email_handoff_created",
+    stableServerReference:
+      `delivery-handoff:${handoff.entryChannel}:${handoff.acquisitionId}`,
+    occurredAt: new Date(handoff.issuedAt * 1_000),
+  });
+  await recordAcquisitionStage({
+    acquisitionId: handoff.acquisitionId,
+    stage: "landing_observed",
+    stableServerReference:
+      `delivery-checkout:${handoff.entryChannel}:${handoff.acquisitionId}`,
+    occurredAt: landingObservedAt,
+  });
+  return acquisition;
+}
+
 export function getGoogleRedirectUri(request: IncomingMessage) {
   const redirectUri = process.env.GOOGLE_REDIRECT_URI ||
     `${getBaseUrl(request)}/api/auth/google/callback`;
@@ -391,7 +639,7 @@ export function getGoogleAuthUrl(
 export function setOAuthCookies(
   request: IncomingMessage,
   response: ServerResponse,
-  options: { state: string; nextPath: string },
+  options: { state: string; nextPath: string; acquisitionCookieValue: string },
 ) {
   appendSetCookies(response, [
     serializeCookie(OAUTH_STATE_COOKIE, options.state, {
@@ -402,6 +650,13 @@ export function setOAuthCookies(
       secure: shouldUseSecureCookies(request),
     }),
     serializeCookie(OAUTH_NEXT_COOKIE, encodeBase64Url(options.nextPath), {
+      httpOnly: true,
+      maxAge: OAUTH_MAX_AGE_SECONDS,
+      path: "/",
+      sameSite: "Lax",
+      secure: shouldUseSecureCookies(request),
+    }),
+    serializeCookie(OAUTH_ACQUISITION_COOKIE, options.acquisitionCookieValue, {
       httpOnly: true,
       maxAge: OAUTH_MAX_AGE_SECONDS,
       path: "/",
@@ -430,6 +685,13 @@ export function clearOAuthCookies(
       sameSite: "Lax",
       secure: shouldUseSecureCookies(request),
     }),
+    serializeCookie(OAUTH_ACQUISITION_COOKIE, "", {
+      httpOnly: true,
+      maxAge: 0,
+      path: "/",
+      sameSite: "Lax",
+      secure: shouldUseSecureCookies(request),
+    }),
   ]);
 }
 
@@ -446,6 +708,10 @@ export function getOAuthNextPath(request: IncomingMessage) {
   } catch {
     return "/account.html";
   }
+}
+
+export function getOAuthAcquisitionCookie(request: IncomingMessage) {
+  return getCookie(request, OAUTH_ACQUISITION_COOKIE);
 }
 
 export async function exchangeGoogleCode(
@@ -749,6 +1015,7 @@ export function publicSessionPayload(session: AccountSession | null) {
 
 type CheckoutIntentRow = {
   id: string;
+  acquisition_id: string | null;
   intent_kind: CheckoutIntentKind;
   account_id: string | null;
   activation_session_id: string | null;
@@ -812,6 +1079,7 @@ function readCheckoutOfferSnapshot(
 }
 
 export async function createCheckoutIntent(options: {
+  acquisitionId: string;
   activationKey?: string;
   buyerCountry?: string;
   session: AccountSession;
@@ -820,6 +1088,10 @@ export async function createCheckoutIntent(options: {
   if (options.session.license.active) return null;
 
   const now = options.now || new Date();
+  const acquisitionId = requiredAcquisitionId(options.acquisitionId);
+  assertCheckoutAcquisitionIntact(
+    await requireCanonicalAcquisition(acquisitionId),
+  );
   const offer = await resolveCheckoutOfferSnapshot(options.buyerCountry);
   const activationKey = cleanString(options.activationKey, 160);
   const kind: CheckoutIntentKind = activationKey
@@ -833,19 +1105,19 @@ export async function createCheckoutIntent(options: {
     ? await query<{ id: string }>(
         `
           insert into public.sidestream_checkout_intents (
-            id, intent_kind, browser_token_hash, account_id,
+            id, acquisition_id, intent_kind, browser_token_hash, account_id,
             activation_session_id, state, attempt, expires_at,
             offer_id, offer_country, offer_currency, offer_amount_minor,
             offer_stripe_product_id, offer_stripe_price_id,
             created_at, updated_at
           )
-          select $1::uuid, 'activation', $2, $3::uuid, a.id,
-            'pending', 0, $4::timestamptz,
-            $7, $8, $9, $10, $11, $12,
-            $5::timestamptz, $5::timestamptz
+          select $1::uuid, $2::uuid, 'activation', $3, $4::uuid, a.id,
+            'pending', 0, $5::timestamptz,
+            $8, $9, $10, $11, $12, $13,
+            $6::timestamptz, $6::timestamptz
           from public.sidestream_activation_sessions a
-          where a.activation_key = $6
-            and a.expires_at > $5::timestamptz
+          where a.activation_key = $7
+            and a.expires_at > $6::timestamptz
             and a.completed_at is null
             and a.device_id_hash is not null
             and a.account_id is null
@@ -854,6 +1126,7 @@ export async function createCheckoutIntent(options: {
         `,
         [
           intentId,
+          acquisitionId,
           hashToken(browserToken),
           accountId,
           expiresAt.toISOString(),
@@ -870,20 +1143,21 @@ export async function createCheckoutIntent(options: {
     : await query<{ id: string }>(
         `
           insert into public.sidestream_checkout_intents (
-            id, intent_kind, browser_token_hash, account_id,
+            id, acquisition_id, intent_kind, browser_token_hash, account_id,
             activation_session_id, state, attempt, expires_at,
             offer_id, offer_country, offer_currency, offer_amount_minor,
             offer_stripe_product_id, offer_stripe_price_id,
             created_at, updated_at
           ) values (
-            $1::uuid, $2, $3, $4::uuid, null, 'pending', 0,
-            $5::timestamptz, $7, $8, $9, $10, $11, $12,
-            $6::timestamptz, $6::timestamptz
+            $1::uuid, $2::uuid, $3, $4, $5::uuid, null, 'pending', 0,
+            $6::timestamptz, $8, $9, $10, $11, $12, $13,
+            $7::timestamptz, $7::timestamptz
           )
           returning id
         `,
         [
           intentId,
+          acquisitionId,
           kind,
           hashToken(browserToken),
           accountId,
@@ -914,10 +1188,25 @@ export async function createCheckoutIntent(options: {
  * session through createCheckoutIntent().
  */
 export async function createCheckoutIntentConfirmation(options: {
+  acquisitionId?: string;
   buyerCountry?: string;
   now?: Date;
+  request?: IncomingMessage;
+  response?: ServerResponse;
 }): Promise<CheckoutIntent | null> {
   const now = options.now || new Date();
+  const acquisitionId = options.acquisitionId
+    ? requiredAcquisitionId(options.acquisitionId)
+    : options.request && options.response
+      ? (await resolveRequiredCheckoutAcquisition(
+          options.request,
+          options.response,
+          { now },
+        )).acquisitionId
+      : requiredAcquisitionId("");
+  assertCheckoutAcquisitionIntact(
+    await requireCanonicalAcquisition(acquisitionId),
+  );
   const offer = await resolveCheckoutOfferSnapshot(options.buyerCountry);
   const intentId = randomUUID();
   const browserToken = randomToken(32);
@@ -925,20 +1214,21 @@ export async function createCheckoutIntentConfirmation(options: {
   const result = await query<{ id: string }>(
     `
       insert into public.sidestream_checkout_intents (
-        id, intent_kind, browser_token_hash, account_id,
+        id, acquisition_id, intent_kind, browser_token_hash, account_id,
         activation_session_id, state, attempt, expires_at,
         offer_id, offer_country, offer_currency, offer_amount_minor,
         offer_stripe_product_id, offer_stripe_price_id,
         created_at, updated_at
       ) values (
-        $1::uuid, 'anonymous', $2, null, null, 'pending', 0,
-        $3::timestamptz, $5, $6, $7, $8, $9, $10,
-        $4::timestamptz, $4::timestamptz
+        $1::uuid, $2::uuid, 'anonymous', $3, null, null, 'pending', 0,
+        $4::timestamptz, $6, $7, $8, $9, $10, $11,
+        $5::timestamptz, $5::timestamptz
       )
       returning id
     `,
     [
       intentId,
+      acquisitionId,
       hashToken(browserToken),
       expiresAt.toISOString(),
       now.toISOString(),
@@ -976,7 +1266,7 @@ export async function createOrReuseCheckoutSession(options: {
     try {
       const selected = await client.query<CheckoutIntentRow>(
         `
-          select ci.id, ci.intent_kind, ci.account_id,
+          select ci.id, ci.acquisition_id, ci.intent_kind, ci.account_id,
             ci.activation_session_id, ci.state, ci.attempt,
             ci.stripe_customer_id, ci.stripe_checkout_session_id,
             ci.stripe_checkout_url, ci.stripe_price_id,
@@ -1004,6 +1294,21 @@ export async function createOrReuseCheckoutSession(options: {
           "intent_expired",
         ));
       }
+      if (!row.acquisition_id || !ACQUISITION_ID.test(row.acquisition_id)) {
+        console.error("[sidestream checkout] acquisition linkage missing", {
+          code: "acquisition_linkage_missing",
+          intentId: row.id,
+        });
+        return commitCheckoutIntentResult(client, checkoutIntentError(
+          503,
+          "Checkout acquisition linkage is unavailable",
+          "acquisition_linkage_missing",
+        ));
+      }
+      assertCheckoutAcquisitionIntact(await requireCanonicalAcquisition(
+        row.acquisition_id,
+        acquisitionTransactionDependencies(client),
+      ));
       if (new Date(row.expires_at).getTime() <= now.getTime()) {
         await client.query(
           `
@@ -1090,6 +1395,7 @@ export async function createOrReuseCheckoutSession(options: {
         const attachedSessionId = lockedActivation.stripe_checkout_session_id || "";
         if (attachedSessionId) {
           const attachedIntent = await client.query<{
+            acquisition_id: string | null;
             state: string;
             attempt: number;
             stripe_customer_id: string | null;
@@ -1105,7 +1411,7 @@ export async function createOrReuseCheckoutSession(options: {
             stripe_session_expires_at: Date | string | null;
           }>(
             `
-              select state, attempt, stripe_customer_id, stripe_checkout_url,
+              select acquisition_id, state, attempt, stripe_customer_id, stripe_checkout_url,
                 stripe_price_id, stripe_product_id, offer_id, offer_country,
                 offer_currency, offer_amount_minor, offer_stripe_product_id,
                 offer_stripe_price_id, stripe_session_expires_at
@@ -1117,6 +1423,13 @@ export async function createOrReuseCheckoutSession(options: {
             [attachedSessionId],
           );
           const attached = attachedIntent.rows[0];
+          if (attached && attached.acquisition_id !== row.acquisition_id) {
+            return commitCheckoutIntentResult(client, checkoutIntentError(
+              409,
+              "Checkout acquisition owner does not match",
+              "acquisition_owner_mismatch",
+            ));
+          }
           attempt = Math.max(attempt, Number(attached?.attempt) || 0);
           if (attached?.state === "completed") {
             const completionUrl = buildCheckoutCompletionUrl(
@@ -1127,7 +1440,7 @@ export async function createOrReuseCheckoutSession(options: {
               ok: true,
               url: completionUrl,
               reused: true,
-            });
+            }, checkoutStartedStage(row, now));
           }
 
           const attachedExpiresAt = attached?.stripe_session_expires_at
@@ -1164,7 +1477,7 @@ export async function createOrReuseCheckoutSession(options: {
               ok: true,
               url: attached.stripe_checkout_url,
               reused: true,
-            });
+            }, checkoutStartedStage(row, now));
           }
 
           if (!attached?.stripe_checkout_url || attachedExpiresAt <= now.getTime()) {
@@ -1182,7 +1495,7 @@ export async function createOrReuseCheckoutSession(options: {
                 ok: true,
                 url: completionUrl,
                 reused: true,
-              });
+              }, checkoutStartedStage(row, now));
             }
             if (
               !options.rotateCancelledSession &&
@@ -1215,7 +1528,7 @@ export async function createOrReuseCheckoutSession(options: {
                 ok: true,
                 url: stripeSession.url,
                 reused: true,
-              });
+              }, checkoutStartedStage(row, now));
             }
             if (stripeSession.status === "open") {
               await expireCheckoutSession(stripeSession.id, row.id, attempt);
@@ -1235,7 +1548,7 @@ export async function createOrReuseCheckoutSession(options: {
                 ok: true,
                 url: completionUrl,
                 reused: true,
-              });
+              }, checkoutStartedStage(row, now));
             }
           }
           replacementSessionId = attachedSessionId;
@@ -1257,7 +1570,7 @@ export async function createOrReuseCheckoutSession(options: {
             ok: true,
             url: row.stripe_checkout_url,
             reused: true,
-          });
+          }, checkoutStartedStage(row, now));
         }
         if (row.state === "completed") {
           const completionUrl = buildCheckoutCompletionUrl(options.baseUrl)
@@ -1266,7 +1579,7 @@ export async function createOrReuseCheckoutSession(options: {
             ok: true,
             url: completionUrl,
             reused: true,
-          });
+          }, checkoutStartedStage(row, now));
         }
         if (
           sessionExpiresAt > now.getTime() &&
@@ -1288,7 +1601,7 @@ export async function createOrReuseCheckoutSession(options: {
               ok: true,
               url: completionUrl,
               reused: true,
-            });
+            }, checkoutStartedStage(row, now));
           }
         }
         replacementSessionId = row.stripe_checkout_session_id;
@@ -1312,6 +1625,7 @@ export async function createOrReuseCheckoutSession(options: {
       );
       cancelUrl.searchParams.set("checkout", "cancelled");
       const metadata: Record<string, string> = {
+        sidestream_acquisition_id: row.acquisition_id,
         sidestream_plan: SIDESTREAM_PRO_PLAN_KEY,
         sidestream_price_id: stripePriceId,
         sidestream_product_id: stripeProductId,
@@ -1425,6 +1739,10 @@ export async function createOrReuseCheckoutSession(options: {
           now.toISOString(),
         ],
       );
+      await recordCheckoutStarted(
+        client,
+        checkoutStartedStage(row, now),
+      );
       await client.query("commit");
       return { ok: true, url: checkoutSession.url, reused: false };
     } catch (error) {
@@ -1532,9 +1850,64 @@ async function prepareCheckoutSessionReplacement(
 async function commitCheckoutIntentResult(
   client: PoolClient,
   result: CheckoutIntentResult,
+  acquisition?: Readonly<{
+    acquisitionId: string;
+    intentId: string;
+    occurredAt: Date;
+  }>,
 ) {
+  if (result.ok && acquisition) {
+    await recordCheckoutStarted(client, acquisition);
+  }
   await client.query("commit");
   return result;
+}
+
+function checkoutStartedStage(
+  row: Pick<CheckoutIntentRow, "id" | "acquisition_id">,
+  occurredAt: Date,
+) {
+  return {
+    acquisitionId: requiredAcquisitionId(row.acquisition_id),
+    intentId: row.id,
+    occurredAt,
+  };
+}
+
+async function recordCheckoutStarted(
+  client: PoolClient,
+  input: Readonly<{
+    acquisitionId: string;
+    intentId: string;
+    occurredAt: Date;
+  }>,
+) {
+  const dependencies = acquisitionTransactionDependencies(client);
+  await addTrustedDeliveryEvidence({
+    acquisitionId: input.acquisitionId,
+    evidence: "checkout_intent",
+  }, dependencies);
+  const stage = await recordAcquisitionStage({
+    acquisitionId: input.acquisitionId,
+    stage: "checkout_started",
+    stableServerReference: `checkout-intent:${input.intentId}`,
+    occurredAt: input.occurredAt,
+  }, dependencies);
+  if (stage.ownerConflict) {
+    throw new AcquisitionIntegrityError(
+      "checkout_acquisition_conflict",
+      "Checkout acquisition ownership conflicted.",
+    );
+  }
+}
+
+function acquisitionTransactionDependencies(client: PoolClient) {
+  const namespace = requireMatchingLicenseEnvironment().namespace;
+  return {
+    namespace,
+    transaction: async <T>(callback: (runner: PoolClient) => Promise<T>) =>
+      callback(client),
+  } as const;
 }
 
 function checkoutIntentError(
@@ -3403,6 +3776,7 @@ export async function fulfillCheckoutSession(
 ) {
   const intentCandidates = await query<{
     id: string;
+    acquisition_id: string | null;
     account_id: string | null;
     activation_session_id: string | null;
     offer_id: string | null;
@@ -3413,7 +3787,7 @@ export async function fulfillCheckoutSession(
     offer_stripe_price_id: string | null;
   }>(
     `
-      select id, account_id, activation_session_id, offer_id, offer_country,
+      select id, acquisition_id, account_id, activation_session_id, offer_id, offer_country,
         offer_currency, offer_amount_minor, offer_stripe_product_id,
         offer_stripe_price_id
       from public.sidestream_checkout_intents
@@ -3472,6 +3846,13 @@ export async function fulfillCheckoutSession(
   if (!checkoutIntent) {
     return { fulfilled: false as const, reason: "checkout_intent_mismatch" };
   }
+  const acquisitionId = cleanString(checkoutIntent.acquisition_id, 36);
+  if (
+    !ACQUISITION_ID.test(acquisitionId) ||
+    cleanString(checkoutSession.metadata?.sidestream_acquisition_id, 36) !== acquisitionId
+  ) {
+    return { fulfilled: false as const, reason: "acquisition_mismatch" };
+  }
   const checkoutOffer = readCheckoutOfferSnapshot(checkoutIntent);
   if (!checkoutOffer) {
     return { fulfilled: false as const, reason: "offer_snapshot_missing" };
@@ -3518,6 +3899,7 @@ export async function fulfillCheckoutSession(
   const canonicalPayment = await retrieveCanonicalCheckoutPayment(
     checkoutSession,
     customerId,
+    acquisitionId,
   );
   if (!canonicalPayment.ok) {
     return { fulfilled: false as const, reason: canonicalPayment.reason };
@@ -3527,6 +3909,7 @@ export async function fulfillCheckoutSession(
     canonicalPayment.facts,
     {
       sessionId: checkoutSessionId,
+      acquisitionId,
       activationKey: activationKey || undefined,
       intentId: checkoutIntent.id,
       accountId: checkoutIntent.account_id || "",
@@ -3568,6 +3951,23 @@ export async function fulfillCheckoutSession(
       await client.query("select pg_advisory_xact_lock(hashtext($1))", [
         `checkout_session:${checkoutSessionId}`,
       ]);
+      const lockedIntent = await client.query<{ acquisition_id: string | null }>(
+        `
+          select acquisition_id
+          from public.sidestream_checkout_intents
+          where id = $1 and stripe_checkout_session_id = $2
+          for update
+        `,
+        [checkoutIntent.id, checkoutSessionId],
+      );
+      if (lockedIntent.rows[0]?.acquisition_id !== acquisitionId) {
+        await client.query("rollback");
+        return { fulfilled: false as const, reason: "acquisition_mismatch" };
+      }
+      assertCheckoutAcquisitionIntact(await requireCanonicalAcquisition(
+        acquisitionId,
+        acquisitionTransactionDependencies(client),
+      ));
 
       let activationCanBind = false;
       if (activationKey && activationId) {
@@ -3657,6 +4057,36 @@ export async function fulfillCheckoutSession(
         [checkoutSessionId, customerId],
       );
 
+      const stageOccurredAt = stripeEvent
+        ? new Date(stripeEvent.created * 1_000)
+        : new Date();
+      const dependencies = acquisitionTransactionDependencies(client);
+      await addTrustedDeliveryEvidence({
+        acquisitionId,
+        evidence: "stripe_checkout_session",
+      }, dependencies);
+      const completedStage = await recordAcquisitionStage({
+        acquisitionId,
+        stage: "checkout_completed",
+        stableServerReference: `checkout-session:${checkoutSessionId}`,
+        occurredAt: stageOccurredAt,
+      }, dependencies);
+      const settledStage = await recordAcquisitionStage({
+        acquisitionId,
+        stage: "payment_settled",
+        stableServerReference: canonicalPayment.facts
+          ? `payment-intent:${canonicalPayment.facts.paymentIntentId}`
+          : `checkout-no-payment-required:${checkoutSessionId}`,
+        occurredAt: stageOccurredAt,
+      }, dependencies);
+      if (completedStage.ownerConflict || settledStage.ownerConflict) {
+        await client.query("rollback");
+        return {
+          fulfilled: false as const,
+          reason: "acquisition_stage_conflict",
+        };
+      }
+
       await client.query("commit");
       return {
         fulfilled: true as const,
@@ -3701,7 +4131,22 @@ export async function fulfillCheckoutSession(
 async function retrieveCanonicalCheckoutPayment(
   checkoutSession: Stripe.Checkout.Session,
   customerId: string,
+  acquisitionId: string,
 ) {
+  const invoiceId = normalizeStripeId(checkoutSession.invoice);
+  if (invoiceId) {
+    const invoice = await getStripe().invoices.retrieve(
+      invoiceId,
+      {},
+      getStripeRequestOptions(),
+    );
+    if (
+      invoice.id !== invoiceId ||
+      cleanString(invoice.metadata?.sidestream_acquisition_id, 36) !== acquisitionId
+    ) {
+      return { ok: false as const, reason: "invoice_acquisition_mismatch" };
+    }
+  }
   const paymentIntentId = normalizeStripeId(checkoutSession.payment_intent);
   const currency = cleanString(checkoutSession.currency, 3).toLowerCase();
   if (!paymentIntentId) {
@@ -3723,6 +4168,11 @@ async function retrieveCanonicalCheckoutPayment(
   );
   if (paymentIntent.id !== paymentIntentId) {
     return { ok: false as const, reason: "payment_intent_mismatch" };
+  }
+  if (
+    cleanString(paymentIntent.metadata?.sidestream_acquisition_id, 36) !== acquisitionId
+  ) {
+    return { ok: false as const, reason: "payment_intent_acquisition_mismatch" };
   }
   const chargeId = normalizeStripeId(paymentIntent.latest_charge);
   if (!chargeId) return { ok: false as const, reason: "missing_charge" };
@@ -3884,6 +4334,9 @@ export async function reconcileOneTimePaymentLifecycle(
       return { fulfilled: false as const, reason: "event_charge_mismatch" };
     }
   } else if (eventType.startsWith("refund.")) {
+    if (!normalizeStripeId(payload.id)) {
+      return { fulfilled: false as const, reason: "missing_refund_id" };
+    }
     chargeId = normalizeStripeId(payload.charge);
   } else if (eventType === "charge.refunded" || eventType === "charge.updated") {
     chargeId = normalizeStripeId(payload.id);
@@ -3911,17 +4364,26 @@ export async function reconcileOneTimePaymentLifecycle(
       ]);
       const selected = await client.query<{
         account_id: string;
+        acquisition_id: string | null;
         stripe_customer_id: string;
         stripe_checkout_session_id: string;
         stripe_payment_intent_id: string;
         stripe_charge_id: string | null;
       }>(
         `
-          select account_id, stripe_customer_id, stripe_checkout_session_id,
-            stripe_payment_intent_id, stripe_charge_id
-          from public.sidestream_licenses
-          where stripe_payment_intent_id = $1
-             or stripe_charge_id = $2
+          select license.account_id, license.stripe_customer_id,
+            license.stripe_checkout_session_id, license.stripe_payment_intent_id,
+            license.stripe_charge_id,
+            (
+              select checkout.acquisition_id
+              from public.sidestream_checkout_intents checkout
+              where checkout.stripe_checkout_session_id = license.stripe_checkout_session_id
+              order by checkout.updated_at desc, checkout.id desc
+              limit 1
+            ) as acquisition_id
+          from public.sidestream_licenses license
+          where license.stripe_payment_intent_id = $1
+             or license.stripe_charge_id = $2
           order by created_at asc
           limit 2
           for update
@@ -3963,6 +4425,7 @@ export async function reconcileOneTimePaymentLifecycle(
         fulfilled: true as const,
         applied: result.applied,
         entitlementStatus: result.entitlementStatus,
+        acquisitionId: license.acquisition_id,
       };
     } catch (error) {
       await client.query("rollback");
@@ -3970,6 +4433,28 @@ export async function reconcileOneTimePaymentLifecycle(
     }
   });
   if (reconciliation.fulfilled) {
+    const acquisitionId = cleanString(reconciliation.acquisitionId, 36);
+    if (ACQUISITION_ID.test(acquisitionId)) {
+      const lifecycleStages = getStripeAcquisitionLifecycleStages(
+        eventType,
+        canonicalDispute || payload,
+        canonical.facts,
+      );
+      for (const lifecycleStage of lifecycleStages) {
+        const stage = await recordAcquisitionStage({
+          acquisitionId,
+          stage: lifecycleStage.stage,
+          stableServerReference: lifecycleStage.stableServerReference,
+          occurredAt: new Date(stripeEvent.created * 1_000),
+        });
+        if (stage.ownerConflict) {
+          throw new AcquisitionIntegrityError(
+            "lifecycle_acquisition_conflict",
+            "Stripe lifecycle acquisition ownership conflicted.",
+          );
+        }
+      }
+    }
     if (reconciliation.entitlementStatus === "unknown") {
       return reconciliation;
     }
@@ -3991,6 +4476,45 @@ export async function reconcileOneTimePaymentLifecycle(
     }
   }
   return reconciliation;
+}
+
+export function getStripeAcquisitionLifecycleStages(
+  eventType: string,
+  eventPayload: unknown,
+  facts: Pick<CanonicalOneTimePaymentFacts, "chargeId" | "amountRefunded">,
+) {
+  const payload = eventPayload as Record<string, unknown>;
+  if (eventType.startsWith("charge.dispute.")) {
+    const disputeId = normalizeStripeId(payload?.id);
+    return Object.freeze(disputeId
+      ? [Object.freeze({
+          stage: "disputed" as const,
+          stableServerReference: `stripe-dispute:${disputeId}`,
+        })]
+      : []);
+  }
+  if (eventType.startsWith("refund.")) {
+    const refundId = normalizeStripeId(payload?.id);
+    return Object.freeze(refundId && facts.amountRefunded > 0
+      ? [Object.freeze({
+          stage: "refunded" as const,
+          stableServerReference: `stripe-refund:${refundId}`,
+        })]
+      : []);
+  }
+  if (eventType === "charge.refunded" && facts.amountRefunded > 0) {
+    const refunds = payload?.refunds as {
+      data?: readonly Readonly<{ id?: unknown }>[];
+    } | null | undefined;
+    const refundIds = [...new Set(
+      (refunds?.data || []).map((refund) => normalizeStripeId(refund.id)).filter(Boolean),
+    )];
+    return Object.freeze(refundIds.map((refundId) => Object.freeze({
+      stage: "refunded" as const,
+      stableServerReference: `stripe-refund:${refundId}`,
+    })));
+  }
+  return Object.freeze([]);
 }
 
 async function upsertLicenseFromOneTimeCheckoutSession(options: {
@@ -4227,6 +4751,29 @@ export function sanitizeNextPath(value: unknown) {
 
 export function cleanString(value: unknown, maxLength = 240) {
   return typeof value === "string" ? value.trim().slice(0, maxLength) : "";
+}
+
+function requiredAcquisitionId(value: unknown) {
+  const acquisitionId = cleanString(value, 36);
+  if (!ACQUISITION_ID.test(acquisitionId)) {
+    throw new AcquisitionIntegrityError(
+      "acquisition_linkage_missing",
+      "A canonical acquisition is required for Checkout.",
+    );
+  }
+  return acquisitionId;
+}
+
+function assertCheckoutAcquisitionIntact(
+  acquisition: CanonicalAcquisition,
+) {
+  if (acquisition.integrityState !== "intact") {
+    throw new AcquisitionIntegrityError(
+      "acquisition_integrity_invalid",
+      "Checkout acquisition integrity is not intact.",
+    );
+  }
+  return acquisition;
 }
 
 export function randomToken(bytes = 32) {

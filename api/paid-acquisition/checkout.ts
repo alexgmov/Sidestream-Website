@@ -123,6 +123,8 @@ export default async function handler(
 
     const confirmation = await createCheckoutIntentConfirmation({
       buyerCountry: getTrustedCheckoutCountry(request.headers),
+      request,
+      response,
     });
     if (!confirmation) {
       return sendError(response, 503, "temporarily_unavailable");
@@ -186,6 +188,9 @@ export default async function handler(
         return sendError(response, 400, "invalid_request");
       }
     }
+    console.error("[sidestream paid checkout] server failure", {
+      code: postgresCode(error) || "checkout_unavailable",
+    });
     return sendError(response, 503, "temporarily_unavailable");
   }
 }
