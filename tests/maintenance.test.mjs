@@ -722,35 +722,49 @@ async function seedRetentionFixture(pool, credential, referenceTime) {
     [graceRateScope, digest("rate-grace"), referenceTime.toISOString()],
   );
 
+  const retentionAcquisition = await pool.query(
+    `
+      insert into public.sidestream_acquisitions (
+        license_namespace, first_observed_source, entry_channel,
+        first_observed_at, attribution_confidence
+      ) values (
+        'test', 'website_direct_or_unknown', 'website',
+        $1::timestamptz - interval '30 days', 'exact_sidestream_entry'
+      ) returning id
+    `,
+    [referenceTime.toISOString()],
+  );
+  const retentionAcquisitionId = retentionAcquisition.rows[0].id;
+
   for (let index = 0; index < 3; index += 1) {
     await pool.query(
       `
         insert into public.sidestream_checkout_intents (
-          intent_kind, browser_token_hash, state, attempt,
+          acquisition_id, intent_kind, browser_token_hash, state, attempt,
           expires_at, created_at, updated_at
         ) values (
-          'anonymous', $1, 'expired', 0,
-          $2::timestamptz - interval '20 days',
-          $2::timestamptz - interval '30 days',
-          $2::timestamptz - interval '20 days'
+          $1, 'anonymous', $2, 'expired', 0,
+          $3::timestamptz - interval '20 days',
+          $3::timestamptz - interval '30 days',
+          $3::timestamptz - interval '20 days'
         )
       `,
-      [digest(`intent-${index}`), referenceTime.toISOString()],
+      [retentionAcquisitionId, digest(`intent-${index}`), referenceTime.toISOString()],
     );
   }
   const graceIntent = await pool.query(
     `
       insert into public.sidestream_checkout_intents (
-        intent_kind, browser_token_hash, state, attempt,
+        acquisition_id, intent_kind, browser_token_hash, state, attempt,
         expires_at, created_at, updated_at
       ) values (
-        'anonymous', $1, 'expired', 0,
-        $2::timestamptz - interval '6 days',
-        $2::timestamptz - interval '10 days',
-        $2::timestamptz - interval '6 days'
+        $1, 'anonymous', $2, 'expired', 0,
+        $3::timestamptz - interval '6 days',
+        $3::timestamptz - interval '10 days',
+        $3::timestamptz - interval '6 days'
       ) returning id
     `,
-    [digest("intent-grace"), referenceTime.toISOString()],
+    [retentionAcquisitionId, digest("intent-grace"), referenceTime.toISOString()],
   );
 
   for (let index = 0; index < 3; index += 1) {
@@ -866,6 +880,17 @@ async function loadRuntimeModules() {
       join(repositoryRoot, "api/_lib/paid-acquisition.ts"),
       { "./postgres.js": postgresUrl },
     );
+    const acquisitionIntegrityUrl = await writeAdaptedModule(
+      directory,
+      "acquisition-integrity",
+      join(repositoryRoot, "api/_lib/acquisition-integrity.ts"),
+      {
+        "./license-environment.js": pathToFileURL(
+          join(repositoryRoot, "api/_lib/license-environment.ts"),
+        ).href,
+        "./postgres.js": postgresUrl,
+      },
+    );
     const accountUrl = await writeAdaptedModule(
       directory,
       "account",
@@ -881,6 +906,16 @@ async function loadRuntimeModules() {
         "./license-environment.js": pathToFileURL(
           join(repositoryRoot, "api/_lib/license-environment.ts"),
         ).href,
+        "./license-entitlement-sql.js": pathToFileURL(
+          join(repositoryRoot, "api/_lib/license-entitlement-sql.ts"),
+        ).href,
+        "./acquisition-cookie.js": pathToFileURL(
+          join(repositoryRoot, "api/_lib/acquisition-cookie.ts"),
+        ).href,
+        "./acquisition-handoff.js": pathToFileURL(
+          join(repositoryRoot, "api/_lib/acquisition-handoff.ts"),
+        ).href,
+        "./acquisition-integrity.js": acquisitionIntegrityUrl,
         "./customer-identity.js": pathToFileURL(
           join(repositoryRoot, "api/_lib/customer-identity.ts"),
         ).href,

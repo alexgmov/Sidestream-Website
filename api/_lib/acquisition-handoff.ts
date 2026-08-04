@@ -34,7 +34,7 @@ export type ServerOwnedDeliveryHandoff = Readonly<{
   acquisitionId: string;
   source: "manychat" | "facebook";
   entryChannel: ServerOwnedDeliveryChannel;
-  canonicalEntryChannel: "email_handoff";
+  canonicalEntryChannel: ServerOwnedDeliveryChannel;
   campaign: string;
   externalReferrerCategory: "messaging" | "social";
   intendedIdentityHash: string;
@@ -45,13 +45,13 @@ export type ServerOwnedDeliveryHandoff = Readonly<{
 const DELIVERY_CHANNELS = Object.freeze({
   manychat_email: Object.freeze({
     source: "manychat" as const,
-    canonicalEntryChannel: "email_handoff" as const,
+    canonicalEntryChannel: "manychat_email" as const,
     campaign: MANYCHAT_EMAIL_CAMPAIGN,
     externalReferrerCategory: "messaging" as const,
   }),
   facebook_lead_form: Object.freeze({
     source: "facebook" as const,
-    canonicalEntryChannel: "email_handoff" as const,
+    canonicalEntryChannel: "facebook_lead_form" as const,
     campaign: "facebook-lead-form",
     externalReferrerCategory: "social" as const,
   }),

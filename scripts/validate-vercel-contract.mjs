@@ -30,12 +30,29 @@ const INTERNAL_CRONS = Object.freeze([
 
 const PROTECTED_ADMIN_ROUTES = Object.freeze([
   {
+    path: "/api/internal/customer-summary",
+    source: "api/internal/customer-summary.ts",
+    testSource: "tests/customer-360/summary.test.mjs",
+  },
+  {
     path: "/api/internal/customers",
     source: "api/internal/customers/index.ts",
+    testSource: "tests/customer-360/query-api.test.mjs",
   },
   {
     path: "/api/internal/customers/[customerId]",
     source: "api/internal/customers/[customerId].ts",
+    testSource: "tests/customer-360/query-api.test.mjs",
+  },
+  {
+    path: "/api/internal/customers/funnel",
+    source: "api/internal/customers/funnel.ts",
+    testSource: "tests/customer-360/acquisition-funnel.test.mjs",
+  },
+  {
+    path: "/api/internal/customers/lookup",
+    source: "api/internal/customers/lookup.ts",
+    testSource: "tests/customer-360/query-api.test.mjs",
   },
 ]);
 
@@ -116,6 +133,10 @@ export async function validateVercelContract(root = REPOSITORY_ROOT) {
     !/Access-Control-Allow-Origin/i.test(adminGuardSource),
     "Customer admin routes must not enable browser CORS",
   );
+  requireCondition(
+    /toUpperCase\(\)\s*!==\s*"POST"/.test(adminGuardSource),
+    "Customer admin routes must remain POST-only",
+  );
 
   const internalRouteFiles = await listTypeScriptFiles(path.join(root, "api", "internal"));
   const expectedRouteFiles = [
@@ -145,18 +166,23 @@ export async function validateVercelContract(root = REPOSITORY_ROOT) {
     authTestSource.includes("GET-only Vercel cron routes"),
     "Cron contract tests must cover the allowed method surface",
   );
-  const adminTestSource = await readFile(
-    path.join(root, "tests/customer-360/query-api.test.mjs"),
-    "utf8",
-  );
   for (const expected of PROTECTED_ADMIN_ROUTES) {
+    const adminTestSource = await readFile(path.join(root, expected.testSource), "utf8");
     requireCondition(
       adminTestSource.includes(expected.path),
       `Missing admin auth coverage marker for ${expected.path}`,
     );
+    requireCondition(
+      /POST-only|unsupported methods/.test(adminTestSource),
+      `Missing POST-only method coverage for ${expected.path}`,
+    );
   }
+  const queryAdminTestSource = await readFile(
+    path.join(root, "tests/customer-360/query-api.test.mjs"),
+    "utf8",
+  );
   requireCondition(
-    adminTestSource.includes("missing, wrong, and multiple SIDESTREAM_CRM_ADMIN_SECRET"),
+    queryAdminTestSource.includes("missing, wrong, and multiple SIDESTREAM_CRM_ADMIN_SECRET"),
     "Customer admin tests must cover missing, incorrect, and multiple authorization",
   );
 

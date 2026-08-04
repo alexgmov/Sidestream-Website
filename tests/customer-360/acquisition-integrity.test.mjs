@@ -129,6 +129,15 @@ test("untrusted or sensitive request-shaped fields are rejected, not retained", 
     "ip", "userAgent", "cookie", "email", "stripePayload",
     "telemetryPayload", "installHash", "receiptHash",
   ]);
+  await assert.rejects(
+    createCanonicalAcquisitionRoot({
+      firstObservedAt: FIRST_OBSERVED,
+      landingDeduplicationReference: "legacy-collapsed-channel",
+      source: "manychat",
+      entryChannel: "email_handoff",
+    }),
+    (error) => error?.code === "invalid_entry_channel",
+  );
 });
 
 test("migration encodes immutability, privacy, Checkout future enforcement, and no inferred history", async () => {
@@ -140,6 +149,11 @@ test("migration encodes immutability, privacy, Checkout future enforcement, and 
     readFile(new URL("../../api/_lib/acquisition-integrity.ts", import.meta.url), "utf8"),
   ]);
   assert.match(migration, /website_direct_or_unknown/);
+  assert.match(
+    migration,
+    /entry_channel in \([\s\S]*'website'[\s\S]*'manychat_email'[\s\S]*'facebook_lead_form'/,
+  );
+  assert.doesNotMatch(migration, /entry_channel in \([^)]*'email_handoff'/s);
   assert.match(migration, /exact_sidestream_entry/);
   assert.match(migration, /missing_internal_linkage/);
   assert.match(migration, /historical_unlinked/);

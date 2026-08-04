@@ -96,6 +96,9 @@ test("activation, claim, Checkout, and credential invariants execute against Pos
             currency: "usd",
             status: "succeeded",
             latest_charge: `ch_${paymentIntentId.slice(3)}`,
+            metadata: {
+              sidestream_acquisition_id: session.metadata.sidestream_acquisition_id,
+            },
           };
         },
       },
@@ -114,6 +117,9 @@ test("activation, claim, Checkout, and credential invariants execute against Pos
             amount_refunded: 0,
             paid: true,
             disputed: false,
+            metadata: {
+              sidestream_acquisition_id: session.metadata.sidestream_acquisition_id,
+            },
           };
         },
       },
@@ -411,7 +417,7 @@ test("activation, claim, Checkout, and credential invariants execute against Pos
       });
       const liveAttachment = checkoutAttachment("grace-live", liveActivation.activationKey);
       assert.equal(await account.attachCheckoutSessionToActivation(liveAttachment), true);
-      const liveIntentId = await seedCheckoutOfferIntent(databasePool, {
+      const liveIntent = await seedCheckoutOfferIntent(databasePool, {
         label: "grace-live",
         accountId: buyer.accountId,
         activationId: liveActivation.activationId,
@@ -425,7 +431,8 @@ test("activation, claim, Checkout, and credential invariants execute against Pos
           "grace-live",
           liveActivation.activationKey,
           buyer,
-          liveIntentId,
+          liveIntent.intentId,
+          liveIntent.acquisitionId,
         ),
       );
       assert.deepEqual(
@@ -445,7 +452,7 @@ test("activation, claim, Checkout, and credential invariants execute against Pos
         deviceId: "checkout-grace-expired-device",
       });
       const expiredBuyer = await seedAccount(databasePool, "checkout-grace-expired-buyer");
-      const expiredIntentId = await seedCheckoutOfferIntent(databasePool, {
+      const expiredIntent = await seedCheckoutOfferIntent(databasePool, {
         label: "checkout-grace-expired",
         accountId: expiredBuyer.accountId,
         activationId: expiredActivation.activationId,
@@ -459,7 +466,8 @@ test("activation, claim, Checkout, and credential invariants execute against Pos
           "checkout-grace-expired",
           expiredActivation.activationKey,
           expiredBuyer,
-          expiredIntentId,
+          expiredIntent.intentId,
+          expiredIntent.acquisitionId,
         ),
       );
       assert.deepEqual(
@@ -831,6 +839,15 @@ async function loadRuntimeModules() {
       "./license-environment.js": pathToFileURL(
         join(repositoryRoot, "api", "_lib", "license-environment.ts"),
       ).href,
+      "./license-entitlement-sql.js": pathToFileURL(
+        join(repositoryRoot, "api", "_lib", "license-entitlement-sql.ts"),
+      ).href,
+      "./acquisition-cookie.js": pathToFileURL(
+        join(repositoryRoot, "api", "_lib", "acquisition-cookie.ts"),
+      ).href,
+      "./acquisition-handoff.js": pathToFileURL(
+        join(repositoryRoot, "api", "_lib", "acquisition-handoff.ts"),
+      ).href,
       "./customer-identity.js": pathToFileURL(
         join(repositoryRoot, "api", "_lib", "customer-identity.ts"),
       ).href,
@@ -843,6 +860,15 @@ async function loadRuntimeModules() {
       "maintenance",
       join(repositoryRoot, "api", "_lib", "maintenance.ts"),
       { "./postgres.js": helperImports["./postgres.js"] },
+    );
+    helperImports["./acquisition-integrity.js"] = await writeRouteModule(
+      temporaryModuleDirectory,
+      "acquisition-integrity",
+      join(repositoryRoot, "api", "_lib", "acquisition-integrity.ts"),
+      {
+        "./license-environment.js": helperImports["./license-environment.js"],
+        "./postgres.js": helperImports["./postgres.js"],
+      },
     );
     helperImports["./paid-acquisition.js"] = await writeRouteModule(
       temporaryModuleDirectory,
@@ -1044,7 +1070,13 @@ function checkoutAttachment(label, activationKey) {
   };
 }
 
-function checkoutSession(label, activationKey, buyer = null, checkoutIntentId = "") {
+function checkoutSession(
+  label,
+  activationKey,
+  buyer = null,
+  checkoutIntentId = "",
+  acquisitionId = "",
+) {
   return {
     id: `cs_${label}`,
     mode: "payment",
@@ -1070,6 +1102,7 @@ function checkoutSession(label, activationKey, buyer = null, checkoutIntentId = 
       sidestream_price_id: `price_${label}`,
       sidestream_product_id: `prod_${label}`,
       sidestream_checkout_intent_id: checkoutIntentId,
+      sidestream_acquisition_id: acquisitionId,
       sidestream_account_id: buyer?.accountId || "",
       sidestream_offer_id: "sidestream-unlimited-global",
       sidestream_offer_country: "US",
@@ -1088,24 +1121,39 @@ function checkoutSession(label, activationKey, buyer = null, checkoutIntentId = 
 }
 
 async function seedCheckoutOfferIntent(pool, options) {
+  const acquisitionId = randomUUID();
+  await pool.query(
+    `
+      insert into public.sidestream_acquisitions (
+        id, license_namespace, first_observed_source, entry_channel,
+        first_observed_at, attribution_confidence, integrity_state,
+        trusted_delivery_evidence
+      ) values (
+        $1, 'production', 'website_direct_or_unknown', 'website', now(),
+        'exact_sidestream_entry', 'intact', array['website_entry']::text[]
+      )
+    `,
+    [acquisitionId],
+  );
   const result = await pool.query(
     `
       insert into public.sidestream_checkout_intents (
-        intent_kind, browser_token_hash, account_id, activation_session_id,
+        acquisition_id, intent_kind, browser_token_hash, account_id, activation_session_id,
         state, attempt, stripe_customer_id, stripe_checkout_session_id,
         stripe_checkout_url, stripe_price_id, stripe_product_id,
         stripe_session_expires_at, offer_id, offer_country, offer_currency,
         offer_amount_minor, offer_stripe_product_id, offer_stripe_price_id,
         expires_at
       ) values (
-        'activation', $1, $2::uuid, $3::uuid, 'open', 0, $4, $5,
-        $6, $7, $8, now() + interval '1 hour',
-        'sidestream-unlimited-global', 'US', 'usd', 999, $8, $7,
+        $1, 'activation', $2, $3::uuid, $4::uuid, 'open', 0, $5, $6,
+        $7, $8, $9, now() + interval '1 hour',
+        'sidestream-unlimited-global', 'US', 'usd', 999, $9, $8,
         now() + interval '1 day'
       )
       returning id
     `,
     [
+      acquisitionId,
       privateIdentifierHash(`checkout-intent-${options.label}`),
       options.accountId,
       options.activationId,
@@ -1116,7 +1164,7 @@ async function seedCheckoutOfferIntent(pool, options) {
       options.productId,
     ],
   );
-  return result.rows[0].id;
+  return { intentId: result.rows[0].id, acquisitionId };
 }
 
 async function activationState(pool, activationKey) {

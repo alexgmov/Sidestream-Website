@@ -274,6 +274,13 @@ export function createApiContractHarness(options = {}) {
       if (request.licenseEnvironment === null) return null;
       return request.licenseEnvironment || environment;
     },
+    async resolveRequiredCheckoutAcquisition(_request, _response, resolution = {}) {
+      return {
+        acquisitionId: "70000000-0000-4000-8000-000000000001",
+        browserCookieValue: "contract-browser-acquisition-cookie",
+        acceptedHandoffToken: cleanString(resolution.handoffToken, 2_048),
+      };
+    },
     async createActivationSession(_request, payload) {
       const activationKey = random.next("activation");
       const activation = store.seedActivation({
@@ -496,6 +503,15 @@ export function createApiContractHarness(options = {}) {
     },
     getOAuthNextPath(request) {
       return sanitizeAccountNextPath(request.contractOAuthNextPath ?? oauth.nextPath);
+    },
+    getOAuthAcquisitionCookie(request) {
+      return request.contractOAuthAcquisitionCookie || "contract-browser-acquisition-cookie";
+    },
+    async completeGoogleAuthenticationAcquisition() {
+      return {
+        acquisitionId: "70000000-0000-4000-8000-000000000001",
+        possibleForwardedHandoff: false,
+      };
     },
     getGoogleAuthUrl(_request, values) {
       if (oauth.authUrlError) throw oauth.authUrlError;

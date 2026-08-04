@@ -66,7 +66,7 @@ test("canonical acquisition pipeline binds every new intent and retains its comp
       source: "manychat",
       medium: "email",
       campaign: "Journey_Matrix",
-      entryChannel: "email_handoff",
+      entryChannel: "manychat_email",
       externalReferrerCategory: "messaging",
       attributionConfidence: "exact_trusted_delivery",
       trustedDeliveryEvidence: ["signed_email_handoff"],
@@ -80,7 +80,7 @@ test("canonical acquisition pipeline binds every new intent and retains its comp
     }, {
       id: ROOT,
       source: "manychat",
-      channel: "email_handoff",
+      channel: "manychat_email",
       confidence: "exact_trusted_delivery",
       namespace: "test",
     });

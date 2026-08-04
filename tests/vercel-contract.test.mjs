@@ -38,15 +38,15 @@ test("the static Vercel contract includes every protected cron and both release 
   const result = await validateVercelContract();
   assert.deepEqual(result, {
     crons: 4,
-    adminRoutes: 2,
-    internalRoutes: 6,
+    adminRoutes: 5,
+    internalRoutes: 9,
     releaseEndpoints: 2,
   });
 });
 
-test("customer list and detail are protected on-demand admin routes, never crons", async () => {
+test("every Customer 360 read is a protected on-demand admin route, never a cron", async () => {
   const result = await validateVercelContract();
-  assert.equal(result.adminRoutes, 2);
+  assert.equal(result.adminRoutes, 5);
   assert.equal(result.crons, 4);
 });
 
@@ -65,7 +65,7 @@ test("the source checkout contract is direct and retains both zero-total Stripe 
   assert.deepEqual(result, {
     checkoutRoute: "direct",
     zeroTotalStatuses: 2,
-    rootHtmlPages: 3,
+    rootHtmlPages: 4,
   });
 });
 

@@ -284,7 +284,7 @@ test("server-owned delivery handoff fixes ManyChat truth, preserves campaign, an
   }, {
     source: "manychat",
     entryChannel: "manychat_email",
-    canonicalEntryChannel: "email_handoff",
+    canonicalEntryChannel: "manychat_email",
     campaign: "manychat-email",
   });
   assert.deepEqual(
@@ -309,10 +309,12 @@ test("server-owned delivery handoff fixes ManyChat truth, preserves campaign, an
     entryChannel: "facebook_lead_form",
     intendedIdentity: "person@example.com",
   }, { secret: SECRET, now: NOW_MS });
-  assert.equal(
-    verifyServerOwnedDeliveryHandoff(future, { secret: SECRET, now: NOW_MS }).entryChannel,
-    "facebook_lead_form",
-  );
+  const verifiedFuture = verifyServerOwnedDeliveryHandoff(future, {
+    secret: SECRET,
+    now: NOW_MS,
+  });
+  assert.equal(verifiedFuture.entryChannel, "facebook_lead_form");
+  assert.equal(verifiedFuture.canonicalEntryChannel, "facebook_lead_form");
 });
 
 function mutateSignaturePadBits(token) {

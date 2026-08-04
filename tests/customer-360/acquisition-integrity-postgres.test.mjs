@@ -187,15 +187,19 @@ test("acquisition integrity is immutable, namespaced, idempotent, and history-sa
       }, { transaction, namespace: "production" });
       assert.equal(production.licenseNamespace, "production");
 
-      await createCanonicalAcquisitionRoot({
+      const facebook = await createCanonicalAcquisitionRoot({
         acquisitionId: ROOT_TWO,
         firstObservedAt: FIRST_OBSERVED,
         landingDeduplicationReference: "landing-request-two",
         source: "facebook",
         medium: "paid_social",
         campaign: "Launch_01",
+        entryChannel: "facebook_lead_form",
         externalReferrerCategory: "social",
+        attributionConfidence: "exact_trusted_delivery",
+        trustedDeliveryEvidence: ["signed_email_handoff"],
       }, { transaction, namespace: "test" });
+      assert.equal(facebook.entryChannel, "facebook_lead_form");
       const first = await recordAcquisitionStage({
         acquisitionId: ROOT_ONE,
         stage: "checkout_completed",

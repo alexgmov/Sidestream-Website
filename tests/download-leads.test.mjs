@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import { after, before, test } from "node:test";
 import { pathToFileURL } from "node:url";
+import { compileApiFixture } from "./helpers/compile-api-fixture.mjs";
 
 const repoRoot = process.cwd();
 const testSecret = "download-lead-tests-use-a-stable-secret-value";
@@ -32,16 +32,11 @@ before(async () => {
   compiledDirectory = mkdtempSync(
     path.join(repoRoot, "node_modules", ".tmp", "download-leads-test-"),
   );
-  execFileSync(path.join(repoRoot, "node_modules", ".bin", "tsc"), [
-    "-p",
-    "tsconfig.node.json",
-    "--noEmit",
-    "false",
-    "--outDir",
-    compiledDirectory,
-    "--tsBuildInfoFile",
-    path.join(compiledDirectory, "tsconfig.tsbuildinfo"),
-  ]);
+  compileApiFixture([
+    "api/download-lead.ts",
+    "api/send-download-links.ts",
+    "api/internal/download-leads/replay.ts",
+  ], compiledDirectory, repoRoot);
   helpers = await import(
     pathToFileURL(path.join(compiledDirectory, "api", "_lib", "download-leads.js")).href
   );
@@ -611,7 +606,7 @@ test("mobile download email builder sends both stable installers through Resend"
     "89504e470d0a1a0a",
   );
   assert.match(message.text, /platform=win32-x64/);
-  assert.match(message.text, /utm_source=mobile_handoff/);
+  assert.doesNotMatch(message.text, /utm_|email=|source=/i);
   assert.match(message.text, /Save 20% on Sidestream Unlimited with code STREAM20\./);
 });
 

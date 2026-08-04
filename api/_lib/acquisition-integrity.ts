@@ -57,7 +57,13 @@ export type AcquisitionCountingGrain =
   (typeof ACQUISITION_STAGE_COUNTING_GRAINS)[AcquisitionStage];
 type CountingGrain = AcquisitionCountingGrain;
 type TrustedDeliveryEvidence = (typeof ACQUISITION_TRUSTED_DELIVERY_EVIDENCE)[number];
-type EntryChannel = "website" | "email_handoff" | "installer" | "account" | "checkout";
+type EntryChannel =
+  | "website"
+  | "manychat_email"
+  | "facebook_lead_form"
+  | "installer"
+  | "account"
+  | "checkout";
 type ExternalReferrerCategory =
   | "search" | "social" | "messaging" | "video" | "community" | "publisher" | "other_external";
 type AttributionConfidence =
@@ -596,7 +602,14 @@ function assertStage(value: unknown): AcquisitionStage {
 }
 
 function assertEntryChannel(value: unknown): EntryChannel {
-  if (!["website", "email_handoff", "installer", "account", "checkout"].includes(value as string)) {
+  if (![
+    "website",
+    "manychat_email",
+    "facebook_lead_form",
+    "installer",
+    "account",
+    "checkout",
+  ].includes(value as string)) {
     fail("invalid_entry_channel", "Acquisition entry channel is invalid.");
   }
   return value as EntryChannel;

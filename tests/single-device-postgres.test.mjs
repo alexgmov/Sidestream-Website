@@ -879,6 +879,19 @@ test("single-device entitlement transactions hold in disposable Postgres", {
 
       const fulfillmentFixture = await seedAccount(databasePool, schema);
       const fulfillmentIntentId = "55555555-5555-4555-8555-555555555555";
+      const fulfillmentAcquisitionId = "66666666-6666-4666-8666-666666666666";
+      await databasePool.query(
+        `
+          insert into ${quotedSchema}.sidestream_acquisitions (
+            id, license_namespace, first_observed_source, entry_channel,
+            first_observed_at, attribution_confidence
+          ) values (
+            $1::uuid, 'production', 'website_direct_or_unknown', 'website',
+            now(), 'exact_sidestream_entry'
+          )
+        `,
+        [fulfillmentAcquisitionId],
+      );
       const fulfillmentSession = {
         id: "cs_exact_fulfillment",
         mode: "payment",
@@ -910,6 +923,7 @@ test("single-device entitlement transactions hold in disposable Postgres", {
           sidestream_offer_currency: "usd",
           sidestream_offer_amount_minor: "999",
           sidestream_activation_key: "activation_exact_fulfillment",
+          sidestream_acquisition_id: fulfillmentAcquisitionId,
         },
         line_items: {
           data: [{
@@ -951,14 +965,14 @@ test("single-device entitlement transactions hold in disposable Postgres", {
       await databasePool.query(
         `
           insert into ${quotedSchema}.sidestream_checkout_intents (
-            id, intent_kind, browser_token_hash, account_id,
+            id, acquisition_id, intent_kind, browser_token_hash, account_id,
             activation_session_id, state, attempt, stripe_customer_id,
             stripe_checkout_session_id, stripe_checkout_url, stripe_price_id,
             stripe_product_id, stripe_session_expires_at, offer_id,
             offer_country, offer_currency, offer_amount_minor,
             offer_stripe_product_id, offer_stripe_price_id, expires_at
           ) values (
-            $1::uuid, 'activation', $2, $3::uuid, $4::uuid, 'open', 0,
+            $1::uuid, $2::uuid, 'activation', $3, $4::uuid, $5::uuid, 'open', 0,
             'cus_exact_fulfillment', 'cs_exact_fulfillment',
             'https://checkout.stripe.test/cs_exact_fulfillment',
             'price_exact_fulfillment', 'prod_UpwXh6oO1OmPyQ',
@@ -969,6 +983,7 @@ test("single-device entitlement transactions hold in disposable Postgres", {
         `,
         [
           fulfillmentIntentId,
+          fulfillmentAcquisitionId,
           "f".repeat(64),
           fulfillmentFixture.accountId,
           fulfillmentActivation.rows[0].id,
@@ -993,6 +1008,7 @@ test("single-device entitlement transactions hold in disposable Postgres", {
               currency: "usd",
               status: "succeeded",
               latest_charge: "ch_exact_fulfillment",
+              metadata: { sidestream_acquisition_id: fulfillmentAcquisitionId },
             };
           },
         },
@@ -1007,6 +1023,7 @@ test("single-device entitlement transactions hold in disposable Postgres", {
               amount_refunded: 0,
               paid: true,
               disputed: false,
+              metadata: { sidestream_acquisition_id: fulfillmentAcquisitionId },
             };
           },
         },
@@ -1016,17 +1033,36 @@ test("single-device entitlement transactions hold in disposable Postgres", {
           },
         },
       });
-      const fulfilled = await accountModule.fulfillCheckoutSession(
-        "cs_exact_fulfillment",
-        "activation_exact_fulfillment",
-      );
-      const fulfilledReplay = await accountModule.fulfillCheckoutSession(
-        "cs_exact_fulfillment",
-        "activation_exact_fulfillment",
-      );
-      accountModule.__setIntegrationStripeClient(null);
-      assert.deepEqual(fulfilled, { fulfilled: true, activationBound: true });
-      assert.deepEqual(fulfilledReplay, { fulfilled: true, activationBound: true });
+      process.env.SIDESTREAM_LICENSE_NAMESPACE = "production";
+      process.env.VERCEL_ENV = "production";
+      process.env.SIDESTREAM_POSTGRES_URL = testDatabaseUrl;
+      let fulfilled;
+      let fulfilledReplay;
+      try {
+        fulfilled = await accountModule.fulfillCheckoutSession(
+          "cs_exact_fulfillment",
+          "activation_exact_fulfillment",
+        );
+        fulfilledReplay = await accountModule.fulfillCheckoutSession(
+          "cs_exact_fulfillment",
+          "activation_exact_fulfillment",
+        );
+      } finally {
+        accountModule.__setIntegrationStripeClient(null);
+        delete process.env.SIDESTREAM_LICENSE_NAMESPACE;
+        delete process.env.VERCEL_ENV;
+        delete process.env.SIDESTREAM_POSTGRES_URL;
+      }
+      assert.deepEqual(fulfilled, {
+        fulfilled: true,
+        activationBound: true,
+        paidAcquisition: false,
+      });
+      assert.deepEqual(fulfilledReplay, {
+        fulfilled: true,
+        activationBound: true,
+        paidAcquisition: false,
+      });
       const fulfillmentState = await databasePool.query(
         `
           select a.account_id, a.status,
@@ -1267,11 +1303,38 @@ async function loadAccountModuleForSchema(schema) {
     ),
     { mode: 0o600 },
   );
+  const acquisitionIntegrityPath = join(
+    temporaryModuleDirectory,
+    "acquisition-integrity-under-test.ts",
+  );
+  let acquisitionIntegritySource = rewritePublicSchema(
+    await readFile(
+      join(repositoryRoot, "api", "_lib", "acquisition-integrity.ts"),
+      "utf8",
+    ),
+    schema,
+  );
+  acquisitionIntegritySource = acquisitionIntegritySource
+    .replaceAll(
+      JSON.stringify("./license-environment.js"),
+      JSON.stringify(pathToFileURL(
+        join(repositoryRoot, "api", "_lib", "license-environment.ts"),
+      ).href),
+    )
+    .replaceAll(
+      JSON.stringify("./postgres.js"),
+      JSON.stringify(postgresUrl),
+    );
+  await writeFile(acquisitionIntegrityPath, acquisitionIntegritySource, { mode: 0o600 });
   const sourceImports = {
     "./entitlement.js": pathToFileURL(join(repositoryRoot, "api", "_lib", "entitlement.ts")).href,
     "./checkout-offers.js": pathToFileURL(join(repositoryRoot, "api", "_lib", "checkout-offers.ts")).href,
     "./device-policy.js": pathToFileURL(join(repositoryRoot, "api", "_lib", "device-policy.ts")).href,
     "./license-environment.js": pathToFileURL(join(repositoryRoot, "api", "_lib", "license-environment.ts")).href,
+    "./license-entitlement-sql.js": pathToFileURL(join(repositoryRoot, "api", "_lib", "license-entitlement-sql.ts")).href,
+    "./acquisition-cookie.js": pathToFileURL(join(repositoryRoot, "api", "_lib", "acquisition-cookie.ts")).href,
+    "./acquisition-handoff.js": pathToFileURL(join(repositoryRoot, "api", "_lib", "acquisition-handoff.ts")).href,
+    "./acquisition-integrity.js": pathToFileURL(acquisitionIntegrityPath).href,
     "./customer-identity.js": pathToFileURL(customerIdentityPath).href,
     "./maintenance.js": pathToFileURL(maintenancePath).href,
     "./paid-acquisition.js": pathToFileURL(

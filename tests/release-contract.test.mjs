@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
 import {
   mkdirSync,
   mkdtempSync,
@@ -11,6 +10,7 @@ import http from "node:http";
 import path from "node:path";
 import { after, before, test } from "node:test";
 import { pathToFileURL } from "node:url";
+import { compileApiFixture } from "./helpers/compile-api-fixture.mjs";
 
 const repoRoot = process.cwd();
 const manifestFixtures = {
@@ -32,17 +32,11 @@ before(async () => {
   compiledDirectory = mkdtempSync(
     path.join(repoRoot, "node_modules", ".tmp", "release-contract-test-"),
   );
-  const tsc = path.join(repoRoot, "node_modules", ".bin", "tsc");
-  execFileSync(tsc, [
-    "-p",
-    "tsconfig.node.json",
-    "--noEmit",
-    "false",
-    "--outDir",
+  compileApiFixture(
+    ["api/download.ts", "api/releases/latest.ts"],
     compiledDirectory,
-    "--tsBuildInfoFile",
-    path.join(compiledDirectory, "tsconfig.tsbuildinfo"),
-  ]);
+    repoRoot,
+  );
 
   ({ createDownloadHandler } = await import(
     pathToFileURL(path.join(compiledDirectory, "api", "download.js")).href

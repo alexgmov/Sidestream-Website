@@ -27,6 +27,7 @@ const CONTROLLED_ENVIRONMENT = [
   "STRIPE_SECRET_KEY",
   "VERCEL_ENV",
   "SIDESTREAM_LICENSE_NAMESPACE",
+  "SIDESTREAM_TEST_API_HOSTS",
 ];
 
 test("cross-lane contracts hold in one isolated disposable Postgres schema", {
@@ -122,15 +123,32 @@ test("cross-lane contracts hold in one isolated disposable Postgres schema", {
       assert.equal(canonical.rows.length, 1);
       assert.equal(canonical.rows[0].cta_source, "download-email-gate");
       assert.equal(Number(canonical.rows[0].submission_count), leads.length);
-      assert.equal(canonical.rows[0].utm_campaign, "campaign-11");
+      assert.equal(canonical.rows[0].utm_campaign, "campaign-0");
     });
 
     const accountFixture = await seedAccountLicenseAndSession(pool, quotedSchema);
 
     await t.test("checkout intent reuse creates one Stripe Session under concurrent retries", async () => {
       configureCheckoutEnvironment();
+      const checkoutAcquisitionId = "77777777-7777-4777-8777-777777777777";
+      await pool.query(
+        `insert into ${quotedSchema}.sidestream_acquisitions (
+           id, license_namespace, first_observed_source, entry_channel,
+           first_observed_at, attribution_confidence
+         ) values (
+           $1::uuid, 'test', 'website_direct_or_unknown', 'website',
+           now(), 'exact_sidestream_entry'
+         )`,
+        [checkoutAcquisitionId],
+      );
       let stripeCreates = 0;
       runtime.account.__setPostgresIntegrationStripeClient({
+        customers: {
+          async retrieve(id) {
+            assert.equal(id, "cus_integration");
+            return { id, deleted: false };
+          },
+        },
         prices: {
           async retrieve(id) {
             return {
@@ -145,8 +163,12 @@ test("cross-lane contracts hold in one isolated disposable Postgres schema", {
         },
         checkout: {
           sessions: {
-            async create() {
+            async create(parameters) {
               stripeCreates += 1;
+              assert.equal(
+                parameters.metadata.sidestream_acquisition_id,
+                checkoutAcquisitionId,
+              );
               return {
                 id: "cs_integration_reused",
                 url: "https://checkout.stripe.test/cs_integration_reused",
@@ -173,6 +195,7 @@ test("cross-lane contracts hold in one isolated disposable Postgres schema", {
         },
       };
       const intent = await runtime.account.createCheckoutIntent({
+        acquisitionId: checkoutAcquisitionId,
         session: buyerSession,
       });
       assert.ok(intent);
@@ -490,6 +513,13 @@ export async function query() { throw new Error("Inject a Postgres query into qu
     source: "api/_lib/rate-limit.ts",
     replacements: { "./postgres.js": postgresStubUrl },
   });
+  const paidAcquisitionUrl = await writeSchemaModule({
+    schema,
+    temporaryDirectory,
+    name: "paid-acquisition",
+    source: "api/_lib/paid-acquisition.ts",
+    replacements: { "./postgres.js": postgresStubUrl },
+  });
   const downloadLeadsUrl = await writeSchemaModule({
     schema,
     temporaryDirectory,
@@ -497,6 +527,7 @@ export async function query() { throw new Error("Inject a Postgres query into qu
     source: "api/_lib/download-leads.ts",
     replacements: {
       "./rate-limit.js": rateLimitUrl,
+      "./paid-acquisition.js": paidAcquisitionUrl,
       "./postgres.js": postgresStubUrl,
     },
   });
@@ -519,6 +550,19 @@ export async function query() { throw new Error("Inject a Postgres query into qu
     name: "customer-commerce",
     source: "api/_lib/customer-commerce.ts",
   });
+  const acquisitionIntegrityUrl = await writeSchemaModule({
+    schema,
+    temporaryDirectory,
+    name: "acquisition-integrity",
+    source: "api/_lib/acquisition-integrity.ts",
+    replacements: {
+      "./license-environment.js": new URL(
+        "../api/_lib/license-environment.ts",
+        import.meta.url,
+      ).href,
+      "./postgres.js": postgresStubUrl,
+    },
+  });
   const accountUrl = await writeSchemaModule({
     schema,
     temporaryDirectory,
@@ -535,8 +579,22 @@ export async function query() { throw new Error("Inject a Postgres query into qu
         "../api/_lib/license-environment.ts",
         import.meta.url,
       ).href,
+      "./license-entitlement-sql.js": new URL(
+        "../api/_lib/license-entitlement-sql.ts",
+        import.meta.url,
+      ).href,
+      "./acquisition-cookie.js": new URL(
+        "../api/_lib/acquisition-cookie.ts",
+        import.meta.url,
+      ).href,
+      "./acquisition-handoff.js": new URL(
+        "../api/_lib/acquisition-handoff.ts",
+        import.meta.url,
+      ).href,
+      "./acquisition-integrity.js": acquisitionIntegrityUrl,
       "./customer-identity.js": customerIdentityUrl,
       "./maintenance.js": maintenanceUrl,
+      "./paid-acquisition.js": paidAcquisitionUrl,
       "./postgres.js": postgresStubUrl,
     },
     append: `
@@ -664,8 +722,9 @@ function addConnectionOption(connectionString) {
 }
 
 function configureCheckoutEnvironment() {
-  delete process.env.VERCEL_ENV;
-  delete process.env.SIDESTREAM_LICENSE_NAMESPACE;
+  process.env.VERCEL_ENV = "test";
+  process.env.SIDESTREAM_LICENSE_NAMESPACE = "test";
+  process.env.SIDESTREAM_TEST_API_HOSTS = "test.sidestream.invalid";
   process.env.SIDESTREAM_LICENSE_HASH_SECRET =
     "checkout-integration-secret-that-is-long-enough";
   process.env.SIDESTREAM_PRO_PRODUCT_ID = "prod_integration";

@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import { after, before, test } from "node:test";
 import { pathToFileURL } from "node:url";
+import { compileApiFixture } from "./helpers/compile-api-fixture.mjs";
 import {
   parseReportArguments,
   summarizeReferralBlobPathnames,
@@ -24,16 +24,7 @@ before(async () => {
   compiledDirectory = mkdtempSync(
     path.join(repoRoot, "node_modules", ".tmp", "referral-visit-test-"),
   );
-  execFileSync(path.join(repoRoot, "node_modules", ".bin", "tsc"), [
-    "-p",
-    "tsconfig.node.json",
-    "--noEmit",
-    "false",
-    "--outDir",
-    compiledDirectory,
-    "--tsBuildInfoFile",
-    path.join(compiledDirectory, "tsconfig.tsbuildinfo"),
-  ]);
+  compileApiFixture(["api/referral-visit.ts"], compiledDirectory, repoRoot);
 
   ({ createReferralVisitHandler } = await import(
     pathToFileURL(path.join(compiledDirectory, "api", "referral-visit.js")).href

@@ -169,7 +169,7 @@ test("acquisition operator projections reject raw identity and provider referenc
     acquisition: {
       id: "00000000-0000-4000-8000-000000000001",
       source: "manychat",
-      channel: "email_handoff",
+      channel: "manychat_email",
       confidence: "exact_trusted_delivery",
       namespace: "test",
       stages: { payment_settled: { count: "1", occurredAt: "2026-08-03T12:00:00Z" } },

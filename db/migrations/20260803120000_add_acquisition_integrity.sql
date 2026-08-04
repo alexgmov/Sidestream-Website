@@ -32,7 +32,10 @@ create table public.sidestream_acquisitions (
     and (first_observed_content_creative is null or first_observed_content_creative ~ '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$')
   ),
   constraint sidestream_acquisitions_entry_channel_valid check (
-    entry_channel in ('website', 'email_handoff', 'installer', 'account', 'checkout')
+    entry_channel in (
+      'website', 'manychat_email', 'facebook_lead_form',
+      'installer', 'account', 'checkout'
+    )
   ),
   constraint sidestream_acquisitions_referrer_category_valid check (
     external_referrer_category is null or external_referrer_category in (

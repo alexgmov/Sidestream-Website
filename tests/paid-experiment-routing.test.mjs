@@ -101,7 +101,9 @@ const CONTROL_NONCE = nonceForCohort("mc-control-v1");
 const PAID_NONCE = nonceForCohort("mc-paid-v1");
 
 test("Vercel middleware and the existing /m redirect remain exactly scoped", () => {
-  assert.deepEqual(middleware.config, { matcher: ["/mc", "/mc-preview"] });
+  assert.deepEqual(middleware.config, {
+    matcher: ["/", "/index.html", "/mc", "/mc-preview"],
+  });
   for (const source of ["/m", "/m/", "/mc/"]) {
     assert.deepEqual(
       vercel.redirects.find((redirect) => redirect.source === source),

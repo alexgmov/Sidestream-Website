@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import { after, before, test } from "node:test";
 import { pathToFileURL } from "node:url";
+import { compileApiFixture } from "./helpers/compile-api-fixture.mjs";
 
 import {
   ACQUISITION_COOKIE_NAME,
@@ -35,12 +35,11 @@ before(async () => {
   compiledDirectory = mkdtempSync(
     path.join(process.cwd(), "node_modules", ".tmp", "acquisition-handoff-test-"),
   );
-  execFileSync(path.join(process.cwd(), "node_modules", ".bin", "tsc"), [
-    "-p", "tsconfig.node.json",
-    "--noEmit", "false",
-    "--outDir", compiledDirectory,
-    "--tsBuildInfoFile", path.join(compiledDirectory, "tsconfig.tsbuildinfo"),
-  ]);
+  compileApiFixture([
+    "api/send-download-links.ts",
+    "api/acquisition/observe.ts",
+    "api/acquisition/entry.ts",
+  ], compiledDirectory);
   ({ createDownloadLinkHandler } = await import(
     pathToFileURL(path.join(compiledDirectory, "api", "send-download-links.js")).href
   ));
@@ -291,6 +290,7 @@ test("ManyChat delivery entry accepts only its opaque server envelope and restor
     acquisition.acquisitionId,
   );
   assert.equal(ensured[0].entryChannel, "manychat_email");
+  assert.equal(ensured[0].canonicalEntryChannel, "manychat_email");
   assert.equal(JSON.stringify(ensured[0]).includes("private@example.com"), false);
   await result.handlerDone;
 });
