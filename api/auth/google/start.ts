@@ -38,7 +38,7 @@ export default async function handler(
     });
   } catch (error) {
     console.error("[sidestream auth] acquisition resolution failed", error);
-    return sendGoogleSignInError(response, 503, "acquisition_unavailable");
+    return sendGoogleSignInError(response, 503, "unavailable");
   }
 
   const state = randomToken(24);

@@ -230,6 +230,7 @@ export function createApiContractHarness(options = {}) {
   const oauth = {
     state: "",
     nextPath: "/account.html",
+    acquisitionCookieValue: "",
     cleared: 0,
     sessionsCreated: 0,
     authUrlError: null,
@@ -492,6 +493,7 @@ export function createApiContractHarness(options = {}) {
     setOAuthCookies(_request, response, values) {
       oauth.state = values.state;
       oauth.nextPath = sanitizeAccountNextPath(values.nextPath);
+      oauth.acquisitionCookieValue = values.acquisitionCookieValue;
       response.setHeader("Set-Cookie", ["sidestream_oauth_state=fake", "sidestream_oauth_next=fake"]);
     },
     clearOAuthCookies(_request, response) {
