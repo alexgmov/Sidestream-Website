@@ -7,6 +7,7 @@ import { invokeHandler } from "../helpers/http.mjs";
 const ADMIN_SECRET = "customer-admin-integration-secret-2026";
 const LIST_PATH = "/api/internal/customers";
 const DETAIL_PATH = "/api/internal/customers/00000000-0000-4000-8000-000000000001";
+const LOOKUP_PATH = "/api/internal/customers/lookup";
 
 const queryModule = await loadInjectedModule(
   new URL("../../api/_lib/customer-query.ts", import.meta.url),
@@ -18,11 +19,14 @@ const queryModule = await loadInjectedModule(
     },
   },
 );
-const [listModule, detailModule] = await Promise.all([
+const [listModule, detailModule, lookupModule] = await Promise.all([
   loadInjectedModule(new URL("../../api/internal/customers/index.ts", import.meta.url), {
     "../../_lib/customer-query.js": queryModule,
   }),
   loadInjectedModule(new URL("../../api/internal/customers/[customerId].ts", import.meta.url), {
+    "../../_lib/customer-query.js": queryModule,
+  }),
+  loadInjectedModule(new URL("../../api/internal/customers/lookup.ts", import.meta.url), {
     "../../_lib/customer-query.js": queryModule,
   }),
 ]);
@@ -125,6 +129,137 @@ test("authorized list and detail responses stay compact and no-store", async () 
   assert.equal(detail.response.statusCode, 200);
   assert.deepEqual(detail.response.json, { customer });
   assertCustomerHeaders(detail.response);
+});
+
+test("exact Stripe lookup is protected, prefix-bounded, and privacy-safe", async () => {
+  const projected = {
+    customerId: "00000000-0000-4000-8000-000000000001",
+    acquisition: {
+      source: "website_direct_or_unknown",
+      campaign: null,
+      creative: null,
+      integrityState: "intact",
+      missingStages: ["refunded", "disputed"],
+      conflictingStages: [],
+    },
+    paymentStatus: { settled: true, refunded: false, disputed: false },
+  };
+  let requestBody;
+  const handler = lookupModule.createCustomerLookupHandler({
+    getAdminSecret: () => ADMIN_SECRET,
+    lookupCustomer: async (body) => {
+      requestBody = body;
+      return projected;
+    },
+  });
+  const response = await invokeHandler(handler, {
+    method: "POST",
+    url: LOOKUP_PATH,
+    headers: { authorization: `Bearer ${ADMIN_SECRET}` },
+    body: { licenseNamespace: "test", stripeReference: "pi_exact_123" },
+  });
+  assert.equal(response.response.statusCode, 200);
+  assert.deepEqual(requestBody, {
+    licenseNamespace: "test",
+    stripeReference: "pi_exact_123",
+  });
+  assert.deepEqual(response.response.json, { customer: projected });
+  assertCustomerHeaders(response.response);
+  assert.doesNotMatch(JSON.stringify(response.response.json), /pi_exact_123|admin-secret/);
+
+  for (const invalid of [
+    "person@example.com",
+    "Alex",
+    "in_123",
+    "pi_",
+    `ch_${"a".repeat(198)}`,
+  ]) {
+    await assert.rejects(queryModule.queryCustomerLookup({
+      licenseNamespace: "test",
+      stripeReference: invalid,
+    }, {
+      transaction: async () => {
+        throw new Error("invalid lookup reached storage");
+      },
+    }), (error) => error?.code === "invalid_stripe_reference");
+  }
+});
+
+test("exact lookup resolves only stored aliases and exposes stage/payment summaries", async () => {
+  const customerId = "00000000-0000-4000-8000-000000000001";
+  const customer = profileRow(customerId);
+  const calls = [];
+  const transaction = async (callback) => callback({
+    query: async (sql, params = []) => {
+      calls.push({ sql, params });
+      if (sql.includes("with exact_identity_owner")) {
+        return { rows: [{ profile_id: customerId, payment_key: "payment_intent:private" }] };
+      }
+      if (sql.includes("sidestream_customer_360_profile_read_model")) {
+        return { rows: [customer] };
+      }
+      if (sql.includes("sidestream_customer_360_money_read_model")) {
+        return { rows: [moneyRow(customerId, "usd", "1999")] };
+      }
+      if (sql.includes("with profile_links")) {
+        return { rows: [{
+          acquisition_id: "10000000-0000-4000-8000-000000000001",
+          first_observed_source: "website_direct_or_unknown",
+          first_observed_medium: null,
+          first_observed_campaign: null,
+          first_observed_content_creative: null,
+          entry_channel: "website",
+          first_observed_at: "2026-07-01T00:00:00Z",
+          experiment_id: null,
+          experiment_cohort: null,
+          attribution_confidence: "exact_sidestream_entry",
+          integrity_state: "quarantined",
+          trusted_delivery_evidence: ["website_entry", "checkout_intent"],
+        }] };
+      }
+      if (sql.includes("sidestream_acquisition_stages")) {
+        return { rows: [
+          { stage: "landing_observed", occurred_at: "2026-07-01T00:00:00Z" },
+          { stage: "payment_settled", occurred_at: "2026-07-02T00:00:00Z" },
+          { stage: "refunded", occurred_at: "2026-07-03T00:00:00Z" },
+          { stage: "disputed", occurred_at: "2026-07-04T00:00:00Z" },
+        ] };
+      }
+      if (sql.includes("sidestream_acquisition_conflicts")) {
+        return { rows: [{ conflict_type: "stage_deduplication_owner" }] };
+      }
+      if (sql.includes("sidestream_customer_commerce_materializations")) {
+        return { rows: [{
+          payment_count: "1",
+          refund_count: "1",
+          dispute_count: "1",
+          inquiry_count: "0",
+          gross_paid_minor: "1999",
+          refunded_minor: "500",
+          disputed_minor: "200",
+          inquiry_minor: "0",
+        }] };
+      }
+      throw new Error(`Unexpected SQL: ${sql}`);
+    },
+  });
+  const result = await queryModule.queryCustomerLookup({
+    licenseNamespace: "test",
+    stripeReference: "ch_exact_123",
+  }, { transaction });
+  assert.equal(result.customerId, customerId);
+  assert.equal(result.acquisition.source, "website_direct_or_unknown");
+  assert.equal(result.acquisition.stageTimestamps.payment_settled, "2026-07-02T00:00:00.000Z");
+  assert.ok(result.acquisition.missingStages.includes("installation_claimed"));
+  assert.deepEqual(result.acquisition.conflictingStages, ["stage_owner_conflict"]);
+  assert.equal(result.paymentStatus.refunded, true);
+  assert.equal(result.paymentStatus.disputed, true);
+  assert.doesNotMatch(
+    JSON.stringify(result),
+    /ch_exact_123|payment_intent:private|contact_email|link_value|deduplication_key/,
+  );
+  assert.match(calls[0].sql, /alias\.alias_id = \$2/);
+  assert.doesNotMatch(calls[0].sql, /\blike\b|similarity|substring/i);
 });
 
 test("list defaults to 50, caps at 100, and signs filters into stable cursors", async () => {
@@ -245,7 +380,7 @@ test("NULL-heavy profiles and currency partitions map without raw source fields"
   assert.doesNotMatch(source, /select\s+\*/i);
   assert.doesNotMatch(
     source,
-    /\b(?:data_points|identity_evidence|link_value|install_id_hash)\b|select[^;]*\bpayload\b/is,
+    /\b(?:data_points|install_id_hash)\b|select[^;]*\bpayload\b/is,
   );
   assert.match(source, /select \$\{PROFILE_COLUMNS\}/);
   assert.match(source, /select \$\{MONEY_COLUMNS\}/);
@@ -254,6 +389,7 @@ test("NULL-heavy profiles and currency partitions map without raw source fields"
 function createAdminRoutes(options = {}) {
   let listWork = 0;
   let detailWork = 0;
+  let lookupWork = 0;
   const getAdminSecret = options.getAdminSecret || (() => ADMIN_SECRET);
   const customer = options.customer || {
     customerId: "00000000-0000-4000-8000-000000000001",
@@ -280,6 +416,17 @@ function createAdminRoutes(options = {}) {
         },
       }),
       work: () => detailWork,
+    },
+    {
+      path: LOOKUP_PATH,
+      handler: lookupModule.createCustomerLookupHandler({
+        getAdminSecret,
+        lookupCustomer: async () => {
+          lookupWork += 1;
+          return customer;
+        },
+      }),
+      work: () => lookupWork,
     },
   ];
 }

@@ -13,7 +13,7 @@ import {
 
 type AcquisitionFunnelRouteDependencies = Readonly<{
   getAdminSecret: () => string;
-  queryFunnel: (request: unknown) => Promise<unknown>;
+  queryFunnel: (request: unknown, cursorSecret: string) => Promise<unknown>;
 }>;
 
 const defaultDependencies: AcquisitionFunnelRouteDependencies = {
@@ -39,7 +39,7 @@ export function createAcquisitionFunnelHandler(
 
     try {
       const body = await readCustomerAdminJson(request);
-      const result = await dependencies.queryFunnel(body);
+      const result = await dependencies.queryFunnel(body, secret);
       return sendCustomerAdminJson(response, 200, result as Record<string, unknown>);
     } catch (error) {
       if (error instanceof CustomerAdminRequestError) {

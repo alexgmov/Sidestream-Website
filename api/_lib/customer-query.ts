@@ -1,5 +1,10 @@
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import type { QueryResult, QueryResultRow } from "pg";
+import {
+  ACQUISITION_STAGES,
+  summarizeAcquisitionStages,
+  type AcquisitionStage,
+} from "./acquisition-integrity.js";
 import { withPostgresTransaction } from "./postgres.js";
 
 const DEFAULT_LIMIT = 50;
@@ -20,6 +25,7 @@ const DATA_QUALITY_FLAGS = new Set([
   "pending_identity_review",
   "commerce_identity_conflict",
 ]);
+const STRIPE_REFERENCE_PATTERN = /^(cus|cs|pi|ch)_[A-Za-z0-9_]{1,196}$/;
 
 type LicenseNamespace = "production" | "test";
 
@@ -107,6 +113,45 @@ type CustomerMoneyRow = QueryResultRow & Readonly<{
   materialized_at: Date | string;
 }>;
 
+type LookupOwnerRow = QueryResultRow & Readonly<{
+  profile_id: string;
+  payment_key: string | null;
+  has_conflict: boolean;
+}>;
+
+type LookupAcquisitionRow = QueryResultRow & Readonly<{
+  acquisition_id: string;
+  first_observed_source: string;
+  first_observed_medium: string | null;
+  first_observed_campaign: string | null;
+  first_observed_content_creative: string | null;
+  entry_channel: string;
+  first_observed_at: Date | string;
+  experiment_id: string | null;
+  experiment_cohort: string | null;
+  attribution_confidence: string;
+  integrity_state: string;
+  trusted_delivery_evidence: string[];
+}>;
+
+type LookupStageRow = QueryResultRow & Readonly<{
+  stage: AcquisitionStage;
+  occurred_at: Date | string;
+}>;
+
+type LookupConflictRow = QueryResultRow & Readonly<{ conflict_type: string }>;
+
+type LookupPaymentRow = QueryResultRow & Readonly<{
+  payment_count: string | number | bigint;
+  refund_count: string | number | bigint;
+  dispute_count: string | number | bigint;
+  inquiry_count: string | number | bigint;
+  gross_paid_minor: string | number | bigint;
+  refunded_minor: string | number | bigint;
+  disputed_minor: string | number | bigint;
+  inquiry_minor: string | number | bigint;
+}>;
+
 export type CustomerQueryResult = Readonly<{
   customerId: string;
   licenseNamespace: LicenseNamespace;
@@ -165,6 +210,15 @@ export class CustomerQueryValidationError extends Error {
     super(message);
     this.name = "CustomerQueryValidationError";
     this.code = code;
+  }
+}
+
+export class CustomerLookupIntegrityError extends Error {
+  readonly code = "conflicting_lookup_ownership";
+
+  constructor() {
+    super("Stripe reference resolves to conflicting customer ownership");
+    this.name = "CustomerLookupIntegrityError";
   }
 }
 
@@ -294,17 +348,250 @@ export async function queryCustomerDetail(
   const licenseNamespace = parseDetailInput(request);
   const dependencies = { ...defaultDependencies, ...overrides };
 
+  return dependencies.transaction((client) =>
+    loadCustomerById(client, licenseNamespace, normalizedCustomerId));
+}
+
+export async function queryCustomerLookup(
+  request: unknown,
+  overrides: Partial<CustomerQueryDependencies> = {},
+) {
+  const { licenseNamespace, stripeReference, referenceType } =
+    parseCustomerLookupInput(request);
+  const dependencies = { ...defaultDependencies, ...overrides };
+
   return dependencies.transaction(async (client) => {
-    const profileResult = await client.query<CustomerProfileRow>(`
-      select ${PROFILE_COLUMNS}
-      from public.sidestream_customer_360_profile_read_model()
-      where license_namespace = $1 and customer_id = $2::uuid
+    const ownerResult = await client.query<LookupOwnerRow>(`
+      with exact_identity_owner as (
+        select link.profile_id, null::text as payment_key
+        from public.sidestream_customer_identity_links link
+        join public.sidestream_customer_profiles profile
+          on profile.id = link.profile_id
+          and profile.license_namespace = link.license_namespace
+          and profile.merged_into is null
+        where link.license_namespace = $1
+          and link.link_type = $3
+          and link.link_value = $2
+      ),
+      exact_alias as (
+        select alias.payment_key
+        from public.sidestream_customer_commerce_aliases alias
+        where alias.license_namespace = $1
+          and alias.alias_type = $4
+          and alias.alias_id = $2
+      ),
+      exact_commerce_owner as (
+        select distinct materialization.profile_id, alias.payment_key
+        from exact_alias alias
+        join public.sidestream_customer_commerce_materializations materialization
+          on materialization.license_namespace = $1
+          and materialization.payment_key = alias.payment_key
+          and materialization.profile_id is not null
+          and not materialization.identity_conflict
+        join public.sidestream_customer_profiles profile
+          on profile.id = materialization.profile_id
+          and profile.license_namespace = materialization.license_namespace
+          and profile.merged_into is null
+      ),
+      owners as (
+        select profile_id, payment_key from exact_identity_owner
+        union
+        select profile_id, payment_key from exact_commerce_owner
+      ),
+      alias_conflict as (
+        select coalesce(bool_or(materialization.identity_conflict), false) as has_conflict
+        from exact_alias alias
+        join public.sidestream_customer_commerce_materializations materialization
+          on materialization.license_namespace = $1
+          and materialization.payment_key = alias.payment_key
+      )
+      select
+        profile_id,
+        max(payment_key) as payment_key,
+        (select has_conflict from alias_conflict) as has_conflict
+      from owners
+      group by profile_id
+      order by profile_id
+      limit 2
+    `, [
+      licenseNamespace,
+      stripeReference,
+      identityLinkType(referenceType),
+      commerceAliasType(referenceType),
+    ]);
+
+    if (ownerResult.rows.length === 0) return null;
+    if (
+      ownerResult.rows.length !== 1 ||
+      ownerResult.rows.some((row) => row.has_conflict)
+    ) throw new CustomerLookupIntegrityError();
+    const owner = ownerResult.rows[0];
+    const customer = await loadCustomerById(client, licenseNamespace, owner.profile_id);
+    if (!customer) return null;
+
+    const acquisitionResult = await client.query<LookupAcquisitionRow>(`
+      with profile_links as (
+        select link_type, link_value
+        from public.sidestream_customer_identity_links
+        where license_namespace = $1 and profile_id = $2::uuid
+      ),
+      exact_payment_sessions as (
+        select session_alias.alias_id
+        from public.sidestream_customer_commerce_aliases reference_alias
+        join public.sidestream_customer_commerce_aliases session_alias
+          on session_alias.license_namespace = reference_alias.license_namespace
+          and session_alias.payment_key = reference_alias.payment_key
+          and session_alias.alias_type = 'checkout_session'
+        where reference_alias.license_namespace = $1
+          and reference_alias.alias_type = $4
+          and reference_alias.alias_id = $3
+      ),
+      linked_acquisitions as (
+        select distinct acquisition.id
+        from public.sidestream_acquisitions acquisition
+        join public.sidestream_checkout_intents intent
+          on intent.acquisition_id = acquisition.id
+        where acquisition.license_namespace = $1
+          and (
+            exists (
+              select 1 from profile_links link
+              where link.link_type = 'account_identity'
+                and intent.account_id::text = link.link_value
+            )
+            or exists (
+              select 1 from profile_links link
+              where link.link_type = 'activation_record'
+                and intent.activation_session_id::text = link.link_value
+            )
+            or exists (
+              select 1 from profile_links link
+              where link.link_type = 'stripe_checkout_session'
+                and intent.stripe_checkout_session_id = link.link_value
+            )
+            or intent.stripe_checkout_session_id = $3
+            or intent.stripe_checkout_session_id in (
+              select alias_id from exact_payment_sessions
+            )
+          )
+      )
+      select
+        acquisition.id as acquisition_id,
+        acquisition.first_observed_source,
+        acquisition.first_observed_medium,
+        acquisition.first_observed_campaign,
+        acquisition.first_observed_content_creative,
+        acquisition.entry_channel,
+        acquisition.first_observed_at,
+        acquisition.experiment_id,
+        acquisition.experiment_cohort,
+        acquisition.attribution_confidence,
+        acquisition.integrity_state,
+        acquisition.trusted_delivery_evidence
+      from public.sidestream_acquisitions acquisition
+      join linked_acquisitions linked on linked.id = acquisition.id
+      order by acquisition.first_observed_at, acquisition.id
       limit 1
-    `, [licenseNamespace, normalizedCustomerId]);
-    const row = profileResult.rows[0];
-    if (!row) return null;
-    const moneyByCustomer = await loadMoney(client, [row.customer_id]);
-    return formatCustomer(row, moneyByCustomer.get(row.customer_id) || []);
+    `, [licenseNamespace, owner.profile_id, stripeReference,
+      commerceAliasType(referenceType)]);
+    const acquisition = acquisitionResult.rows[0] || null;
+
+    const stageResult = acquisition
+      ? await client.query<LookupStageRow>(`
+            select stage, occurred_at
+            from public.sidestream_acquisition_stages
+            where license_namespace = $1 and acquisition_id = $2::uuid
+            order by occurred_at, stage, id
+          `, [licenseNamespace, acquisition.acquisition_id])
+      : ({ rows: [] } as unknown as QueryResult<LookupStageRow>);
+    const conflictResult = acquisition
+      ? await client.query<LookupConflictRow>(`
+            select distinct conflict_type
+            from public.sidestream_acquisition_conflicts
+            where license_namespace = $1 and acquisition_id = $2::uuid
+            order by conflict_type
+          `, [licenseNamespace, acquisition.acquisition_id])
+      : ({ rows: [] } as unknown as QueryResult<LookupConflictRow>);
+    const paymentResult = await client.query<LookupPaymentRow>(`
+        select
+          count(distinct payment_key) filter (where fact_kind = 'payment')::bigint
+            as payment_count,
+          count(*) filter (
+            where fact_kind = 'refund' or refunded_minor > 0
+          )::bigint as refund_count,
+          count(*) filter (
+            where fact_kind = 'dispute' and disputed_minor > 0
+          )::bigint as dispute_count,
+          count(*) filter (
+            where fact_kind = 'dispute' and inquiry_minor > 0
+          )::bigint as inquiry_count,
+          coalesce(sum(gross_paid_minor) filter (where fact_kind = 'payment'), 0)::bigint
+            as gross_paid_minor,
+          coalesce(max(refunded_minor), 0)::bigint as refunded_minor,
+          coalesce(max(disputed_minor), 0)::bigint as disputed_minor,
+          coalesce(max(inquiry_minor), 0)::bigint as inquiry_minor
+        from public.sidestream_customer_commerce_materializations
+        where license_namespace = $1
+          and profile_id = $2::uuid
+          and not identity_conflict
+          and ($3::text is null or payment_key = $3)
+      `, [licenseNamespace, owner.profile_id, owner.payment_key]);
+
+    const stageSummary = summarizeAcquisitionStages(
+      stageResult.rows.map((row) => ({ stage: row.stage, occurredAt: row.occurred_at })),
+      conflictResult.rows.map((row) => row.conflict_type),
+    );
+    const payment = paymentResult.rows[0];
+    const historicalUnlinked = acquisition === null;
+
+    return {
+      ...customer,
+      acquisition: acquisition ? {
+        firstObservedAt: toIsoString(acquisition.first_observed_at),
+        source: acquisition.first_observed_source,
+        medium: acquisition.first_observed_medium,
+        campaign: acquisition.first_observed_campaign,
+        creative: acquisition.first_observed_content_creative,
+        entryChannel: acquisition.entry_channel,
+        deliveryChannels: [...acquisition.trusted_delivery_evidence],
+        experiment: acquisition.experiment_id,
+        cohort: acquisition.experiment_cohort,
+        attributionConfidence: acquisition.attribution_confidence,
+        integrityState: acquisition.integrity_state,
+        stageTimestamps: stageSummary.timestamps,
+        stageCounts: stageSummary.counts,
+        missingStages: stageSummary.missingStages,
+        conflictingStages: stageSummary.conflictingStages,
+      } : {
+        firstObservedAt: null,
+        source: null,
+        medium: null,
+        campaign: null,
+        creative: null,
+        entryChannel: null,
+        deliveryChannels: [],
+        experiment: null,
+        cohort: null,
+        attributionConfidence: "historical_unlinked",
+        integrityState: "historical_unlinked",
+        stageTimestamps: Object.fromEntries(ACQUISITION_STAGES.map((stage) => [stage, null])),
+        stageCounts: Object.fromEntries(ACQUISITION_STAGES.map((stage) => [stage, "0"])),
+        missingStages: [...ACQUISITION_STAGES],
+        conflictingStages: [],
+      },
+      paymentStatus: {
+        settled: toBigInt(payment?.payment_count || 0) > 0n,
+        refunded: toBigInt(payment?.refund_count || 0) > 0n,
+        disputed: toBigInt(payment?.dispute_count || 0) > 0n,
+        inquiryOpen: toBigInt(payment?.inquiry_count || 0) > 0n,
+        grossPaidMinor: String(payment?.gross_paid_minor || 0),
+        refundedMinor: String(payment?.refunded_minor || 0),
+        disputedMinor: String(payment?.disputed_minor || 0),
+        inquiryMinor: String(payment?.inquiry_minor || 0),
+      },
+      integrityState: historicalUnlinked
+        ? "historical_unlinked"
+        : acquisition.integrity_state,
+    };
   });
 }
 
@@ -332,6 +619,46 @@ function parseDetailInput(request: unknown) {
   const body = requireRecord(request, "request body");
   rejectUnknownKeys(body, ["licenseNamespace"]);
   return parseLicenseNamespace(body.licenseNamespace);
+}
+
+function parseCustomerLookupInput(request: unknown) {
+  const body = requireRecord(request, "request body");
+  rejectUnknownKeys(body, ["licenseNamespace", "stripeReference"]);
+  const licenseNamespace = parseLicenseNamespace(body.licenseNamespace);
+  if (
+    typeof body.stripeReference !== "string" ||
+    body.stripeReference.length > 200 ||
+    !STRIPE_REFERENCE_PATTERN.test(body.stripeReference)
+  ) {
+    throw new CustomerQueryValidationError(
+      "invalid_stripe_reference",
+      "stripeReference must be one exact cus_, cs_, pi_, or ch_ identifier",
+    );
+  }
+  const referenceType = body.stripeReference.slice(0, body.stripeReference.indexOf("_"));
+  return {
+    licenseNamespace,
+    stripeReference: body.stripeReference,
+    referenceType,
+  };
+}
+
+function identityLinkType(referenceType: string) {
+  return ({
+    cus: "stripe_customer",
+    cs: "stripe_checkout_session",
+    pi: "stripe_payment_intent",
+    ch: "__no_identity_link__",
+  } as const)[referenceType as "cus" | "cs" | "pi" | "ch"];
+}
+
+function commerceAliasType(referenceType: string) {
+  return ({
+    cus: "__no_commerce_alias__",
+    cs: "checkout_session",
+    pi: "payment_intent",
+    ch: "charge",
+  } as const)[referenceType as "cus" | "cs" | "pi" | "ch"];
 }
 
 function parseLicenseNamespace(value: unknown): LicenseNamespace {
@@ -506,6 +833,23 @@ async function loadMoney(
   return moneyByCustomer;
 }
 
+async function loadCustomerById(
+  client: CustomerQueryClient,
+  licenseNamespace: LicenseNamespace,
+  customerId: string,
+) {
+  const profileResult = await client.query<CustomerProfileRow>(`
+    select ${PROFILE_COLUMNS}
+    from public.sidestream_customer_360_profile_read_model()
+    where license_namespace = $1 and customer_id = $2::uuid
+    limit 1
+  `, [licenseNamespace, customerId]);
+  const row = profileResult.rows[0];
+  if (!row) return null;
+  const moneyByCustomer = await loadMoney(client, [row.customer_id]);
+  return formatCustomer(row, moneyByCustomer.get(row.customer_id) || []);
+}
+
 function formatCustomer(
   row: CustomerProfileRow,
   moneyRows: readonly CustomerMoneyRow[],
@@ -588,4 +932,8 @@ function toNullableIsoString(value: Date | string | null) {
 
 function toDecimalString(value: string | number | bigint | null) {
   return value === null ? null : String(value);
+}
+
+function toBigInt(value: string | number | bigint) {
+  return BigInt(value);
 }

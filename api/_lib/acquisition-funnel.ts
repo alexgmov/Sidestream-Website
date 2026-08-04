@@ -1,10 +1,20 @@
+import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import type { QueryResult, QueryResultRow } from "pg";
+import {
+  ACQUISITION_STAGES,
+  ACQUISITION_STAGE_COUNTING_GRAINS,
+  type AcquisitionStage,
+} from "./acquisition-integrity.js";
 import { withPostgresTransaction } from "./postgres.js";
 
 const DEFAULT_JOURNEY_LIMIT = 50;
 const MAX_JOURNEY_LIMIT = 100;
 const MAX_COHORT_WINDOW_MS = 366 * 24 * 60 * 60 * 1_000;
 const MAX_OBSERVATION_SPAN_MS = 730 * 24 * 60 * 60 * 1_000;
+const MAX_SOURCE_GROUPS = 100;
+const FUNNEL_CURSOR_VERSION = 1;
+const MAX_CURSOR_LENGTH = 2_048;
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const UTC_TIMESTAMP_PATTERN =
   /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z$/;
 
@@ -12,10 +22,20 @@ type LicenseNamespace = "production" | "test";
 
 type FunnelInput = Readonly<{
   licenseNamespace: LicenseNamespace;
+  cohortBasis: "first_install" | "first_purchase";
   cohortStart: string;
   cohortEnd: string;
   observationEnd: string;
   journeyLimit: number;
+  journeyCursor: FunnelCursor | null;
+  filterHash: string;
+}>;
+
+type FunnelCursor = Readonly<{
+  v: 1;
+  filterHash: string;
+  cohortAt: string;
+  customerId: string;
 }>;
 
 type FunnelQueryClient = Readonly<{
@@ -36,6 +56,7 @@ type FunnelGroupRow = QueryResultRow & Readonly<{
   experiment: string | null;
   cohort: string | null;
   attribution_confidence: string;
+  integrity_state: string;
   profile_count: string | number | bigint;
   first_opened_count: string | number | bigint;
   completed_activation_count: string | number | bigint;
@@ -56,12 +77,27 @@ type FunnelJourneyRow = QueryResultRow & Readonly<{
   first_attributed_at: Date | string | null;
   first_installer_requested_at: Date | string | null;
   first_installer_platform: string | null;
-  first_install_at: Date | string;
+  cohort_at: Date | string;
+  first_install_at: Date | string | null;
+  first_purchase_at: Date | string | null;
   first_open_at: Date | string | null;
   activation_at: Date | string | null;
   day_zero_download_attempts: string | number | bigint;
   later_open_days: string[] | null;
   return_eligible: boolean;
+  paid_customer: boolean;
+  integrity_state: string;
+}>;
+
+type FunnelStageRow = QueryResultRow & Readonly<{
+  stage: AcquisitionStage;
+  counting_grain: string;
+  distinct_count: string | number | bigint;
+}>;
+
+type FunnelIntegrityRow = QueryResultRow & Readonly<{
+  integrity_state: string;
+  acquisition_count: string | number | bigint;
 }>;
 
 export class AcquisitionFunnelValidationError extends Error {
@@ -82,19 +118,35 @@ const defaultDependencies: FunnelDependencies = {
 };
 
 const FUNNEL_CTES = `
-  with cohort_profiles as (
+  with profile_landmarks as (
     select
       profile.id as profile_id,
-      min(install.first_seen_at) as first_install_at
+      min(install.first_seen_at) as first_install_at,
+      min(money.first_paid_at) as first_purchase_at
     from public.sidestream_customer_profiles profile
-    join public.sidestream_customer_installs install
+    left join public.sidestream_customer_installs install
       on install.profile_id = profile.id
       and install.license_namespace = profile.license_namespace
+    left join public.sidestream_customer_money_totals money
+      on money.profile_id = profile.id
+      and money.license_namespace = profile.license_namespace
+      and money.first_paid_at is not null
     where profile.license_namespace = $1
       and profile.merged_into is null
     group by profile.id
-    having min(install.first_seen_at) >= $2::timestamptz
-      and min(install.first_seen_at) < $3::timestamptz
+  ),
+  cohort_profiles as (
+    select
+      profile_id,
+      first_install_at,
+      first_purchase_at,
+      case when $5::text = 'first_purchase'
+        then first_purchase_at else first_install_at end as cohort_at
+    from profile_landmarks
+    where case when $5::text = 'first_purchase'
+      then first_purchase_at else first_install_at end >= $2::timestamptz
+      and case when $5::text = 'first_purchase'
+        then first_purchase_at else first_install_at end < $3::timestamptz
   ),
   profile_usage as (
     select
@@ -113,7 +165,9 @@ const FUNNEL_CTES = `
   usage_detail as (
     select
       cohort.profile_id,
+      cohort.cohort_at,
       cohort.first_install_at,
+      cohort.first_purchase_at,
       profile_usage.first_open_at,
       coalesce(
         sum(usage.download_attempt_count) filter (
@@ -152,7 +206,9 @@ const FUNNEL_CTES = `
       and usage.activity_day < ($4::timestamptz at time zone 'UTC')::date
     group by
       cohort.profile_id,
+      cohort.cohort_at,
       cohort.first_install_at,
+      cohort.first_purchase_at,
       profile_usage.first_open_at
   ),
   activations as (
@@ -255,6 +311,7 @@ const FUNNEL_CTES = `
       paid.experiment_id as experiment,
       paid.cohort,
       'exact_paid_checkout'::text as attribution_confidence,
+      'historical_unlinked'::text as integrity_state,
       paid.first_attributed_at,
       null::timestamptz as first_installer_requested_at,
       null::text as first_installer_platform,
@@ -270,7 +327,7 @@ const FUNNEL_CTES = `
     join cohort_profiles cohort on cohort.profile_id = edge.profile_id
     join verified_paid_checkouts paid
       on paid.checkout_id = edge.checkout_id
-      and paid.first_attributed_at <= cohort.first_install_at
+      and paid.first_attributed_at <= cohort.cohort_at
   ),
   anonymous_claim_candidates as (
     select
@@ -281,6 +338,7 @@ const FUNNEL_CTES = `
       acquisition.experiment_id as experiment,
       acquisition.experiment_cohort as cohort,
       'exact_anonymous_claim'::text as attribution_confidence,
+      'historical_unlinked'::text as integrity_state,
       acquisition.first_seen_at as first_attributed_at,
       acquisition.first_installer_requested_at,
       acquisition.first_installer_platform,
@@ -296,7 +354,7 @@ const FUNNEL_CTES = `
       and acquisition.claim_state = 'claimed'
       and acquisition.claimed_profile_id is not null
       and acquisition.first_installer_requested_at is not null
-      and acquisition.first_seen_at <= cohort.first_install_at
+      and acquisition.first_seen_at <= cohort.cohort_at
       and (
         acquisition.first_touch_medium is distinct from 'installation_claim'
         or acquisition.first_touch_campaign is distinct from 'server_claim_v1'
@@ -323,6 +381,7 @@ const FUNNEL_CTES = `
         else null
       end as cohort,
       'exact_verified_email'::text as attribution_confidence,
+      'historical_unlinked'::text as integrity_state,
       lead.first_captured_at as first_attributed_at,
       null::timestamptz as first_installer_requested_at,
       null::text as first_installer_platform,
@@ -348,13 +407,82 @@ const FUNNEL_CTES = `
       on lead.cta_source = 'mobile-download-handoff'
       and lead.email = account.email
       and lead.email = lower(btrim(lead.email))
-      and lead.first_captured_at <= cohort.first_install_at
-      and lead.last_captured_at <= cohort.first_install_at
+      and lead.first_captured_at <= cohort.cohort_at
+      and lead.last_captured_at <= cohort.cohort_at
+  ),
+  canonical_profile_edges as (
+    select distinct
+      acquisition.id as acquisition_id,
+      link.profile_id
+    from public.sidestream_acquisitions acquisition
+    join public.sidestream_checkout_intents intent
+      on intent.acquisition_id = acquisition.id
+    join public.sidestream_customer_identity_links link
+      on link.license_namespace = acquisition.license_namespace
+      and (
+        (link.link_type = 'account_identity' and link.link_value = intent.account_id::text)
+        or (
+          link.link_type = 'activation_record'
+          and link.link_value = intent.activation_session_id::text
+        )
+        or (
+          link.link_type = 'stripe_checkout_session'
+          and link.link_value = intent.stripe_checkout_session_id
+        )
+      )
+    join cohort_profiles cohort on cohort.profile_id = link.profile_id
+    where acquisition.license_namespace = $1
+
+    union
+
+    select distinct
+      acquisition.id as acquisition_id,
+      materialization.profile_id
+    from public.sidestream_acquisitions acquisition
+    join public.sidestream_checkout_intents intent
+      on intent.acquisition_id = acquisition.id
+      and intent.stripe_checkout_session_id is not null
+    join public.sidestream_customer_commerce_aliases session_alias
+      on session_alias.license_namespace = acquisition.license_namespace
+      and session_alias.alias_type = 'checkout_session'
+      and session_alias.alias_id = intent.stripe_checkout_session_id
+    join public.sidestream_customer_commerce_materializations materialization
+      on materialization.license_namespace = session_alias.license_namespace
+      and materialization.payment_key = session_alias.payment_key
+      and materialization.profile_id is not null
+      and not materialization.identity_conflict
+    join cohort_profiles cohort on cohort.profile_id = materialization.profile_id
+    where acquisition.license_namespace = $1
+  ),
+  canonical_candidates as (
+    select
+      edge.profile_id,
+      acquisition.first_observed_source as source,
+      acquisition.first_observed_medium as medium,
+      acquisition.first_observed_campaign as campaign,
+      acquisition.experiment_id as experiment,
+      acquisition.experiment_cohort as cohort,
+      acquisition.attribution_confidence,
+      acquisition.integrity_state,
+      acquisition.first_observed_at as first_attributed_at,
+      null::timestamptz as first_installer_requested_at,
+      null::text as first_installer_platform,
+      4 as attribution_priority,
+      row_number() over (
+        partition by edge.profile_id
+        order by acquisition.first_observed_at, acquisition.id
+      ) as candidate_order
+    from canonical_profile_edges edge
+    join public.sidestream_acquisitions acquisition
+      on acquisition.id = edge.acquisition_id
+      and acquisition.license_namespace = $1
+    join cohort_profiles cohort on cohort.profile_id = edge.profile_id
+    where acquisition.first_observed_at <= cohort.cohort_at
   ),
   attribution_candidates as (
     select
       profile_id, source, medium, campaign, experiment, cohort,
-      attribution_confidence, first_attributed_at,
+      attribution_confidence, integrity_state, first_attributed_at,
       first_installer_requested_at, first_installer_platform,
       attribution_priority
     from paid_candidates
@@ -364,7 +492,7 @@ const FUNNEL_CTES = `
 
     select
       profile_id, source, medium, campaign, experiment, cohort,
-      attribution_confidence, first_attributed_at,
+      attribution_confidence, integrity_state, first_attributed_at,
       first_installer_requested_at, first_installer_platform,
       attribution_priority
     from anonymous_claim_candidates
@@ -374,10 +502,20 @@ const FUNNEL_CTES = `
 
     select
       profile_id, source, medium, campaign, experiment, cohort,
-      attribution_confidence, first_attributed_at,
+      attribution_confidence, integrity_state, first_attributed_at,
       first_installer_requested_at, first_installer_platform,
       attribution_priority
     from freemium_candidates
+    where candidate_order = 1
+
+    union all
+
+    select
+      profile_id, source, medium, campaign, experiment, cohort,
+      attribution_confidence, integrity_state, first_attributed_at,
+      first_installer_requested_at, first_installer_platform,
+      attribution_priority
+    from canonical_candidates
     where candidate_order = 1
   ),
   selected_attribution as (
@@ -397,7 +535,9 @@ const FUNNEL_CTES = `
   attributed_profiles as (
     select
       usage.profile_id,
+      usage.cohort_at,
       usage.first_install_at,
+      usage.first_purchase_at,
       usage.first_open_at,
       activation.activation_at,
       (paid_customer.profile_id is not null) as paid_customer,
@@ -413,6 +553,8 @@ const FUNNEL_CTES = `
         attribution.attribution_confidence,
         'unattributed'
       ) as attribution_confidence,
+      coalesce(attribution.integrity_state, 'missing_internal_linkage')
+        as integrity_state,
       attribution.first_attributed_at,
       coalesce(
         attribution.first_installer_requested_at,
@@ -437,15 +579,23 @@ const FUNNEL_CTES = `
 
 export async function queryAcquisitionFunnel(
   request: unknown,
-  overrides: Partial<FunnelDependencies> = {},
+  cursorSecretOrOverrides: string | Partial<FunnelDependencies> = "",
+  explicitOverrides: Partial<FunnelDependencies> = {},
 ) {
-  const input = parseFunnelInput(request);
+  const cursorSecret = typeof cursorSecretOrOverrides === "string"
+    ? cursorSecretOrOverrides
+    : "direct-funnel-query-compatibility-secret";
+  const overrides = typeof cursorSecretOrOverrides === "string"
+    ? explicitOverrides
+    : cursorSecretOrOverrides;
+  const input = parseFunnelInput(request, cursorSecret);
   const dependencies = { ...defaultDependencies, ...overrides };
   const parameters = [
     input.licenseNamespace,
     input.cohortStart,
     input.cohortEnd,
     input.observationEnd,
+    input.cohortBasis,
   ] as const;
 
   return dependencies.transaction(async (client) => {
@@ -458,6 +608,7 @@ export async function queryAcquisitionFunnel(
         experiment,
         cohort,
         attribution_confidence,
+        integrity_state,
         count(*)::bigint as profile_count,
         count(*) filter (where first_open_at is not null)::bigint
           as first_opened_count,
@@ -475,7 +626,8 @@ export async function queryAcquisitionFunnel(
         )::bigint as one_and_done_count
       from attributed_profiles
       group by
-        source, medium, campaign, experiment, cohort, attribution_confidence
+        source, medium, campaign, experiment, cohort, attribution_confidence,
+        integrity_state
       order by
         source,
         medium nulls first,
@@ -495,19 +647,57 @@ export async function queryAcquisitionFunnel(
         experiment,
         cohort,
         attribution_confidence,
+        integrity_state,
         first_attributed_at,
         first_installer_requested_at,
         first_installer_platform,
+        cohort_at,
         first_install_at,
+        first_purchase_at,
         first_open_at,
         activation_at,
         day_zero_download_attempts,
         later_open_days,
-        return_eligible
+        return_eligible,
+        paid_customer
       from attributed_profiles
-      order by first_install_at, profile_id
-      limit $5
-    `, [...parameters, input.journeyLimit]);
+      where (
+        $7::timestamptz is null
+        or (cohort_at, profile_id) > ($7::timestamptz, $8::uuid)
+      )
+      order by cohort_at, profile_id
+      limit $6
+    `, [
+      ...parameters,
+      input.journeyLimit + 1,
+      input.journeyCursor?.cohortAt || null,
+      input.journeyCursor?.customerId || null,
+    ]);
+
+    const stageResult = await client.query<FunnelStageRow>(`
+      select
+        stage,
+        counting_grain,
+        count(distinct deduplication_key)::bigint as distinct_count
+      from public.sidestream_acquisition_stages
+      where license_namespace = $1
+        and occurred_at >= $2::timestamptz
+        and occurred_at < $3::timestamptz
+      group by stage, counting_grain
+      order by stage
+    `, [input.licenseNamespace, input.cohortStart, input.observationEnd]);
+    const integrityResult = await client.query<FunnelIntegrityRow>(`
+      select integrity_state, count(distinct id)::bigint as acquisition_count
+      from public.sidestream_acquisitions
+      where license_namespace = $1
+        and first_observed_at >= $2::timestamptz
+        and first_observed_at < $3::timestamptz
+        and integrity_state in (
+          'missing_internal_linkage', 'historical_unlinked', 'quarantined'
+        )
+      group by integrity_state
+      order by integrity_state
+    `, [input.licenseNamespace, input.cohortStart, input.cohortEnd]);
 
     const groups = groupsResult.rows.map(formatGroup);
     const totals = sumGroupCounts(groupsResult.rows);
@@ -537,6 +727,13 @@ export async function queryAcquisitionFunnel(
     );
     const unattributedProfiles = totals.profiles - attributedProfiles;
 
+    const hasMoreJourneys = journeysResult.rows.length > input.journeyLimit;
+    const journeyRows = journeysResult.rows.slice(0, input.journeyLimit);
+    const cursorRow = hasMoreJourneys ? journeyRows.at(-1) : null;
+    const sourceTotals = buildSourceTotals(groupsResult.rows);
+    const stageCounts = formatStageCounts(stageResult.rows);
+    const integrityAlerts = formatIntegrityAlerts(integrityResult.rows);
+
     return {
       licenseNamespace: input.licenseNamespace,
       dateWindow: {
@@ -545,7 +742,9 @@ export async function queryAcquisitionFunnel(
         observationEnd: input.observationEnd,
         endExclusive: true,
         observationEndExclusive: true,
-        cohortDefinition: "first_install_at",
+        cohortDefinition: input.cohortBasis === "first_purchase"
+          ? "first_purchase_at"
+          : "first_install_at",
         observationDefinition: "completed_utc_days_before_observation_end",
       },
       firstOpenPercentage: percentageMetric(
@@ -598,28 +797,67 @@ export async function queryAcquisitionFunnel(
         oneAndDoneProfiles: totals.oneAndDoneProfiles.toString(),
       },
       groups,
-      journeys: journeysResult.rows.map(formatJourney),
+      sourceTotals: sourceTotals.rows,
+      sourceCap: MAX_SOURCE_GROUPS,
+      sourcesReturned: sourceTotals.rows.length,
+      sourcesTruncated: sourceTotals.truncated,
+      stageCounts,
+      integrityAlerts,
+      reportDefinition: {
+        cohortBasis: input.cohortBasis,
+        cohortStartInclusive: true,
+        cohortEndExclusive: true,
+        observationEndExclusive: true,
+        observationBoundary: "completed_utc_days_before_observation_end",
+        journeyCountingGrain: "live_customer_profile",
+        paidCustomerCountingGrain: "distinct_live_customer_profile",
+        stageCountingGrain: "distinct_stage_deduplication_key",
+        stageObservationStartInclusive: input.cohortStart,
+        stageObservationEndExclusive: input.observationEnd,
+        sourceCap: MAX_SOURCE_GROUPS,
+        journeyPageCap: MAX_JOURNEY_LIMIT,
+        historicalInference: "rejected",
+      },
+      journeys: journeyRows.map(formatJourney),
       journeyLimit: input.journeyLimit,
-      journeysReturned: journeysResult.rows.length,
-      journeysTruncated: totals.profiles > BigInt(journeysResult.rows.length),
+      journeysReturned: journeyRows.length,
+      journeysTruncated: hasMoreJourneys ||
+        totals.profiles > BigInt(journeyRows.length),
+      nextJourneyCursor: cursorRow ? encodeFunnelCursor({
+        v: FUNNEL_CURSOR_VERSION,
+        filterHash: input.filterHash,
+        cohortAt: toIsoString(cursorRow.cohort_at),
+        customerId: cursorRow.customer_id,
+      }, cursorSecret) : null,
     };
   });
 }
 
-function parseFunnelInput(request: unknown): FunnelInput {
+function parseFunnelInput(request: unknown, cursorSecret: string): FunnelInput {
   const body = requireRecord(request);
   rejectUnknownKeys(body, [
     "licenseNamespace",
+    "cohortBasis",
     "cohortStart",
     "cohortEnd",
     "observationEnd",
     "journeyLimit",
+    "journeyCursor",
   ]);
 
   if (body.licenseNamespace !== "production" && body.licenseNamespace !== "test") {
     throw new AcquisitionFunnelValidationError(
       "invalid_namespace",
       "licenseNamespace must be production or test",
+    );
+  }
+  const cohortBasis = body.cohortBasis === undefined
+    ? "first_install"
+    : body.cohortBasis;
+  if (cohortBasis !== "first_install" && cohortBasis !== "first_purchase") {
+    throw new AcquisitionFunnelValidationError(
+      "invalid_cohort_basis",
+      "cohortBasis must be first_install or first_purchase",
     );
   }
   const cohortStart = normalizeUtcTimestamp(body.cohortStart, "cohortStart");
@@ -667,12 +905,27 @@ function parseFunnelInput(request: unknown): FunnelInput {
     );
   }
 
-  return {
+  const filterHash = createHash("sha256").update(JSON.stringify({
     licenseNamespace: body.licenseNamespace,
+    cohortBasis,
     cohortStart,
     cohortEnd,
     observationEnd,
     journeyLimit,
+  })).digest("hex");
+  const journeyCursor = body.journeyCursor === undefined || body.journeyCursor === null
+    ? null
+    : decodeFunnelCursor(body.journeyCursor, cursorSecret, filterHash);
+
+  return {
+    licenseNamespace: body.licenseNamespace,
+    cohortBasis,
+    cohortStart,
+    cohortEnd,
+    observationEnd,
+    journeyLimit,
+    journeyCursor,
+    filterHash,
   };
 }
 
@@ -737,6 +990,7 @@ function formatGroup(row: FunnelGroupRow) {
   const profiles = toBigInt(row.profile_count);
   const firstOpenedProfiles = toBigInt(row.first_opened_count);
   const completedActivations = toBigInt(row.completed_activation_count);
+  const paidCustomers = toBigInt(row.paid_customer_count);
   const returnEligibleProfiles = toBigInt(row.return_eligible_count);
   const returnedProfiles = toBigInt(row.returned_count);
   const oneAndDoneProfiles = toBigInt(row.one_and_done_count);
@@ -748,9 +1002,11 @@ function formatGroup(row: FunnelGroupRow) {
     cohort: row.cohort,
     attributionConfidence: row.attribution_confidence,
     confidence: row.attribution_confidence,
+    integrityState: row.integrity_state,
     profileCount: profiles.toString(),
     firstOpenedProfiles: firstOpenedProfiles.toString(),
     completedActivations: completedActivations.toString(),
+    paidCustomers: paidCustomers.toString(),
     returnEligibleProfiles: returnEligibleProfiles.toString(),
     returnedProfiles: returnedProfiles.toString(),
     oneAndDoneProfiles: oneAndDoneProfiles.toString(),
@@ -759,6 +1015,7 @@ function formatGroup(row: FunnelGroupRow) {
       completedActivations,
       firstOpenedProfiles,
     ),
+    paidCustomerPercentage: percentageMetric(paidCustomers, profiles),
     returnPercentage: percentageMetric(
       returnedProfiles,
       returnEligibleProfiles,
@@ -783,20 +1040,127 @@ function formatJourney(row: FunnelJourneyRow) {
     cohort: row.cohort,
     attributionConfidence: row.attribution_confidence,
     confidence: row.attribution_confidence,
+    integrityState: row.integrity_state,
     firstVisitAt: nullableIsoString(row.first_attributed_at),
     firstAttributedAt: nullableIsoString(row.first_attributed_at),
     installerRequestedAt: nullableIsoString(row.first_installer_requested_at),
     installerPlatform: row.first_installer_platform,
-    firstInstallAt: toIsoString(row.first_install_at),
+    cohortAt: toIsoString(row.cohort_at),
+    firstInstallAt: nullableIsoString(row.first_install_at),
+    firstPurchaseAt: nullableIsoString(row.first_purchase_at),
     firstOpenAt: nullableIsoString(row.first_open_at),
     activationAt: nullableIsoString(row.activation_at),
     completedActivation: row.activation_at !== null,
+    paidCustomer: row.paid_customer,
     dayZeroDownloadAttempts: toBigInt(row.day_zero_download_attempts).toString(),
     laterOpenDays,
     returnEligible: row.return_eligible,
     returned: row.return_eligible && laterOpenDays.length > 0,
     oneAndDone: row.return_eligible && laterOpenDays.length === 0,
   };
+}
+
+function buildSourceTotals(rows: readonly FunnelGroupRow[]) {
+  const totals = new Map<string, { profiles: bigint; paidCustomers: bigint }>();
+  for (const row of rows) {
+    const current = totals.get(row.source) || { profiles: 0n, paidCustomers: 0n };
+    current.profiles += toBigInt(row.profile_count);
+    current.paidCustomers += toBigInt(row.paid_customer_count);
+    totals.set(row.source, current);
+  }
+  const ordered = [...totals.entries()].sort((left, right) =>
+    left[0].localeCompare(right[0]));
+  return {
+    rows: ordered.slice(0, MAX_SOURCE_GROUPS).map(([source, total]) => ({
+      source,
+      profileCount: total.profiles.toString(),
+      paidCustomers: total.paidCustomers.toString(),
+      paidCustomerPercentage: percentageMetric(total.paidCustomers, total.profiles),
+      countingGrain: "distinct_live_customer_profile",
+    })),
+    truncated: ordered.length > MAX_SOURCE_GROUPS,
+  };
+}
+
+function formatStageCounts(rows: readonly FunnelStageRow[]) {
+  const byStage = new Map(rows
+    .filter((row) => ACQUISITION_STAGES.includes(row.stage))
+    .map((row) => [row.stage, row]));
+  return ACQUISITION_STAGES.map((stage) => ({
+    stage,
+    count: toBigInt(byStage.get(stage)?.distinct_count || 0).toString(),
+    countingGrain: ACQUISITION_STAGE_COUNTING_GRAINS[stage],
+    distinctBy: "deduplication_key",
+  }));
+}
+
+function formatIntegrityAlerts(rows: readonly FunnelIntegrityRow[]) {
+  const byState = new Map(rows
+    .filter((row) => typeof row.integrity_state === "string" &&
+      row.acquisition_count !== undefined)
+    .map((row) => [
+      row.integrity_state,
+      toBigInt(row.acquisition_count).toString(),
+    ]));
+  return {
+    missingInternalLinkage: {
+      acquisitionCount: byState.get("missing_internal_linkage") || "0",
+      integrityState: "missing_internal_linkage",
+    },
+    historicalUnlinked: {
+      acquisitionCount: byState.get("historical_unlinked") || "0",
+      integrityState: "historical_unlinked",
+    },
+    quarantined: {
+      acquisitionCount: byState.get("quarantined") || "0",
+      integrityState: "quarantined",
+    },
+  };
+}
+
+function decodeFunnelCursor(
+  value: unknown,
+  secret: string,
+  expectedFilterHash: string,
+): FunnelCursor {
+  try {
+    if (typeof value !== "string" || value.length < 3 || value.length > MAX_CURSOR_LENGTH) {
+      throw new Error("invalid cursor");
+    }
+    const segments = value.split(".");
+    if (segments.length !== 2 || !segments.every((segment) =>
+      /^[A-Za-z0-9_-]+$/.test(segment))) throw new Error("invalid cursor");
+    const [payloadSegment, signatureSegment] = segments;
+    const supplied = Buffer.from(signatureSegment, "base64url");
+    const expected = createHmac("sha256", secret).update(payloadSegment).digest();
+    if (supplied.length !== expected.length || !timingSafeEqual(supplied, expected)) {
+      throw new Error("invalid cursor");
+    }
+    const parsed = JSON.parse(Buffer.from(payloadSegment, "base64url").toString("utf8"));
+    if (
+      !parsed || typeof parsed !== "object" || Array.isArray(parsed) ||
+      parsed.v !== FUNNEL_CURSOR_VERSION || parsed.filterHash !== expectedFilterHash ||
+      typeof parsed.cohortAt !== "string" ||
+      typeof parsed.customerId !== "string" || !UUID_PATTERN.test(parsed.customerId)
+    ) throw new Error("invalid cursor");
+    return {
+      v: FUNNEL_CURSOR_VERSION,
+      filterHash: expectedFilterHash,
+      cohortAt: normalizeUtcTimestamp(parsed.cohortAt, "cursor cohortAt"),
+      customerId: parsed.customerId.toLowerCase(),
+    };
+  } catch {
+    throw new AcquisitionFunnelValidationError(
+      "invalid_journey_cursor",
+      "journeyCursor is invalid",
+    );
+  }
+}
+
+function encodeFunnelCursor(cursor: FunnelCursor, secret: string) {
+  const payload = Buffer.from(JSON.stringify(cursor)).toString("base64url");
+  const signature = createHmac("sha256", secret).update(payload).digest("base64url");
+  return `${payload}.${signature}`;
 }
 
 function sumGroupCounts(rows: readonly FunnelGroupRow[]) {

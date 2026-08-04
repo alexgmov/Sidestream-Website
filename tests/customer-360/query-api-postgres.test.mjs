@@ -13,11 +13,14 @@ import {
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const migrations = [
+  "20260703120000_add_sidestream_accounts_billing.sql",
+  "20260713203000_add_checkout_intents.sql",
   "20260715120000_add_customer_360_core.sql",
   "20260715121000_add_customer_identity_links.sql",
   "20260715122000_add_customer_commerce_ledger.sql",
   "20260715123000_add_customer_usage_aggregates.sql",
   "20260715124000_add_customer_360_read_model.sql",
+  "20260803120000_add_acquisition_integrity.sql",
 ];
 const ADMIN_SECRET = "postgres-customer-admin-secret-2026";
 const PROFILE_NULL = "00000000-0000-4000-8000-000000000001";
@@ -26,6 +29,9 @@ const PROFILE_C = "00000000-0000-4000-8000-000000000003";
 const PROFILE_B = "00000000-0000-4000-8000-000000000004";
 const TOMBSTONE = "00000000-0000-4000-8000-000000000010";
 const PRODUCTION_PROFILE = "00000000-0000-4000-8000-000000000099";
+const LOOKUP_ACCOUNT = "10000000-0000-4000-8000-000000000010";
+const LOOKUP_ACQUISITION = "20000000-0000-4000-8000-000000000010";
+const LOOKUP_INTENT = "30000000-0000-4000-8000-000000000010";
 
 const queryModule = await loadInjectedModule(
   new URL("../../api/_lib/customer-query.ts", import.meta.url),
@@ -238,6 +244,42 @@ test("Customer 360 list/detail stay private, compact, stable, and currency-separ
         cursor: first.nextCursor,
       }, ADMIN_SECRET, { transaction }), (error) => error?.code === "invalid_cursor");
     });
+
+    await t.test("exact Stripe aliases route within one namespace without leaking identifiers", async () => {
+      for (const stripeReference of [
+        "cus_lookup_exact",
+        "cs_lookup_exact",
+        "pi_lookup_exact",
+        "ch_lookup_exact",
+      ]) {
+        const customer = await queryModule.queryCustomerLookup({
+          licenseNamespace: "test",
+          stripeReference,
+        }, { transaction });
+        assert.equal(customer.customerId, PROFILE_B);
+        assert.equal(customer.acquisition.source, "website_direct_or_unknown");
+        assert.equal(customer.acquisition.campaign, "lookup-campaign");
+        assert.equal(customer.acquisition.stageTimestamps.payment_settled,
+          "2026-07-10T09:00:00.000Z");
+        assert.ok(customer.acquisition.missingStages.includes("refunded"));
+        assert.deepEqual(customer.acquisition.conflictingStages, []);
+        assert.equal(customer.paymentStatus.settled, true);
+        assert.equal(customer.paymentStatus.refunded, true);
+        assert.equal(customer.paymentStatus.disputed, true);
+        const serialized = JSON.stringify(customer);
+        assert.doesNotMatch(serialized, /(?:cus|cs|pi|ch)_lookup_exact/);
+        assert.doesNotMatch(serialized, /b@example\.com|link_value|identity_evidence/);
+      }
+
+      assert.equal(await queryModule.queryCustomerLookup({
+        licenseNamespace: "production",
+        stripeReference: "pi_lookup_exact",
+      }, { transaction }), null);
+      assert.equal(await queryModule.queryCustomerLookup({
+        licenseNamespace: "test",
+        stripeReference: "pi_not_stored",
+      }, { transaction }), null);
+    });
   } finally {
     if (schemaCreated) {
       await pool.query(`drop schema if exists ${quotedSchema} cascade`).catch(() => {});
@@ -368,6 +410,126 @@ async function seedProfiles(pool, schema) {
        'verified_server', 'activation_claim')`,
     [PROFILE_B, PROFILE_C, "f".repeat(64)],
   );
+
+  await pool.query(
+    `insert into ${schema}.sidestream_accounts (
+       id, google_sub, email, created_at, updated_at
+     ) values ($1, 'google-lookup', 'lookup@example.com',
+       '2026-07-01T00:00:00Z', '2026-07-01T00:00:00Z')`,
+    [LOOKUP_ACCOUNT],
+  );
+  await pool.query(
+    `insert into ${schema}.sidestream_acquisitions (
+       id, license_namespace, first_observed_source, first_observed_medium,
+       first_observed_campaign, first_observed_content_creative,
+       entry_channel, first_observed_at, experiment_id, experiment_cohort,
+       attribution_confidence, integrity_state, trusted_delivery_evidence
+     ) values (
+       $1, 'test', 'website_direct_or_unknown', null, 'lookup-campaign',
+       'lookup-creative', 'website', '2026-07-01T00:00:00Z',
+       'lookup-experiment', 'lookup-cohort', 'exact_sidestream_entry', 'intact',
+       array['website_entry', 'authenticated_account', 'checkout_intent']::text[]
+     )`,
+    [LOOKUP_ACQUISITION],
+  );
+  await pool.query(
+    `insert into ${schema}.sidestream_checkout_intents (
+       id, acquisition_id, intent_kind, browser_token_hash, account_id,
+       state, expires_at, created_at, updated_at
+     ) values ($1, $2, 'account', $3, $4, 'completed',
+       '2026-08-01T00:00:00Z', '2026-07-10T08:00:00Z',
+       '2026-07-10T09:00:00Z')`,
+    [LOOKUP_INTENT, LOOKUP_ACQUISITION, "9".repeat(64), LOOKUP_ACCOUNT],
+  );
+  await pool.query(
+    `insert into ${schema}.sidestream_customer_identity_links (
+       profile_id, license_namespace, link_type, link_value
+     ) values
+       ($1, 'test', 'account_identity', $2),
+       ($1, 'test', 'stripe_customer', 'cus_lookup_exact'),
+       ($1, 'test', 'stripe_checkout_session', 'cs_lookup_exact'),
+       ($1, 'test', 'stripe_payment_intent', 'pi_lookup_exact')`,
+    [PROFILE_B, LOOKUP_ACCOUNT],
+  );
+  await pool.query(
+    `insert into ${schema}.sidestream_customer_commerce_materializations (
+       license_namespace, profile_id, event_id, event_type, event_created_at,
+       source_object_type, source_object_id, fact_kind, commerce_model, state,
+       currency, gross_paid_minor, refunded_minor, disputed_minor,
+       net_paid_minor, effective_at, timestamp_source, source,
+       source_confidence, payment_key
+     ) values
+       ('test', $1, 'evt_lookup_payment', 'payment_intent.succeeded',
+        '2026-07-10T09:00:00Z', 'payment_intent', 'pi_lookup_exact',
+        'payment', 'one_time', 'succeeded', 'usd', 1999, 300, 0, 1699,
+        '2026-07-10T09:00:00Z', 'stripe_object', 'stripe_object', 'verified',
+        'payment_intent:pi_lookup_exact'),
+       ('test', $1, 'evt_lookup_dispute', 'charge.dispute.created',
+        '2026-07-11T09:00:00Z', 'dispute', 'dp_lookup_private',
+        'dispute', 'one_time', 'needs_response', 'usd', 0, 0, 200, 0,
+        '2026-07-11T09:00:00Z', 'stripe_object', 'stripe_object', 'verified',
+        'payment_intent:pi_lookup_exact')`,
+    [PROFILE_B],
+  );
+  await pool.query(
+    `insert into ${schema}.sidestream_customer_commerce_aliases (
+       license_namespace, alias_type, alias_id, payment_key, first_event_id
+     ) values
+       ('test', 'checkout_session', 'cs_lookup_exact',
+        'payment_intent:pi_lookup_exact', 'evt_lookup_payment'),
+       ('test', 'payment_intent', 'pi_lookup_exact',
+        'payment_intent:pi_lookup_exact', 'evt_lookup_payment'),
+       ('test', 'charge', 'ch_lookup_exact',
+        'payment_intent:pi_lookup_exact', 'evt_lookup_payment')`,
+  );
+  await pool.query(
+    `insert into ${schema}.sidestream_acquisition_stages (
+       acquisition_id, license_namespace, stage, counting_grain,
+       deduplication_key, occurred_at
+     ) values
+       ($1, 'test', 'landing_observed', 'acquisition', $2,
+        '2026-07-01T00:00:00Z'),
+       ($1, 'test', 'payment_settled', 'payment', $3,
+        '2026-07-10T09:00:00Z')`,
+    [LOOKUP_ACQUISITION, "a".repeat(64), "b".repeat(64)],
+  );
+
+  await pool.query(
+    `update ${schema}.sidestream_customer_profiles
+     set commerce_model = 'one_time', entitlement_status = 'active',
+         commerce_synced_at = '2026-07-15T12:30:00Z',
+         first_paid_at = '2026-07-10T09:00:00Z',
+         last_paid_at = '2026-07-10T09:00:00Z',
+         first_upgraded_at = '2026-07-10T09:00:00Z',
+         last_upgraded_at = '2026-07-10T09:00:00Z'
+     where id = any($1::uuid[])`,
+    [[PROFILE_D, PROFILE_C, PROFILE_B]],
+  );
+  for (const money of [
+    ["eur", 500, 0, 500],
+    ["usd", 1000, 300, 700],
+  ]) {
+    await pool.query(
+      `insert into ${schema}.sidestream_customer_money_totals (
+         profile_id, license_namespace, currency, commerce_model,
+         gross_paid_minor, off_stripe_paid_minor, discount_minor, tax_minor,
+         refunded_minor, disputed_minor, inquiry_minor, net_paid_minor,
+         paid_transaction_count, comped_transaction_count,
+         first_paid_at, last_paid_at, first_upgraded_at, last_upgraded_at,
+         materialized_at
+       ) values (
+         $1, 'test', $2, 'one_time', $3, 0, 0, 0, $4, 0, 0, $5,
+         1, 0, '2026-07-10T09:00:00Z', '2026-07-10T09:00:00Z',
+         '2026-07-10T09:00:00Z', '2026-07-10T09:00:00Z',
+         '2026-07-15T12:30:00Z'
+       ) on conflict (license_namespace, profile_id, currency) do update set
+         gross_paid_minor = excluded.gross_paid_minor,
+         refunded_minor = excluded.refunded_minor,
+         net_paid_minor = excluded.net_paid_minor,
+         materialized_at = excluded.materialized_at`,
+      [PROFILE_B, ...money],
+    );
+  }
 }
 
 function quoteIdentifier(identifier) {

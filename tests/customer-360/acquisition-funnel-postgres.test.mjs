@@ -12,6 +12,7 @@ import {
 } from "../../scripts/run-postgres-integration.mjs";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
+const ADMIN_SECRET = "postgres-acquisition-funnel-secret-2026";
 const migrations = [
   "20260626120000_add_sidestream_download_leads.sql",
   "20260703120000_add_sidestream_accounts_billing.sql",
@@ -23,19 +24,28 @@ const migrations = [
   "20260715123000_add_customer_usage_aggregates.sql",
   "20260727010000_add_paid_acquisition_experiment.sql",
   "20260731120000_add_anonymous_acquisition_sessions.sql",
+  "20260803120000_add_acquisition_integrity.sql",
 ];
 
 const PROFILE_PAID = "00000000-0000-4000-8000-000000000001";
 const PROFILE_FREEMIUM = "00000000-0000-4000-8000-000000000002";
 const PROFILE_UNVERIFIED_EMAIL = "00000000-0000-4000-8000-000000000003";
 const PROFILE_UNKNOWN = "00000000-0000-4000-8000-000000000004";
+const PROFILE_PURCHASE_ONLY = "00000000-0000-4000-8000-000000000005";
 const ACCOUNT_FREEMIUM = "10000000-0000-4000-8000-000000000001";
 const ACCOUNT_LATE_EMAIL = "10000000-0000-4000-8000-000000000002";
+const ACCOUNT_PURCHASE_ONLY = "10000000-0000-4000-8000-000000000003";
 const ACTIVATION_PAID = "20000000-0000-4000-8000-000000000001";
 const ACTIVATION_UNOPENED = "20000000-0000-4000-8000-000000000002";
 const ACTIVATION_AFTER_OBSERVATION = "20000000-0000-4000-8000-000000000003";
 const CHECKOUT_INTENT = "30000000-0000-4000-8000-000000000001";
 const CHECKOUT_INTENT_LATE = "30000000-0000-4000-8000-000000000002";
+const CHECKOUT_INTENT_PURCHASE_ONLY = "30000000-0000-4000-8000-000000000003";
+const ACQUISITION_PAID = "70000000-0000-4000-8000-000000000001";
+const ACQUISITION_LATE = "70000000-0000-4000-8000-000000000002";
+const ACQUISITION_PURCHASE_ONLY = "70000000-0000-4000-8000-000000000003";
+const ACQUISITION_MISSING = "70000000-0000-4000-8000-000000000004";
+const ACQUISITION_HISTORICAL = "70000000-0000-4000-8000-000000000005";
 const ENTRY_PAID = "40000000-0000-4000-8000-000000000001";
 const ENTRY_LATE = "40000000-0000-4000-8000-000000000002";
 const CHECKOUT_PAID = "50000000-0000-4000-8000-000000000001";
@@ -98,6 +108,13 @@ test("acquisition funnel keeps attribution exact and retention UTC-day based", {
       await pool.query(sql.replace(/\bpublic\./g, `${quotedSchema}.`));
     }
     await seedFunnel(pool, quotedSchema);
+    const seededPaid = await pool.query(
+      `select profile_id, net_paid_minor, first_paid_at
+       from ${quotedSchema}.sidestream_customer_money_totals
+       where license_namespace = 'test' and net_paid_minor > 0
+       order by profile_id`,
+    );
+    assert.equal(seededPaid.rows.length, 3);
 
     const report = await funnelModule.queryAcquisitionFunnel({
       licenseNamespace: "test",
@@ -177,9 +194,11 @@ test("acquisition funnel keeps attribution exact and retention UTC-day based", {
       cohort: "mc-paid-v1",
       attributionConfidence: "exact_paid_checkout",
       confidence: "exact_paid_checkout",
+      integrityState: "historical_unlinked",
       profileCount: "1",
       firstOpenedProfiles: "1",
       completedActivations: "1",
+      paidCustomers: "1",
       returnEligibleProfiles: "1",
       returnedProfiles: "1",
       oneAndDoneProfiles: "0",
@@ -189,6 +208,11 @@ test("acquisition funnel keeps attribution exact and retention UTC-day based", {
         percentage: "100.00",
       },
       activationPercentage: {
+        numerator: "1",
+        denominator: "1",
+        percentage: "100.00",
+      },
+      paidCustomerPercentage: {
         numerator: "1",
         denominator: "1",
         percentage: "100.00",
@@ -227,6 +251,9 @@ test("acquisition funnel keeps attribution exact and retention UTC-day based", {
     assert.equal(paid.installerRequestedAt, "2026-07-01T07:30:00.000Z");
     assert.equal(paid.installerPlatform, "macos");
     assert.equal(paid.firstInstallAt, "2026-07-02T10:15:16.789Z");
+    assert.equal(paid.cohortAt, "2026-07-02T10:15:16.789Z");
+    assert.equal(paid.firstPurchaseAt, "2026-07-03T12:00:00.000Z");
+    assert.equal(paid.paidCustomer, true);
     assert.equal(paid.firstOpenAt, "2026-07-02T11:00:00.000Z");
     assert.equal(paid.activationAt, "2026-07-03T12:00:00.000Z");
     assert.equal(paid.dayZeroDownloadAttempts, "2");
@@ -267,6 +294,58 @@ test("acquisition funnel keeps attribution exact and retention UTC-day based", {
       PROFILE_UNVERIFIED_EMAIL,
       PROFILE_UNKNOWN,
     ]);
+    assert.equal(report.stageCounts.length, 10);
+    assert.equal(
+      report.stageCounts.find((stage) => stage.stage === "payment_settled").count,
+      "3",
+    );
+    assert.equal(report.integrityAlerts.missingInternalLinkage.acquisitionCount, "1");
+    assert.equal(report.integrityAlerts.historicalUnlinked.acquisitionCount, "1");
+
+    const firstPage = await funnelModule.queryAcquisitionFunnel({
+      licenseNamespace: "test",
+      cohortStart: "2026-07-01T00:00:00Z",
+      cohortEnd: "2026-07-08T00:00:00Z",
+      observationEnd: "2026-08-01T00:00:00Z",
+      journeyLimit: 2,
+    }, ADMIN_SECRET, { transaction });
+    const repeatedPage = await funnelModule.queryAcquisitionFunnel({
+      licenseNamespace: "test",
+      cohortStart: "2026-07-01T00:00:00Z",
+      cohortEnd: "2026-07-08T00:00:00Z",
+      observationEnd: "2026-08-01T00:00:00Z",
+      journeyLimit: 2,
+    }, ADMIN_SECRET, { transaction });
+    assert.equal(firstPage.nextJourneyCursor, repeatedPage.nextJourneyCursor);
+    const secondPage = await funnelModule.queryAcquisitionFunnel({
+      licenseNamespace: "test",
+      cohortStart: "2026-07-01T00:00:00Z",
+      cohortEnd: "2026-07-08T00:00:00Z",
+      observationEnd: "2026-08-01T00:00:00Z",
+      journeyLimit: 2,
+      journeyCursor: firstPage.nextJourneyCursor,
+    }, ADMIN_SECRET, { transaction });
+    assert.equal(new Set([
+      ...firstPage.journeys.map((journey) => journey.customerId),
+      ...secondPage.journeys.map((journey) => journey.customerId),
+    ]).size, 4);
+
+    const purchaseReport = await funnelModule.queryAcquisitionFunnel({
+      licenseNamespace: "test",
+      cohortBasis: "first_purchase",
+      cohortStart: "2026-07-01T00:00:00Z",
+      cohortEnd: "2026-07-08T00:00:00Z",
+      observationEnd: "2026-08-01T00:00:00Z",
+      journeyLimit: 10,
+    }, ADMIN_SECRET, { transaction });
+    const purchaseOnly = purchaseReport.journeys.find(
+      (journey) => journey.customerId === PROFILE_PURCHASE_ONLY,
+    );
+    assert.equal(purchaseOnly.firstInstallAt, null);
+    assert.equal(purchaseOnly.firstPurchaseAt, "2026-07-04T12:00:00.000Z");
+    assert.equal(purchaseOnly.source, "website_direct_or_unknown");
+    assert.equal(purchaseOnly.integrityState, "intact");
+    assert.equal(purchaseOnly.paidCustomer, true);
 
     const serialized = JSON.stringify(report);
     assert.doesNotMatch(serialized, /freemium@example\.com|unverified@example\.com/);
@@ -299,8 +378,10 @@ async function seedFunnel(pool, schema) {
        ($1, 'google-freemium', 'freemium@example.com',
         '2026-06-30T00:00:00Z', '2026-06-30T00:00:00Z'),
        ($2, 'google-late-email', 'unverified@example.com',
-        '2026-07-06T00:00:00Z', '2026-07-06T00:00:00Z')`,
-    [ACCOUNT_FREEMIUM, ACCOUNT_LATE_EMAIL],
+        '2026-07-06T00:00:00Z', '2026-07-06T00:00:00Z'),
+       ($3, 'google-purchase-only', 'purchase@example.com',
+        '2026-07-01T00:00:00Z', '2026-07-01T00:00:00Z')`,
+    [ACCOUNT_FREEMIUM, ACCOUNT_LATE_EMAIL, ACCOUNT_PURCHASE_ONLY],
   );
   await pool.query(
     `insert into ${schema}.sidestream_activation_sessions (
@@ -345,22 +426,12 @@ async function seedFunnel(pool, schema) {
       [profileId, installHash(profileId), firstInstallAt],
     );
   }
-
   await pool.query(
-    `insert into ${schema}.sidestream_customer_money_totals (
-       profile_id, license_namespace, currency, commerce_model,
-       gross_paid_minor, off_stripe_paid_minor, discount_minor, tax_minor,
-       refunded_minor, disputed_minor, inquiry_minor, net_paid_minor,
-       paid_transaction_count, comped_transaction_count,
-       first_paid_at, last_paid_at
-     ) values
-       ($1, 'test', 'usd', 'one_time', 1999, 0, 0, 0, 0, 0, 0, 1999,
-        1, 0, '2026-07-03T12:00:00Z', '2026-07-03T12:00:00Z'),
-       ($2, 'test', 'usd', 'one_time', 1999, 0, 0, 0, 1999, 0, 0, 0,
-        1, 0, '2026-07-06T12:00:00Z', '2026-07-06T12:00:00Z'),
-       ($3, 'test', 'usd', 'one_time', 1999, 0, 0, 0, 0, 0, 0, 1999,
-        1, 0, '2026-08-02T12:00:00Z', '2026-08-02T12:00:00Z')`,
-    [PROFILE_PAID, PROFILE_FREEMIUM, PROFILE_UNVERIFIED_EMAIL],
+    `insert into ${schema}.sidestream_customer_profiles (
+       id, license_namespace, contact_email, created_at, updated_at
+     ) values ($1, 'test', 'purchase@example.com',
+       '2026-07-01T00:00:00Z', '2026-07-04T12:00:00Z')`,
+    [PROFILE_PURCHASE_ONLY],
   );
 
   await pool.query(
@@ -401,7 +472,8 @@ async function seedFunnel(pool, schema) {
        ($4, 'test', 'activation_record', $6),
        ($7, 'test', 'account_identity', $8),
        ($9, 'test', 'installer_receipt_hash', $10),
-       ($9, 'test', 'activation_record', $11)`,
+       ($9, 'test', 'activation_record', $11),
+       ($12, 'test', 'account_identity', $13)`,
     [
       PROFILE_PAID,
       RECEIPT_HASH,
@@ -414,6 +486,8 @@ async function seedFunnel(pool, schema) {
       PROFILE_UNKNOWN,
       LATE_RECEIPT_HASH,
       ACTIVATION_UNOPENED,
+      PROFILE_PURCHASE_ONLY,
+      ACCOUNT_PURCHASE_ONLY,
     ],
   );
 
@@ -478,22 +552,92 @@ async function seedFunnel(pool, schema) {
   );
 
   await pool.query(
+    `insert into ${schema}.sidestream_acquisitions (
+       id, license_namespace, first_observed_source, first_observed_medium,
+       first_observed_campaign, entry_channel, first_observed_at,
+       attribution_confidence, integrity_state, trusted_delivery_evidence
+     ) values
+       ($1, 'test', 'manychat', 'dm', 'paid-launch', 'checkout',
+        '2026-07-01T08:00:00Z', 'exact_trusted_delivery', 'intact',
+        array['website_entry', 'checkout_intent']::text[]),
+       ($2, 'test', 'later-visit', 'dm', 'late', 'checkout',
+        '2026-07-08T08:00:00Z', 'exact_trusted_delivery', 'intact',
+        array['website_entry', 'checkout_intent']::text[]),
+       ($3, 'test', 'website_direct_or_unknown', null, null, 'website',
+        '2026-07-01T00:00:00Z', 'exact_sidestream_entry', 'intact',
+        array['website_entry', 'authenticated_account', 'checkout_intent']::text[]),
+       ($4, 'test', 'unknown_source', null, null, 'account',
+        '2026-07-02T00:00:00Z', 'missing_internal_linkage',
+        'missing_internal_linkage', array['authenticated_account']::text[]),
+       ($5, 'test', 'legacy_unknown', null, null, 'account',
+        '2026-07-03T00:00:00Z', 'historical_unlinked',
+        'historical_unlinked', array['authenticated_account']::text[])`,
+    [
+      ACQUISITION_PAID,
+      ACQUISITION_LATE,
+      ACQUISITION_PURCHASE_ONLY,
+      ACQUISITION_MISSING,
+      ACQUISITION_HISTORICAL,
+    ],
+  );
+  await pool.query(
+    `insert into ${schema}.sidestream_acquisition_stages (
+       acquisition_id, license_namespace, stage, counting_grain,
+       deduplication_key, occurred_at
+     ) values
+       ($1, 'test', 'landing_observed', 'acquisition', $3,
+        '2026-07-01T08:00:00Z'),
+       ($1, 'test', 'payment_settled', 'payment', $4,
+        '2026-07-03T12:00:00Z'),
+       ($2, 'test', 'landing_observed', 'acquisition', $5,
+        '2026-07-08T08:00:00Z'),
+       ($2, 'test', 'payment_settled', 'payment', $6,
+        '2026-07-08T08:10:00Z'),
+       ($7, 'test', 'landing_observed', 'acquisition', $8,
+        '2026-07-01T00:00:00Z'),
+       ($7, 'test', 'payment_settled', 'payment', $9,
+        '2026-07-04T12:00:00Z')`,
+    [
+      ACQUISITION_PAID,
+      ACQUISITION_LATE,
+      "1".repeat(64),
+      "2".repeat(64),
+      "3".repeat(64),
+      "4".repeat(64),
+      ACQUISITION_PURCHASE_ONLY,
+      "5".repeat(64),
+      "6".repeat(64),
+    ],
+  );
+
+  await pool.query(
     `insert into ${schema}.sidestream_checkout_intents (
-       id, intent_kind, browser_token_hash, state, expires_at, created_at, updated_at
+       id, acquisition_id, intent_kind, browser_token_hash, account_id,
+       state, expires_at, created_at, updated_at
      ) values
        (
-         $1, 'anonymous', $2, 'completed', '2026-08-01T00:00:00Z',
+         $1, $2, 'anonymous', $3, null, 'completed', '2026-08-01T00:00:00Z',
          '2026-07-01T08:05:00Z', '2026-07-01T08:10:00Z'
        ),
        (
-         $3, 'anonymous', $4, 'completed', '2026-09-01T00:00:00Z',
+         $4, $5, 'anonymous', $6, null, 'completed', '2026-09-01T00:00:00Z',
          '2026-07-08T08:05:00Z', '2026-07-08T08:10:00Z'
+       ),
+       (
+         $7, $8, 'account', $9, $10, 'completed', '2026-08-01T00:00:00Z',
+         '2026-07-04T11:55:00Z', '2026-07-04T12:00:00Z'
        )`,
     [
       CHECKOUT_INTENT,
+      ACQUISITION_PAID,
       "c".repeat(64),
       CHECKOUT_INTENT_LATE,
+      ACQUISITION_LATE,
       "7".repeat(64),
+      CHECKOUT_INTENT_PURCHASE_ONLY,
+      ACQUISITION_PURCHASE_ONLY,
+      "8".repeat(64),
+      ACCOUNT_PURCHASE_ONLY,
     ],
   );
   await pool.query(
@@ -587,6 +731,27 @@ async function seedFunnel(pool, schema) {
       "2".repeat(64),
       LATE_RECEIPT_HASH,
     ],
+  );
+
+  // Identity-link triggers recompute commerce totals, so seed authoritative
+  // totals after all exact profile edges exist.
+  await pool.query(
+    `insert into ${schema}.sidestream_customer_money_totals (
+       profile_id, license_namespace, currency, commerce_model,
+       gross_paid_minor, off_stripe_paid_minor, discount_minor, tax_minor,
+       refunded_minor, disputed_minor, inquiry_minor, net_paid_minor,
+       paid_transaction_count, comped_transaction_count,
+       first_paid_at, last_paid_at
+     ) values
+       ($1, 'test', 'usd', 'one_time', 1999, 0, 0, 0, 0, 0, 0, 1999,
+        1, 0, '2026-07-03T12:00:00Z', '2026-07-03T12:00:00Z'),
+       ($2, 'test', 'usd', 'one_time', 1999, 0, 0, 0, 1999, 0, 0, 0,
+        1, 0, '2026-07-06T12:00:00Z', '2026-07-06T12:00:00Z'),
+       ($3, 'test', 'usd', 'one_time', 1999, 0, 0, 0, 0, 0, 0, 1999,
+        1, 0, '2026-08-02T12:00:00Z', '2026-08-02T12:00:00Z'),
+       ($4, 'test', 'usd', 'one_time', 1999, 0, 0, 0, 0, 0, 0, 1999,
+        1, 0, '2026-07-04T12:00:00Z', '2026-07-04T12:00:00Z')`,
+    [PROFILE_PAID, PROFILE_FREEMIUM, PROFILE_UNVERIFIED_EMAIL, PROFILE_PURCHASE_ONLY],
   );
 }
 
