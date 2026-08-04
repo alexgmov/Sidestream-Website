@@ -169,13 +169,14 @@ export async function createCanonicalAcquisitionRoot(input: Readonly<{
   attributionConfidence?: AttributionConfidence;
   integrityState?: Exclude<IntegrityState, "quarantined">;
   trustedDeliveryEvidence?: readonly TrustedDeliveryEvidence[];
+  recordLandingObserved?: boolean;
 }>, dependencies: Dependencies = {}): Promise<CanonicalAcquisition> {
   assertPlainObject(input);
   assertOnlyKeys(input, new Set([
     "acquisitionId", "firstObservedAt", "landingDeduplicationReference",
     "source", "medium", "campaign", "contentCreative", "entryChannel",
     "externalReferrerCategory", "experiment", "attributionConfidence",
-    "integrityState", "trustedDeliveryEvidence",
+    "integrityState", "trustedDeliveryEvidence", "recordLandingObserved",
   ]));
   const acquisitionId = input.acquisitionId === undefined
     ? generateAcquisitionId()
@@ -197,6 +198,10 @@ export async function createCanonicalAcquisitionRoot(input: Readonly<{
   const trustedDeliveryEvidence = normalizeDeliveryEvidence(
     input.trustedDeliveryEvidence ?? ["website_entry"],
   );
+  const recordLandingObserved = input.recordLandingObserved ?? true;
+  if (typeof recordLandingObserved !== "boolean") {
+    fail("invalid_request", "recordLandingObserved must be boolean.");
+  }
   stableServerReference(input.landingDeduplicationReference);
 
   if (source === "website_direct_or_unknown" && (
@@ -245,12 +250,14 @@ export async function createCanonicalAcquisitionRoot(input: Readonly<{
       stored = requiredRow(await selectAcquisitionById(client, acquisitionId));
     }
 
-    await recordStageWithClient(client, namespace, {
-      acquisitionId,
-      stage: "landing_observed",
-      stableServerReference: input.landingDeduplicationReference,
-      occurredAt: firstObservedAt,
-    });
+    if (recordLandingObserved) {
+      await recordStageWithClient(client, namespace, {
+        acquisitionId,
+        stage: "landing_observed",
+        stableServerReference: input.landingDeduplicationReference,
+        occurredAt: firstObservedAt,
+      });
+    }
     return mapAcquisition(stored);
   });
 }

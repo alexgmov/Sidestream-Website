@@ -1,4 +1,5 @@
 import { BlobError } from "@vercel/blob";
+import { waitUntil } from "@vercel/functions";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { isIP } from "node:net";
 import {
@@ -34,8 +35,8 @@ import {
   ACQUISITION_SECRET_NAME,
   createBrowserAcquisitionCookie,
   readBrowserAcquisitionCookie,
+  resolveBrowserAcquisitionCookie,
   serializeBrowserAcquisitionCookie,
-  verifyBrowserAcquisitionCookie,
   type BrowserAcquisitionCookie,
 } from "./_lib/acquisition-cookie.js";
 import {
@@ -43,6 +44,12 @@ import {
   createAcquisitionHandoff,
   verifyAcquisitionHandoff,
 } from "./_lib/acquisition-handoff.js";
+import {
+  AcquisitionIntegrityError,
+  addTrustedDeliveryEvidence,
+  recordAcquisitionStage,
+} from "./_lib/acquisition-integrity.js";
+import { ensureBrowserAcquisition } from "./acquisition/_lib.js";
 
 const MOBILE_DOWNLOAD_SOURCE = "mobile-download-handoff";
 const EMAIL_RATE_LIMIT_WINDOW_SECONDS = 60 * 60;
@@ -69,6 +76,13 @@ type DownloadLinkHandlerDependencies = Readonly<{
     links?: Readonly<{ macUrl: string; windowsUrl: string }>,
   ) => Promise<void>;
   getAcquisitionSecret: () => string;
+  recordHandoff: (event: Readonly<{
+    cookie: BrowserAcquisitionCookie;
+    kind: "signed_email_handoff" | "secure_share_handoff";
+    stableReference: string;
+    createdAt: Date;
+  }>) => Promise<void>;
+  scheduleBackground: (operation: Promise<void>) => void;
   log: (entry: Record<string, string | number>) => void;
 }>;
 
@@ -103,6 +117,8 @@ const defaultDependencies: DownloadLinkHandlerDependencies = {
     });
   },
   getAcquisitionSecret: () => process.env[ACQUISITION_SECRET_NAME]?.trim() || "",
+  recordHandoff: persistCanonicalHandoff,
+  scheduleBackground: waitUntil,
   log: (entry) => console.info(JSON.stringify(entry)),
 };
 
@@ -248,7 +264,14 @@ export function createDownloadLinkHandler(
         outcome: "accepted",
         count: 1,
       });
-      return sendJson(response, 200, { ok: true });
+      sendJson(response, 200, { ok: true });
+      if (links) scheduleHandoffPersistence({
+        cookie: links.cookie,
+        kind: "signed_email_handoff",
+        stableReference: `email-handoff:${lead.idempotencyKeyHash}`,
+        createdAt: now,
+      }, dependencies);
+      return;
     } catch (error) {
       if (error instanceof DownloadLinkEmailConfigurationError) {
         dependencies.log({
@@ -325,7 +348,7 @@ function serveAcquisitionHandoff(
     const now = dependencies.now();
     const secret = dependencies.getAcquisitionSecret();
     const handoff = verifyAcquisitionHandoff(tokens[0], { secret, now });
-    const cookie = verifyBrowserAcquisitionCookie(
+    const resolved = resolveBrowserAcquisitionCookie(
       handoff.acquisitionCookieValue,
       { secret, now },
     );
@@ -337,7 +360,7 @@ function serveAcquisitionHandoff(
       "Location",
       platform === "windows" ? "/api/download?platform=win32-x64" : "/api/download",
     );
-    response.setHeader("Set-Cookie", serializeBrowserAcquisitionCookie(cookie));
+    response.setHeader("Set-Cookie", serializeBrowserAcquisitionCookie(resolved.cookie));
     response.setHeader("Cache-Control", "private, no-store");
     response.setHeader("X-Content-Type-Options", "nosniff");
     response.end();
@@ -362,10 +385,17 @@ function createEmailOptionalHandoff(
       now,
     });
     if (resolved.setCookie) response.setHeader("Set-Cookie", resolved.setCookie);
-    return sendJson(response, 200, {
+    sendJson(response, 200, {
       ok: true,
       handoffUrl: buildAcquisitionHandoffUrl(token),
     });
+    scheduleHandoffPersistence({
+      cookie: resolved.cookie,
+      kind: "secure_share_handoff",
+      stableReference: `secure-share-handoff:${resolved.cookie.acquisitionId}`,
+      createdAt: now,
+    }, dependencies);
+    return;
   } catch {
     return sendJson(response, 503, {
       error: "Computer handoff temporarily unavailable",
@@ -396,6 +426,7 @@ function createEmailHandoffLinks(
         windowsUrl: makeUrl("windows"),
       }),
       setCookie: resolved.setCookie,
+      cookie: resolved.cookie,
     };
   } catch {
     // Preserve the existing direct installer email if attribution is unavailable.
@@ -412,10 +443,13 @@ function resolveOrCreateHandoffCookie(
   const existing = readBrowserAcquisitionCookie(request.headers.cookie);
   if (existing) {
     try {
+      const resolved = resolveBrowserAcquisitionCookie(existing, { secret, now });
       return {
-        cookie: verifyBrowserAcquisitionCookie(existing, { secret, now }),
+        cookie: resolved.cookie,
         secret,
-        setCookie: "",
+        setCookie: resolved.promoted
+          ? serializeBrowserAcquisitionCookie(resolved.cookie)
+          : "",
       };
     } catch {
       // Invalid browser state is replaced with a fresh, direct first touch.
@@ -427,6 +461,51 @@ function resolveOrCreateHandoffCookie(
     secret,
     setCookie: serializeBrowserAcquisitionCookie(cookie),
   };
+}
+
+function scheduleHandoffPersistence(
+  event: Readonly<{
+    cookie: BrowserAcquisitionCookie;
+    kind: "signed_email_handoff" | "secure_share_handoff";
+    stableReference: string;
+    createdAt: Date;
+  }>,
+  dependencies: DownloadLinkHandlerDependencies,
+) {
+  try {
+    dependencies.scheduleBackground(
+      dependencies.recordHandoff(event).catch(() => undefined),
+    );
+  } catch {
+    // Tracking cannot change a successfully issued handoff or accepted email.
+  }
+}
+
+async function persistCanonicalHandoff(event: Readonly<{
+  cookie: BrowserAcquisitionCookie;
+  kind: "signed_email_handoff" | "secure_share_handoff";
+  stableReference: string;
+  createdAt: Date;
+}>) {
+  const stageInput = {
+    acquisitionId: event.cookie.acquisitionId,
+    stage: "email_handoff_created" as const,
+    stableServerReference: event.stableReference,
+    occurredAt: event.createdAt,
+  };
+  try {
+    await recordAcquisitionStage(stageInput);
+  } catch (error) {
+    if (!(error instanceof AcquisitionIntegrityError) || error.code !== "acquisition_not_found") {
+      throw error;
+    }
+    await ensureBrowserAcquisition(event.cookie);
+    await recordAcquisitionStage(stageInput);
+  }
+  await addTrustedDeliveryEvidence({
+    acquisitionId: event.cookie.acquisitionId,
+    evidence: event.kind,
+  });
 }
 
 function platformFromUserAgent(userAgent: string) {

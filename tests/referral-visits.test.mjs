@@ -175,6 +175,7 @@ test("landing page and Vercel config preserve dedicated and legacy ManyChat rout
   const vercel = JSON.parse(readFileSync(path.join(repoRoot, "vercel.json"), "utf8"));
   const middleware = readFileSync(path.join(repoRoot, "middleware.ts"), "utf8");
   assert.match(html, /fetch\("\/api\/referral-visit"/);
+  assert.match(html, /fetch\("\/api\/acquisition\/observe"/);
   assert.match(html, /utm_source/);
   for (const source of ["/manychat-instagram", "/manychat-instagram/"]) {
     assert.ok(vercel.redirects.some((redirect) =>
@@ -197,7 +198,7 @@ test("landing page and Vercel config preserve dedicated and legacy ManyChat rout
   );
   assert.match(
     middleware,
-    /matcher:\s*\[\s*"\/mc",\s*"\/mc-preview"\s*\]/,
+    /matcher:\s*\[\s*"\/",\s*"\/index\.html",\s*"\/mc",\s*"\/mc-preview"\s*\]/,
   );
   assert.match(middleware, /SIDESTREAM_PAID_ACQUISITION_ASSIGNMENT_SECRET/);
 });

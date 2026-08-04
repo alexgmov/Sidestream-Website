@@ -27,8 +27,8 @@ import {
   createBrowserAcquisitionCookie,
   normalizeBrowserAcquisitionAttribution,
   readBrowserAcquisitionCookie,
+  resolveBrowserAcquisitionCookie,
   serializeBrowserAcquisitionCookie,
-  verifyBrowserAcquisitionCookie,
   ACQUISITION_SECRET_NAME,
   type BrowserAcquisitionCookie,
 } from "./_lib/acquisition-cookie.js";
@@ -37,6 +37,12 @@ import {
   createAnonymousAcquisitionSession,
   recordAnonymousAcquisitionInstallerRequest,
 } from "./_lib/anonymous-acquisition.js";
+import {
+  AcquisitionIntegrityError,
+  addTrustedDeliveryEvidence,
+  recordAcquisitionStage,
+} from "./_lib/acquisition-integrity.js";
+import { ensureBrowserAcquisition } from "./acquisition/_lib.js";
 
 const DEFAULT_CONTENT_TYPE = "application/octet-stream";
 const SIGNED_DOWNLOAD_TTL_MS = 5 * 60 * 1000;
@@ -237,10 +243,13 @@ function resolveAcquisitionForDownload(
     const existing = readBrowserAcquisitionCookie(request.headers.cookie);
     if (existing) {
       try {
+        const resolved = resolveBrowserAcquisitionCookie(existing, { secret, now: requestedAt });
         return {
-          cookie: verifyBrowserAcquisitionCookie(existing, { secret, now: requestedAt }),
+          cookie: resolved.cookie,
           requestedAt,
-          setCookie: "",
+          setCookie: resolved.promoted
+            ? serializeBrowserAcquisitionCookie(resolved.cookie)
+            : "",
         };
       } catch {
         // A forged or expired cookie has no authority over the fresh first touch.
@@ -289,18 +298,47 @@ async function persistAnonymousAcquisitionDownload(
         secret,
       })
     : null;
-  await createAnonymousAcquisitionSession({
-    token: event.cookie.token,
-    attribution: event.cookie.attribution,
-    assignment,
-    assignmentSecret: assignment ? secret : undefined,
-    firstSeenAt: new Date(event.cookie.issuedAt * 1000),
-    expiresAt: new Date(event.cookie.expiresAt * 1000),
-  });
-  await recordAnonymousAcquisitionInstallerRequest({
-    token: event.cookie.token,
-    platform: event.platform,
-    requestedAt: event.requestedAt,
+  await Promise.all([
+    (async () => {
+      await createAnonymousAcquisitionSession({
+        token: event.cookie.token,
+        attribution: event.cookie.attribution,
+        assignment,
+        assignmentSecret: assignment ? secret : undefined,
+        firstSeenAt: new Date(event.cookie.issuedAt * 1000),
+        expiresAt: new Date(event.cookie.expiresAt * 1000),
+      });
+      await recordAnonymousAcquisitionInstallerRequest({
+        token: event.cookie.token,
+        platform: event.platform,
+        requestedAt: event.requestedAt,
+      });
+    })(),
+    persistCanonicalInstallerRequest(event),
+  ]);
+}
+
+async function persistCanonicalInstallerRequest(
+  event: AnonymousAcquisitionDownloadEvent,
+) {
+  const stageInput = {
+    acquisitionId: event.cookie.acquisitionId,
+    stage: "installer_requested" as const,
+    stableServerReference: `installer-request:${event.cookie.acquisitionId}:${event.platform}`,
+    occurredAt: event.requestedAt,
+  };
+  try {
+    await recordAcquisitionStage(stageInput);
+  } catch (error) {
+    if (!(error instanceof AcquisitionIntegrityError) || error.code !== "acquisition_not_found") {
+      throw error;
+    }
+    await ensureBrowserAcquisition(event.cookie);
+    await recordAcquisitionStage(stageInput);
+  }
+  await addTrustedDeliveryEvidence({
+    acquisitionId: event.cookie.acquisitionId,
+    evidence: "installer_redirect",
   });
 }
 
