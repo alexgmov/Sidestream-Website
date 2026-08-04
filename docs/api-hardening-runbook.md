@@ -9,7 +9,8 @@ evidence that a Production migration, Stripe configuration change, Vercel WAF ru
 deployment, secret change, cron change, traffic change, query, or cutover has
 occurred. The documentation-remediation worker that wrote this revision ran
 local checks only; it did not call live Stripe or Vercel endpoints or read or
-mutate Production data.
+mutate Production data. Disposable tests and a local build do not prove live
+Google, Stripe, Neon, Resend, Vercel, browser, or Premiere behavior.
 
 This document records API, HTTP, data-model, telemetry, and operational facts,
 plus the capabilities that a separately reviewed Production plan needs.
@@ -28,6 +29,9 @@ history or tickets.
 - Upgrade uses one server-owned sequence: Upgrade button, Google authentication,
   Stripe payment. `GET /api/checkout/start` creates or reuses the Stripe Checkout
   Session after authentication.
+- Every new Checkout intent requires one immutable canonical acquisition UUID.
+  OAuth preserves it, Stripe metadata must agree with it, fulfillment fails
+  closed on any mismatch, and stage/conflict reporting never guesses a link.
 - Stripe webhook requests durably record an event and acknowledge it. A claimed,
   leased queue reconciles entitlements; account and activation reads never drain
   webhook backlog.
@@ -35,7 +39,7 @@ history or tickets.
   fallback, not a second source of truth, and replay is explicit and observable.
 - Four `CRON_SECRET`-protected jobs process Stripe events, replay fallback leads,
   run retention maintenance, and materialize Customer 360 usage once daily.
-- Anonymous acquisition keeps signed browser token, verified install/receipt
+- Anonymous acquisition keeps signed browser UUID/cookie, verified install/receipt
   hashes, sparse Customer 360 profile, and later verified account/contact
   separate. Tracking is nonblocking, installer bytes remain static, and missing
   configuration fails association and protected reads closed.
@@ -47,6 +51,93 @@ history or tickets.
   tools, or historical lifecycle repair tool.
   Every one remains an explicit Production blocker, never an existing
   capability.
+
+## Acquisition integrity operator contract
+
+The paid path is fixed and prominent because no alternate client-owned sequence
+is valid:
+
+```text
+Upgrade
+  -> GET /api/checkout/start resolves canonical acquisition UUID
+  -> Google authentication when signed out
+  -> short-lived HttpOnly OAuth acquisition cookie restores the same UUID
+  -> locked Checkout intent requires acquisition_id
+  -> Stripe Session (+ Invoice/PaymentIntent when present) agrees on UUID
+  -> fulfillment commits entitlement and ledger stages together
+```
+
+The private root is `public.sidestream_acquisitions.id`. First source, medium,
+campaign, creative, entry channel, observation time, coarse referrer category,
+experiment, and confidence are immutable. Delivery evidence is append-only.
+`website_direct_or_unknown` means an exact `website` entry with no available
+external origin; it is never a fallback for broken internal joins. Browser
+input cannot select trusted channels. Only an encrypted/signed server-owned
+delivery envelope can create immutable `manychat_email` or
+`facebook_lead_form` entry channels.
+
+The append-only stage/grain pairs are:
+
+| Stage | Grain |
+| --- | --- |
+| `landing_observed` | `acquisition` |
+| `email_handoff_created` | `delivery_handoff` |
+| `installer_requested` | `installer_request` |
+| `installation_claimed` | `installation` |
+| `authentication_completed` | `authentication` |
+| `checkout_started` | `checkout_intent` |
+| `checkout_completed` | `checkout_session` |
+| `payment_settled` | `payment` |
+| `refunded` | `refund` |
+| `disputed` | `dispute` |
+
+Each key is a server-derived digest of namespace, stage, and stable server
+reference. Retries converge. Reuse by another root records hashed conflict
+evidence and quarantines both roots; no operator may reassign or delete the
+stage. Refund/dispute stages are immutable observed facts. Current paid,
+refunded, disputed, inquiry, and net-paid state comes from commerce truth, so a
+later dispute win can clear current disputed money without erasing the event.
+
+Every new Checkout intent has `acquisition_id`; migration intentionally leaves
+historical rows null. Checkout Session metadata, Invoice metadata when present,
+and PaymentIntent metadata when present must each contain the same
+`sidestream_acquisition_id`. The existing exact account, activation, offer,
+Product, Price, currency, subtotal, discount, tax, shipping, total, customer,
+PaymentIntent, and Charge checks remain mandatory. A verified zero-total
+Session may omit PaymentIntent only for exact `paid` or `no_payment_required`
+settlement and does not waive the UUID agreement.
+
+On mismatch, `/api/checkout/complete` returns `409`, no success redirect occurs,
+and the entitlement plus `checkout_completed`/`payment_settled` writes do not
+commit. The signed webhook queue records a returned non-fulfilled mismatch as
+terminal `ignored` with a bounded `checkout_<reason>` outcome; thrown transient
+provider/database failures use the existing retry/dead-letter path. Alert on
+every acquisition/linkage/owner/stage mismatch outcome. Queue terminality does
+not make it a fulfilled purchase.
+
+Operator reporting uses two independent cohort selectors: `first_install` and
+`first_purchase`. Journey pagination is ascending `(cohortAt, customerId)` with
+a signed cursor bound to namespace, basis, limit, cohort window, and observation
+boundary. Source rollups cap at 100 and expose truncation. Exact `cus_`, `cs_`,
+`pi_`, or `ch_` lookup resolves only stored aliases, never echoes the Stripe
+identifier, returns `404` for no owner, and `409` for ambiguous/conflicting
+ownership. Monitor `missing_internal_linkage`, `historical_unlinked`, and
+`quarantined` separately; never relabel them as external unknown origin.
+
+Acquisition storage, logs, lookup, and funnel output exclude raw email, IP, user
+agent, cookie/browser token, install/receipt hash, identity-link value, Stripe
+or telemetry payload, and Stripe object identifier. Deduplication keys and raw
+conflict evidence are also excluded from operator responses. Installer packages
+and public URLs remain static and carry no acquisition UUID or personalized
+payload.
+
+Historical linkage is deterministic-only. Exact signed cookie/claim, account or
+activation link, Checkout/Stripe alias, verified installer receipt, or reviewed
+server delivery record may prove a relation. Similar email, time, name, UTM, IP,
+user agent, or campaign proximity may not. No acquisition-history backfill tool
+exists. Preserve unproved historical nulls as `historical_unlinked`; any future
+operator must be separately reviewed, append-only, idempotent, checkpointed,
+conflict-preserving, and prove a no-op rerun.
 
 ## HTTP and release contract
 
@@ -62,11 +153,12 @@ and JSON responses are `no-store`.
 | `/api/releases/latest` | `OPTIONS` | `204` CORS preflight | — |
 | `/api/download-lead` | `POST` | `200 {"ok":true}` after Postgres commit or `200 {"ok":true,"queued":true}` after Blob fallback | `400` validation, `409` idempotency conflict, `413` body over 8 KiB, `415` non-JSON, `429` rate limit, `503` no durable destination |
 | `/api/send-download-links` | `POST` / `GET` | Email POST sends signed Mac/Windows handoffs when anonymous continuity is configured and otherwise preserves its direct static-link fallback; `{"handoffOnly":true}` POST returns one no-email secure URL; GET accepts exactly one valid `handoff`, restores the acquisition cookie, and redirects to the canonical platform download | `400`/`413`/`415` request failures, `429` email rate limit, `502` provider failure, `503` storage/configuration failure; forged/expired/duplicated/augmented handoff is `404` |
-| `/api/auth/google/start` | `GET` | Sets bounded OAuth cookies and `302` redirects to Google | Invalid server configuration fails as a server error; unsafe `next` values collapse to `/account.html` |
+| `/api/acquisition/entry` | `GET` | Accepts exactly one encrypted/signed server delivery `handoff`, persists its canonical root/stages, restores the signed acquisition cookie, and redirects to `/` | Unsupported method, missing/extra query, forged/expired envelope, or storage failure returns indistinguishable private `404` |
+| `/api/auth/google/start` | `GET` | Resolves acquisition first, sets bounded OAuth state/next/acquisition cookies, and `302` redirects to Google | Acquisition and ordinary configuration failures render the same generic temporary-unavailability HTML; unsafe `next` values collapse to `/account.html` |
 | `/api/auth/google/callback` | `GET` | Creates the server session and `303` redirects to the allowlisted next path | `400` invalid state/code, `500` exchange/account/session failure |
 | `/api/auth/session` | `GET` | Always `200`: `{"authenticated":false}` or authenticated `user`, `license`, and `billing.hasCustomer` | Dependency failure is a server `500`; this read never processes Stripe events |
 | `/api/auth/logout` | `POST` | `200 {"ok":true}` after clearing the session | Dependency failure is a server `500` |
-| `/api/checkout/start` | `GET` | Signed-out users receive `302` to Google authentication; signed-in Free accounts receive `303` to Stripe Checkout; an active owner redirects to account/claim | `409 checkout_unavailable`, `intent_expired`, `activation_unavailable`, or `activation_window_too_short`; `429 rate_limited`; unhandled DB/Stripe failure is `500` |
+| `/api/checkout/start` | `GET` | Resolves the mandatory acquisition UUID; signed-out users receive `302` to Google authentication; signed-in Free accounts receive `303` to Stripe Checkout; an active owner redirects to account/claim | `503 acquisition_unavailable`; `409 checkout_unavailable`, `intent_expired`, `activation_unavailable`, or `activation_window_too_short`; `429 rate_limited`; unhandled DB/Stripe failure is `500` |
 | `/api/checkout/complete` | `GET` | Verifies the exact attached Session/Price/Product, reconciles payment, then `303` to thank-you | `400` missing session, `409` payment not ready or exact contract mismatch |
 | `/api/billing/portal` | `POST` | Authenticated `200 {"url":"..."}` for a Stripe Customer Portal Session | `401` unauthenticated, `400` no linked Stripe customer, Stripe failure is a server `500` |
 | `/api/billing/receipt` | `POST` | Authenticated `200 {"url":"..."}` for the latest owned charge receipt | `401` unauthenticated, `403` customer mismatch, `404` no purchase/receipt URL, Stripe failure is a server `500` |
@@ -75,8 +167,9 @@ and JSON responses are `no-store`.
 | `/api/activation/status` | `POST` | `200` state payload: `pending`, `pending_payment`, `active`, `completed`, `not_found`, `device_mismatch`, `expired`, `transfer_required`, `transfer_limit_reached`, `device_replaced`, or `device_deactivated` | A parsed non-null JSON value missing valid `activationKey` or `deviceId` returns `400 invalid_request`; valid JSON `null`, malformed JSON, and body-read failures currently escape as an unshaped platform `5xx`, not `400`; `503` environment unavailable |
 | `/api/activation/claim` | `GET` / `POST` | GET authenticates and routes Free accounts to Checkout; active owners receive the restore/transfer decision; same-origin CSRF-valid POST restores/reconnects/transfers | `400` invalid/transfer intent; `401` sign-in required; `403` inactive or CSRF; `409` unavailable, binding changed, or claim conflict; `503` environment unavailable |
 | `/api/activation/paid-claim` | `GET` / `POST` | Exact `paid-acquisition-mc-v1` activation source authenticates through Google; active owners use the same CSRF-bound reconnect/confirmed-transfer engine; inactive owners receive support-only noindex HTML | No Checkout fallback; nonmatching/expired/conflicting activation is unavailable; existing claim CSRF, device, transfer-limit, and environment failures remain unchanged |
-| `/api/installation/claim` | `POST` | Accepts exactly lowercase hex64 `installIdHash` and `installerReceiptIdHash` after panel-side receipt verification; returns a 15-minute opaque `browserUrl` and `expiresAt` | `400 invalid_request` / `invalid_customer_identity`; `503 claim_unavailable` when namespace, secret, schema, or database association is unavailable |
+| `/api/installation/claim` | `POST` | Accepts exactly lowercase hex64 `installIdHash` and `installerReceiptIdHash` after panel-side receipt verification; returns a 15-minute opaque `browserUrl`, opaque `acknowledgmentHandle`, and `expiresAt` | `400 invalid_request` / `invalid_customer_identity`; `503 claim_unavailable` when namespace, secret, schema, or database association is unavailable |
 | `/api/installation/claim-complete` | `GET` | Uses only one opaque `nonce` plus the signed acquisition cookie, consumes the exact claim once, and returns minimal private noindex HTML | `400` invalid nonce, `409` conflict, `410` expired, `503` unavailable; missing/forged browser state returns the same minimal `200` without consuming the claim |
+| `/api/installation/claim-status` | `POST` | Accepts only `acknowledgmentHandle`; returns `pending`, `browser_opened`, `claim_completed`, `conflict`, `expired`, or `terminal_unknown` with private no-store headers | `400 terminal_unknown` for invalid body/handle; `503 terminal_unknown` when environment or secret is unavailable; never reveals nonce, hashes, profile, or internal error detail |
 | `/api/license/verify` | `POST` | `200` current credential result | `400 invalid_request`; `401 invalid_token`, `revoked`, `device_mismatch`, `device_replaced`, or `device_deactivated`; `403 license_inactive`; `503` retryable environment failure |
 | `/api/license/refresh` | `POST` | `200` atomically rotated access/refresh pair; predecessor replay is deterministic for two minutes | Same stable `400`/`401`/`403`/`503` classes as verify |
 | `/api/license/authorize-download` | `POST` | Exactly `200 {"active":true}` for the active device | `401` revoked/replaced/deactivated device; `403` inactive; `503 {"code":"authorization_unavailable"}` is retryable |
@@ -86,7 +179,7 @@ and JSON responses are `no-store`.
 | `/api/internal/download-leads/replay` | `GET` / `POST` | `200 {"ok":true,"summary":{...},"nextCursor":string|null,"hasMore":boolean}` | `400` invalid controls/JSON, `401 unauthorized`, `415` non-JSON POST, `503 replay_unavailable`, `blob_unavailable`, or `invalid_blob_page`; per-record failures stay in the summary |
 | `/api/internal/maintenance` | `GET` | `200 {"ok":true,"outcome":"completed"|"locked","durationMs":n,"batchSize":n,"hasMore":boolean,"counts":{...}}` | `401 unauthorized`, `503 maintenance_unavailable`, `500 maintenance_failed` |
 | `/api/internal/customer-usage/sync` | `GET` | Once-daily protected aggregate summary with namespace, batches, source rows, daily buckets, refreshed profiles, and source freshness | `401 unauthorized`, `503 customer_usage_unavailable`, `500 customer_usage_sync_failed`; concurrent/daily duplicate invocation reports a non-error locked/skipped outcome |
-| `/api/internal/customers`, `/api/internal/customers/{customerId}`, `/api/internal/customer-summary`, `/api/internal/customers/funnel` | `POST` | `SIDESTREAM_CRM_ADMIN_SECRET`-protected, no-browser, no-store compact reads, license-backed summary, and first-install funnel report | `400` bounded validation, `401` unauthorized, `404` absent/tombstoned detail, `503 customer_admin_unavailable`, shaped `500` read failure |
+| `/api/internal/customers`, `/api/internal/customers/{customerId}`, `/api/internal/customers/lookup`, `/api/internal/customer-summary`, `/api/internal/customers/funnel` | `POST` | `SIDESTREAM_CRM_ADMIN_SECRET`-protected, no-browser, no-store compact reads, exact Stripe-reference lookup, license-backed summary, and first-install/first-purchase funnel report | `400` bounded validation, `401` unauthorized, `404` absent detail/lookup, `409` lookup integrity conflict, `503 customer_admin_unavailable`, shaped `500` read failure |
 
 Browser/account behavior and device support facts are expanded in
 `docs/single-device-entitlements.md`. Its former Production cutover prose is
@@ -98,18 +191,20 @@ replacement. None of those reads processes the Stripe event queue.
 The exact privacy, identity, attribution, and rollout contract is
 `docs/customer-360.md`. Operationally, `SIDESTREAM_ANONYMOUS_ACQUISITION_SECRET`
 signs/encrypts the 30-day browser cookie, seven-day computer handoff, and
-15-minute installation claim envelope. The browser token is 256-bit random and
-only its SHA-256 digest is persisted. URLs expose only `handoff` or `nonce`,
-never UTM fields, email, install/receipt hashes, profile IDs, payment, device, or
-entitlement evidence.
+15-minute installation claim/acknowledgment envelopes. The v2 browser cookie
+contains the canonical acquisition UUID and immutable bounded first touch; its
+derived legacy-compatible claim token is never serialized. URLs expose only
+`handoff` or `nonce`, never UTM fields, email, install/receipt hashes, profile
+IDs, payment, device, or entitlement evidence.
 
 The browser cookie write and post-redirect acquisition persistence are best
 effort. Missing/weak secret, invalid cookie, database failure, or scheduling
 failure cannot block a valid page or static installer response. The claim and
 Customer 360 surfaces do fail closed when unconfigured. Exact same-profile
 claim replay is idempotent; contradictory evidence is quarantined with an
-append-only digest. No acquisition path changes manifest selection or package
-pathname/SHA/size.
+append-only digest. The panel may poll only with the opaque acknowledgment
+handle and receives the six bounded states listed above. No acquisition path
+changes manifest selection or package pathname/SHA/size.
 
 ### Dedicated paid onboarding claim boundary
 
@@ -383,7 +478,16 @@ An existing non-empty schema without the ledger is not automatically assumed to
 be current. `--status` reports that a baseline is required; `--baseline` checks
 the known pre-hardening schema and records only migrations it can prove. Applying
 refuses an unbaselined non-empty schema. The chain currently ends with
-`20260731120000_add_anonymous_acquisition_sessions.sql`; the earlier
+`20260803120000_add_acquisition_integrity.sql`. Its acquisition-dependent tail
+must stay ordered as regional Checkout snapshots
+(`20260729120000_add_regional_checkout_offer_snapshots.sql`), anonymous
+acquisition sessions (`20260731120000_add_anonymous_acquisition_sessions.sql`),
+then acquisition integrity (`20260803120000_add_acquisition_integrity.sql`). The
+last migration creates private root/stage/conflict tables and adds the
+Checkout-intent foreign key plus new-insert guard while deliberately preserving
+historical nulls. Stop if connected status does not prove all three with the
+repository checksums before acquisition-aware runtime deployment. Never reorder,
+squash, edit, baseline, or mark the last migration applied by hand. The earlier
 `20260714200000_remove_redundant_download_lead_key_unique.sql` keeps canonical
 lead uniqueness on `(email, cta_source)` and `lead_key` as a non-unique lookup
 index. Runtime DDL is prohibited and checked by
@@ -524,6 +628,7 @@ Never paste values into this document, tickets, chat, browser code, or CEP code.
 | Migration database | `SIDESTREAM_POSTGRES_URL_NON_POOLING` preferred; `POSTGRES_MIGRATION_STATEMENT_TIMEOUT_MS` defaults to 300000 and is bounded 1000-1800000; runner pool max is 1 |
 | Test database | `SIDESTREAM_TEST_POSTGRES_URL` is mandatory for integration tests, must be disposable, and must not normalize to any runtime host/port/database target |
 | Anonymous acquisition | `SIDESTREAM_ANONYMOUS_ACQUISITION_SECRET` is stable server-only secret material for cookie, handoff, and claim continuity; `SIDESTREAM_PAID_ACQUISITION_ASSIGNMENT_SECRET` is separately required only for signed `/mc` experiment dimensions. Missing/invalid values never become browser-selected fallbacks. Optional email-later uses existing `RESEND_API_KEY`, `BLOB_READ_WRITE_TOKEN`, `SIDESTREAM_LEAD_HASH_SECRET`, and `SIDESTREAM_RATE_LIMIT_HASH_SECRET` (or Vercel-managed `VERCEL_OIDC_TOKEN` plus `BLOB_STORE_ID` for Blob access); no-email secure sharing remains available without a recipient. |
+| Upgrade / Google / Stripe names | `SIDESTREAM_BASE_URL`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REDIRECT_URI`, `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `SIDESTREAM_PRO_PRODUCT_ID`, `SIDESTREAM_PRO_PRICE_ID`, `SIDESTREAM_UNLIMITED_PRICE_ID`, `SIDESTREAM_PRO_INDIA_PRICE_ID`, `SIDESTREAM_PRO_BRAZIL_PRICE_ID`, `SIDESTREAM_PRO_SOUTH_KOREA_PRICE_ID`, `VERCEL_ENV`, `SIDESTREAM_PRODUCTION_API_HOSTS`, `SIDESTREAM_TEST_API_HOSTS`. Values remain only in the approved secret/configuration manager. |
 | Customer 360 | `SIDESTREAM_CRM_ADMIN_SECRET` protects non-browser reads and cursor signing; `SIDESTREAM_TELEMETRY_POSTGRES_URL` selects a separate read-only telemetry source; `SIDESTREAM_LICENSE_NAMESPACE` is trusted server state. Human-only guarded usage operations select Production target through `SIDESTREAM_POSTGRES_URL_NON_POOLING` or Test through `SIDESTREAM_TEST_POSTGRES_URL`. Never expose values. |
 | Rate limiter | `SIDESTREAM_RATE_LIMIT_HASH_SECRET`, at least 32 characters and stable; no production fallback. Checkout is fixed at 8/intent and 20/IP per 15 minutes; lead capture is fixed at 5/email and 20/IP per 10 minutes |
 | Checkout intent | Database intent TTL 24 hours; fixed code constant. Product/Price variables are `SIDESTREAM_PRO_PRODUCT_ID`, `SIDESTREAM_PRO_PRICE_ID`, and legacy `SIDESTREAM_UNLIMITED_PRICE_ID` |
@@ -563,7 +668,7 @@ tokens, device IDs, full Stripe payloads, or lead email addresses.
 | Lead fallback backlog | Private Blob count and oldest age under the configured prefix | Warning if nonzero for 15 minutes after Postgres recovers or oldest exceeds 30 minutes; critical over 2 hours or growth across two replay intervals. |
 | Unmapped Blob records | Replay `summary.unmapped` and path sample without lead contents | Critical on any new unmapped record. Quarantine/preserve it; do not auto-delete. |
 | Maintenance | Missing run, `maintenance_failed`, `hasMore`, duration, and every deletion/redaction count | Critical on any failed run or no completed/locked run in 26 hours; warning when `hasMore` or a count reaches batch size for 3 runs, or a count exceeds 4x its rolling seven-day median. |
-| Anonymous acquisition | First visits, installer requests, claimed/quarantined sessions, and exact confidence coverage as aggregate counts only | Stop rollout on unexpected quarantine growth, claim conflicts, privacy leakage, or a material drop in installer delivery. Tracking failure must not be counted as installer failure. |
+| Acquisition integrity | Canonical roots by integrity state; all ten stage counts/grains; Checkout/Stripe acquisition mismatch outcomes; claim status distribution; exact lookup conflicts; attributed/unknown coverage | Critical on new `missing_internal_linkage`, quarantine, owner/stage conflict, Checkout acquisition mismatch, unexpected `terminal_unknown`, lookup ambiguity, missing required stage, or privacy leakage. Track `historical_unlinked` separately. Tracking failure must not be counted as installer or fulfillment success. |
 | Customer usage/funnel | Last sync outcome, source freshness/lag, rescan checkpoint completeness, attributed/unknown coverage, and each exposed numerator/denominator | Stop on stale/null freshness beyond the approved threshold, incomplete/mismatched checkpoint, unknown coverage disappearance, or any numerator above its defined denominator. Do not trust historical retention before rescan `complete=true`. |
 | DB pool saturation | Provider connections, pool waiters/acquisition timeouts, query/statement timeouts | Warning at 80% provider connections for 5 minutes or waiters for 1 minute; critical at 90% or any sustained acquisition timeout. Reduce concurrency/pool, do not switch to direct runtime URLs. |
 | Release-platform mismatch | Compare manifest and download HEAD platform/version/SHA/filename/size for Mac and Windows aliases | Critical on any mismatch or an unknown platform that does not return `404`; stop promotion and use only the pre-qualified schema-compatible manifests/application artifact. |
@@ -749,6 +854,71 @@ databases. Production reporting/export remains blocked until separately owned
 tools implement clean selection, strict endpoint/TLS-option rejection, pinned
 provider-CA and hostname validation, and connected-target evidence without
 printing a URL or customer data to uncontrolled output.
+
+### Acquisition verification, release, and rollback stops
+
+Run local source gates first:
+
+```bash
+npm run test:customer-360
+npm run test:acquisition-journey-matrix
+npm run verify:checkout-contract
+npm run test:entitlement
+npm run db:migrate -- --validate
+node scripts/validate-vercel-contract.mjs
+npm run typecheck
+npm run build
+git diff --check
+```
+
+When schema/query/concurrency behavior changes, separately use only an approved
+disposable selector:
+
+```bash
+SIDESTREAM_TEST_POSTGRES_URL='<disposable-postgres-url>' npm run test:customer-360-postgres
+SIDESTREAM_TEST_POSTGRES_URL='<disposable-postgres-url>' npm run test:acquisition-journey-matrix-postgres
+```
+
+These checks prove repository and disposable-database behavior only. They do
+not prove live Google, Stripe, Neon, Resend, Vercel, browser, or Premiere
+behavior. A separately authorized live qualification must observe each relevant
+surface, including Google round trip, exact Stripe metadata chain, connected
+migration ledger/roles, email delivery when in scope, canonical browser cookie,
+claim acknowledgment transitions, protected lookup/funnel pagination, actual
+installer bytes, and loaded Premiere behavior.
+
+Production source is only a clean, pushed `origin/main` commit. Before push,
+run `npm run verify:production-source`, `npm run test:entitlement`, and
+`npm run build`; then push only `main:main` and wait for the Git-linked Vercel
+Production deployment. Do not deploy or promote a feature, Orchestra, detached,
+or local worktree branch and do not use a direct Vercel CLI Production deploy in
+an agent session. A Ready or Preview deployment is not proof. Canonical
+`https://sidestream.tv/version.json` must report the pushed SHA, and the live
+`/api/checkout/start` path must still prove Upgrade -> Google authentication ->
+Stripe before completion is reported.
+
+Stop before migration, deployment, traffic, or the next rollout stage on any:
+
+- target/namespace/TLS/checksum/RLS/grant mismatch or acquisition migration not
+  last in the complete applied chain;
+- new intent without `acquisition_id`, Session/Invoice/PaymentIntent UUID
+  mismatch, fulfillment `ignored checkout_<reason>`, owner/stage conflict, or
+  missing required stage;
+- new `missing_internal_linkage`/quarantine, unexpected `terminal_unknown` claim
+  growth, lookup ambiguity, cursor/filter mismatch, source truncation mistaken
+  for completeness, or privacy leakage;
+- refund/dispute current-state inconsistency, canonical SHA mismatch, installer
+  hash/size drift, or unproved live provider/product behavior.
+
+Rollback is stop-first, main-only, and no-delete. Stop the approved traffic/job
+surface; preserve logs, queue rows, stage/conflict evidence, checkpoints, and
+connected status; and restore only a schema-compatible last-known-good commit
+through `origin/main` plus Git-linked Production. Never run down SQL, rewrite an
+immutable first touch, update/delete stage or conflict rows, fabricate
+historical acquisitions, manually attach Stripe/Customer 360 owners, or treat a
+snapshot restore as feature-only. Removing/rotating access secrets to make new
+surfaces fail closed and restoring a database snapshot both require separate
+human authorization and impact analysis for concurrent website writes.
 
 ## Full-service Production cutover status: blocked
 

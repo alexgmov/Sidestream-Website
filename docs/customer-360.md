@@ -27,6 +27,13 @@ Customers dashboard rendered live Production data through its loopback proxy.
 This is the qualification baseline; future changes must repeat the applicable
 human-gated stages below rather than treating this record as standing approval.
 
+The acquisition-integrity migration and source contract documented below are a
+later repository change. This documentation run performed only local source,
+test, type, and build checks. It did not prove that
+`20260803120000_add_acquisition_integrity.sql` is applied in live Neon or that
+live Google, Stripe, Resend, Vercel, browser, or Premiere behavior matches the
+local contract.
+
 The website repository owns the Customer 360 database, Stripe money projection,
 telemetry aggregate import, and private read API. FlowState may provide durable
 association values such as `installIdHash`, but it does not select the database,
@@ -44,7 +51,7 @@ None is a substitute for another:
 
 | Identity | Authority and lifetime | Explicit non-authority |
 | --- | --- | --- |
-| Browser acquisition session | A random 256-bit token in the signed, 30-day, `Secure`, `HttpOnly`, `SameSite=Lax`, host-only `__Host-sidestream-acquisition-v1` cookie. Postgres stores only its SHA-256 digest, immutable first touch, optional signed experiment, first installer request, and claim state. The default retained-until horizon is 90 days and the schema caps it at 180 days. | It is not an account, email, install, device credential, payment, or entitlement. A visit alone creates no Customer 360 profile. |
+| Browser acquisition session | A server-generated UUID plus bounded first touch in the signed, 30-day, `Secure`, `HttpOnly`, `SameSite=Lax`, host-only `__Host-sidestream-acquisition-v2` cookie. The UUID points to the private canonical acquisition root. The derived legacy-compatible claim token is never serialized. | It is not an account, email, install, device credential, payment, or entitlement. A visit alone creates no Customer 360 profile. |
 | Installation evidence | The panel's existing lowercase hex64 `installIdHash` plus a separately generated lowercase hex64 `installerReceiptIdHash`, submitted only after local receipt verification. | Neither hash authenticates an account, grants a device seat, proves payment, or selects attribution. Raw IDs never cross this boundary. |
 | Customer 360 profile | A server-created UUID in one trusted `production` or `test` namespace, connected to the browser session only by the one-time installation claim. It may remain sparse and email-free indefinitely. | The profile is not a login session, active device binding, license credential, or browser token. |
 | Verified account/contact | A Google-authenticated server account and its verified email, optionally attached later through exact server-side identity evidence. | Email does not merge profiles and does not replace the anonymous first touch. It is acquisition evidence only under the lower-precedence exact verified-email rule below. |
@@ -63,8 +70,10 @@ eligible page GET
        -> same /api/download route and same static package
   -> panel verifies its local installer receipt
   -> POST /api/installation/claim with only two hashes
-  -> browser opens a 15-minute opaque nonce
+       -> panel receives a 15-minute browser URL plus opaque acknowledgment handle
+  -> browser opens the 15-minute opaque nonce
   -> GET /api/installation/claim-complete combines nonce + signed cookie once
+  -> panel polls POST /api/installation/claim-status with the handle
   -> sparse Customer 360 profile is created or reused
   -> later verified Google/account evidence may attach to that same profile
 ```
@@ -81,10 +90,193 @@ when browser state is missing or forged and does not consume the one-time claim.
 The claim request accepts exactly `installIdHash` and
 `installerReceiptIdHash`; attribution, account, email, payment, entitlement,
 and device fields are rejected. Its encrypted, signed nonce expires after 15
-minutes and is the only claim URL parameter. Exact replay to the same profile is
-idempotent. Reuse against different evidence, conflicting identity ownership,
-or contradictory profile ownership is quarantined with append-only hashed
-evidence; it is never guessed, overwritten, or silently re-opened.
+minutes and is the only claim URL parameter. The acknowledgment handle is
+encrypted/signed server state and is sent only in the status POST body. Status
+is exactly `pending`, `browser_opened`, `claim_completed`, `conflict`, `expired`,
+or `terminal_unknown`; malformed/unknown handles never reveal a different
+internal state. Exact replay to the same profile is idempotent. Reuse against
+different evidence, conflicting identity ownership, contradictory profile
+ownership, or a claim whose acquisition UUID/token do not agree is quarantined
+with append-only hashed evidence; it is never guessed, overwritten, or silently
+re-opened.
+
+## Canonical acquisition integrity
+
+### Root, first touch, and trust boundaries
+
+`public.sidestream_acquisitions.id` is the canonical acquisition root. It is a
+server-generated UUID scoped to exactly one `production` or `test` license
+namespace. The root owns immutable first-observed source, medium, campaign,
+creative, entry channel, time, coarse external-referrer category, optional
+signed experiment, and attribution confidence. Delivery evidence may only grow;
+the first touch cannot be edited. A contradictory replay writes a hashed
+conflict and makes quarantine sticky instead of choosing a winner.
+
+The browser and server-owned delivery boundaries are:
+
+```text
+ordinary eligible entry
+  -> signed __Host-sidestream-acquisition-v2 cookie
+  -> canonical entryChannel=website
+  -> exact bounded UTM, coarse external referrer, or
+     source=website_direct_or_unknown
+
+trusted delivery integration selected in server code
+  -> encrypted + signed seven-day envelope
+  -> canonical entryChannel=manychat_email or facebook_lead_form
+  -> fixed source/campaign/referrer category from the allowlist
+  -> /api/acquisition/entry restores a signed browser cookie
+
+Upgrade
+  -> GET /api/checkout/start resolves the canonical UUID
+  -> signed-out browser -> Google -> same UUID restored from the short-lived
+     HttpOnly OAuth acquisition cookie
+  -> signed-in Free account -> locked Checkout intent -> Stripe
+  -> verified fulfillment -> entitlement + acquisition stages in one transaction
+```
+
+`website`, `manychat_email`, and `facebook_lead_form` are immutable values on
+the root. Browser query/body input can create only the bounded ordinary website
+first touch; it cannot select either trusted delivery channel. The two delivery
+channels are selected by server library code and their source/campaign mapping
+must survive encryption, signature, expiry, and exact-key validation.
+
+`website_direct_or_unknown` has one exact meaning: Sidestream observed a
+website entry, no external origin was available, the external-referrer category
+is null, and confidence is `exact_sidestream_entry`. It is truthful unknown
+external origin. It must never be used to conceal missing Sidestream-owned joins
+between account, intent, Stripe, installation, profile, or report data. Those
+are `missing_internal_linkage`; older records that predate deterministic proof
+are `historical_unlinked`.
+
+The only allowlisted delivery evidence on the root is `website_entry`,
+`signed_email_handoff`, `secure_share_handoff`, `installer_redirect`,
+`authenticated_account`, `checkout_intent`, `stripe_checkout_session`, and
+`verified_installation_claim`. It is bounded, append-only, and is not a generic
+payload store.
+
+### Ten-stage ledger and counting grains
+
+`public.sidestream_acquisition_stages` is append-only. The server hashes the
+trusted namespace, stage, and stable server-owned reference into a 64-character
+deduplication key. Exact retries converge on the unique namespace/stage/key;
+the same key presented for another root quarantines both owners and records only
+hashed conflict evidence.
+
+| Stage | Counting grain | Stable fact represented |
+| --- | --- | --- |
+| `landing_observed` | `acquisition` | One canonical first entry |
+| `email_handoff_created` | `delivery_handoff` | One server-owned delivery envelope |
+| `installer_requested` | `installer_request` | One accepted platform installer request |
+| `installation_claimed` | `installation` | One verified install identity claim |
+| `authentication_completed` | `authentication` | One exact Google account/acquisition completion |
+| `checkout_started` | `checkout_intent` | One locked Checkout intent |
+| `checkout_completed` | `checkout_session` | One verified completed Stripe Session |
+| `payment_settled` | `payment` | One verified PaymentIntent, or exact zero-total Session fallback |
+| `refunded` | `refund` | One exact Stripe refund ID with positive refunded money |
+| `disputed` | `dispute` | One exact Stripe dispute ID |
+
+Stage time cannot predate the root's first observation. Refund/dispute rows are
+immutable lifecycle facts, not a mutable current-state flag. Current paid,
+refunded, disputed, inquiry, and net-money status continues to come from the
+canonical commerce materialization. A dispute stage may therefore remain after
+Stripe reports a later win, while current disputed money becomes zero under the
+commerce rules.
+
+### Mandatory Checkout and Stripe agreement
+
+The paid sequence remains exactly Upgrade -> Google authentication -> Stripe,
+owned end to end by `GET /api/checkout/start`. Acquisition is resolved before
+Google redirect or intent insertion. A valid signed cookie wins; a valid
+server-owned handoff is next; otherwise the server creates a new truthful
+`website_direct_or_unknown` root. Google start exposes acquisition storage
+failure only as its generic temporary-unavailability HTML. Checkout exposes the
+separate machine-readable `503 acquisition_unavailable` response.
+
+Every new `sidestream_checkout_intents` insert requires `acquisition_id`.
+Historical rows deliberately remain nullable. Checkout creation copies the UUID
+into `sidestream_acquisition_id` metadata. Fulfillment requires exact agreement
+between the locked intent and:
+
+- Checkout Session metadata;
+- Invoice metadata when the Session has an Invoice; and
+- PaymentIntent metadata when the Session has a PaymentIntent.
+
+The Session must also pass the existing exact intent, account, activation,
+offer, Product, Price, currency, subtotal/discount/tax/shipping/total,
+customer, PaymentIntent, and Charge checks. A complete verified zero-total
+Session may have no PaymentIntent with `payment_status=paid` or
+`no_payment_required`; only then does the Session become the settlement
+reference. The exception never weakens acquisition or offer agreement.
+
+A mismatch fails closed. Browser completion returns `409` with a bounded reason,
+does not redirect to a success page, and does not commit an entitlement or the
+`checkout_completed`/`payment_settled` stages. A signed webhook event that
+returns a non-fulfilled bounded mismatch is terminally recorded as an `ignored`
+`checkout_<reason>` outcome; thrown provider/database failures follow the
+existing retry/dead-letter path. Operators must treat acquisition mismatch,
+missing linkage, owner conflict, or stage conflict as an integrity alert, not as
+a successful purchase and not as permission for a manual row edit.
+
+### Reporting cohorts, lookup, pagination, and alerts
+
+`POST /api/internal/customers/funnel` has an independent `cohortBasis` selector:
+
+- `first_install` uses the live profile's earliest install membership time.
+- `first_purchase` uses the live profile's earliest verified paid time across
+  currency totals and includes accounts that purchased before installation.
+
+Both use the same inclusive `cohortStart`, exclusive `cohortEnd`, and later
+exclusive completed-UTC-day `observationEnd`. The selector changes cohort
+membership; it does not silently reuse the other basis. Journey pagination is
+keyset order `(cohortAt, customerId)`, limit 1-100, and a signed opaque
+`journeyCursor` binds namespace, basis, limit, and all three time boundaries.
+Changing any bound invalidates the cursor. `nextJourneyCursor=null` is the final
+page. Source totals are explicitly capped at 100 groups and report
+`sourcesTruncated`; no caller may interpret a truncated page as comprehensive.
+
+Stage counts use distinct stage deduplication keys in
+`[cohortStart, observationEnd)`. Integrity alerts separately count roots whose
+first observation is in `[cohortStart, cohortEnd)` and state is
+`missing_internal_linkage`, `historical_unlinked`, or `quarantined`. Alert on
+any new missing internal linkage or quarantine; track historical-unlinked as an
+explicit migration debt rather than folding it into external unknown origin.
+
+`POST /api/internal/customers/lookup` accepts only an exact Stripe reference
+matching `cus_`, `cs_`, `pi_`, or `ch_` plus the required namespace. It resolves
+only stored identity/commerce aliases, returns `404 customer_not_found` for no
+owner and `409 conflicting_lookup_ownership` for ambiguous/conflicting
+ownership, and returns the privacy-safe customer, acquisition-stage summary,
+and payment status. The supplied Stripe ID is never echoed. Prefix search,
+email/name search, and inferred joins are prohibited.
+
+A paid customer is one distinct live cohort profile with verified
+`first_paid_at < observationEnd` and current materialized `net_paid_minor > 0`
+in at least one currency. Refunds and formal open/lost disputes reduce net paid;
+zero net removes current paid-customer status without erasing the immutable
+first-purchase landmark or refund/dispute ledger stages. `paidCustomerPercentage`
+is therefore distinct people, not transactions, revenue, entitlement, or
+attribution coverage.
+
+### Historical correction and privacy
+
+Migration `20260803120000_add_acquisition_integrity.sql` does not invent roots
+for old Checkout intents. A historical link may be added only when existing
+server-owned evidence proves the exact relationship, such as an exact signed
+cookie/claim, verified account or activation link, exact Checkout/Stripe alias,
+verified installer receipt, or reviewed server campaign/delivery record. Email
+similarity, timestamps, names, UTM resemblance, or probabilistic matching are
+not proof. When deterministic evidence is absent, preserve the null and report
+`historical_unlinked`. The repository has no acquisition-history mutation tool;
+any future backfill requires a separate reviewed append-only, idempotent,
+checkpointed operator with conflict preservation and a no-op rerun.
+
+Acquisition roots, stages, conflicts, lookup responses, funnel groups, and
+journeys must not retain or expose raw email, IP, user agent, cookie, browser
+token, install/receipt hash, identity-link value, Stripe payload, telemetry
+payload, or Stripe `cus_`/`cs_`/`pi_`/`ch_` identifier. The canonical UUID and
+deduplication/conflict hashes are private server/database facts; public URLs and
+installer packages contain neither.
 
 ### Profiles, installs, and identity
 
@@ -391,23 +583,27 @@ The request body accepts only:
 | Field | Contract |
 | --- | --- |
 | `licenseNamespace` | Required `production` or `test`; scopes every identity, install, usage, activation, and attribution read |
+| `cohortBasis` | Optional `first_install` or `first_purchase`; defaults to `first_install` and independently selects the cohort landmark |
 | `cohortStart` | Required valid UTC timestamp ending in `Z`; inclusive |
 | `cohortEnd` | Required valid UTC timestamp ending in `Z`; exclusive and after the start |
 | `observationEnd` | Required UTC day boundary at `00:00:00Z`; exclusive, at or after `cohortEnd`, and used only for completed observation days |
 | `journeyLimit` | Optional integer 1-100; defaults to 50 |
+| `journeyCursor` | Optional opaque signed cursor returned by the previous page; bound to namespace, cohort basis, limit, and all window fields |
 
-The first-install cohort window cannot exceed 366 days, and the complete span
+The selected cohort window cannot exceed 366 days, and the complete span
 from `cohortStart` through `observationEnd` cannot exceed 730 days.
-`dateWindow.cohortDefinition` is `first_install_at`, `endExclusive` applies to
-`cohortEnd`, and `observationEndExclusive` applies to the completed UTC-day
-observation boundary. Cohort selection never expands when an analyst moves
+`dateWindow.cohortDefinition` is `first_install_at` or `first_purchase_at` as
+selected. `endExclusive` applies to `cohortEnd`, and
+`observationEndExclusive` applies to the completed UTC-day observation
+boundary. Cohort selection never expands when an analyst moves
 `observationEnd` later.
 
 ### Exact metric definitions
 
 | Metric | Exact definition |
 | --- | --- |
-| Install / cohort membership | `firstInstallAt` is the minimum `first_seen_at` across the live profile's current `sidestream_customer_installs` memberships. A profile is in the cohort only when `cohortStart <= firstInstallAt < cohortEnd`. |
+| First-install cohort membership | When `cohortBasis=first_install`, `firstInstallAt` is the minimum `first_seen_at` across the live profile's current install memberships; membership requires `cohortStart <= firstInstallAt < cohortEnd`. |
+| First-purchase cohort membership | When `cohortBasis=first_purchase`, `firstPurchaseAt` is the minimum verified `first_paid_at` across the live profile's money totals; membership requires `cohortStart <= firstPurchaseAt < cohortEnd`, even if no installation exists yet. |
 | Telemetry-derived install evidence | `installer_install_completed`, `session_started`, or an accepted download attempt/success may contribute an exact lifecycle timestamp. A heartbeat is not install-completion or open evidence and must not advance an existing install lifecycle. |
 | First open | Earliest `first_app_use_at` before `observationEnd`, where `first_app_use_at` is populated only from an exact schema `0.2.0` `session_started` event. |
 | Active/open day | UTC calendar day with at least one `session_started`. Installer events, heartbeats, download events, and other telemetry do not create an active/open day. |
@@ -460,7 +656,11 @@ Attribution is deterministic and deliberately narrow:
    `cta_source=mobile-download-handoff` lead's normalized email exactly equals
    both the verified account email and the profile's verified contact email.
    Source, medium, campaign, and first-attributed time come from that lead.
-4. Every other profile is `source=unknown` with
+4. A canonical acquisition root joined through an exact account, activation,
+   Checkout Session identity link, or non-conflicting commerce alias is next.
+   Its immutable root source/channel/confidence and integrity state are used
+   only when `first_observed_at <= cohortAt`.
+5. Every other profile is `source=unknown` with
    `attributionConfidence=unattributed`.
 
 Paid attribution wins over anonymous claim and verified email even when either
@@ -471,13 +671,14 @@ stable acquisition-session ID tie-breaker. Within freemium candidates, the
 earliest lead wins with a stable lead-ID tie-breaker.
 
 All candidate classes are acquisition first touches only when their
-`first_attributed_at`/`first_captured_at` is at or before the profile's exact
-`firstInstallAt`. A paid entry first captured after installation is ineligible
-even when its exact identity linkage is otherwise valid. The canonical
-verified-email lead must also have `last_captured_at <= firstInstallAt`: because
+`first_attributed_at`/`first_captured_at` is at or before the profile's selected
+exact `cohortAt`. A paid entry first captured after the selected landmark is
+ineligible even when its exact identity linkage is otherwise valid. The canonical
+verified-email lead must also have `last_captured_at <= cohortAt`: because
 that row does not retain per-field capture timestamps, a row revisited after
-install is conservatively excluded instead of allowing later-filled attribution
-fields to rewrite acquisition source, campaign, or experiment dimensions.
+the selected cohort landmark is conservatively excluded instead of allowing
+later-filled attribution fields to rewrite acquisition source, campaign, or
+experiment dimensions.
 
 For repeat mobile handoffs, each UTM field preserves its earliest non-null value:
 a later submission may fill a field that was previously null but cannot replace
@@ -506,36 +707,40 @@ verified-email link remain unknown.
 
 ### Coverage, output, and privacy
 
-Source-segmented retention covers only exact paid links, exact anonymous claims,
-and exact verified-email matches. Every anonymous unlinked install remains
-unknown. This is an explicit coverage boundary, not missing data that the
-report may guess away.
+Source-segmented retention covers exact paid links, exact anonymous claims,
+exact verified-email matches, and exact canonical acquisition roots. Every
+unlinked cohort profile remains unknown. This is an explicit coverage boundary,
+not missing data that the report may guess away.
 `attributionCoverage` therefore reports:
 
-- numerator: `exact_paid_checkout + exact_anonymous_claim +
-  exact_verified_email` cohort profiles;
-- denominator: every profile in the first-install cohort;
+- numerator: every cohort profile whose confidence is not `unattributed`;
+- denominator: every profile in the selected cohort;
 - percentage: that ratio, or null for an empty cohort;
 - paid-attributed, anonymous-attributed, freemium-attributed, and unattributed
-  profile counts. The parallel `coverage` object exposes the same total
-  attributed and unknown ratios plus one cohort-denominator ratio per exact
-  confidence class.
+  profile counts. The three named class counts cover the legacy exact paid,
+  anonymous-claim, and verified-email classes; canonical-root confidence is
+  included in total attributed coverage but is not mislabeled as one of those
+  three. The parallel `coverage` object exposes the same total attributed and
+  unknown ratios plus one selected-cohort-denominator ratio for each of those
+  three named classes.
 
 Overall stickiness continues to use all install IDs and all exact open days.
 Unknown installs remain in product-wide install/open/return denominators even
 though they cannot support source-segmented comparison.
 
 `groups` cover the complete cohort and are partitioned by source, medium,
-campaign, experiment, cohort, and attribution confidence. Each group exposes
-profile, first-open, completed-activation, return-eligible, returned, and
-one-and-done counts plus the four numerator/denominator/percentage objects
-defined above. `journeys` are ordered by exact first install time then customer
-UUID and expose only the customer UUID, bounded attribution
-dimensions/confidence, first-attributed/install/open/activation timestamps,
-first anonymous installer-request timestamp/platform when present, day-zero
-attempt count, later UTC open dates, explicit return eligibility, returned
-status, and one-and-done status. The response includes `journeyLimit`,
-`journeysReturned`, and `journeysTruncated`.
+campaign, experiment, cohort, attribution confidence, and integrity state.
+Each group exposes profile, first-open, completed-activation, paid-customer,
+return-eligible, returned, and one-and-done counts plus all five
+numerator/denominator/percentage objects defined above. `sourceTotals` rolls up
+at most 100 sources and exposes cap/truncation metadata. `journeys` are ordered
+by selected `cohortAt` then customer UUID and expose only the customer UUID,
+bounded attribution dimensions/confidence/integrity, cohort/install/purchase/
+open/activation timestamps, first anonymous installer-request timestamp and
+platform when present, paid-customer boolean, day-zero attempt count, later UTC
+open dates, return eligibility, returned status, and one-and-done status. The
+response includes `journeyLimit`, `journeysReturned`, `journeysTruncated`, and a
+signed `nextJourneyCursor` or null.
 
 Email, `installIdHash`, installer receipt/assignment hashes, Stripe identifiers,
 identity-link values, raw telemetry, and raw attribution proof do not cross the
@@ -640,6 +845,7 @@ The server-only routes are:
 
 - `POST /api/internal/customers`
 - `POST /api/internal/customers/{customerId}`
+- `POST /api/internal/customers/lookup`
 - `POST /api/internal/customer-summary`
 - `POST /api/internal/customers/funnel`
 
@@ -666,10 +872,12 @@ below apply only to the list route:
 | `dataQualityFlag` | One documented quality flag below |
 
 There is intentionally no search text, email substring, name substring, raw
-identity, Stripe-ID, or behavioral search filter. Detail and summary bodies
-accept only `licenseNamespace`; `{customerId}` must be a UUID. Namespace is
-required on all four routes, and summary additionally requires it to match the
-deployment/database namespace.
+identity, or behavioral search filter. Detail and summary bodies accept only
+`licenseNamespace`; `{customerId}` must be a UUID. Lookup accepts only
+`licenseNamespace` and one exact `stripeReference` beginning `cus_`, `cs_`,
+`pi_`, or `ch_`; it never echoes the value. Namespace is required on all five
+routes, and summary additionally requires it to match the deployment/database
+namespace.
 
 ### Cursors and consistency
 
@@ -680,14 +888,24 @@ The opaque keyset cursor is HMAC-SHA-256 signed with
 Tampering, reusing it with different filters/limit/namespace, or rotating the
 secret returns `400 invalid_cursor`. `nextCursor` is null on the final page.
 
+Funnel journey reads use the separate ascending `(cohortAt, customerId)`
+keyset. `journeyCursor` is HMAC-SHA-256 signed with the same admin secret and
+binds namespace, `cohortBasis`, journey limit, cohort start/end, and observation
+end. Tampering or changing any selector returns `400 invalid_journey_cursor`;
+`nextJourneyCursor` is null on the final page.
+
 ### Response envelopes
 
-List success is `{"customers":[...],"nextCursor":string|null}`. Detail success
-is `{"customer":{...}}`; a missing live root in the requested namespace returns
-`404 customer_not_found`. List and detail use the same customer object. Funnel
-success is the date window, activation percentage, attribution coverage,
-totals, complete groups, bounded journeys, and journey truncation metadata
-documented above; it does not use the compact customer object.
+List success is `{"customers":[...],"nextCursor":string|null}`. Detail and
+exact-lookup success are `{"customer":{...}}`; a missing live root or exact
+lookup owner in the requested namespace returns `404 customer_not_found`.
+Ambiguous/conflicting exact Stripe ownership returns `409
+conflicting_lookup_ownership`. Lookup adds the privacy-safe acquisition
+stage/payment summary documented above and never echoes the supplied Stripe
+reference. Funnel success is the date window, percentages, attribution
+coverage, totals, complete groups, bounded source totals, ten stage counts,
+integrity alerts, bounded journeys, and signed pagination metadata documented
+above; it does not use the compact customer object.
 
 Summary success is
 `{"licenseNamespace":"production|test","totals":{"unlimitedAccessUsers":"…","paidUsers":"…","paidUnlimitedAccessUsers":"…","successfulPayments":"…"}}`.
@@ -763,11 +981,13 @@ The possible `dataQualityFlags` are `usage_not_synced`,
 
 Validation failures return `400` with a stable code such as
 `invalid_request`, `invalid_namespace`, `invalid_limit`, `invalid_filter`,
-`invalid_cursor`, `invalid_customer_id`, `unknown_request_key`,
-`invalid_cohort_window`, or `invalid_journey_limit`. An unexpected list/detail
-read failure returns `500 customer_query_failed`; an unexpected funnel read
-failure returns `500 acquisition_funnel_query_failed`. Error payloads do not
-expose database or source details.
+`invalid_cursor`, `invalid_customer_id`, `invalid_stripe_reference`,
+`unknown_request_key`, `invalid_cohort_basis`, `invalid_cohort_window`,
+`invalid_journey_cursor`, or `invalid_journey_limit`. An unexpected list/detail
+read failure returns `500 customer_query_failed`; unexpected exact lookup
+returns `500 customer_lookup_failed`; unexpected funnel read returns `500
+acquisition_funnel_query_failed`. Error payloads do not expose database or
+source details.
 
 ## Privacy exclusions and retention
 
@@ -779,8 +999,11 @@ telemetry or generic payload containers, raw IP, user agent, hardware
 fingerprints, device names/serials, request credentials, access/refresh tokens,
 API keys, passwords, exact behavioral histories, or installer-referral HMACs.
 The private read models additionally exclude identity link values,
-`installIdHash`, Stripe object/event IDs, merged tombstones, and raw conflict
-evidence.
+`installIdHash`, `installerReceiptIdHash`, browser/cookie values, Stripe
+object/event IDs and payloads, telemetry payloads, merged tombstones,
+deduplication keys, and raw conflict evidence. Exact Stripe lookup consumes the
+operator-supplied identifier only as a server-side equality selector and never
+returns it.
 
 The current repository has no Customer 360 deletion or aggregate-expiry job.
 Profiles, identity links, install memberships, daily aggregate buckets, money
@@ -818,6 +1041,12 @@ Operators must inspect:
   sources;
 - unattributed profile share, which must remain explicit rather than being
   reassigned or excluded from overall stickiness;
+- funnel `integrityAlerts` for any new `missing_internal_linkage` or
+  `quarantined` root, the explicit `historical_unlinked` backlog, and all ten
+  stage counts/grains; alert if a new Checkout or settled payment lacks its
+  required root/stages or if stage ownership conflicts appear;
+- `ignored` Stripe queue outcomes containing acquisition/linkage/owner/stage
+  mismatch; these are failed fulfillment evidence, not successful terminality;
 - unresolved `pending_identity_review` and `commerce_identity_conflict` counts;
 - backfill candidate/orphan/conflict totals and the complete checkpoint;
 - protected route `401`, `403`, `400`, and `500` rates without logging bearer
@@ -893,10 +1122,14 @@ Run the contract with only that disposable selector configured:
 
 ```bash
 npm run test:customer-360
+npm run test:acquisition-journey-matrix
 SIDESTREAM_TEST_POSTGRES_URL='<disposable-postgres-url>' npm run test:customer-360-postgres
+SIDESTREAM_TEST_POSTGRES_URL='<disposable-postgres-url>' npm run test:acquisition-journey-matrix-postgres
 npm run test:api
 SIDESTREAM_TEST_POSTGRES_URL='<disposable-postgres-url>' npm run test:postgres-integration
 SIDESTREAM_TEST_POSTGRES_URL='<disposable-postgres-url>' npm run test:single-device
+npm run verify:checkout-contract
+npm run test:entitlement
 npm run test:download-referral
 npm run test:migrations
 node scripts/assert-no-runtime-ddl.mjs
@@ -905,9 +1138,19 @@ npm run typecheck
 npm run build
 ```
 
+The disposable acquisition matrix covers every supported entry, handoff,
+download, claim, Google, Checkout reuse/rotation/concurrency, regional offer,
+positive/zero payment, Stripe replay, refund/dispute, lookup, pagination,
+integrity alert, and deterministic-history case exactly once. It is source and
+disposable-database evidence only. It does not prove live Google, Stripe, Neon,
+Resend, Vercel, browser, or Premiere behavior; each requested live surface must
+be exercised and observed separately.
+
 `test:customer-360-postgres` exercises core merge/identity, commerce,
 once-daily usage sync and rolling decay, list/detail privacy/cursors, the
-first-install acquisition/retention funnel, dry-run and test-only backfill
+first-install and first-purchase acquisition/retention funnel, exact Stripe
+lookup, signed journey pagination, canonical stage/integrity reporting,
+dry-run and test-only backfill
 recovery, and the end-to-end merge/replay pipeline. Funnel coverage proves the
 exclusive first-install window stays separate from the completed UTC-day
 observation boundary, exact UTC open/return days, mature return eligibility,
@@ -926,6 +1169,19 @@ Local migration validation and dry-run never connect:
 npm run db:migrate -- --validate
 npm run db:migrate -- --dry-run
 ```
+
+The acquisition-dependent tail must remain in this exact order:
+
+1. `20260729120000_add_regional_checkout_offer_snapshots.sql`
+2. `20260731120000_add_anonymous_acquisition_sessions.sql`
+3. `20260803120000_add_acquisition_integrity.sql`
+
+The last migration creates the private root/stage/conflict tables and adds the
+Checkout-intent foreign key/insert guard. It intentionally preserves null
+`acquisition_id` on historical intents. Do not deploy acquisition-aware runtime
+before complete connected status proves all repository migrations applied with
+matching checksums; never reorder, squash, edit, or mark the new migration
+applied by hand.
 
 Connected Test status/apply use only `SIDESTREAM_TEST_POSTGRES_URL`:
 
@@ -1042,6 +1298,7 @@ storage.
 | Scope | Required variable names |
 | --- | --- |
 | Anonymous browser/download/claim continuity | `SIDESTREAM_ANONYMOUS_ACQUISITION_SECRET`; the existing pooled runtime selector `SIDESTREAM_POSTGRES_URL`; trusted `SIDESTREAM_LICENSE_NAMESPACE` |
+| Upgrade, Google, and Stripe | `SIDESTREAM_BASE_URL`; `GOOGLE_CLIENT_ID`; `GOOGLE_CLIENT_SECRET`; `GOOGLE_REDIRECT_URI`; `STRIPE_SECRET_KEY`; `STRIPE_WEBHOOK_SECRET`; `SIDESTREAM_PRO_PRODUCT_ID`; `SIDESTREAM_PRO_PRICE_ID`; `SIDESTREAM_UNLIMITED_PRICE_ID`; `SIDESTREAM_PRO_INDIA_PRICE_ID`; `SIDESTREAM_PRO_BRAZIL_PRICE_ID`; `SIDESTREAM_PRO_SOUTH_KOREA_PRICE_ID`; trusted deployment selectors `VERCEL_ENV`, `SIDESTREAM_PRODUCTION_API_HOSTS`, and `SIDESTREAM_TEST_API_HOSTS` |
 | Protected Customer 360 reads and daily sync | `SIDESTREAM_CRM_ADMIN_SECRET`; `CRON_SECRET`; separately selected read-only `SIDESTREAM_TELEMETRY_POSTGRES_URL` |
 | Human-only migration/sync/rescan tools | `SIDESTREAM_POSTGRES_URL_NON_POOLING`; `SIDESTREAM_TELEMETRY_POSTGRES_URL` (and `SIDESTREAM_TEST_POSTGRES_URL` for an approved Test target only) |
 | Signed `/mc` experiment metadata | `SIDESTREAM_PAID_ACQUISITION_ASSIGNMENT_SECRET` when the paid/freemium experiment is enabled; absent/invalid configuration keeps `/mc` on its existing safe fallback and adds no signed experiment dimension |
@@ -1121,7 +1378,7 @@ still requires a new human authorization for each external stage:
 2. Capture a restorable Production database snapshot and authenticated
    connected-target evidence. Run complete checksummed migration status, apply
    the pending chain through
-   `20260731120000_add_anonymous_acquisition_sessions.sql`, and re-run complete
+   `20260803120000_add_acquisition_integrity.sql`, and re-run complete
    status/checksum, RLS, grant, and no-runtime-DDL verification. Stop on any
    unexpected existing object, checksum, role, or target.
 3. In Vercel, set the required names above for Production without exposing
@@ -1132,7 +1389,8 @@ still requires a new human authorization for each external stage:
    Production deployment only. Do not use a feature/Orchestra branch or direct
    CLI promotion. Wait for canonical `https://sidestream.tv/version.json` to
    report the exact pushed SHA and recheck the ordinary
-   Upgrade -> Google authentication -> Stripe redirect before proceeding.
+   Upgrade -> Google authentication -> Stripe redirect before proceeding. A
+   Vercel Ready build, Preview URL, or local build is not Production proof.
 5. With scheduling still disabled, run the real-product smoke checklist below,
    then human-authorize the guarded full Production rescan using the exact
    target fingerprint and restricted checkpoint. Preserve every checkpoint and
@@ -1162,8 +1420,12 @@ domain mutation; claim conflict/quarantine growth; privacy-field leakage;
 package hash/size drift; canonical SHA mismatch; protected route without the
 expected `401`/authenticated behavior; scheduler ambiguity; nonzero unexpected
 entitlement/device diff; incomplete rescan; or any funnel numerator larger than
-its documented denominator. Preserve the evidence and do not advance to the
-next stage.
+its documented denominator. Also stop on any new Checkout intent without an
+acquisition UUID; Session/Invoice/PaymentIntent acquisition mismatch;
+`missing_internal_linkage` or acquisition owner/stage conflict; unexpected
+`terminal_unknown` claim growth; invalid lookup ambiguity; signed-cursor drift;
+or stage/counting-grain mismatch. Preserve the evidence and do not advance to
+the next stage.
 
 Rollback is stop-first and no-delete. Disable the approved usage invocation; if
 the Vercel project-wide cron switch was enabled, disable it only under the
@@ -1172,10 +1434,12 @@ secrets to return the new surfaces to fail-closed behavior, restore the last
 known website commit through the canonical `origin/main` Git deployment path,
 and halt/roll back the FlowState release manifest to the last verified static
 installer. Do not run down SQL, delete acquisition sessions/conflicts,
-truncate/rewrite telemetry, delete profiles/identity/commerce/audit rows, or
-discard checkpoints. A database snapshot restore is a separately authorized
-last resort and must account for all concurrent website writes, not only this
-feature.
+truncate/rewrite telemetry, delete or update acquisition stages/conflicts,
+rewrite canonical first touch, fabricate historical roots, delete
+profiles/identity/commerce/audit rows, or discard checkpoints. Do not roll code
+back to a schema-incompatible artifact after the insert guard exists. A database
+snapshot restore is a separately authorized last resort and must account for
+all concurrent website writes, not only this feature.
 
 ### Real-product smoke checklist
 
@@ -1195,8 +1459,11 @@ logs.
    paths must return the same static package bytes.
 4. Install and open the actual signed/notarized FlowState product. Confirm the
    panel verifies the local receipt, requests a claim with only the two hashes,
-   opens the 15-minute browser URL, shows the generic connected page, and
-   resumes in Premiere without email or Google authentication.
+   receives only the browser URL, acknowledgment handle, and expiry; observes
+   `pending` -> `browser_opened` -> `claim_completed`; shows the generic
+   connected page; and resumes in Premiere without email or Google
+   authentication. Exercise expired/conflict Test cases without exposing the
+   nonce or handle.
 5. Through the protected report, verify one exact anonymous journey from first
    visit through installer request, install, exact `session_started` first open,
    and any accepted day-zero attempt. Confirm confidence is
@@ -1208,8 +1475,14 @@ logs.
    history remain byte-for-byte/logically unchanged.
 7. Re-run ordinary Upgrade -> Google authentication -> Stripe Checkout plus an
    existing active-account restore/transfer check. Anonymous acquisition must
-   not change either server-owned path. Verify alerts, source freshness, cron
-   summaries, and canonical SHA before ending the smoke.
+   not change either server-owned path. With designated Test Stripe objects,
+   verify the intent, Session, optional Invoice, and optional PaymentIntent carry
+   the same acquisition UUID; verify exact `cus_`, `cs_`, `pi_`, and `ch_`
+   operator lookup resolves without echoing the identifier; and compare the
+   first-install and first-purchase funnel selectors across signed cursor pages.
+   Verify refund/dispute current money state, immutable lifecycle stages,
+   integrity alerts, source freshness, cron summaries, and canonical SHA before
+   ending the smoke.
 
 For non-Production rollback, the same stop-first rule applies: stop the approved
 usage invocation, account for the four-job scheduler switch, remove protected
