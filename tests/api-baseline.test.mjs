@@ -517,6 +517,54 @@ test("OAuth start forwards only the exact account-selection prompt", async () =>
   );
 });
 
+test("OAuth start preserves the resolved acquisition cookie through Google sign-in", async () => {
+  const harness = createApiContractHarness();
+  const start = await loadAccountHandler("../api/auth/google/start.ts", harness);
+
+  const result = await invokeHandler(start, {
+    method: "GET",
+    url: "/api/auth/google/start?next=%2Fapi%2Fcheckout%2Fstart",
+  });
+
+  assert.equal(result.response.statusCode, 302);
+  assert.equal(
+    harness.oauth.acquisitionCookieValue,
+    "contract-browser-acquisition-cookie",
+  );
+  assert.match(result.response.getHeader("set-cookie").join(";"), /sidestream_oauth_state/);
+});
+
+test("OAuth start keeps acquisition-resolution failures on the generic unavailable page", async (t) => {
+  const harness = createApiContractHarness();
+  const acquisitionError = new Error("test acquisition storage failure");
+  harness.dependencies.resolveRequiredCheckoutAcquisition = async () => {
+    throw acquisitionError;
+  };
+  const start = await loadAccountHandler("../api/auth/google/start.ts", harness);
+  const originalConsoleError = console.error;
+  const logged = [];
+  t.after(() => {
+    console.error = originalConsoleError;
+  });
+  console.error = (...values) => logged.push(values);
+
+  const result = await invokeHandler(start, {
+    method: "GET",
+    url: "/api/auth/google/start?next=%2Fapi%2Fcheckout%2Fstart",
+  });
+
+  assert.equal(result.response.statusCode, 503);
+  assert.equal(result.response.getHeader("content-type"), "text/html; charset=utf-8");
+  assert.equal(result.response.getHeader("set-cookie"), undefined);
+  assert.match(result.response.body, /<p>unavailable<\/p>/);
+  assert.doesNotMatch(result.response.body, /acquisition_unavailable/);
+  assert.deepEqual(logged, [[
+    "[sidestream auth] acquisition resolution failed",
+    acquisitionError,
+  ]]);
+  assert.equal(harness.oauth.state, "");
+});
+
 test("OAuth start fails before setting state cookies when callback configuration is invalid", async (t) => {
   const harness = createApiContractHarness();
   const start = await loadAccountHandler("../api/auth/google/start.ts", harness);
@@ -536,6 +584,8 @@ test("OAuth start fails before setting state cookies when callback configuration
   assert.equal(result.response.getHeader("content-type"), "text/html; charset=utf-8");
   assert.equal(result.response.getHeader("set-cookie"), undefined);
   assert.match(result.response.body, /Continue with Google/);
+  assert.match(result.response.body, /<p>unavailable<\/p>/);
+  assert.doesNotMatch(result.response.body, /acquisition_unavailable/);
   assert.equal(harness.oauth.state, "");
 });
 
