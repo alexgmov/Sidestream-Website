@@ -7,6 +7,7 @@ import {
   AnonymousInstallationClaimError,
   buildAnonymousInstallationClaimUrl,
   createAnonymousInstallationClaimNonce,
+  normalizeAnonymousInstallationClaimStatusRequest,
   normalizeAnonymousInstallationClaimIdentity,
   verifyAnonymousInstallationClaimNonce,
 } from "../../api/_lib/anonymous-install-claim.ts";
@@ -114,7 +115,26 @@ test("browser URL contains only the opaque nonce", () => {
   }
 });
 
-test("plugin POST returns only the private browser URL and expiry", async (t) => {
+test("status polling accepts only the separate acknowledgment handle", () => {
+  assert.deepEqual(normalizeAnonymousInstallationClaimStatusRequest({
+    acknowledgmentHandle: "opaque.status_handle-1",
+  }), {
+    acknowledgmentHandle: "opaque.status_handle-1",
+  });
+  for (const value of [
+    {},
+    { acknowledgmentHandle: "opaque", nonce: "forbidden" },
+    { acknowledgmentHandle: "opaque", installIdHash: INSTALL },
+    { acknowledgmentHandle: "not valid" },
+  ]) {
+    assert.throws(
+      () => normalizeAnonymousInstallationClaimStatusRequest(value),
+      AnonymousInstallationClaimError,
+    );
+  }
+});
+
+test("plugin POST returns only the browser URL, acknowledgment handle, and expiry", async (t) => {
   const previousSecret = process.env.SIDESTREAM_ANONYMOUS_ACQUISITION_SECRET;
   process.env.SIDESTREAM_ANONYMOUS_ACQUISITION_SECRET = SECRET;
   t.after(() => restoreEnvironment(
@@ -134,7 +154,11 @@ test("plugin POST returns only the private browser URL and expiry", async (t) =>
         buildAnonymousInstallationClaimUrl,
         createAnonymousInstallationClaim: async (payload) => {
           receivedPayload = payload;
-          return { nonce: "opaque_nonce", expiresAt: "2026-07-31T19:15:00.000Z" };
+          return {
+            nonce: "opaque_nonce",
+            acknowledgmentHandle: "opaque_acknowledgment",
+            expiresAt: "2026-07-31T19:15:00.000Z",
+          };
         },
       },
     },
@@ -152,7 +176,10 @@ test("plugin POST returns only the private browser URL and expiry", async (t) =>
     installerReceiptIdHash: RECEIPT,
   });
   const body = JSON.parse(response.body);
-  assert.deepEqual(Object.keys(body).sort(), ["browserUrl", "expiresAt"]);
+  assert.deepEqual(Object.keys(body).sort(), [
+    "acknowledgmentHandle", "browserUrl", "expiresAt",
+  ]);
+  assert.equal(body.acknowledgmentHandle, "opaque_acknowledgment");
   assert.equal(new URL(body.browserUrl).searchParams.get("nonce"), "opaque_nonce");
   assert.equal(body.browserUrl.includes(INSTALL), false);
   assert.equal(body.browserUrl.includes(RECEIPT), false);
@@ -167,6 +194,7 @@ test("browser GET treats missing cookie as safe unknown and always uses hardened
     previousSecret,
   ));
   let completions = 0;
+  let browserOpenMarks = 0;
   const handler = await loadInjectedHandler(
     new URL("../../api/installation/claim-complete.ts", import.meta.url),
     {
@@ -180,6 +208,9 @@ test("browser GET treats missing cookie as safe unknown and always uses hardened
       "../_lib/anonymous-install-claim.js": {
         ANONYMOUS_INSTALL_CLAIM_SECRET_NAME: "SIDESTREAM_ANONYMOUS_ACQUISITION_SECRET",
         AnonymousInstallationClaimError,
+        markAnonymousInstallationClaimBrowserOpened: async () => {
+          browserOpenMarks += 1;
+        },
         completeAnonymousInstallationClaim: async () => {
           completions += 1;
           return { outcome: "connected" };
@@ -194,6 +225,7 @@ test("browser GET treats missing cookie as safe unknown and always uses hardened
     headers: {},
   }, response);
   assert.equal(response.statusCode, 200);
+  assert.equal(browserOpenMarks, 1);
   assert.equal(completions, 0);
   assert.equal(response.headers.get("cache-control"), "no-store");
   assert.equal(response.headers.get("referrer-policy"), "no-referrer");
@@ -206,6 +238,105 @@ test("browser GET treats missing cookie as safe unknown and always uses hardened
   for (const forbidden of [INSTALL, RECEIPT, "nonce=", "profile", "email"]) {
     assert.equal(response.body.includes(forbidden), false, forbidden);
   }
+});
+
+test("browser GET completes with the exact verified canonical acquisition", async (t) => {
+  const previousSecret = process.env.SIDESTREAM_ANONYMOUS_ACQUISITION_SECRET;
+  process.env.SIDESTREAM_ANONYMOUS_ACQUISITION_SECRET = SECRET;
+  t.after(() => restoreEnvironment(
+    "SIDESTREAM_ANONYMOUS_ACQUISITION_SECRET",
+    previousSecret,
+  ));
+  const acquisitionId = "00000000-0000-4000-8000-000000000123";
+  const acquisitionToken = "A".repeat(43);
+  let completionInput;
+  const handler = await loadInjectedHandler(
+    new URL("../../api/installation/claim-complete.ts", import.meta.url),
+    {
+      "../_lib/account.js": accountBindings(),
+      "../_lib/acquisition-cookie.js": {
+        readBrowserAcquisitionCookie: () => "signed-cookie",
+        verifyBrowserAcquisitionCookie: () => ({
+          acquisitionId,
+          token: acquisitionToken,
+        }),
+      },
+      "../_lib/anonymous-install-claim.js": {
+        ANONYMOUS_INSTALL_CLAIM_SECRET_NAME: "SIDESTREAM_ANONYMOUS_ACQUISITION_SECRET",
+        AnonymousInstallationClaimError,
+        markAnonymousInstallationClaimBrowserOpened: async () => {},
+        completeAnonymousInstallationClaim: async (input) => {
+          completionInput = input;
+          return { outcome: "connected" };
+        },
+      },
+    },
+  );
+  const response = responseRecorder();
+  await handler({
+    method: "GET",
+    url: "/api/installation/claim-complete?nonce=opaque_nonce",
+    headers: { cookie: "signed-cookie" },
+  }, response);
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(completionInput, {
+    nonce: "opaque_nonce",
+    acquisitionId,
+    acquisitionToken,
+  });
+});
+
+test("status route is POST-only, private, bounded, and forwards only its body", async (t) => {
+  const previousSecret = process.env.SIDESTREAM_ANONYMOUS_ACQUISITION_SECRET;
+  process.env.SIDESTREAM_ANONYMOUS_ACQUISITION_SECRET = SECRET;
+  t.after(() => restoreEnvironment(
+    "SIDESTREAM_ANONYMOUS_ACQUISITION_SECRET",
+    previousSecret,
+  ));
+  let receivedPayload;
+  const handler = await loadInjectedHandler(
+    new URL("../../api/installation/claim-status.ts", import.meta.url),
+    {
+      "../_lib/account.js": accountBindings({
+        readJsonBody: async (request) => request.body,
+      }),
+      "../_lib/anonymous-install-claim.js": {
+        ANONYMOUS_INSTALL_CLAIM_SECRET_NAME: "SIDESTREAM_ANONYMOUS_ACQUISITION_SECRET",
+        getAnonymousInstallationClaimStatus: async (payload) => {
+          receivedPayload = payload;
+          return { state: "browser_opened" };
+        },
+      },
+    },
+  );
+  const response = responseRecorder();
+  await handler({
+    method: "POST",
+    url: "/api/installation/claim-status",
+    headers: {},
+    body: { acknowledgmentHandle: "opaque_acknowledgment" },
+  }, response);
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(receivedPayload, { acknowledgmentHandle: "opaque_acknowledgment" });
+  assert.deepEqual(JSON.parse(response.body), { state: "browser_opened" });
+  assert.equal(response.headers.get("cache-control"), "no-store");
+  assert.equal(response.headers.get("referrer-policy"), "no-referrer");
+  assert.equal(response.headers.get("content-security-policy"), "default-src 'none'");
+  for (const forbidden of [
+    "source", "campaign", "profile", "install", "receipt", "nonce", "url",
+    "email", "payment", "entitlement",
+  ]) {
+    assert.equal(response.body.toLowerCase().includes(forbidden), false, forbidden);
+  }
+
+  const getResponse = responseRecorder();
+  await handler({
+    method: "GET",
+    url: "/api/installation/claim-status",
+    headers: {},
+  }, getResponse);
+  assert.equal(getResponse.statusCode, 405);
+  assert.equal(getResponse.headers.get("allow"), "POST");
 });
 
 test("owned activation and license routes retain body-only continuity fields", async () => {

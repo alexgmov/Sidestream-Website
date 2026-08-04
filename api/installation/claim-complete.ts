@@ -13,6 +13,7 @@ import {
   ANONYMOUS_INSTALL_CLAIM_SECRET_NAME,
   AnonymousInstallationClaimError,
   completeAnonymousInstallationClaim,
+  markAnonymousInstallationClaimBrowserOpened,
 } from "../_lib/anonymous-install-claim.js";
 
 const HTML = "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><meta name=\"robots\" content=\"noindex,nofollow\"><title>Sidestream connected</title></head><body><main><p>Sidestream connected.</p><p>Return to Premiere Pro.</p></main></body></html>";
@@ -43,12 +44,27 @@ export default async function handler(
     return sendConnectedHtml(response, 400);
   }
 
-  let acquisitionToken = "";
+  try {
+    await markAnonymousInstallationClaimBrowserOpened({ nonce: nonceValues[0] }, {
+      environment,
+      secret,
+    });
+  } catch (error) {
+    if (error instanceof AnonymousInstallationClaimError) {
+      if (error.code === "claim_expired") return sendConnectedHtml(response, 410);
+      if (error.code === "invalid_claim" || error.code === "invalid_request") {
+        return sendConnectedHtml(response, 400);
+      }
+    }
+    return sendConnectedHtml(response, 503);
+  }
+
+  let acquisition: Readonly<{ acquisitionId: string; token: string }>;
   try {
     const cookieValue = readBrowserAcquisitionCookie(request.headers.cookie);
-    acquisitionToken = verifyBrowserAcquisitionCookie(cookieValue, {
+    acquisition = verifyBrowserAcquisitionCookie(cookieValue, {
       secret,
-    }).token;
+    });
   } catch {
     // Missing or forged browser state is deliberately indistinguishable from a
     // successful optional association and never consumes the one-time claim.
@@ -58,7 +74,8 @@ export default async function handler(
   try {
     const completed = await completeAnonymousInstallationClaim({
       nonce: nonceValues[0],
-      acquisitionToken,
+      acquisitionId: acquisition.acquisitionId,
+      acquisitionToken: acquisition.token,
     }, {
       environment,
       secret,
