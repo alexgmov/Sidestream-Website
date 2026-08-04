@@ -151,13 +151,19 @@ test("acquisition integrity is immutable, namespaced, idempotent, and history-sa
     await t.test("all stage retries and concurrent webhook replays retain the first fact", async () => {
       const firstOccurredAt = "2026-08-03T12:10:00.000Z";
       const laterOccurredAt = "2026-08-03T12:11:00.000Z";
-      const calls = Array.from({ length: 8 }, (_, index) => recordAcquisitionStage({
+      const first = await recordAcquisitionStage({
         acquisitionId: ROOT_ONE,
         stage: "payment_settled",
         stableServerReference: "verified-payment-one",
-        occurredAt: index === 0 ? firstOccurredAt : laterOccurredAt,
-      }, { transaction, namespace: "test" }));
-      const results = await Promise.all(calls);
+        occurredAt: firstOccurredAt,
+      }, { transaction, namespace: "test" });
+      const replays = await Promise.all(Array.from({ length: 7 }, () => recordAcquisitionStage({
+        acquisitionId: ROOT_ONE,
+        stage: "payment_settled",
+        stableServerReference: "verified-payment-one",
+        occurredAt: laterOccurredAt,
+      }, { transaction, namespace: "test" })));
+      const results = [first, ...replays];
       assert.equal(new Set(results.map((row) => row.id)).size, 1);
       assert.equal(new Set(results.map((row) => row.deduplicationKey)).size, 1);
       assert.ok(results.every((row) => row.countingGrain === "payment"));
