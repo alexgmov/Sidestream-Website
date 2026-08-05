@@ -287,6 +287,12 @@ test("aggregate and journey output exposes all ratios without raw linkage", asyn
 
   assert.equal(sqlCalls.length, 4);
   assert.match(sqlCalls[0].sql, /payment_state = 'active'/);
+  assert.match(sqlCalls[0].sql, /join public\.sidestream_checkout_intents core/);
+  assert.match(sqlCalls[0].sql, /left join public\.sidestream_acquisitions acquisition/);
+  assert.match(
+    sqlCalls[0].sql,
+    /coalesce\(acquisition\.first_observed_source, 'manychat'\) as source/,
+  );
   assert.match(sqlCalls[0].sql, /claim\.claim_state = 'claimed'/);
   assert.match(sqlCalls[0].sql, /lead\.cta_source = 'mobile-download-handoff'/);
   assert.match(sqlCalls[0].sql, /sidestream_anonymous_acquisition_sessions/);

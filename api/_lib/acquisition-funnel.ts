@@ -243,10 +243,12 @@ const FUNNEL_CTES = `
       checkout.verified_checkout_session_ref,
       entry.id as entry_id,
       entry.created_at as first_attributed_at,
-      entry.utm_medium,
-      entry.utm_campaign,
-      entry.experiment_id,
-      entry.cohort
+      coalesce(acquisition.first_observed_source, 'manychat') as source,
+      coalesce(acquisition.first_observed_medium, entry.utm_medium) as medium,
+      coalesce(acquisition.first_observed_campaign, entry.utm_campaign) as campaign,
+      coalesce(acquisition.experiment_id, entry.experiment_id) as experiment_id,
+      coalesce(acquisition.experiment_cohort, entry.cohort) as cohort,
+      coalesce(acquisition.integrity_state, 'historical_unlinked') as integrity_state
     from public.sidestream_paid_acquisition_checkouts checkout
     join public.sidestream_paid_acquisition_entries entry
       on entry.id = checkout.entry_id
@@ -256,6 +258,11 @@ const FUNNEL_CTES = `
       and entry.assignment_id_hash = checkout.assignment_id_hash
       and entry.entry_token_hash = checkout.entry_token_hash
       and entry.attribution_hash = checkout.attribution_hash
+    join public.sidestream_checkout_intents core
+      on core.id = checkout.checkout_intent_ref
+    left join public.sidestream_acquisitions acquisition
+      on acquisition.id = core.acquisition_id
+      and acquisition.license_namespace = checkout.environment
     where checkout.environment = $1
       and checkout.payment_state = 'active'
       and checkout.completed_at is not null
@@ -305,13 +312,13 @@ const FUNNEL_CTES = `
   paid_candidates as (
     select
       edge.profile_id,
-      'manychat'::text as source,
-      paid.utm_medium as medium,
-      paid.utm_campaign as campaign,
+      paid.source,
+      paid.medium,
+      paid.campaign,
       paid.experiment_id as experiment,
       paid.cohort,
       'exact_paid_checkout'::text as attribution_confidence,
-      'historical_unlinked'::text as integrity_state,
+      paid.integrity_state,
       paid.first_attributed_at,
       null::timestamptz as first_installer_requested_at,
       null::text as first_installer_platform,

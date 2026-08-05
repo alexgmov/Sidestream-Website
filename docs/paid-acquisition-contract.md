@@ -9,9 +9,33 @@ This contract freezes the additive website/FlowState boundary for the
 ManyChat mobile paid-acquisition experiment. Normative terms such as **must**,
 **must not**, and **only** are release requirements.
 
+## Fixed Meta ad destinations
+
+The parallel Meta creative test does not use the ManyChat 50/50 assignment.
+It has two exact, unlinked, noindex paths:
+
+- `GET /meta-default` always redirects to the existing canonical/default site.
+- `GET /meta-paid` always enters the paid landing through the same signed,
+  server-owned Checkout boundary as the paid ManyChat cohort.
+
+Both paths use server-owned attribution: `source=meta`, `medium=social`,
+`campaign=sidestream_direct_offer_test`, and
+`experiment=meta-direct-links-v1`. Their exact variant dimensions are
+`cohort=freemium, content=default` and `cohort=paid, content=paid`.
+Browser query parameters cannot select or relabel the variant. A valid
+acquisition cookie already carrying the same Meta variant remains stable;
+entering the other exact Meta path creates a new canonical acquisition UUID,
+so a later Checkout belongs to the most recent explicit Meta ad click while
+the older root remains immutable. `/meta-paid` fails closed if signing is
+unavailable and must never silently render the default experience.
+
+The Meta paths are private-by-distribution only. No canonical page, sitemap,
+or crawler asset links to them, but possession of either URL is sufficient to
+request it. They are not authentication or authorization boundaries.
+
 ## Invariants
 
-- `/mc` is the only experiment entry path. Only an eligible mobile top-level
+- `/mc` is the only randomized ManyChat experiment entry path. Only an eligible mobile top-level
   document request whose decoded pathname is exactly `/mc` may be assigned.
 - No canonical page or public HTML links to `/mc`. Assignment remains
   default-off when
@@ -20,7 +44,8 @@ ManyChat mobile paid-acquisition experiment. Normative terms such as **must**,
 - `/m` is not edited, wrapped, intercepted, or reimplemented. It keeps its
   current temporary redirect to
   `https://sidestream.tv/?utm_source=manychat`.
-- The canonical root, direct/root visitors, desktop behavior, organic/search
+- Outside the two exact Meta paths, the canonical root, direct/root visitors,
+  desktop behavior, organic/search
   traffic, account routes, API requests, installers, download routes, existing
   Checkout flows, email flows, activation flows, manifests, and every path
   other than `/mc` retain their current behavior.

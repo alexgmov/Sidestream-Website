@@ -12,6 +12,9 @@ import {
   persistPaidAcquisitionEntry,
   validatePaidAcquisitionLandingProof,
 } from "../_lib/paid-acquisition.js";
+import {
+  readNormalizedPaidLandingAttribution,
+} from "../_lib/paid-landing-attribution.js";
 
 const ASSIGNMENT_HEADER = "x-sidestream-paid-acquisition-assignment";
 const PROOF_HEADER = "x-sidestream-paid-acquisition-proof";
@@ -47,7 +50,7 @@ export default async function handler(
   );
   const attribution =
     attributionQuery.length <= 320
-      ? readNormalizedAttribution(new URLSearchParams(attributionQuery))
+      ? readNormalizedPaidLandingAttribution(new URLSearchParams(attributionQuery))
       : null;
   if (!assignmentCookieValue || !proof || !attributionQuery || !attribution) {
     return sendLandingError(response, 403);
@@ -97,43 +100,6 @@ export default async function handler(
         : 503;
     return sendLandingError(response, status);
   }
-}
-
-function readNormalizedAttribution(searchParams: URLSearchParams) {
-  const allowed = new Set([
-    "utm_source",
-    "utm_medium",
-    "utm_campaign",
-    "utm_content",
-    "utm_id",
-  ]);
-  for (const key of searchParams.keys()) {
-    if (!allowed.has(key) || searchParams.getAll(key).length !== 1) return null;
-  }
-  if (
-    searchParams.getAll("utm_source").length !== 1 ||
-    searchParams.get("utm_source") !== "manychat"
-  ) {
-    return null;
-  }
-  const medium = searchParams.get("utm_medium");
-  if (medium !== null && medium !== "dm" && medium !== "social") return null;
-  const values: Record<string, string | null> = {
-    utmCampaign: searchParams.get("utm_campaign"),
-    utmContent: searchParams.get("utm_content"),
-    utmId: searchParams.get("utm_id"),
-  };
-  for (const value of Object.values(values)) {
-    if (value !== null && !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(value)) {
-      return null;
-    }
-  }
-  return {
-    ...(medium ? { utmMedium: medium } : {}),
-    ...(values.utmCampaign ? { utmCampaign: values.utmCampaign } : {}),
-    ...(values.utmContent ? { utmContent: values.utmContent } : {}),
-    ...(values.utmId ? { utmId: values.utmId } : {}),
-  };
 }
 
 function firstHeader(value: string | string[] | undefined) {

@@ -12,6 +12,9 @@ import {
   validatePaidAcquisitionLandingProof,
   validatePaidAcquisitionReceiptCookie,
 } from "../api/_lib/paid-acquisition.ts";
+import {
+  readNormalizedPaidLandingAttribution,
+} from "../api/_lib/paid-landing-attribution.ts";
 import { sanitizeAccountNextPath } from "../api/_lib/entitlement.ts";
 
 const SECRET = "0123456789abcdef0123456789abcdef";
@@ -45,6 +48,31 @@ const middleware = await import(
     ),
   ).toString("base64")}`
 );
+
+test("the paid landing accepts only the server-owned ManyChat and Meta sources", () => {
+  assert.deepEqual(
+    readNormalizedPaidLandingAttribution(new URLSearchParams(
+      "utm_source=meta&utm_medium=social&utm_campaign=sidestream_direct_offer_test&utm_content=paid",
+    )),
+    {
+      utmMedium: "social",
+      utmCampaign: "sidestream_direct_offer_test",
+      utmContent: "paid",
+    },
+  );
+  assert.deepEqual(
+    readNormalizedPaidLandingAttribution(new URLSearchParams(
+      "utm_source=manychat&utm_medium=dm&utm_campaign=Launch_1",
+    )),
+    { utmMedium: "dm", utmCampaign: "Launch_1" },
+  );
+  assert.equal(
+    readNormalizedPaidLandingAttribution(new URLSearchParams(
+      "utm_source=instagram&utm_medium=social",
+    )),
+    null,
+  );
+});
 
 test("the router cookie is consumable by the audited server helper", async () => {
   const nonce = paidNonce();

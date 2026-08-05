@@ -4,7 +4,9 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 const COOKIE_NAME = "__Host-sidestream-mc-mobile-paid-v1";
+const ACQUISITION_COOKIE_NAME = "__Host-sidestream-acquisition-v2";
 const SECRET = "0123456789abcdef0123456789abcdef";
+const ACQUISITION_SECRET = "meta-acquisition-test-secret-0123456789";
 const NOW_MS = Date.UTC(2026, 6, 27, 7, 0, 0);
 const IPHONE_UA =
   "Mozilla/5.0 (iPhone; CPU iPhone OS 18_5 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148 Safari/604.1";
@@ -74,6 +76,18 @@ function cookieValue(response) {
   return cookiePair(response)?.slice(COOKIE_NAME.length + 1) ?? null;
 }
 
+function namedCookieValue(response, name) {
+  const header = response.headers.get("set-cookie") || "";
+  const match = header.match(new RegExp(`(?:^|,\\s*)${name}=([^;]+)`));
+  return match?.[1] || null;
+}
+
+function acquisitionPayload(response) {
+  const value = namedCookieValue(response, ACQUISITION_COOKIE_NAME);
+  assert.ok(value, "expected a signed acquisition cookie");
+  return JSON.parse(Buffer.from(value.split(".", 1)[0], "base64url"));
+}
+
 function bucketForNonce(bytes) {
   const nonce = Buffer.from(bytes).toString("base64url");
   const digest = createHmac("sha256", SECRET)
@@ -102,7 +116,14 @@ const PAID_NONCE = nonceForCohort("mc-paid-v1");
 
 test("Vercel middleware and the existing /m redirect remain exactly scoped", () => {
   assert.deepEqual(middleware.config, {
-    matcher: ["/", "/index.html", "/mc", "/mc-preview"],
+    matcher: [
+      "/",
+      "/index.html",
+      "/mc",
+      "/mc-preview",
+      "/meta-default",
+      "/meta-paid",
+    ],
   });
   for (const source of ["/m", "/m/", "/mc/"]) {
     assert.deepEqual(
@@ -118,10 +139,130 @@ test("Vercel middleware and the existing /m redirect remain exactly scoped", () 
     vercel.redirects.some((redirect) => redirect.source === "/mc"),
     false,
   );
+  for (const source of ["/meta-default", "/meta-paid"]) {
+    const headerRule = vercel.headers.find((rule) => rule.source === source);
+    assert.deepEqual(headerRule?.headers, [
+      { key: "X-Robots-Tag", value: "noindex, nofollow" },
+      { key: "Cache-Control", value: "private, no-store" },
+    ]);
+  }
   assert.doesNotMatch(
     middlewareSource,
     /(?:ipAddress|x-forwarded-for|edge-config|vercel\/flags|Math\.random|console\.)/i,
   );
+});
+
+test("fixed Meta links select the default and paid experiences without random assignment", async () => {
+  const defaultResponse = await middleware.routeBrowserAcquisitionForTest(
+    request("/meta-default", { userAgent: DESKTOP_UA }),
+    {
+      nowMs: NOW_MS,
+      tokenBytes: Uint8Array.from({ length: 32 }, (_, index) => index + 1),
+      nonceBytes: PAID_NONCE,
+      paidSecret: SECRET,
+      acquisitionSecret: ACQUISITION_SECRET,
+    },
+  );
+  assert.equal(defaultResponse.status, 307);
+  assert.equal(
+    defaultResponse.headers.get("location"),
+    "https://sidestream.tv/?utm_source=meta&utm_medium=social&utm_campaign=sidestream_direct_offer_test&utm_content=default",
+  );
+  assert.equal(namedCookieValue(defaultResponse, COOKIE_NAME), null);
+  const defaultAcquisition = acquisitionPayload(defaultResponse);
+  assert.deepEqual(defaultAcquisition.firstTouch.slice(0, 4), [
+    "meta", "social", "sidestream_direct_offer_test", "default",
+  ]);
+  assert.deepEqual(defaultAcquisition.experiment.slice(0, 2), [
+    "meta-direct-links-v1", "freemium",
+  ]);
+
+  const paidResponse = await middleware.routeBrowserAcquisitionForTest(
+    request("/meta-paid", { userAgent: DESKTOP_UA }),
+    {
+      nowMs: NOW_MS,
+      tokenBytes: Uint8Array.from({ length: 32 }, (_, index) => index + 33),
+      nonceBytes: PAID_NONCE,
+      paidSecret: SECRET,
+      acquisitionSecret: ACQUISITION_SECRET,
+    },
+  );
+  assert.equal(
+    paidResponse.headers.get("x-test-rewrite"),
+    "https://sidestream.tv/mobile-paid-prototype.html",
+  );
+  assert.equal(
+    paidResponse.headers.get(
+      "x-rewrite-x-sidestream-paid-acquisition-attribution",
+    ),
+    "utm_source=meta&utm_medium=social&utm_campaign=sidestream_direct_offer_test&utm_content=paid",
+  );
+  assert.match(namedCookieValue(paidResponse, COOKIE_NAME), /^1\./);
+  const paidAcquisition = acquisitionPayload(paidResponse);
+  assert.deepEqual(paidAcquisition.firstTouch.slice(0, 4), [
+    "meta", "social", "sidestream_direct_offer_test", "paid",
+  ]);
+  assert.deepEqual(paidAcquisition.experiment.slice(0, 2), [
+    "meta-direct-links-v1", "paid",
+  ]);
+  assert.notEqual(paidAcquisition.acquisitionId, defaultAcquisition.acquisitionId);
+});
+
+test("Meta journeys stay stable within a variant and restart when the selected ad changes", async () => {
+  const first = await middleware.routeBrowserAcquisitionForTest(
+    request("/meta-default", { userAgent: DESKTOP_UA }),
+    {
+      nowMs: NOW_MS,
+      tokenBytes: Uint8Array.from({ length: 32 }, (_, index) => index + 1),
+      paidSecret: SECRET,
+      acquisitionSecret: ACQUISITION_SECRET,
+    },
+  );
+  const firstValue = namedCookieValue(first, ACQUISITION_COOKIE_NAME);
+  const firstPayload = acquisitionPayload(first);
+
+  const replay = await middleware.routeBrowserAcquisitionForTest(
+    request("/meta-default", {
+      userAgent: DESKTOP_UA,
+      cookie: `${ACQUISITION_COOKIE_NAME}=${firstValue}`,
+    }),
+    {
+      nowMs: NOW_MS + 60_000,
+      tokenBytes: Uint8Array.from({ length: 32 }, () => 255),
+      paidSecret: SECRET,
+      acquisitionSecret: ACQUISITION_SECRET,
+    },
+  );
+  assert.equal(namedCookieValue(replay, ACQUISITION_COOKIE_NAME), null);
+
+  const switched = await middleware.routeBrowserAcquisitionForTest(
+    request("/meta-paid", {
+      userAgent: DESKTOP_UA,
+      cookie: `${ACQUISITION_COOKIE_NAME}=${firstValue}`,
+    }),
+    {
+      nowMs: NOW_MS + 120_000,
+      tokenBytes: Uint8Array.from({ length: 32 }, (_, index) => 255 - index),
+      nonceBytes: PAID_NONCE,
+      paidSecret: SECRET,
+      acquisitionSecret: ACQUISITION_SECRET,
+    },
+  );
+  const switchedPayload = acquisitionPayload(switched);
+  assert.notEqual(switchedPayload.acquisitionId, firstPayload.acquisitionId);
+  assert.deepEqual(switchedPayload.experiment.slice(0, 2), [
+    "meta-direct-links-v1", "paid",
+  ]);
+});
+
+test("the fixed Meta paid link fails closed instead of contaminating the control", async () => {
+  const response = await middleware.routeMetaAdLinkForTest(
+    request("/meta-paid", { userAgent: DESKTOP_UA }),
+    { nowMs: NOW_MS, nonceBytes: PAID_NONCE, secret: "short" },
+  );
+  assert.equal(response.status, 503);
+  assert.equal(response.headers.get("location"), null);
+  assert.match(await response.text(), /temporarily unavailable/);
 });
 
 test("only exact GET /mc can reach assignment", async () => {

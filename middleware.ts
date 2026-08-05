@@ -11,6 +11,10 @@ const COOKIE_NAME = "__Host-sidestream-mc-mobile-paid-v1";
 const COOKIE_VERSION = "1";
 const COOKIE_MAX_AGE_SECONDS = 2_592_000;
 const REVIEW_PATH = "/mc-preview";
+const META_DEFAULT_PATH = "/meta-default";
+const META_PAID_PATH = "/meta-paid";
+const META_EXPERIMENT_ID = "meta-direct-links-v1";
+const META_CAMPAIGN = "sidestream_direct_offer_test";
 const PAID_LANDING_PATH = "/api/paid-acquisition/landing";
 const TEST_PAID_LANDING_PATH = "/mobile-paid-prototype.html";
 const CONTROL_DESTINATION = "https://sidestream.tv/";
@@ -68,7 +72,14 @@ const encoder = new TextEncoder();
 const acquisitionExperiments = new WeakMap();
 
 export const config = {
-  matcher: ["/", "/index.html", "/mc", "/mc-preview"],
+  matcher: [
+    "/",
+    "/index.html",
+    "/mc",
+    "/mc-preview",
+    "/meta-default",
+    "/meta-paid",
+  ],
 };
 
 export default async function paidAcquisitionMiddleware(request) {
@@ -87,6 +98,15 @@ export function routePaidExperimentForTest(request, overrides) {
       }
       return new Uint8Array(nonceBytes);
     },
+    secret: overrides.secret,
+    paidLandingPath: TEST_PAID_LANDING_PATH,
+  });
+}
+
+export function routeMetaAdLinkForTest(request, overrides) {
+  return routeMetaAdLink(request, {
+    now: () => overrides.nowMs,
+    randomBytes: () => new Uint8Array(overrides.nonceBytes),
     secret: overrides.secret,
     paidLandingPath: TEST_PAID_LANDING_PATH,
   });
@@ -186,14 +206,107 @@ async function routePaidExperiment(request, runtime) {
   }
 }
 
+async function routeMetaAdLink(request, runtime) {
+  const url = new URL(request.url);
+  const variant = url.pathname === META_DEFAULT_PATH
+    ? "default"
+    : url.pathname === META_PAID_PATH
+      ? "paid"
+      : null;
+  if (!variant) return next();
+  if (request.method !== "GET" && request.method !== "HEAD") return next();
+
+  const attribution = metaAttribution(variant);
+  const nowSeconds = Math.floor(runtime.now() / 1_000);
+  if (variant === "default") {
+    const response = controlRedirect(attribution);
+    rememberAcquisitionExperiment(
+      response,
+      CONTROL_COHORT,
+      nowSeconds,
+      META_EXPERIMENT_ID,
+    );
+    return response;
+  }
+  if (request.method === "HEAD") {
+    return new Response(null, {
+      status: 200,
+      headers: {
+        "Cache-Control": "private, no-store",
+        "X-Robots-Tag": "noindex, nofollow",
+      },
+    });
+  }
+
+  const secretBytes = validSecretBytes(runtime.secret);
+  if (!secretBytes) return paidLinkUnavailable();
+  try {
+    const key = await crypto.subtle.importKey(
+      "raw",
+      secretBytes,
+      { name: "HMAC", hash: "SHA-256" },
+      false,
+      ["sign", "verify"],
+    );
+    const suppliedCookie = readSingleCookie(
+      request.headers.get("cookie"),
+      COOKIE_NAME,
+    );
+    const existing = suppliedCookie
+      ? await verifyAssignmentCookie(suppliedCookie, key, nowSeconds)
+      : null;
+    let assignmentCookieValue = suppliedCookie;
+    let setCookie;
+    let issuedAtSeconds = existing?.issuedAtSeconds ?? nowSeconds;
+    if (!existing || existing.cohort !== PAID_COHORT) {
+      const nonceBytes = runtime.randomBytes(16);
+      if (!(nonceBytes instanceof Uint8Array) || nonceBytes.length !== 16) {
+        return paidLinkUnavailable();
+      }
+      assignmentCookieValue = await createAssignmentCookie(
+        key,
+        bytesToBase64Url(nonceBytes),
+        PAID_COHORT,
+        nowSeconds,
+      );
+      setCookie = assignmentCookieValue;
+      issuedAtSeconds = nowSeconds;
+      assignmentCookieValue = assignmentCookieValue
+        .split(";", 1)[0]
+        .slice(`${COOKIE_NAME}=`.length);
+    }
+    return cohortResponse(PAID_COHORT, attribution, setCookie, {
+      ...runtime,
+      key,
+      assignmentCookieValue,
+      experimentIssuedAtSeconds: issuedAtSeconds,
+      browserExperimentId: META_EXPERIMENT_ID,
+    });
+  } catch {
+    return paidLinkUnavailable();
+  }
+}
+
 async function routeBrowserRequest(request, runtime) {
   const url = new URL(request.url);
-  const paidResponse = url.pathname === "/mc" || url.pathname === REVIEW_PATH
-    ? await routePaidExperiment(request, runtime)
-    : next();
+  const isMetaLink = url.pathname === META_DEFAULT_PATH ||
+    url.pathname === META_PAID_PATH;
+  const paidResponse = isMetaLink
+    ? await routeMetaAdLink(request, runtime)
+    : url.pathname === "/mc" || url.pathname === REVIEW_PATH
+      ? await routePaidExperiment(request, runtime)
+      : next();
   const experiment = acquisitionExperiments.get(paidResponse) ||
     runtime.acquisitionExperiment || null;
-  return attachBrowserAcquisition(request, paidResponse, runtime, experiment);
+  const metaVariant = url.pathname === META_PAID_PATH ? "paid" : "default";
+  return attachBrowserAcquisition(
+    request,
+    paidResponse,
+    runtime,
+    experiment,
+    isMetaLink ? metaBrowserAttribution(metaVariant) : null,
+    isMetaLink,
+  );
 }
 
 function productionRuntime() {
@@ -269,6 +382,24 @@ function normalizeAttribution(rawSearch) {
   return attribution;
 }
 
+function metaAttribution(variant) {
+  return [
+    ["utm_source", "meta"],
+    ["utm_medium", "social"],
+    ["utm_campaign", META_CAMPAIGN],
+    ["utm_content", variant],
+  ];
+}
+
+function metaBrowserAttribution(variant) {
+  return {
+    source: "meta",
+    medium: "social",
+    campaign: META_CAMPAIGN,
+    content: variant,
+  };
+}
+
 function strictQueryDecode(value) {
   if (!/^(?:[^%]|%[0-9A-Fa-f]{2})*$/.test(value)) return null;
   try {
@@ -302,10 +433,27 @@ function controlRedirect(attribution, cookie) {
   return new Response(null, { status: 307, headers });
 }
 
+function paidLinkUnavailable() {
+  const body = "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"robots\" content=\"noindex,nofollow\"><title>Sidestream</title></head><body><main><h1>Sidestream is temporarily unavailable</h1><p>Please return to the original ad and try again.</p></main></body></html>";
+  return new Response(body, {
+    status: 503,
+    headers: {
+      "Cache-Control": "private, no-store",
+      "Content-Type": "text/html; charset=utf-8",
+      "X-Robots-Tag": "noindex, nofollow",
+    },
+  });
+}
+
 async function cohortResponse(cohort, attribution, cookie, runtime) {
   if (cohort === CONTROL_COHORT) {
     const response = controlRedirect(attribution, cookie);
-    rememberAcquisitionExperiment(response, cohort, runtime.experimentIssuedAtSeconds);
+    rememberAcquisitionExperiment(
+      response,
+      cohort,
+      runtime.experimentIssuedAtSeconds,
+      runtime.browserExperimentId,
+    );
     return response;
   }
 
@@ -334,21 +482,38 @@ async function cohortResponse(cohort, attribution, cookie, runtime) {
   });
   response.headers.set("Cache-Control", "private, no-store");
   if (cookie) response.headers.append("Set-Cookie", cookie);
-  rememberAcquisitionExperiment(response, cohort, runtime.experimentIssuedAtSeconds);
+  rememberAcquisitionExperiment(
+    response,
+    cohort,
+    runtime.experimentIssuedAtSeconds,
+    runtime.browserExperimentId,
+  );
   return response;
 }
 
-function rememberAcquisitionExperiment(response, cohort, issuedAtSeconds) {
+function rememberAcquisitionExperiment(
+  response,
+  cohort,
+  issuedAtSeconds,
+  experimentId = EXPERIMENT_ID,
+) {
   if (!Number.isSafeInteger(issuedAtSeconds)) return;
   acquisitionExperiments.set(response, {
-    experimentId: EXPERIMENT_ID,
+    experimentId,
     cohort: cohort === PAID_COHORT ? "paid" : "freemium",
     issuedAt: issuedAtSeconds,
     expiresAt: issuedAtSeconds + COOKIE_MAX_AGE_SECONDS,
   });
 }
 
-async function attachBrowserAcquisition(request, response, runtime, experiment) {
+async function attachBrowserAcquisition(
+  request,
+  response,
+  runtime,
+  experiment,
+  attributionOverride = null,
+  replaceExistingExperiment = false,
+) {
   if (request.method !== "GET" || isSpeculativeRequest(request)) return response;
   const secretBytes = validSecretBytes(runtime.acquisitionSecret);
   if (!secretBytes) return response;
@@ -365,10 +530,22 @@ async function attachBrowserAcquisition(request, response, runtime, experiment) 
       request.headers.get("cookie"),
       ACQUISITION_COOKIE_NAME,
     );
-    if (existing && await verifyAcquisitionCookie(existing, key, nowSeconds)) {
-      return response;
+    const verifiedExisting = existing
+      ? await readVerifiedAcquisitionCookie(existing, key, nowSeconds)
+      : null;
+    if (verifiedExisting) {
+      const expectedExperiment = normalizeBrowserExperiment(
+        experiment,
+        nowSeconds,
+      );
+      const sameForcedExperiment = replaceExistingExperiment &&
+        expectedExperiment &&
+        Array.isArray(verifiedExisting.experiment) &&
+        verifiedExisting.experiment[0] === expectedExperiment.experimentId &&
+        verifiedExisting.experiment[1] === expectedExperiment.cohort;
+      if (!replaceExistingExperiment || sameForcedExperiment) return response;
     }
-    const legacy = existing ? null : readSingleCookie(
+    const legacy = existing || replaceExistingExperiment ? null : readSingleCookie(
       request.headers.get("cookie"),
       LEGACY_ACQUISITION_COOKIE_NAME,
     );
@@ -390,8 +567,11 @@ async function attachBrowserAcquisition(request, response, runtime, experiment) 
     const issued = await createAcquisitionCookie(
       key,
       uuidFromBytes(tokenBytes.slice(0, 16)),
-      normalizeBrowserAttribution(new URL(request.url).searchParams),
-      normalizeReferrerCategory(request.headers.get("referer")),
+      attributionOverride ||
+        normalizeBrowserAttribution(new URL(request.url).searchParams),
+      attributionOverride
+        ? "social"
+        : normalizeReferrerCategory(request.headers.get("referer")),
       normalizeBrowserExperiment(experiment, nowSeconds),
       nowSeconds,
     );
@@ -506,15 +686,15 @@ async function createAcquisitionCookie(
   ].join("; ");
 }
 
-async function verifyAcquisitionCookie(value, key, nowSeconds) {
+async function readVerifiedAcquisitionCookie(value, key, nowSeconds) {
   const decoded = await verifyAcquisitionCookieEnvelope(
     value,
     key,
     ACQUISITION_SIGNATURE_CONTEXT,
   );
-  if (!decoded) return false;
+  if (!decoded) return null;
   const keys = Object.keys(decoded).sort().join(",");
-  return keys === "acquisitionId,experiment,expiresAt,firstTouch,issuedAt,v" &&
+  const valid = keys === "acquisitionId,experiment,expiresAt,firstTouch,issuedAt,v" &&
     decoded.v === ACQUISITION_COOKIE_VERSION &&
     /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(decoded.acquisitionId || "") &&
     Number.isSafeInteger(decoded.issuedAt) && decoded.issuedAt <= nowSeconds &&
@@ -523,6 +703,7 @@ async function verifyAcquisitionCookie(value, key, nowSeconds) {
     Array.isArray(decoded.firstTouch) && decoded.firstTouch.length === 5 &&
     validStoredAttribution(decoded.firstTouch) &&
     validStoredExperiment(decoded.experiment, decoded.issuedAt, decoded.expiresAt);
+  return valid ? decoded : null;
 }
 
 async function verifyAcquisitionCookieEnvelope(value, key, signatureContext) {

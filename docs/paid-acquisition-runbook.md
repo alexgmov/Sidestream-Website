@@ -6,7 +6,26 @@
 
 ## Scope and preserved behavior
 
-`/mc` is the only experiment entry. Only an eligible mobile `GET /mc`
+The Meta creative comparison uses deterministic server-owned links, not the
+ManyChat 50/50 router:
+
+```text
+https://sidestream.tv/meta-default
+https://sidestream.tv/meta-paid
+```
+
+Keep both paths unlinked and noindex. `/meta-default` must always redirect to
+the existing canonical/default site. `/meta-paid` must always render the paid
+landing and must return `503` rather than silently showing the control if its
+signing boundary is unavailable. Verify that Checkout and payment retain the
+canonical `source=meta`, `campaign=sidestream_direct_offer_test`,
+`experiment=meta-direct-links-v1`, and exact `freemium/default` or `paid/paid`
+dimensions. Reopening the same variant must preserve its acquisition UUID;
+switching variants must issue a new UUID. Do not add query parameters that
+allow a browser or ad platform to choose the variant. These URLs are
+private-by-distribution, not access-controlled after sharing.
+
+`/mc` is the only randomized ManyChat experiment entry. Only an eligible mobile `GET /mc`
 top-level document navigation may be assigned. Eligibility is conservative:
 desktop, tablet, bot, scanner, prefetch/prerender, missing or conflicting
 device evidence, `HEAD`, non-`GET`, `/mc/`, encoded lookalikes, and case

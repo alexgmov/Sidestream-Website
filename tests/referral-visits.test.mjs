@@ -161,7 +161,7 @@ test("referral report counts unique daily humans and scanners without exposing h
   );
 });
 
-test("landing page and Vercel config preserve dedicated and legacy ManyChat routes", () => {
+test("landing page and Vercel config preserve Meta and ManyChat routes", () => {
   const html = readFileSync(path.join(repoRoot, "index.html"), "utf8");
   const vercel = JSON.parse(readFileSync(path.join(repoRoot, "vercel.json"), "utf8"));
   const middleware = readFileSync(path.join(repoRoot, "middleware.ts"), "utf8");
@@ -189,8 +189,10 @@ test("landing page and Vercel config preserve dedicated and legacy ManyChat rout
   );
   assert.match(
     middleware,
-    /matcher:\s*\[\s*"\/",\s*"\/index\.html",\s*"\/mc",\s*"\/mc-preview"\s*\]/,
+    /matcher:\s*\[\s*"\/",\s*"\/index\.html",\s*"\/mc",\s*"\/mc-preview",\s*"\/meta-default",\s*"\/meta-paid",\s*\]/,
   );
+  assert.match(middleware, /META_DEFAULT_PATH = "\/meta-default"/);
+  assert.match(middleware, /META_PAID_PATH = "\/meta-paid"/);
   assert.match(middleware, /SIDESTREAM_PAID_ACQUISITION_ASSIGNMENT_SECRET/);
 });
 
