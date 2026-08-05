@@ -41,8 +41,8 @@ before(async () => {
     "api/_lib/paid-release-manifest.ts",
   );
   copyTypeScriptModule(
-    "api/paid-download.ts",
-    "api/paid-download.ts",
+    "api/_lib/paid-download.ts",
+    "api/_lib/paid-download.ts",
   );
   copyTypeScriptModule(
     "api/releases/paid-latest.ts",
@@ -63,7 +63,7 @@ before(async () => {
   ));
   ({ createPaidDownloadHandler } = await import(
     pathToFileURL(
-      path.join(compiledDirectory, "api", "paid-download.ts"),
+      path.join(compiledDirectory, "api", "_lib", "paid-download.ts"),
     ).href
   ));
   ({ createPaidReleaseHandler } = await import(
@@ -223,7 +223,7 @@ test("paid latest GET and HEAD return no-store public metadata only", async () =
   }
 });
 
-test("both paid routes reject unsupported methods and inexact platform queries", async () => {
+test("paid metadata and the internal download helper reject inexact platform queries", async () => {
   for (const route of [
     { handler: releaseHandler(), path: "/api/releases/paid-latest" },
     { handler: downloadState().handler, path: "/api/paid-download" },
@@ -262,7 +262,7 @@ test("both paid routes reject unsupported methods and inexact platform queries",
   }
 });
 
-test("paid download HEAD validates metadata without issuing a signed URL", async () => {
+test("the internal paid download helper validates HEAD metadata without signing", async () => {
   const state = downloadState({
     createSignedUrl: async () => assert.fail("HEAD must not sign"),
   });
@@ -289,7 +289,7 @@ test("paid download HEAD validates metadata without issuing a signed URL", async
   assert.deepEqual(state.signedPathnames, []);
 });
 
-test("paid download GET redirects only after metadata validation", async () => {
+test("the receipt route's paid download helper signs only after metadata validation", async () => {
   const state = downloadState();
   const result = await invoke(state.handler, {
     path: "/api/paid-download?platform=macos-universal",

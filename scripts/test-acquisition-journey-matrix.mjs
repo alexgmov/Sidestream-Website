@@ -99,6 +99,10 @@ const CLAIM_PURCHASE_STAGES = Object.freeze([
   "checkout_completed",
   "payment_settled",
 ]);
+const PAID_PURCHASE_STAGES = Object.freeze([
+  ...PURCHASE_STAGES,
+  "installer_requested",
+]);
 const COMPLETE_LIFECYCLE_STAGES = Object.freeze([
   ...PURCHASE_STAGES,
   "refunded",
@@ -246,12 +250,13 @@ export const ACQUISITION_JOURNEY_MATRIX = Object.freeze([
     source: "manychat",
     channel: "checkout",
     confidence: "exact_trusted_delivery",
-    requiredStages: PURCHASE_STAGES,
+    requiredStages: PAID_PURCHASE_STAGES,
     paymentState: { paid: true },
     reportCohortInclusion: { first_purchase: true },
     evidence: [
       "tests/paid-acquisition-checkout.test.mjs",
       "tests/paid-acquisition-e2e-fixtures.test.mjs",
+      "tests/acquisition-route-coverage.test.mjs",
       ...checkoutEvidence,
       ...reportEvidence,
     ],

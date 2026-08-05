@@ -318,9 +318,13 @@ A selected manifest has exactly these public fields:
 Private Blob paths, storage tokens, receipt tokens, cohort cookies, customer
 email, and payment identifiers are not manifest fields. The download route
 verifies current receipt and payment lifecycle, then redirects to a short-lived
-signed artifact URL. The static installer bits may be identical to the normal
-release; the paid route and manifest are attribution/onboarding surfaces, not
-different entitlement authority.
+signed artifact URL. That verified redirect records one canonical
+`installer_requested` stage at the installer-request grain plus
+`installer_redirect` evidence, after the response so attribution failure cannot
+delay delivery. The Blob signer is an internal helper; there is no standalone
+anonymous `/api/paid-download` HTTP route. The static installer bits may be
+identical to the normal release; the paid route and manifest are
+attribution/onboarding surfaces, not different entitlement authority.
 
 The opaque onboarding receipt is 32 random bytes encoded as 43 base64url
 characters, expires after 7 days, and is stored only as SHA-256. It is

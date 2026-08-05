@@ -11,10 +11,14 @@ import {
   ACQUISITION_PRIVACY_EXCLUSIONS,
   ACQUISITION_STAGES,
   ACQUISITION_STAGE_COUNTING_GRAINS,
+  addTrustedDeliveryEvidence,
   createCanonicalAcquisitionRoot,
   recordAcquisitionStage,
   summarizeAcquisitionStages,
 } from "../../api/_lib/acquisition-integrity.ts";
+import {
+  recordPaidAcquisitionInstallerRequest,
+} from "../../api/_lib/paid-acquisition.ts";
 import {
   createTestPoolOptions,
   requireSafeTestDatabaseUrl,
@@ -109,7 +113,23 @@ test("canonical acquisition pipeline binds every new intent and retains its comp
         occurredAt: new Date(Date.parse(FIRST_OBSERVED) + (index + 1) * 60_000),
       };
       const replays = await Promise.all(Array.from({ length: 4 }, () =>
-        recordAcquisitionStage(input, { transaction, namespace: "test" })
+        stage === "installer_requested"
+          ? recordPaidAcquisitionInstallerRequest({
+              acquisitionId: ROOT,
+              checkoutId: INTENT,
+              platform: "macos-universal",
+              occurredAt: input.occurredAt,
+            }, {
+              recordStage: (stageInput) => recordAcquisitionStage(
+                stageInput,
+                { transaction, namespace: "test" },
+              ),
+              addEvidence: (evidenceInput) => addTrustedDeliveryEvidence(
+                evidenceInput,
+                { transaction, namespace: "test" },
+              ),
+            })
+          : recordAcquisitionStage(input, { transaction, namespace: "test" })
       ));
       assert.equal(new Set(replays.map((row) => row.id)).size, 1, stage);
       assert.equal(new Set(replays.map((row) => row.deduplicationKey)).size, 1, stage);
@@ -134,6 +154,15 @@ test("canonical acquisition pipeline binds every new intent and retains its comp
     assert.deepEqual(summary.missingStages, []);
     assert.deepEqual(summary.conflictingStages, []);
     assert.ok(Object.values(summary.counts).every((count) => count === "1"));
+    const acquisition = await pool.query(`
+      select trusted_delivery_evidence
+      from ${quotedSchema}.sidestream_acquisitions
+      where id = $1
+    `, [ROOT]);
+    assert.deepEqual(acquisition.rows[0].trusted_delivery_evidence.sort(), [
+      "installer_redirect",
+      "signed_email_handoff",
+    ]);
 
     const intent = await pool.query(`
       select acquisition_id, stripe_customer_id, stripe_checkout_session_id, state

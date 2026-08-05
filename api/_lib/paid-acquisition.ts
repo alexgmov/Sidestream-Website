@@ -1439,9 +1439,12 @@ export async function getPaidAcquisitionReceiptState(options: {
         paid.canonical_payment_ref, paid.payment_state,
         paid.claim_state, paid.receipt_expires_at,
         paid.checkout_email_normalized,
+        core.acquisition_id,
         license.id as entitlement_ref,
         ${paidLifecycleSql("license")} as entitlement_status
       from public.sidestream_paid_acquisition_checkouts paid
+      join public.sidestream_checkout_intents core
+        on core.id = paid.checkout_intent_ref
       left join public.sidestream_licenses license
         on license.stripe_payment_intent_id = paid.canonical_payment_ref
         or (
@@ -1457,6 +1460,47 @@ export async function getPaidAcquisitionReceiptState(options: {
   );
   if (result.rows.length !== 1) return null;
   return result.rows[0];
+}
+
+export async function recordPaidAcquisitionInstallerRequest(options: {
+  acquisitionId: string;
+  checkoutId: string;
+  platform: "macos-universal" | "windows-x64";
+  occurredAt: Date;
+}, dependencies: {
+  recordStage?: (input: any) => Promise<any>;
+  addEvidence?: (input: any) => Promise<any>;
+} = {}) {
+  const acquisitionId = assertUuid(options.acquisitionId, "acquisitionId");
+  const checkoutId = assertUuid(options.checkoutId, "checkoutId");
+  if (options.platform !== "macos-universal" && options.platform !== "windows-x64") {
+    fail("invalid_request", "Paid installer platform is invalid.");
+  }
+  if (!(options.occurredAt instanceof Date) || Number.isNaN(options.occurredAt.getTime())) {
+    fail("invalid_request", "Paid installer timestamp is invalid.");
+  }
+  const integrity = dependencies.recordStage && dependencies.addEvidence
+    ? null
+    : await import("./acquisition-integrity.js");
+  const recordStage = dependencies.recordStage || integrity.recordAcquisitionStage;
+  const addEvidence = dependencies.addEvidence || integrity.addTrustedDeliveryEvidence;
+  const stage = await recordStage({
+    acquisitionId,
+    stage: "installer_requested",
+    stableServerReference: `paid-installer-request:${checkoutId}:${options.platform}`,
+    occurredAt: options.occurredAt,
+  });
+  if (stage.ownerConflict) {
+    fail(
+      "paid_installer_acquisition_conflict",
+      "Paid installer acquisition ownership conflicted.",
+    );
+  }
+  await addEvidence({
+    acquisitionId,
+    evidence: "installer_redirect",
+  });
+  return stage;
 }
 
 export async function associatePaidAcquisitionActivation(

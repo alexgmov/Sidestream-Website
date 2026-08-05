@@ -12,6 +12,7 @@ import {
   createPaidAcquisitionEntryContext,
   createPaidAcquisitionLifecycleEvent,
   normalizePaidAcquisitionVerifiedEmail,
+  recordPaidAcquisitionInstallerRequest,
   resolvePaidAcquisitionCheckoutCompletion,
   resolvePaidAcquisitionCheckoutStart,
   validatePaidAcquisitionAssignmentCookie,
@@ -28,6 +29,7 @@ const IDEMPOTENCY_KEY = "20000000-0000-4000-8000-000000000002";
 const SESSION_REF = "cs_test_paid_acquisition_1";
 const PAYMENT_REF = "pi_test_paid_acquisition_1";
 const DAY_HASH = createHash("sha256").update("anonymous-day").digest("hex");
+const ACQUISITION_ID = "30000000-0000-4000-8000-000000000003";
 
 function expectCode(code) {
   return (error) =>
@@ -442,4 +444,39 @@ test("lifecycle events expose only the contract allowlist", () => {
       }),
     expectCode("invalid_request"),
   );
+});
+
+test("receipt-gated paid artifact delivery records one canonical installer request", async () => {
+  const calls = [];
+  const occurredAt = new Date("2026-07-27T12:00:00.000Z");
+  const stage = await recordPaidAcquisitionInstallerRequest({
+    acquisitionId: ACQUISITION_ID,
+    checkoutId: INTENT_REF,
+    platform: "macos-universal",
+    occurredAt,
+  }, {
+    recordStage: async (input) => {
+      calls.push(["stage", input]);
+      return { ownerConflict: false, acquisitionId: input.acquisitionId };
+    },
+    addEvidence: async (input) => {
+      calls.push(["evidence", input]);
+      return { id: input.acquisitionId };
+    },
+  });
+
+  assert.equal(stage.acquisitionId, ACQUISITION_ID);
+  assert.deepEqual(calls, [
+    ["stage", {
+      acquisitionId: ACQUISITION_ID,
+      stage: "installer_requested",
+      stableServerReference:
+        `paid-installer-request:${INTENT_REF}:macos-universal`,
+      occurredAt,
+    }],
+    ["evidence", {
+      acquisitionId: ACQUISITION_ID,
+      evidence: "installer_redirect",
+    }],
+  ]);
 });

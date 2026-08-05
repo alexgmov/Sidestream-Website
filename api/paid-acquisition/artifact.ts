@@ -1,3 +1,4 @@
+import { waitUntil } from "@vercel/functions";
 import type { ServerResponse } from "node:http";
 import {
   fulfillCheckoutSession,
@@ -12,6 +13,7 @@ import {
   PaidAcquisitionError,
   createPaidAcquisitionReceiptCookie,
   getPaidAcquisitionReceiptState,
+  recordPaidAcquisitionInstallerRequest,
 } from "../_lib/paid-acquisition.js";
 import {
   getPaidArtifactPathname,
@@ -22,7 +24,7 @@ import {
   applyRateLimitHeaders,
   consumeRateLimit,
 } from "../_lib/rate-limit.js";
-import { createSignedPaidDownloadUrl } from "../paid-download.js";
+import { createSignedPaidDownloadUrl } from "../_lib/paid-download.js";
 
 const RECEIPT = /^[A-Za-z0-9_-]{43}$/;
 
@@ -168,6 +170,12 @@ export default async function handler(
     );
     response.setHeader("X-Content-Type-Options", "nosniff");
     response.end();
+    schedulePaidArtifactTracking({
+      acquisitionId: state.acquisition_id,
+      checkoutId: state.id,
+      platform,
+      occurredAt: new Date(),
+    });
   } catch (error) {
     if (
       error instanceof PaidAcquisitionError &&
@@ -176,6 +184,36 @@ export default async function handler(
       return sendError(response, 400, "invalid_request");
     }
     return sendError(response, 503, "temporarily_unavailable");
+  }
+}
+
+function schedulePaidArtifactTracking(event: Readonly<{
+  acquisitionId: string | null;
+  checkoutId: string;
+  platform: "macos-universal" | "windows-x64";
+  occurredAt: Date;
+}>) {
+  if (!event.acquisitionId) {
+    console.error("[sidestream paid artifact] acquisition tracking unavailable", {
+      code: "acquisition_linkage_missing",
+    });
+    return;
+  }
+  try {
+    waitUntil(recordPaidAcquisitionInstallerRequest({
+      acquisitionId: event.acquisitionId,
+      checkoutId: event.checkoutId,
+      platform: event.platform,
+      occurredAt: event.occurredAt,
+    }).catch(() => {
+      console.error("[sidestream paid artifact] acquisition tracking unavailable", {
+        code: "acquisition_stage_write_failed",
+      });
+    }));
+  } catch {
+    console.error("[sidestream paid artifact] acquisition tracking unavailable", {
+      code: "acquisition_schedule_failed",
+    });
   }
 }
 

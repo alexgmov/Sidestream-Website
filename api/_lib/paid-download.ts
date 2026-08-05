@@ -3,16 +3,16 @@ import {
   getPaidArtifactPathname,
   readPaidReleaseManifest,
   selectPaidReleasePlatform,
-} from "./_lib/paid-release-manifest.js";
+} from "./paid-release-manifest.js";
 import type {
   PaidReleaseManifest,
-} from "./_lib/paid-release-manifest.js";
+} from "./paid-release-manifest.js";
 
 const DEFAULT_CONTENT_TYPE = "application/octet-stream";
 const SIGNED_DOWNLOAD_TTL_MS = 5 * 60 * 1000;
 
-// This route serves generic installer bits only. Receipt/payment validation and
-// entitlement issuance remain separate server-owned paid-acquisition steps.
+// This internal helper signs generic installer bits only. The calling HTTP
+// route owns receipt/payment validation and entitlement checks.
 type PaidDownloadRequest = IncomingMessage & {
   method?: string;
   url?: string;
@@ -114,8 +114,6 @@ export function createPaidDownloadHandler(
     }
   };
 }
-
-export default createPaidDownloadHandler();
 
 async function headPaidArtifact(pathname: string) {
   const { head } = await import("@vercel/blob");
