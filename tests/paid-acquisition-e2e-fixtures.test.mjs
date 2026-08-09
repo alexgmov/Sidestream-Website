@@ -35,11 +35,7 @@ import {
   createPaidInstallerEmailJob,
   sendPaidInstallerEmail,
 } from "../api/_lib/paid-installer-email.ts";
-import {
-  getPaidArtifactPathname,
-  readPaidReleaseManifest,
-  resolvePaidReleasePlatform,
-} from "../api/_lib/paid-release-manifest.ts";
+import { readReleaseManifest } from "../api/_lib/release-manifest.ts";
 
 const REPO_ROOT = process.cwd();
 const SECRET = "fixture-only-secret-with-at-least-thirty-two-bytes";
@@ -434,20 +430,17 @@ test("fixture purchase connects sticky paid entry to idempotent verified regiona
   assert.match(emailJob.message.text, /platform=macos-universal/);
   assert.match(emailJob.message.text, /platform=windows-x64/);
 
-  for (const platform of ["macos-universal", "windows-x64"]) {
-    assert.equal(resolvePaidReleasePlatform(platform), platform);
-    const manifest = readPaidReleaseManifest(platform);
-    assert.equal(manifest.platform, platform);
+  for (const platform of ["macos", "windows"]) {
+    const manifest = readReleaseManifest(platform);
     assert.match(
-      getPaidArtifactPathname(manifest),
+      manifest.artifact.pathname,
       new RegExp(
         `^sidestream/.+\\.${
-          platform === "windows-x64" ? "exe" : "dmg"
+          platform === "windows" ? "exe" : "dmg"
         }$`,
       ),
     );
   }
-  assert.equal(resolvePaidReleasePlatform("macos"), null);
 
   assert.equal(
     normalizePaidAcquisitionVerifiedEmail(" Buyer+MC@EXAMPLE.com "),
