@@ -5,6 +5,7 @@ import test from "node:test";
 
 import {
   PAID_ACQUISITION_PAID_COHORT,
+  associatePaidAcquisitionActivationWithOutcome,
   createPaidAcquisitionLandingProof,
   createPaidAcquisitionReceipt,
   createPaidAcquisitionReceiptCookie,
@@ -188,6 +189,97 @@ test("receipt derivation and claim-cookie signing remain environment bound", () 
   );
 });
 
+test("paid activation linkage returns bounded outcomes without weakening joins", async () => {
+  const activationRef = "40000000-0000-4000-8000-000000000004";
+  const claimId = "50000000-0000-4000-8000-000000000005";
+  const acquisitionId = "60000000-0000-4000-8000-000000000006";
+  const receipt = Buffer.alloc(32, 9).toString("base64url");
+  const matchingRow = {
+    claim_id: claimId,
+    claim_activation_ref: null,
+    activation_ref: activationRef,
+    activation_source_matches: true,
+    activation_expired: false,
+    acquisition_id: acquisitionId,
+  };
+
+  const noMatch = await runPaidActivationLinkage({
+    receipt,
+    selectedRows: [],
+  });
+  assert.equal(noMatch.outcome, "receipt_activation_no_match");
+
+  const sourceMismatch = await runPaidActivationLinkage({
+    receipt,
+    selectedRows: [{
+      ...matchingRow,
+      claim_id: null,
+      activation_source_matches: false,
+    }],
+  });
+  assert.equal(sourceMismatch.outcome, "activation_source_mismatch");
+
+  const bindingConflict = await runPaidActivationLinkage({
+    receipt,
+    selectedRows: [{
+      ...matchingRow,
+      claim_activation_ref: "70000000-0000-4000-8000-000000000007",
+    }],
+  });
+  assert.equal(bindingConflict.outcome, "claim_binding_conflict");
+
+  const missingIdentity = await runPaidActivationLinkage({
+    receipt,
+    selectedRows: [matchingRow],
+    identityRows: [],
+  });
+  assert.equal(
+    missingIdentity.outcome,
+    "installation_identity_not_unique_or_missing",
+  );
+
+  const nonUniqueIdentity = await runPaidActivationLinkage({
+    receipt,
+    selectedRows: [matchingRow],
+    identityRows: [
+      {
+        install_id_hash: "a".repeat(64),
+        installer_receipt_id_hash: "b".repeat(64),
+      },
+      {
+        install_id_hash: "c".repeat(64),
+        installer_receipt_id_hash: "b".repeat(64),
+      },
+    ],
+  });
+  assert.equal(
+    nonUniqueIdentity.outcome,
+    "installation_identity_not_unique_or_missing",
+  );
+
+  const ownerConflict = await runPaidActivationLinkage({
+    receipt,
+    selectedRows: [matchingRow],
+    ownerConflict: true,
+  });
+  assert.equal(ownerConflict.outcome, "acquisition_ownership_conflict");
+
+  const recorded = await runPaidActivationLinkage({
+    receipt,
+    selectedRows: [matchingRow],
+  });
+  assert.equal(recorded.outcome, "installation_claimed_recorded");
+  assert.deepEqual(recorded.integrityCalls.map(([kind]) => kind), [
+    "stage",
+    "evidence",
+  ]);
+  assert.match(recorded.queries[0].sql, /activation\.source = \$4/);
+  assert.match(recorded.queries[0].sql, /paid\.installer_receipt_hash = \$2/);
+  assert.match(recorded.queries[2].sql, /link_type = 'install_identity_hash'/);
+  assert.match(recorded.queries[2].sql, /link_type = 'installer_receipt_hash'/);
+  assert.match(recorded.queries[2].sql, /limit 2/);
+});
+
 test("Google OAuth return sanitization admits only the exact paid claim shape", () => {
   assert.equal(
     sanitizeAccountNextPath(
@@ -327,4 +419,42 @@ function paidNonce() {
     }
   }
   throw new Error("Unable to find paid nonce");
+}
+
+async function runPaidActivationLinkage({
+  receipt,
+  selectedRows,
+  identityRows = [{
+    install_id_hash: "a".repeat(64),
+    installer_receipt_id_hash: "b".repeat(64),
+  }],
+  ownerConflict = false,
+}) {
+  const queries = [];
+  const integrityCalls = [];
+  const client = {
+    async query(sql, params) {
+      queries.push({ sql, params });
+      if (queries.length === 1) return { rows: selectedRows };
+      if (queries.length === 2) return { rows: [{ id: params[0] }] };
+      if (queries.length === 3) return { rows: identityRows };
+      throw new Error("Unexpected paid activation diagnostic query");
+    },
+  };
+  const outcome = await associatePaidAcquisitionActivationWithOutcome({
+    environment: "production",
+    activationKey: "activation-test-key",
+    receipt,
+    occurredAt: new Date("2026-08-09T12:00:00.000Z"),
+  }, {
+    transaction: async (callback) => callback(client),
+    recordStage: async (input, options) => {
+      integrityCalls.push(["stage", input, options]);
+      return { ownerConflict };
+    },
+    addEvidence: async (input, options) => {
+      integrityCalls.push(["evidence", input, options]);
+    },
+  });
+  return { ...outcome, queries, integrityCalls };
 }

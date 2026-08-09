@@ -27,7 +27,9 @@ import {
   renderMissingPaidEntitlementPage,
 } from "../_lib/paid-onboarding-claim-page.js";
 import {
-  associatePaidAcquisitionActivation,
+  associatePaidAcquisitionActivationWithOutcome,
+  PAID_ACQUISITION_SOURCE,
+  type PaidAcquisitionActivationLinkageOutcome,
 } from "../_lib/paid-acquisition.js";
 
 type ActivationDecisionContext = {
@@ -264,6 +266,8 @@ export async function handleActivationClaim(
     }
 
     await finalizePaidAcquisitionLinkage({
+      expectedPaidAcquisition:
+        options.requiredActivationSource === PAID_ACQUISITION_SOURCE,
       receipt: options.paidAcquisitionReceipt,
       environment: environment.namespace,
       activationKey,
@@ -289,6 +293,8 @@ export async function handleActivationClaim(
     });
   }
   await finalizePaidAcquisitionLinkage({
+    expectedPaidAcquisition:
+      options.requiredActivationSource === PAID_ACQUISITION_SOURCE,
     receipt: options.paidAcquisitionReceipt,
     environment: environment.namespace,
     activationKey,
@@ -297,25 +303,34 @@ export async function handleActivationClaim(
 }
 
 async function finalizePaidAcquisitionLinkage(options: {
+  expectedPaidAcquisition: boolean;
   receipt?: string;
   environment: "test" | "production";
   activationKey: string;
 }) {
-  if (!options.receipt) return;
+  if (!options.expectedPaidAcquisition) return;
+  if (!options.receipt) {
+    recordPaidAcquisitionLinkageOutcome("missing_browser_paid_receipt");
+    return;
+  }
   try {
-    const association = await associatePaidAcquisitionActivation({
+    const association = await associatePaidAcquisitionActivationWithOutcome({
       environment: options.environment,
       activationKey: options.activationKey,
       receipt: options.receipt,
     });
-    if (!association.associated) return;
+    recordPaidAcquisitionLinkageOutcome(association.outcome);
   } catch {
     // Paid acquisition attribution is additive. It must never undo a valid,
     // authenticated entitlement reconnect or confirmed device transfer.
-    console.error("[sidestream paid activation] attribution linkage unavailable", {
-      code: "paid_activation_linkage_failed",
-    });
+    recordPaidAcquisitionLinkageOutcome("linkage_unavailable");
   }
+}
+
+function recordPaidAcquisitionLinkageOutcome(
+  outcome: PaidAcquisitionActivationLinkageOutcome,
+) {
+  console.info("[sidestream paid activation] attribution linkage", { outcome });
 }
 
 async function getActivationDecisionContext(

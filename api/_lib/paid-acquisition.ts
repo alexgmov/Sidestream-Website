@@ -85,6 +85,17 @@ export const PAID_ACQUISITION_RECEIPT_COOKIE =
 export const PAID_ACQUISITION_RECEIPT_MAX_AGE_SECONDS =
   RECEIPT_COOKIE_MAX_AGE_SECONDS;
 
+export type PaidAcquisitionActivationLinkageOutcome =
+  | "missing_browser_paid_receipt"
+  | "receipt_activation_no_match"
+  | "activation_source_mismatch"
+  | "claim_binding_conflict"
+  | "installation_identity_not_unique_or_missing"
+  | "acquisition_identity_missing"
+  | "acquisition_ownership_conflict"
+  | "installation_claimed_recorded"
+  | "linkage_unavailable";
+
 export class PaidAcquisitionError extends Error {
   readonly code: string;
 
@@ -1503,6 +1514,12 @@ export async function recordPaidAcquisitionInstallerRequest(options: {
   return stage;
 }
 
+type PaidAcquisitionActivationDependencies = {
+  transaction?: <T>(callback: (client: PoolClient) => Promise<T>) => Promise<T>;
+  recordStage?: (input: any, options: any) => Promise<any>;
+  addEvidence?: (input: any, options: any) => Promise<any>;
+};
+
 export async function associatePaidAcquisitionActivation(
   options: {
     environment: "test" | "production";
@@ -1510,12 +1527,28 @@ export async function associatePaidAcquisitionActivation(
     receipt: string;
     occurredAt?: Date;
   },
-  dependencies: {
-    transaction?: <T>(callback: (client: PoolClient) => Promise<T>) => Promise<T>;
-    recordStage?: (input: any, options: any) => Promise<any>;
-    addEvidence?: (input: any, options: any) => Promise<any>;
-  } = {},
+  dependencies: PaidAcquisitionActivationDependencies = {},
 ) {
+  const result = await associatePaidAcquisitionActivationWithOutcome(
+    options,
+    dependencies,
+  );
+  return {
+    associated: isPaidActivationAssociated(result.outcome),
+    installationClaimed:
+      result.outcome === "installation_claimed_recorded",
+  };
+}
+
+export async function associatePaidAcquisitionActivationWithOutcome(
+  options: {
+    environment: "test" | "production";
+    activationKey: string;
+    receipt: string;
+    occurredAt?: Date;
+  },
+  dependencies: PaidAcquisitionActivationDependencies = {},
+): Promise<{ outcome: PaidAcquisitionActivationLinkageOutcome }> {
   const environment = asEnvironment(options.environment);
   const activationKey = assertProviderReference(
     options.activationKey,
@@ -1531,37 +1564,58 @@ export async function associatePaidAcquisitionActivation(
 
   return transaction(async (client) => {
     const selected = await client.query<{
-      claim_id: string;
+      claim_id: string | null;
+      claim_activation_ref: string | null;
       activation_ref: string;
+      activation_source_matches: boolean;
+      activation_expired: boolean;
       acquisition_id: string | null;
     }>(
       `
-        select claim.id as claim_id,
+        select receipt_match.claim_id,
+          receipt_match.claim_activation_ref,
           activation.id as activation_ref,
-          core.acquisition_id
-        from public.sidestream_paid_acquisition_claims claim
-        join public.sidestream_paid_acquisition_checkouts paid
-          on paid.id = claim.checkout_id
-        join public.sidestream_checkout_intents core
-          on core.id = paid.checkout_intent_ref
-        join public.sidestream_activation_sessions activation
-          on activation.activation_key = $3
-          and activation.source = $4
-        where claim.environment = $1
-          and paid.environment = $1
-          and paid.installer_receipt_hash = $2
-          and paid.receipt_expires_at > now()
-          and paid.payment_state = 'active'
-          and activation.expires_at > now()
-          and (claim.activation_ref is null or claim.activation_ref = activation.id)
-        for update of claim
+          activation.source = $4 as activation_source_matches,
+          activation.expires_at <= now() as activation_expired,
+          receipt_match.acquisition_id
+        from public.sidestream_activation_sessions activation
+        left join lateral (
+          select claim.id as claim_id,
+            claim.activation_ref as claim_activation_ref,
+            core.acquisition_id
+          from public.sidestream_paid_acquisition_claims claim
+          join public.sidestream_paid_acquisition_checkouts paid
+            on paid.id = claim.checkout_id
+          join public.sidestream_checkout_intents core
+            on core.id = paid.checkout_intent_ref
+          where claim.environment = $1
+            and paid.environment = $1
+            and paid.installer_receipt_hash = $2
+            and paid.receipt_expires_at > now()
+            and paid.payment_state = 'active'
+          for update of claim
+        ) receipt_match on true
+        where activation.activation_key = $3
+        limit 2
       `,
       [environment, receiptHash, activationKey, PAID_SOURCE],
     );
     if (selected.rows.length !== 1) {
-      return { associated: false as const, installationClaimed: false as const };
+      return { outcome: "receipt_activation_no_match" };
     }
     const row = selected.rows[0];
+    if (row.activation_source_matches === false) {
+      return { outcome: "activation_source_mismatch" };
+    }
+    if (row.activation_expired === true || !row.claim_id) {
+      return { outcome: "receipt_activation_no_match" };
+    }
+    if (
+      typeof row.claim_activation_ref === "string" &&
+      row.claim_activation_ref !== row.activation_ref
+    ) {
+      return { outcome: "claim_binding_conflict" };
+    }
     const associated = await client.query<{ id: string }>(
       `
         update public.sidestream_paid_acquisition_claims
@@ -1574,7 +1628,7 @@ export async function associatePaidAcquisitionActivation(
       [row.claim_id, row.activation_ref],
     );
     if (associated.rows.length !== 1) {
-      return { associated: false as const, installationClaimed: false as const };
+      return { outcome: "claim_binding_conflict" };
     }
 
     const identity = await client.query<{
@@ -1600,8 +1654,11 @@ export async function associatePaidAcquisitionActivation(
       `,
       [environment, row.activation_ref],
     );
-    if (identity.rows.length !== 1 || !row.acquisition_id) {
-      return { associated: true as const, installationClaimed: false as const };
+    if (identity.rows.length !== 1) {
+      return { outcome: "installation_identity_not_unique_or_missing" };
+    }
+    if (!row.acquisition_id) {
+      return { outcome: "acquisition_identity_missing" };
     }
 
     const integrity = dependencies.recordStage && dependencies.addEvidence
@@ -1618,14 +1675,23 @@ export async function associatePaidAcquisitionActivation(
       occurredAt,
     }, { transaction: nestedTransaction, namespace: environment });
     if (stage.ownerConflict) {
-      return { associated: true as const, installationClaimed: false as const };
+      return { outcome: "acquisition_ownership_conflict" };
     }
     await addEvidence({
       acquisitionId: row.acquisition_id,
       evidence: "verified_installation_claim",
     }, { transaction: nestedTransaction, namespace: environment });
-    return { associated: true as const, installationClaimed: true as const };
+    return { outcome: "installation_claimed_recorded" };
   });
+}
+
+function isPaidActivationAssociated(
+  outcome: PaidAcquisitionActivationLinkageOutcome,
+) {
+  return outcome === "installation_identity_not_unique_or_missing" ||
+    outcome === "acquisition_identity_missing" ||
+    outcome === "acquisition_ownership_conflict" ||
+    outcome === "installation_claimed_recorded";
 }
 
 export async function getPaidAcquisitionActivationOutcome(options: {
