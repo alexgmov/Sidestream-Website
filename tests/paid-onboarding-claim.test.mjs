@@ -101,7 +101,15 @@ test("paid install attribution uses the signed browser receipt after authenticat
   );
   assert.match(
     paidAcquisitionSource,
-    /paid\.installer_receipt_hash = \$2[\s\S]*?activation\.activation_key = \$3[\s\S]*?activation\.source = \$4/,
+    /paid\.installer_receipt_hash = \$2/,
+  );
+  assert.match(
+    paidAcquisitionSource,
+    /activation\.activation_key = \$3/,
+  );
+  assert.match(
+    paidAcquisitionSource,
+    /activation\.source = \$4 as activation_source_matches/,
   );
   assert.match(
     paidAcquisitionSource,
@@ -111,6 +119,35 @@ test("paid install attribution uses the signed browser receipt after authenticat
     accountSource,
     /installerReceiptIdHash:[\s\S]{0,200}associatePaidAcquisitionActivation/,
   );
+});
+
+test("paid POST linkage records only bounded outcomes and ordinary claims stay quiet", () => {
+  assert.match(
+    claimSource,
+    /options\.requiredActivationSource === PAID_ACQUISITION_SOURCE/,
+  );
+  assert.match(
+    claimSource,
+    /if \(!options\.expectedPaidAcquisition\) return;[\s\S]*?if \(!options\.receipt\) \{[\s\S]*?"missing_browser_paid_receipt"/,
+  );
+  assert.match(
+    claimSource,
+    /console\.info\("\[sidestream paid activation\] attribution linkage", \{ outcome \}\)/,
+  );
+  assert.doesNotMatch(
+    claimSource,
+    /console\.(?:info|warn|error)\([^\n]*(?:activationKey|receipt|email|token|stripe|customer)/i,
+  );
+  for (const outcome of [
+    "receipt_activation_no_match",
+    "activation_source_mismatch",
+    "claim_binding_conflict",
+    "installation_identity_not_unique_or_missing",
+    "acquisition_ownership_conflict",
+    "installation_claimed_recorded",
+  ]) {
+    assert.match(paidAcquisitionSource, new RegExp(`"${outcome}"`));
+  }
 });
 
 test("signed-out OAuth accepts only the exact dedicated same-origin return shape", () => {
