@@ -398,6 +398,18 @@ dedicated route rechecks the stored source on GET and POST. Source selects UX
 only: it cannot activate a license, prove payment, bypass account ownership, or
 weaken the existing two-active-device policy.
 
+The paid artifact redirect also sets a signed HTTP-only browser receipt. That
+per-Checkout receipt and FlowState's locally verified installer receipt are
+different identifiers and must never be compared or substituted. The dedicated
+claim GET remains read-only. Only after the authenticated, same-origin,
+CSRF-protected reconnect or confirmed-transfer POST succeeds may the server use
+the browser receipt to bind the paid Checkout to the exact paid-source activation.
+Canonical `installation_claimed` and `verified_installation_claim` evidence are
+then written only when Customer 360 resolves exactly one install identity and one
+local installer-receipt identity on that activation. Missing, expired, ambiguous,
+or conflicting attribution evidence fails linkage closed without reversing an
+otherwise valid entitlement recovery.
+
 After the existing safe Google OAuth flow, an active Unlimited account with no active
 device or the same device receives the existing one-time same-origin,
 CSRF-bound reconnect POST. A different device fills the second available slot;

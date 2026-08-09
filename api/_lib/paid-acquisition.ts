@@ -1504,35 +1504,128 @@ export async function recordPaidAcquisitionInstallerRequest(options: {
 }
 
 export async function associatePaidAcquisitionActivation(
-  runner: Pick<PoolClient, "query">,
   options: {
     environment: "test" | "production";
-    activationRef: string;
-    installerReceiptIdHash: string;
+    activationKey: string;
+    receipt: string;
+    occurredAt?: Date;
   },
+  dependencies: {
+    transaction?: <T>(callback: (client: PoolClient) => Promise<T>) => Promise<T>;
+    recordStage?: (input: any, options: any) => Promise<any>;
+    addEvidence?: (input: any, options: any) => Promise<any>;
+  } = {},
 ) {
-  const result = await runner.query<{ id: string }>(
-    `
-      update public.sidestream_paid_acquisition_claims claim
-      set activation_ref = $3::uuid,
-          updated_at = now()
-      from public.sidestream_paid_acquisition_checkouts paid
-      where claim.checkout_id = paid.id
-        and claim.environment = $1
-        and paid.environment = $1
-        and paid.installer_receipt_hash = $2
-        and paid.receipt_expires_at > now()
-        and paid.payment_state = 'active'
-        and (claim.activation_ref is null or claim.activation_ref = $3::uuid)
-      returning claim.id
-    `,
-    [
-      options.environment,
-      options.installerReceiptIdHash,
-      options.activationRef,
-    ],
+  const environment = asEnvironment(options.environment);
+  const activationKey = assertProviderReference(
+    options.activationKey,
+    "activationKey",
   );
-  return Boolean(result.rows[0]);
+  const receiptHash = sha256Hex(assertReceipt(options.receipt));
+  const occurredAt = options.occurredAt || new Date();
+  if (!(occurredAt instanceof Date) || Number.isNaN(occurredAt.getTime())) {
+    fail("invalid_request", "Paid installation timestamp is invalid.");
+  }
+  const transaction = dependencies.transaction || ((callback) =>
+    withPaidPostgresTransaction(environment, callback));
+
+  return transaction(async (client) => {
+    const selected = await client.query<{
+      claim_id: string;
+      activation_ref: string;
+      acquisition_id: string | null;
+    }>(
+      `
+        select claim.id as claim_id,
+          activation.id as activation_ref,
+          core.acquisition_id
+        from public.sidestream_paid_acquisition_claims claim
+        join public.sidestream_paid_acquisition_checkouts paid
+          on paid.id = claim.checkout_id
+        join public.sidestream_checkout_intents core
+          on core.id = paid.checkout_intent_ref
+        join public.sidestream_activation_sessions activation
+          on activation.activation_key = $3
+          and activation.source = $4
+        where claim.environment = $1
+          and paid.environment = $1
+          and paid.installer_receipt_hash = $2
+          and paid.receipt_expires_at > now()
+          and paid.payment_state = 'active'
+          and activation.expires_at > now()
+          and (claim.activation_ref is null or claim.activation_ref = activation.id)
+        for update of claim
+      `,
+      [environment, receiptHash, activationKey, PAID_SOURCE],
+    );
+    if (selected.rows.length !== 1) {
+      return { associated: false as const, installationClaimed: false as const };
+    }
+    const row = selected.rows[0];
+    const associated = await client.query<{ id: string }>(
+      `
+        update public.sidestream_paid_acquisition_claims
+        set activation_ref = $2::uuid,
+            updated_at = now()
+        where id = $1::uuid
+          and (activation_ref is null or activation_ref = $2::uuid)
+        returning id
+      `,
+      [row.claim_id, row.activation_ref],
+    );
+    if (associated.rows.length !== 1) {
+      return { associated: false as const, installationClaimed: false as const };
+    }
+
+    const identity = await client.query<{
+      install_id_hash: string;
+      installer_receipt_id_hash: string;
+    }>(
+      `
+        select install_link.link_value as install_id_hash,
+          receipt_link.link_value as installer_receipt_id_hash
+        from public.sidestream_customer_identity_links activation_link
+        join public.sidestream_customer_identity_links install_link
+          on install_link.profile_id = activation_link.profile_id
+          and install_link.license_namespace = activation_link.license_namespace
+          and install_link.link_type = 'install_identity_hash'
+        join public.sidestream_customer_identity_links receipt_link
+          on receipt_link.profile_id = activation_link.profile_id
+          and receipt_link.license_namespace = activation_link.license_namespace
+          and receipt_link.link_type = 'installer_receipt_hash'
+        where activation_link.license_namespace = $1
+          and activation_link.link_type = 'activation_record'
+          and activation_link.link_value = $2::text
+        limit 2
+      `,
+      [environment, row.activation_ref],
+    );
+    if (identity.rows.length !== 1 || !row.acquisition_id) {
+      return { associated: true as const, installationClaimed: false as const };
+    }
+
+    const integrity = dependencies.recordStage && dependencies.addEvidence
+      ? null
+      : await import("./acquisition-integrity.js");
+    const recordStage = dependencies.recordStage || integrity.recordAcquisitionStage;
+    const addEvidence = dependencies.addEvidence || integrity.addTrustedDeliveryEvidence;
+    const nestedTransaction = <T>(callback: (runner: PoolClient) => Promise<T>) =>
+      callback(client);
+    const stage = await recordStage({
+      acquisitionId: row.acquisition_id,
+      stage: "installation_claimed",
+      stableServerReference: `installation:${identity.rows[0].install_id_hash}`,
+      occurredAt,
+    }, { transaction: nestedTransaction, namespace: environment });
+    if (stage.ownerConflict) {
+      return { associated: true as const, installationClaimed: false as const };
+    }
+    await addEvidence({
+      acquisitionId: row.acquisition_id,
+      evidence: "verified_installation_claim",
+    }, { transaction: nestedTransaction, namespace: environment });
+    return { associated: true as const, installationClaimed: true as const };
+  });
 }
 
 export async function getPaidAcquisitionActivationOutcome(options: {

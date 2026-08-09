@@ -7,6 +7,7 @@ import {
   PAID_ACQUISITION_EXPERIMENT_ID,
   PAID_ACQUISITION_PAID_COHORT,
   PaidAcquisitionError,
+  associatePaidAcquisitionActivation,
   bindPaidAcquisitionCheckoutIntent,
   createPaidAcquisitionAssignmentCookie,
   createPaidAcquisitionEntryContext,
@@ -479,4 +480,75 @@ test("receipt-gated paid artifact delivery records one canonical installer reque
       evidence: "installer_redirect",
     }],
   ]);
+});
+
+test("authenticated paid activation binds the browser receipt and records the verified install", async () => {
+  const receipt = Buffer.alloc(32, 11).toString("base64url");
+  const activationRef = "40000000-0000-4000-8000-000000000004";
+  const installIdHash = "a".repeat(64);
+  const installerReceiptIdHash = "b".repeat(64);
+  const queries = [];
+  const integrityCalls = [];
+  const client = {
+    async query(sql, params) {
+      queries.push({ sql, params });
+      if (queries.length === 1) {
+        return {
+          rows: [{
+            claim_id: INTENT_REF,
+            activation_ref: activationRef,
+            acquisition_id: ACQUISITION_ID,
+          }],
+        };
+      }
+      if (queries.length === 2) return { rows: [{ id: INTENT_REF }] };
+      if (queries.length === 3) {
+        return {
+          rows: [{
+            install_id_hash: installIdHash,
+            installer_receipt_id_hash: installerReceiptIdHash,
+          }],
+        };
+      }
+      throw new Error("Unexpected paid activation query");
+    },
+  };
+  const occurredAt = new Date("2026-08-08T12:00:00.000Z");
+  const result = await associatePaidAcquisitionActivation({
+    environment: "production",
+    activationKey: "activation-test-key",
+    receipt,
+    occurredAt,
+  }, {
+    transaction: async (callback) => callback(client),
+    recordStage: async (input, options) => {
+      integrityCalls.push(["stage", input, options]);
+      return { ownerConflict: false };
+    },
+    addEvidence: async (input, options) => {
+      integrityCalls.push(["evidence", input, options]);
+    },
+  });
+
+  assert.deepEqual(result, { associated: true, installationClaimed: true });
+  assert.equal(queries.length, 3);
+  assert.match(queries[0].sql, /activation\.source = \$4/);
+  assert.match(queries[0].sql, /paid\.installer_receipt_hash = \$2/);
+  assert.equal(queries[0].params[0], "production");
+  assert.equal(queries[0].params[1], createHash("sha256").update(receipt).digest("hex"));
+  assert.equal(queries[0].params[2], "activation-test-key");
+  assert.equal(queries[0].params[3], "paid-acquisition-mc-v1");
+  assert.match(queries[2].sql, /link_type = 'install_identity_hash'/);
+  assert.match(queries[2].sql, /link_type = 'installer_receipt_hash'/);
+  assert.equal(integrityCalls[0][0], "stage");
+  assert.deepEqual(integrityCalls[0][1], {
+    acquisitionId: ACQUISITION_ID,
+    stage: "installation_claimed",
+    stableServerReference: `installation:${installIdHash}`,
+    occurredAt,
+  });
+  assert.deepEqual(integrityCalls[1][1], {
+    acquisitionId: ACQUISITION_ID,
+    evidence: "verified_installation_claim",
+  });
 });

@@ -27,6 +27,10 @@ const dedicatedRouteSource = await readFile(
   new URL("../api/activation/paid-claim.ts", import.meta.url),
   "utf8",
 );
+const paidAcquisitionSource = await readFile(
+  new URL("../api/_lib/paid-acquisition.ts", import.meta.url),
+  "utf8",
+);
 
 test("activation start selects the dedicated URL only for the exact raw source", () => {
   assert.match(
@@ -79,6 +83,33 @@ test("the dedicated route constrains server-side source and changes only inactiv
   assert.match(
     claimSource,
     /signIn\.searchParams\.set\("prompt", options\.googlePrompt\)/,
+  );
+});
+
+test("paid install attribution uses the signed browser receipt after authenticated confirmation", () => {
+  assert.match(
+    dedicatedRouteSource,
+    /validatePaidAcquisitionReceiptCookie/,
+  );
+  assert.match(
+    dedicatedRouteSource,
+    /paidAcquisitionReceipt/,
+  );
+  assert.match(
+    claimSource,
+    /await finalizePaidAcquisitionLinkage\([\s\S]*?receipt: options\.paidAcquisitionReceipt/,
+  );
+  assert.match(
+    paidAcquisitionSource,
+    /paid\.installer_receipt_hash = \$2[\s\S]*?activation\.activation_key = \$3[\s\S]*?activation\.source = \$4/,
+  );
+  assert.match(
+    paidAcquisitionSource,
+    /stage: "installation_claimed"[\s\S]*?evidence: "verified_installation_claim"/,
+  );
+  assert.doesNotMatch(
+    accountSource,
+    /installerReceiptIdHash:[\s\S]{0,200}associatePaidAcquisitionActivation/,
   );
 });
 

@@ -26,6 +26,9 @@ import {
 import {
   renderMissingPaidEntitlementPage,
 } from "../_lib/paid-onboarding-claim-page.js";
+import {
+  associatePaidAcquisitionActivation,
+} from "../_lib/paid-acquisition.js";
 
 type ActivationDecisionContext = {
   accountId: string | null;
@@ -54,6 +57,7 @@ export type ActivationClaimHandlerOptions = {
   requiredActivationSource?: string;
   inactiveEntitlementMode?: "checkout" | "support_only";
   googlePrompt?: "select_account";
+  paidAcquisitionReceipt?: string;
 };
 
 export default async function handler(
@@ -259,6 +263,12 @@ export async function handleActivationClaim(
       });
     }
 
+    await finalizePaidAcquisitionLinkage({
+      receipt: options.paidAcquisitionReceipt,
+      environment: environment.namespace,
+      activationKey,
+    });
+
     return redirectToSuccess(response, baseUrl, activationKey, "transferred");
   }
 
@@ -278,7 +288,34 @@ export async function handleActivationClaim(
       code: claimed.reason,
     });
   }
+  await finalizePaidAcquisitionLinkage({
+    receipt: options.paidAcquisitionReceipt,
+    environment: environment.namespace,
+    activationKey,
+  });
   return redirectToSuccess(response, baseUrl, activationKey, "restored");
+}
+
+async function finalizePaidAcquisitionLinkage(options: {
+  receipt?: string;
+  environment: "test" | "production";
+  activationKey: string;
+}) {
+  if (!options.receipt) return;
+  try {
+    const association = await associatePaidAcquisitionActivation({
+      environment: options.environment,
+      activationKey: options.activationKey,
+      receipt: options.receipt,
+    });
+    if (!association.associated) return;
+  } catch {
+    // Paid acquisition attribution is additive. It must never undo a valid,
+    // authenticated entitlement reconnect or confirmed device transfer.
+    console.error("[sidestream paid activation] attribution linkage unavailable", {
+      code: "paid_activation_linkage_failed",
+    });
+  }
 }
 
 async function getActivationDecisionContext(

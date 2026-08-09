@@ -76,7 +76,6 @@ import {
 import {
   PAID_ACQUISITION_EXPERIMENT_ID,
   PAID_ACQUISITION_SOURCE,
-  associatePaidAcquisitionActivation,
   completePaidAcquisitionCheckout,
   recordPaidAcquisitionLifecycle,
 } from "./paid-acquisition.js";
@@ -2478,18 +2477,6 @@ export async function createActivationSession(
       );
       const activationId = inserted.rows[0]?.id;
       if (!activationId) throw new Error("Activation insert did not return an ID");
-
-      if (
-        paidOnboardingSource &&
-        typeof payload.installerReceiptIdHash === "string" &&
-        /^[0-9a-f]{64}$/.test(payload.installerReceiptIdHash)
-      ) {
-        await associatePaidAcquisitionActivation(client, {
-          environment: environment.namespace,
-          activationRef: activationId,
-          installerReceiptIdHash: payload.installerReceiptIdHash,
-        });
-      }
 
       await attachCustomerIdentity(client, {
         environment,
