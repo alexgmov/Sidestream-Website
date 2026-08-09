@@ -2,8 +2,8 @@
   "schemaVersion": 1,
   "platform": "macos-universal",
   "version": "1.0.17",
-  "filename": "Sidestream-1.0.17-Mac-Installer.dmg",
-  "sizeBytes": 226540711,
-  "sha256": "7189d55af4afdad9ee4d3188117d782dd1869690b735ac388e448fcb6aa106e3",
-  "artifactPathname": "sidestream/1.0.17/Sidestream-1.0.17-Mac-Installer.dmg"
+  "filename": "Sidestream-1.0.17-Unlimited-Mac-Installer.dmg",
+  "sizeBytes": 226542501,
+  "sha256": "e941f79f7332e9b70c8b63f200275eb56f1ed14f15fee7177fafef51f43d6121",
+  "artifactPathname": "sidestream/1.0.17/e941f79f7332e9b7/Sidestream-1.0.17-Unlimited-Mac-Installer.dmg"
 }
