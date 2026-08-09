@@ -20,7 +20,9 @@ test("paid thank-you is a phone-first computer and email handoff", async () => {
   assert.doesNotMatch(html, /class="phone-note"/);
   assert.match(html, /“Sidestream Unlimited”/);
   assert.match(html, /same email you used at Checkout/);
-  assert.match(html, /You are finished on this phone\./);
+  assert.doesNotMatch(html, /You are finished on this phone\./);
+  assert.doesNotMatch(html, /Your receipt comes from Stripe\./);
+  assert.doesNotMatch(html, /class="done"/);
   assert.doesNotMatch(html, /href="\/api\/download|Download latest/);
 });
 
