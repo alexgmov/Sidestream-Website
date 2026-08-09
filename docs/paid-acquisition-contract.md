@@ -347,9 +347,12 @@ signed artifact URL. That verified redirect records one canonical
 `installer_requested` stage at the installer-request grain plus
 `installer_redirect` evidence, after the response so attribution failure cannot
 delay delivery. The Blob signer is an internal helper; there is no standalone
-anonymous `/api/paid-download` HTTP route. The static installer bits may be
-identical to the normal release; the paid route and manifest are
-attribution/onboarding surfaces, not different entitlement authority.
+anonymous `/api/paid-download` HTTP route. The paid manifest must select a
+FlowState `paid-onboarding` artifact. It must not select the normal public
+installer because standard builds do not load the blocking authentication
+experience. The paid route and manifest are still not entitlement authority;
+Google authentication and server-side license state remain authoritative after
+installation.
 
 The opaque onboarding receipt is 32 random bytes encoded as 43 base64url
 characters, expires after 7 days, and is stored only as SHA-256. It is

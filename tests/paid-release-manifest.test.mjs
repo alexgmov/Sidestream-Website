@@ -18,27 +18,23 @@ const fixtureSources = {
   "windows-x64": readFixture("windows-x64"),
 };
 const originalManifestPaths = {
-  "macos-universal": process.env.SIDESTREAM_RELEASE_MANIFEST_PATH,
-  "windows-x64": process.env.SIDESTREAM_WINDOWS_RELEASE_MANIFEST_PATH,
+  "macos-universal": process.env.SIDESTREAM_PAID_RELEASE_MANIFEST_PATH,
+  "windows-x64": process.env.SIDESTREAM_PAID_WINDOWS_RELEASE_MANIFEST_PATH,
 };
 
 let compiledDirectory;
 let createPaidDownloadHandler;
 let createPaidReleaseHandler;
 let getPaidArtifactPathname;
+let parsePaidReleaseManifest;
 let readPaidReleaseManifest;
 let resolvePaidReleasePlatform;
 let selectPaidReleasePlatform;
-let toPaidReleaseManifest;
 let toPublicPaidReleaseManifest;
 
 before(async () => {
   compiledDirectory = mkdtempSync(
     path.join(os.tmpdir(), "sidestream-paid-release-test-"),
-  );
-  copyTypeScriptModule(
-    "api/_lib/release-manifest.ts",
-    "api/_lib/release-manifest.ts",
   );
   copyTypeScriptModule(
     "api/_lib/paid-release-manifest.ts",
@@ -55,10 +51,10 @@ before(async () => {
 
   ({
     getPaidArtifactPathname,
+    parsePaidReleaseManifest,
     readPaidReleaseManifest,
     resolvePaidReleasePlatform,
     selectPaidReleasePlatform,
-    toPaidReleaseManifest,
     toPublicPaidReleaseManifest,
   } = await import(
     pathToFileURL(
@@ -79,11 +75,11 @@ before(async () => {
 
 after(() => {
   restoreEnvironment(
-    "SIDESTREAM_RELEASE_MANIFEST_PATH",
+    "SIDESTREAM_PAID_RELEASE_MANIFEST_PATH",
     originalManifestPaths["macos-universal"],
   );
   restoreEnvironment(
-    "SIDESTREAM_WINDOWS_RELEASE_MANIFEST_PATH",
+    "SIDESTREAM_PAID_WINDOWS_RELEASE_MANIFEST_PATH",
     originalManifestPaths["windows-x64"],
   );
   if (compiledDirectory) {
@@ -153,25 +149,40 @@ test("platform selection is exact, singular, and has no default or aliases", () 
   }
 });
 
-test("paid manifests are exact projections of the canonical stable releases", () => {
-  for (const platform of ["macos-universal", "windows-x64"]) {
-    const manifest = readPaidReleaseManifest(platform);
-    const canonical = readCanonicalFixture(platform);
+test("the parser rejects extra/private fields and every malformed public bound", () => {
+  const malformed = [
+    ["schema", (manifest) => { manifest.schemaVersion = 2; }],
+    ["platform", (manifest) => { manifest.platform = "macos-universal"; }],
+    ["version whitespace", (manifest) => { manifest.version = " 1.0.0"; }],
+    ["version characters", (manifest) => { manifest.version = "1.0.0+paid"; }],
+    ["version length", (manifest) => { manifest.version = "a".repeat(33); }],
+    ["filename path", (manifest) => { manifest.filename = "../artifact.exe"; }],
+    ["filename extension", (manifest) => { manifest.filename = "artifact.dmg"; }],
+    ["filename length", (manifest) => {
+      manifest.filename = `${"a".repeat(117)}.exe`;
+    }],
+    ["size zero", (manifest) => { manifest.sizeBytes = 0; }],
+    ["size maximum", (manifest) => { manifest.sizeBytes = 1_073_741_825; }],
+    ["checksum uppercase", (manifest) => {
+      manifest.sha256 = manifest.sha256.toUpperCase();
+    }],
+    ["artifact path", (manifest) => {
+      manifest.artifactPathname = "../private/path.exe";
+    }],
+    ["extra artifact identity", (manifest) => {
+      manifest.artifactId = "private-artifact";
+    }],
+  ];
 
-    assert.equal(manifest.version, canonical.version);
-    assert.equal(manifest.filename, path.basename(canonical.artifact.pathname));
-    assert.equal(manifest.sizeBytes, canonical.artifact.sizeBytes);
-    assert.equal(manifest.sha256, canonical.artifact.sha256);
-    assert.equal(manifest.artifactPathname, canonical.artifact.pathname);
+  for (const [label, mutate] of malformed) {
+    const candidate = structuredClone(fixtureSources["windows-x64"]);
+    mutate(candidate);
+    assert.throws(
+      () => parsePaidReleaseManifest(candidate, "windows-x64"),
+      undefined,
+      label,
+    );
   }
-
-  assert.throws(
-    () => toPaidReleaseManifest(
-      readPaidReleaseManifest("windows-x64"),
-      "macos-universal",
-    ),
-    /platform mismatch/,
-  );
 });
 
 test("paid latest GET and HEAD return no-store public metadata only", async () => {
@@ -334,11 +345,11 @@ test("absent, size-drifted, and invalid artifacts fail closed without signing", 
 });
 
 test("invalid manifest source fails both routes before artifact access", async () => {
-  const malformed = readCanonicalFixture("windows-x64");
-  malformed.artifact.pathname = "../private/blob/path.exe";
-  const manifestPath = path.join(compiledDirectory, "invalid-windows.json");
+  const malformed = structuredClone(fixtureSources["windows-x64"]);
+  malformed.artifactPathname = "../private/blob/path.exe";
+  const manifestPath = path.join(compiledDirectory, "invalid-paid-windows.json");
   writeFileSync(manifestPath, `${JSON.stringify(malformed)}\n`, "utf8");
-  process.env.SIDESTREAM_WINDOWS_RELEASE_MANIFEST_PATH = manifestPath;
+  process.env.SIDESTREAM_PAID_WINDOWS_RELEASE_MANIFEST_PATH = manifestPath;
 
   try {
     const state = downloadState();
@@ -351,7 +362,7 @@ test("invalid manifest source fails both routes before artifact access", async (
     assert.equal(downloadResult.response.status, 404);
     assert.deepEqual(state.headPathnames, []);
     assert.deepEqual(state.signedPathnames, []);
-    assert.equal(downloadBody.includes(malformed.artifact.pathname), false);
+    assert.equal(downloadBody.includes(malformed.artifactPathname), false);
 
     const releaseResult = await invoke(releaseHandler(), {
       path: "/api/releases/paid-latest?platform=windows-x64",
@@ -360,10 +371,10 @@ test("invalid manifest source fails both routes before artifact access", async (
     const releaseBody = await releaseResult.response.text();
 
     assert.equal(releaseResult.response.status, 404);
-    assert.equal(releaseBody.includes(malformed.artifact.pathname), false);
+    assert.equal(releaseBody.includes(malformed.artifactPathname), false);
   } finally {
     restoreEnvironment(
-      "SIDESTREAM_WINDOWS_RELEASE_MANIFEST_PATH",
+      "SIDESTREAM_PAID_WINDOWS_RELEASE_MANIFEST_PATH",
       originalManifestPaths["windows-x64"],
     );
   }
@@ -406,22 +417,9 @@ function expectedPathname(platform) {
 }
 
 function readFixture(platform) {
-  const canonical = readCanonicalFixture(platform);
-  return {
-    schemaVersion: 1,
-    platform,
-    version: canonical.version,
-    filename: path.basename(canonical.artifact.pathname),
-    sizeBytes: canonical.artifact.sizeBytes,
-    sha256: canonical.artifact.sha256,
-    artifactPathname: canonical.artifact.pathname,
-  };
-}
-
-function readCanonicalFixture(platform) {
   const filename = platform === "windows-x64"
-    ? "release-manifest.windows.json"
-    : "release-manifest.json";
+    ? "release-manifest.paid.windows.json"
+    : "release-manifest.paid.json";
   return JSON.parse(readFileSync(path.join(repoRoot, "data", filename), "utf8"));
 }
 
@@ -434,9 +432,6 @@ function copyTypeScriptModule(sourceRelativePath, targetRelativePath) {
   ).replace(
     /paid-release-manifest\.js/g,
     "paid-release-manifest.ts",
-  ).replace(
-    /(["'])\.\/release-manifest\.js\1/g,
-    "$1./release-manifest.ts$1",
   );
   writeFileSync(targetPath, source, "utf8");
 }

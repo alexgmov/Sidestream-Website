@@ -74,15 +74,12 @@ of these bindings to agree:
 | Stripe | `STRIPE_SECRET_KEY` in test mode plus reviewed Test `SIDESTREAM_PRO_PRODUCT_ID`; `SIDESTREAM_PRO_PRICE_ID` is an optional validated hint for USD 1999 |
 | Google OAuth | Test client and exact Test-origin `GOOGLE_REDIRECT_URI` |
 | Email | `SIDESTREAM_PAID_ACQUISITION_EMAIL_ENABLED=0` until an allowlisted Test recipient and Resend gate are approved |
-| Artifacts | Test-only `SIDESTREAM_RELEASE_MANIFEST_PATH` and `SIDESTREAM_WINDOWS_RELEASE_MANIFEST_PATH` after reviewed artifacts are published; paid delivery derives from these same canonical stable manifests |
+| Artifacts | Test-only `SIDESTREAM_PAID_RELEASE_MANIFEST_PATH` and `SIDESTREAM_PAID_WINDOWS_RELEASE_MANIFEST_PATH` after reviewed artifacts are published |
 
 Any missing, ambiguous, shared, cross-mode, or cross-environment binding must
-fail closed. The committed canonical manifests are release pointers, not
-storage evidence. Paid delivery projects its version, filename, pathname, byte
-size, and digest from the same platform manifest as `/api/download`, so it
-cannot retain an older independent pointer. Verify the selected pathname, byte
-size, digest, and live receipt-gated response before claiming either platform
-artifact is available.
+fail closed. The committed paid manifests are release pointers, not storage
+evidence; verify the selected pathname, byte size, digest, and live
+receipt-gated response before claiming either platform artifact is available.
 
 ## Deterministic fixture verification
 
