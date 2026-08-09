@@ -413,6 +413,51 @@ local installer-receipt identity on that activation. Missing, expired, ambiguous
 or conflicting attribution evidence fails linkage closed without reversing an
 otherwise valid entitlement recovery.
 
+### Bounded activation-linkage diagnostics
+
+The authenticated paid-claim POST emits exactly one bounded operational outcome
+after a valid entitlement reconnect or confirmed transfer. This diagnostic is
+additive: it cannot undo that entitlement result and is not itself installation
+proof. Ordinary activation claims emit no paid-linkage outcome. The log surface
+is `[sidestream paid activation] attribution linkage` with exactly the single
+structured field `{ outcome }`; it must not contain an activation key, browser
+receipt or hash, installer receipt or hash, install identity, email,
+account/license identifier, Stripe reference, token, or database error.
+
+| Outcome | Durable meaning |
+| --- | --- |
+| `missing_browser_paid_receipt` | The exact paid claim completed without the distinct signed HTTP-only browser paid receipt. |
+| `receipt_activation_no_match` | No active, unexpired receipt/activation association matched in the trusted environment. |
+| `activation_source_mismatch` | The selected activation did not retain exact source `paid-acquisition-mc-v1`; no canonical install evidence was written. |
+| `claim_binding_conflict` | The paid receipt/claim is already bound incompatibly. |
+| `installation_identity_not_unique_or_missing` | The activation did not resolve exactly one activation-linked install identity and one locally verified installer-receipt identity. |
+| `acquisition_identity_missing` | The paid acquisition could not resolve its canonical acquisition identity after claim binding. |
+| `acquisition_ownership_conflict` | The resolved acquisition is owned by a different Customer 360 profile. |
+| `installation_claimed_recorded` | Both canonical `installation_claimed` and `verified_installation_claim` were committed for the resolved acquisition/install identity. |
+| `linkage_unavailable` | The additive association attempt failed outside the bounded domain outcomes; the valid entitlement result remains intact. |
+
+Only `installation_claimed_recorded` is positive canonical installation-linkage
+evidence. `installation_identity_not_unique_or_missing`,
+`acquisition_identity_missing`, and `acquisition_ownership_conflict` occur after
+the paid claim was bound but before verified installation evidence completed;
+they must not be reported as a completed installation claim.
+
+### Exact Checkout acquisition priority in Customer 360
+
+After exact Stripe-reference lookup resolves one non-conflicted Customer 360
+owner, its acquisition projection must prefer the acquisition attached to the
+requested Checkout Session. For PaymentIntent or Charge lookup, the same direct
+priority applies to the Checkout Session alias sharing that requested commerce
+payment key. Account, activation, and other profile-linked Checkout evidence is
+fallback only. If no direct Checkout acquisition exists, candidates retain the
+deterministic existing order by `first_observed_at`, then acquisition UUID.
+
+This is a read-time selection rule only. It does not rewrite historical
+attribution, merge identities, accept approximate provider references, or weaken
+the one-owner/identity-conflict rejection that runs before selection. The
+privacy-safe response still omits the requested Stripe identifier and all raw
+identity values.
+
 After the existing safe Google OAuth flow, an active Unlimited account with no active
 device or the same device receives the existing one-time same-origin,
 CSRF-bound reconnect POST. A different device fills the second available slot;
@@ -651,8 +696,21 @@ Implementation must:
   without treating a build, redirect config, email-provider acceptance,
   installer download, or health response as end-to-end success.
 
+Deterministic and disposable-database checks prove contracts and fixtures only.
+The final live Meta-paid release gate must use one fresh acquisition lineage and
+must observe, in order: the fresh `/meta-paid` acquisition; the receipt-gated
+paid-onboarding artifact for that purchase; that installed artifact loaded in
+Premiere with `onboardingChannel=paid-onboarding`; authenticated Google restore;
+Customer 360 showing `installation_claimed=1` with
+`verified_installation_claim`; and a later telemetry event on the same install
+identity. Evidence from separate acquisitions, receipts, installs, accounts, or
+telemetry identities cannot be spliced into a passing gate.
+
 Before any separately authorized Production release, an independent review must
 confirm the current Stripe refund/dispute status mapping, lifecycle replay and
 dead-letter recovery, environment binding, artifact integrity, email
 deliverability, database migrations, telemetry exclusions, and exact
 Production alias. This contract itself grants no such authorization.
+Passing repository gates does not mean that any live provider, payment, email,
+artifact, installer, Premiere, Customer 360, telemetry, deployment, or
+Production gate ran.

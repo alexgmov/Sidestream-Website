@@ -100,14 +100,20 @@ selectors before rerunning the harness.
 Run the focused dedicated-claim proof as well:
 
 ```bash
-node --experimental-strip-types --test tests/paid-onboarding-claim.test.mjs
+node --experimental-strip-types --test \
+  tests/paid-onboarding-claim.test.mjs \
+  tests/paid-acquisition-integration.test.mjs \
+  tests/customer-360/query-api.test.mjs
+npm run verify:checkout-contract
 ```
 
-It proves that only the exact raw `paid-acquisition-mc-v1` source selects
+The combined gate proves that only the exact raw `paid-acquisition-mc-v1` source selects
 `/api/activation/paid-claim`, the route rechecks the stored source, requests
 Google's account chooser, keeps the inactive branch noindex and support-only,
-and leaves active owners on the existing same-origin CSRF and device
-reconnect/transfer policy. The ordinary route keeps its original default:
+leaves active owners on the existing same-origin CSRF and device
+reconnect/transfer policy, emits only a bounded outcome for exact paid linkage,
+and prioritizes the exact Checkout acquisition in Customer 360. The ordinary
+route keeps its original default:
 after authentication, a Free account continues through `/api/checkout/start`
 directly to Stripe.
 
@@ -131,6 +137,37 @@ These commands are deterministic contract integration evidence. They do not
 prove a deployed Test or Production surface, a Stripe payment, Resend delivery,
 Google OAuth, a migrated database, a published artifact, an installation, or a
 loaded Premiere panel.
+
+## Paid activation linkage outcome triage
+
+The exact paid-claim POST logs
+`[sidestream paid activation] attribution linkage` with one `outcome` field.
+Never add or copy activation keys, receipt values/hashes, install identities,
+emails, account/license identifiers, Stripe references, tokens, or database
+errors into the log. Ordinary activation claims must not emit this diagnostic.
+
+| Outcome | Operator interpretation |
+| --- | --- |
+| `missing_browser_paid_receipt` | The exact paid claim had no signed browser paid receipt. Reproduce from the receipt-gated handoff; do not substitute the local installer receipt. |
+| `receipt_activation_no_match` | The receipt did not match an active, unexpired paid activation in the selected environment. |
+| `activation_source_mismatch` | The activation source was not exact `paid-acquisition-mc-v1`; investigate source propagation without forcing linkage. |
+| `claim_binding_conflict` | Existing claim binding disagrees; preserve both histories and investigate. |
+| `installation_identity_not_unique_or_missing` | The activation has zero/multiple install identities or lacks one locally verified installer-receipt identity. |
+| `acquisition_identity_missing` | Claim binding succeeded but its canonical acquisition identity is unavailable. |
+| `acquisition_ownership_conflict` | The acquisition belongs to a different Customer 360 profile; fail closed and do not merge manually. |
+| `installation_claimed_recorded` | Both `installation_claimed` and `verified_installation_claim` committed. |
+| `linkage_unavailable` | The additive linkage attempt failed unexpectedly; entitlement reconnect/transfer still stands. |
+
+Only `installation_claimed_recorded` is a successful installation-linkage
+outcome. No other outcome may be presented as Customer 360 install proof.
+
+For Customer 360 lookup by `cs_`, `pi_`, or `ch_`, first require exactly one
+non-conflicted owner. The acquisition in the response then prefers the exact
+requested Checkout Session, or the Checkout Session alias sharing the requested
+PaymentIntent/Charge payment key. Broader account, activation, or profile-linked
+acquisitions are fallback candidates ordered by `first_observed_at` and UUID.
+The lookup does not rewrite attribution. If ownership is missing, ambiguous, or
+conflicted, stop; do not pick the oldest or newest profile manually.
 
 ## Manual Production smoke after a separately authorized deployment
 
@@ -231,6 +268,42 @@ this document.
     Any Production proposal requires a separate plan, independent review, and
     explicit authorization.
 
+## Final live Meta-paid release qualification
+
+Run this only after the separately authorized live Test or release environment,
+providers, payment, recipient, artifacts, and Premiere machines are ready. The
+repository and fixture gates above are prerequisites, not substitutes. Start
+fresh and keep one evidence record keyed by the same canonical acquisition and
+install identity; do not combine earlier screenshots, provider records, or
+installations from different journeys.
+
+1. Open the exact `/meta-paid` destination in a clean browser and record the new
+   canonical acquisition UUID plus its server-owned Meta paid dimensions. Do not
+   reuse a prior acquisition or the default variant.
+2. Complete the authorized payment and prove the recipient received the setup
+   email. Follow that lineage's receipt-gated link and verify the selected
+   artifact is the paid-onboarding artifact. Stripe completion, Resend
+   acceptance, a manifest, redirect, or download alone is not this proof.
+3. Install that artifact and load its panel inside Premiere. Capture the loaded
+   runtime state showing exact `onboardingChannel=paid-onboarding`; an installer
+   package, process, source tree, or panel build outside Premiere is insufficient.
+4. Complete authenticated Google restore from that panel with the authorized
+   account and observe the final active loaded-panel result. A redirect URL or
+   OAuth start is not authentication proof.
+5. Query Customer 360 by the exact Checkout/payment reference and confirm its
+   exact-priority acquisition is the fresh Meta-paid root. On that same lineage,
+   require `installation_claimed=1` and `verified_installation_claim`. The
+   operational outcome must be `installation_claimed_recorded`; any other
+   bounded outcome fails this gate.
+6. After the claim, generate a new panel telemetry event and verify it appears
+   on the same install identity as step 5. Pre-claim telemetry, another install,
+   or account-level activity does not prove continuity.
+
+Record timestamps and redacted identifiers sufficient to join all six
+observations. Stop on any broken join. This Orchestra documentation/integration
+step ran no live provider, payment, email, artifact, installer, Premiere,
+Customer 360, telemetry, deployment, migration, or Production gate.
+
 ## Rollback
 
 Rollback is the default-off switch, not a database rewind:
@@ -295,6 +368,12 @@ All of these remain open:
 - macOS installation;
 - Windows installation; and
 - loaded Premiere verification on both platforms.
+
+Final release qualification also remains open until one fresh Meta-paid lineage
+passes the six-step gate above, including the receipt-gated paid-onboarding
+artifact, loaded Premiere `onboardingChannel=paid-onboarding`, authenticated
+Google restore, Customer 360 `installation_claimed=1` with
+`verified_installation_claim`, and later telemetry on the same install identity.
 
 This documentation run did not deploy, apply migrations, publish artifacts,
 make payments, send email, change Production, or prove loaded Premiere
