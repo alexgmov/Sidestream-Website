@@ -262,6 +262,124 @@ test("exact lookup resolves only stored aliases and exposes stage/payment summar
   assert.doesNotMatch(calls[0].sql, /\blike\b|similarity|substring/i);
 });
 
+test("exact Checkout acquisition wins over older profile linkage with deterministic fallback", async () => {
+  const customerId = "00000000-0000-4000-8000-000000000001";
+  const exactAcquisition = {
+    acquisition_id: "10000000-0000-4000-8000-000000000002",
+    first_observed_source: "meta",
+    first_observed_medium: "paid_social",
+    first_observed_campaign: "new-exact-checkout",
+    first_observed_content_creative: "exact-creative",
+    entry_channel: "website",
+    first_observed_at: "2026-07-09T00:00:00Z",
+    experiment_id: "meta-direct-links-v1",
+    experiment_cohort: "paid",
+    attribution_confidence: "exact_sidestream_entry",
+    integrity_state: "intact",
+    trusted_delivery_evidence: ["website_entry", "checkout_intent"],
+  };
+  const fallbackAcquisition = {
+    ...exactAcquisition,
+    acquisition_id: "10000000-0000-4000-8000-000000000001",
+    first_observed_source: "website_direct_or_unknown",
+    first_observed_medium: null,
+    first_observed_campaign: "older-profile-fallback",
+    first_observed_content_creative: null,
+    first_observed_at: "2026-07-01T00:00:00Z",
+    experiment_id: null,
+    experiment_cohort: null,
+  };
+
+  const transaction = async (callback) => callback({
+    query: async (sql, params = []) => {
+      if (sql.includes("with exact_identity_owner")) {
+        return { rows: [{
+          profile_id: customerId,
+          payment_key: params[1].startsWith("cus_") ? null : "payment_intent:private",
+          has_conflict: false,
+        }] };
+      }
+      if (sql.includes("sidestream_customer_360_profile_read_model")) {
+        return { rows: [profileRow(customerId)] };
+      }
+      if (sql.includes("sidestream_customer_360_money_read_model")) {
+        return { rows: [] };
+      }
+      if (sql.includes("with profile_links")) {
+        assert.match(sql, /case\s+when intent\.stripe_checkout_session_id = \$3[\s\S]*then 0[\s\S]*else 1/);
+        assert.match(sql, /select id, min\(match_priority\) as match_priority[\s\S]*group by id/);
+        assert.match(sql, /order by linked\.match_priority, acquisition\.first_observed_at, acquisition\.id/);
+        return { rows: [params[2].endsWith("profile_only")
+          ? fallbackAcquisition
+          : exactAcquisition] };
+      }
+      if (sql.includes("sidestream_acquisition_stages") ||
+        sql.includes("sidestream_acquisition_conflicts")) {
+        return { rows: [] };
+      }
+      if (sql.includes("sidestream_customer_commerce_materializations")) {
+        return { rows: [{
+          payment_count: "1",
+          refund_count: "0",
+          dispute_count: "0",
+          inquiry_count: "0",
+          gross_paid_minor: "1999",
+          refunded_minor: "0",
+          disputed_minor: "0",
+          inquiry_minor: "0",
+        }] };
+      }
+      throw new Error(`Unexpected SQL: ${sql}`);
+    },
+  });
+
+  for (const stripeReference of ["cs_exact_new", "pi_exact_new", "ch_exact_new"]) {
+    const result = await queryModule.queryCustomerLookup({
+      licenseNamespace: "test",
+      stripeReference,
+    }, { transaction });
+    assert.equal(result.acquisition.campaign, "new-exact-checkout");
+    assert.equal(result.acquisition.firstObservedAt, "2026-07-09T00:00:00.000Z");
+    assert.doesNotMatch(JSON.stringify(result), /(?:cs|pi|ch)_exact_new/);
+  }
+
+  const fallback = await queryModule.queryCustomerLookup({
+    licenseNamespace: "test",
+    stripeReference: "pi_profile_only",
+  }, { transaction });
+  assert.equal(fallback.acquisition.campaign, "older-profile-fallback");
+  assert.equal(fallback.acquisition.firstObservedAt, "2026-07-01T00:00:00.000Z");
+});
+
+test("exact lookup fails closed for ambiguous or conflicted ownership", async () => {
+  for (const ownerRows of [
+    [
+      { profile_id: "00000000-0000-4000-8000-000000000001", payment_key: null, has_conflict: false },
+      { profile_id: "00000000-0000-4000-8000-000000000002", payment_key: null, has_conflict: false },
+    ],
+    [{
+      profile_id: "00000000-0000-4000-8000-000000000001",
+      payment_key: "payment_intent:private",
+      has_conflict: true,
+    }],
+  ]) {
+    let queryCount = 0;
+    await assert.rejects(queryModule.queryCustomerLookup({
+      licenseNamespace: "test",
+      stripeReference: "pi_conflicted_owner",
+    }, {
+      transaction: async (callback) => callback({
+        query: async (sql) => {
+          queryCount += 1;
+          assert.match(sql, /with exact_identity_owner/);
+          return { rows: ownerRows };
+        },
+      }),
+    }), (error) => error?.code === "conflicting_lookup_ownership");
+    assert.equal(queryCount, 1);
+  }
+});
+
 test("list defaults to 50, caps at 100, and signs filters into stable cursors", async () => {
   const first = profileRow("00000000-0000-4000-8000-000000000002", {
     contact_email: "one@example.com",

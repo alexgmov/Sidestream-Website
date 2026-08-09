@@ -446,8 +446,17 @@ export async function queryCustomerLookup(
           and reference_alias.alias_type = $4
           and reference_alias.alias_id = $3
       ),
-      linked_acquisitions as (
-        select distinct acquisition.id
+      candidate_acquisitions as (
+        select
+          acquisition.id,
+          case
+            when intent.stripe_checkout_session_id = $3
+              or intent.stripe_checkout_session_id in (
+                select alias_id from exact_payment_sessions
+              )
+            then 0
+            else 1
+          end as match_priority
         from public.sidestream_acquisitions acquisition
         join public.sidestream_checkout_intents intent
           on intent.acquisition_id = acquisition.id
@@ -473,6 +482,11 @@ export async function queryCustomerLookup(
               select alias_id from exact_payment_sessions
             )
           )
+      ),
+      linked_acquisitions as (
+        select id, min(match_priority) as match_priority
+        from candidate_acquisitions
+        group by id
       )
       select
         acquisition.id as acquisition_id,
@@ -489,7 +503,7 @@ export async function queryCustomerLookup(
         acquisition.trusted_delivery_evidence
       from public.sidestream_acquisitions acquisition
       join linked_acquisitions linked on linked.id = acquisition.id
-      order by acquisition.first_observed_at, acquisition.id
+      order by linked.match_priority, acquisition.first_observed_at, acquisition.id
       limit 1
     `, [licenseNamespace, owner.profile_id, stripeReference,
       commerceAliasType(referenceType)]);
