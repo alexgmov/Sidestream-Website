@@ -864,10 +864,31 @@ npm run reconcile:paid-telemetry-handoff -- --apply \
 Apply requires a separately reviewed current dry-run, revalidates all exact
 eligibility under one serializable transaction plus namespace/journey advisory
 locks, and may repair only missing authentication/current-install stages and
-evidence, exact claim/activation linkage, deterministic merge/audit, immutable
-binding, and merge-triggered commerce refresh. An identical confirmed replay
-is a no-op. This command shape is capability, not authorization or evidence of
-a Production repair.
+evidence, exact claim/activation linkage, a matching Checkout/claim transition
+from `unclaimed` to `claimed`, deterministic merge/audit, immutable binding,
+and merge-triggered commerce refresh. An identical confirmed replay is a no-op.
+
+The inspector recognizes both the original direct-account install-profile split
+and the narrower pending verified-account-review topology. With multiple paid
+attempts, it derives the current path from the active activation and exact
+verified receipt rather than newest/oldest row order. The pending bridge is
+eligible only when one verified-server `account_identity` review from
+`activation_claim` joins the activation profile to the exact authenticated
+account owner; Stripe reviews do not select an owner. Checkout and claim state
+must match as `unclaimed/unclaimed` or `claimed/claimed`. A second eligible path
+or owner, mixed state, or any later stage/merge/binding conflict aborts and
+rolls back every write, including claim state. Entitlement is checked but never
+rewritten.
+
+Disposable evidence for the second boundary is
+`npm run replay:paid-telemetry-handoff -- --expect-pending-review-repaired`.
+It covers privacy-bounded dry-run/apply, runtime convergence, claim repair,
+stable replay, and common commerce/lookup/funnel ownership. The earlier
+read-only Production dry-run against deployed `aa5a604` rejected the live
+pending-review shape without mutation; that fail-closed result neither
+authorizes apply nor proves the revised code is deployed or the live journey is
+now eligible. This command shape is capability, not authorization or evidence
+of a Production repair.
 
 ### Production device support and backfill
 

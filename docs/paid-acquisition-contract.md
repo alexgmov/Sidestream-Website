@@ -425,6 +425,35 @@ telemetry, commerce materialization, exact Stripe lookup, and funnel
 attribution. Retries and concurrency converge on one binding, one merge audit,
 and one copy of every stage.
 
+The exact pending verified-account-review topology is a second, narrower
+boundary beyond the simple two-profile install split. The current activation,
+install membership, and locally verified native receipt may occupy a profile
+with no direct account or Stripe identity while the authenticated account owns
+one other live profile. Runtime may bridge them only through one review whose
+type is `account_identity`, trust is `verified_server`, attachment source is
+`activation_claim`, state is `pending_review`, candidate resolves to the
+activation profile, and existing resolves to the exact authenticated-account
+owner. Stripe review rows never select that owner.
+
+Historical paid attempts under the acquisition remain immutable context.
+Selection follows the active activation and exact verified receipt, not row
+age, insertion order, count, or profile-wide history; another eligible
+activation path or reviewed owner fails closed. The exact Checkout and claim
+must also agree as `unclaimed/unclaimed` or `claimed/claimed`. Only after all
+account, payment, entitlement, expiry, namespace, install, receipt, and
+ownership checks pass may one transaction record authentication, claim the
+matching pair, merge the compatible live roots, preserve/record installation,
+and insert the binding. Any later failure rolls back the claim-state change and
+every other write. Entitlement remains required and unchanged.
+
+The pending-review replay proves dry-run `repair_ready`, rollback-contained
+operator apply, runtime convergence, stable replay, one stage/binding/audit
+set, exact commerce/lookup/funnel ownership, and privacy-bounded output via
+`npm run replay:paid-telemetry-handoff -- --expect-pending-review-repaired`.
+The earlier read-only Production dry-run against deployed commit `aa5a604`
+correctly rejected this live topology without mutation. It is not deployment,
+repair, current eligibility, or live-qualification evidence for this revision.
+
 ### Bounded activation-linkage diagnostics
 
 The authenticated paid-claim POST emits exactly one bounded operational outcome

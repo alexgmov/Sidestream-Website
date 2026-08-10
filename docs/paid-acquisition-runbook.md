@@ -219,22 +219,46 @@ claim, account, entitlement, activation, exact identity rows, current stage
 owners, binding, acquisition conflicts, and complete commerce payment-key
 group. Any stale, missing, ambiguous, refunded, disputed, or contradictory fact
 aborts. The permitted repair is limited to missing authentication/current-
-install stages and evidence, exact claim/activation linkage, deterministic
-profile merge/audit, immutable exact binding, and merge-triggered commerce
-refresh. Replaying the same confirmed journey is a no-op.
+install stages and evidence, exact claim/activation linkage, an exact matching
+Checkout/claim transition from `unclaimed` to `claimed`, deterministic profile
+merge/audit, immutable exact binding, and merge-triggered commerce refresh.
+Replaying the same confirmed journey is a no-op.
 
 Disposable proof is:
 
 ```bash
 npm run replay:paid-telemetry-handoff
+npm run replay:paid-telemetry-handoff -- --expect-pending-review-repaired
 ```
 
-The replay requires the approved disposable `SIDESTREAM_TEST_POSTGRES_URL`,
-uses real migration, identity, usage, commerce, exact lookup, and funnel code,
-and prints a privacy-safe summary. It proves one live/one merged profile, eight
-expected stages exactly once, one binding, one merge audit, one commerce owner,
-preserved search/download usage, exact paid funnel attribution, and fail-closed
-negative fixtures. It does not inspect or repair a deployed database.
+Both forms require the approved disposable `SIDESTREAM_TEST_POSTGRES_URL`, use
+real migration, identity, usage, commerce, exact lookup, and funnel code, and
+print privacy-safe summaries. The default replay proves the simple
+install-profile split: one live/one merged profile, eight expected stages
+exactly once, one binding, one merge audit, one commerce owner, preserved
+search/download usage, exact paid funnel attribution, and fail-closed negative
+fixtures.
+
+The pending-review replay preserves multiple historical Checkout/paid and
+activation-claim attempts, then selects the current path only from its active
+activation plus exact verified receipt. The current telemetry profile has no
+direct account/Stripe link; exactly one verified-server `account_identity`
+review from `activation_claim` must resolve it to the exact account owner.
+Stripe review rows are never selectors. It proves `repair_ready`, a
+rollback-contained operator apply, runtime convergence, matching
+`unclaimed/unclaimed` to `claimed/claimed` repair, runtime/operator replay,
+stable journey fingerprint, and common commerce/lookup/funnel ownership. A
+second eligible activation path, second reviewed owner, mismatched claim states,
+or any stale eligibility fact fails closed and rolls back the whole transaction.
+Both summaries omit fixture UUIDs, hashes, email, Stripe references, tokens, and
+connection strings. Neither form inspects or repairs a deployed database.
+
+The earlier read-only Production dry-run on deployed commit `aa5a604` rejected
+the actual pending-review topology as ineligible and wrote nothing. Record that
+as proof the old simple-split operator failed closed, not as a successful repair
+or qualification. Do not retry Production from this documentation: the revised
+snapshot still requires integration, canonical deployment proof, a fresh
+read-only dry-run, and separate apply approval.
 
 ### Post-audit rollout ladder (do not execute from this documentation step)
 

@@ -1171,7 +1171,7 @@ Use the narrowest relevant check after edits:
 
 ## Recent Change Log
 
-- 2026-08-09: Repaired and fixture-proved the Meta-paid telemetry handoff: the authenticated paid-claim POST now binds its exact current install/verified-receipt pair through one immutable edge after deterministic Customer 360 profile convergence, records authentication durably, and provides a guarded dry-run-first single-journey reconciler. `installation_claimed_recorded` alone is not success unless that exact binding and the telemetry-owning live profile agree. This integration snapshot did not deploy, migrate, repair Production, or qualify a live journey.
+- 2026-08-09: Extended the fixture-proved Meta-paid telemetry handoff from a simple install-profile split to the exact pending verified-account-review shape: multi-attempt selection follows the active activation/receipt, matching Checkout/claim state converges atomically, and replay remains privacy-safe and idempotent. The earlier `aa5a604` Production dry-run rejected that live shape without mutation; this integration snapshot did not deploy, migrate, repair Production, or qualify a live journey.
 
 - 2026-08-09: Added macOS Keychain fallback for the guarded Alex reset operator so repeat Production/Test authentication-flow cleanup does not depend on plaintext secret files, while preserving environment precedence, fixed provider targets, dry-run default, and explicit apply confirmation.
 
