@@ -4,6 +4,8 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Pool } from "pg";
 
+import * as paidTelemetryRepair from "../../api/_lib/paid-telemetry-handoff-repair.ts";
+
 import "./customer-360-network-guard.mjs";
 import {
   loadMigrationFiles,
@@ -33,6 +35,37 @@ const IDS = Object.freeze({
   claim: "78000000-0000-4000-8000-000000000001",
   idempotency: "79000000-0000-4000-8000-000000000001",
 });
+
+const HISTORICAL_PAID_REPLAYS = Object.freeze([
+  Object.freeze({
+    activation: "74000000-0000-4000-8000-000000000002",
+    checkoutIntent: "75000000-0000-4000-8000-000000000002",
+    entry: "76000000-0000-4000-8000-000000000002",
+    paidCheckout: "77000000-0000-4000-8000-000000000002",
+    claim: "78000000-0000-4000-8000-000000000002",
+    idempotency: "79000000-0000-4000-8000-000000000002",
+    checkoutSession: "cs_fixture_paid_handoff_history_1",
+    paymentIntent: "pi_fixture_paid_handoff_history_1",
+    entryToken: "5".repeat(64),
+    browserToken: "6".repeat(64),
+    requestFingerprint: "7".repeat(64),
+    installerReceipt: "8".repeat(64),
+  }),
+  Object.freeze({
+    activation: "74000000-0000-4000-8000-000000000003",
+    checkoutIntent: "75000000-0000-4000-8000-000000000003",
+    entry: "76000000-0000-4000-8000-000000000003",
+    paidCheckout: "77000000-0000-4000-8000-000000000003",
+    claim: "78000000-0000-4000-8000-000000000003",
+    idempotency: "79000000-0000-4000-8000-000000000003",
+    checkoutSession: "cs_fixture_paid_handoff_history_2",
+    paymentIntent: "pi_fixture_paid_handoff_history_2",
+    entryToken: "9".repeat(64),
+    browserToken: "0".repeat(64),
+    requestFingerprint: "a".repeat(64),
+    installerReceipt: "b".repeat(64),
+  }),
+]);
 
 const HASHES = Object.freeze({
   currentInstall: "a".repeat(64),
@@ -144,8 +177,10 @@ export async function runPaidTelemetryHandoffFixture({
   expectation = "repaired",
   environment = process.env,
 } = {}) {
-  if (expectation !== "repaired" && expectation !== "broken") {
-    throw new TypeError("Paid telemetry handoff expectation must be repaired or broken");
+  if (!["repaired", "broken", "pending-review-broken"].includes(expectation)) {
+    throw new TypeError(
+      "Paid telemetry handoff expectation must be repaired, broken, or pending-review-broken",
+    );
   }
 
   const databaseUrl = requireSafeTestDatabaseUrl(environment);
@@ -172,6 +207,21 @@ export async function runPaidTelemetryHandoffFixture({
       transaction: writeTransaction,
       namespace: "test",
     };
+
+    if (expectation === "pending-review-broken") {
+      const summary = await runPendingReviewBrokenScenario({
+        pool,
+        quotedCrm,
+        quotedTelemetry,
+        crmSchema,
+        telemetrySchema,
+        writeTransaction,
+        readTransaction,
+        integrityDependencies,
+      });
+      assertPendingReviewBrokenExpectation(summary);
+      return summary;
+    }
 
     await acquisitionIntegrity.createCanonicalAcquisitionRoot({
       acquisitionId: IDS.acquisition,
@@ -406,6 +456,346 @@ export async function runPaidTelemetryHandoffFixture({
     }
     await pool.end().catch(() => {});
   }
+}
+
+async function runPendingReviewBrokenScenario({
+  pool,
+  quotedCrm,
+  quotedTelemetry,
+  crmSchema,
+  telemetrySchema,
+  writeTransaction,
+  readTransaction,
+  integrityDependencies,
+}) {
+  await acquisitionIntegrity.createCanonicalAcquisitionRoot({
+    acquisitionId: IDS.acquisition,
+    firstObservedAt: FIXTURE_TIME.firstObserved,
+    landingDeduplicationReference: "fixture-meta-paid-pending-review",
+    source: "meta",
+    medium: "social",
+    campaign: "sidestream_direct_offer_test",
+    contentCreative: "paid",
+    entryChannel: "website",
+    externalReferrerCategory: "social",
+    experiment: { id: "meta-direct-links-v1", cohort: "paid" },
+    attributionConfidence: "exact_trusted_delivery",
+    trustedDeliveryEvidence: ["website_entry", "checkout_intent"],
+  }, integrityDependencies);
+
+  const browserReceipt = paidAcquisition.createPaidAcquisitionReceipt({
+    environment: "test",
+    verifiedCheckoutSessionRef: PROVIDER.checkoutSession,
+    secret: RECEIPT_SECRET,
+  });
+  await seedAuthenticatedPaidJourney(pool, quotedCrm, browserReceipt);
+  await pool.query(
+    `update ${quotedCrm}.sidestream_checkout_intents
+     set account_id = $2, intent_kind = 'account' where id = $1`,
+    [IDS.checkoutIntent, IDS.account],
+  );
+  await pool.query(
+    `update ${quotedCrm}.sidestream_paid_acquisition_checkouts
+     set claim_state = 'unclaimed' where id = $1`,
+    [IDS.paidCheckout],
+  );
+  await pool.query(
+    `update ${quotedCrm}.sidestream_paid_acquisition_claims
+     set activation_ref = $2, claim_state = 'unclaimed'
+     where id = $1`,
+    [IDS.claim, IDS.activation],
+  );
+  await seedHistoricalPaidReplays(pool, quotedCrm);
+
+  for (const [stage, stableServerReference, occurredAt] of [
+    ["email_handoff_created", "pending-review-paid-handoff", FIXTURE_TIME.checkoutCompleted],
+    ["installer_requested", "pending-review-installer-request", FIXTURE_TIME.checkoutCompleted],
+    ["installation_claimed", `installation:${HASHES.currentInstall}`,
+      FIXTURE_TIME.installationClaimed],
+    ["checkout_started", `checkout-intent:${IDS.checkoutIntent}`,
+      FIXTURE_TIME.checkoutStarted],
+    ["checkout_completed", `checkout-session:${PROVIDER.checkoutSession}`,
+      FIXTURE_TIME.checkoutCompleted],
+    ["payment_settled", `payment:${PROVIDER.paymentIntent}`,
+      FIXTURE_TIME.paymentSettled],
+  ]) {
+    await acquisitionIntegrity.recordAcquisitionStage({
+      acquisitionId: IDS.acquisition,
+      stage,
+      stableServerReference,
+      occurredAt,
+    }, integrityDependencies);
+  }
+  await acquisitionIntegrity.addTrustedDeliveryEvidence({
+    acquisitionId: IDS.acquisition,
+    evidence: "verified_installation_claim",
+  }, integrityDependencies);
+
+  await seedTelemetry(pool, quotedTelemetry, { phase: "pending-review" });
+  await customerUsage.runCustomerUsageSync({
+    targetPool: pool,
+    telemetryPool: pool,
+    targetSchema: crmSchema,
+    telemetrySchema,
+    licenseNamespace: "test",
+    overlapMs: 48 * 60 * 60 * 1_000,
+    batchSize: 50,
+    now: new Date(FIXTURE_TIME.syncNow),
+  });
+  const telemetryOwner = await installOwner(pool, quotedCrm, HASHES.currentInstall);
+  if (!telemetryOwner) throw new Error("Pending-review telemetry profile was not materialized");
+
+  const accountAttachment = await writeTransaction((client) =>
+    customerIdentity.attachCustomerIdentity(client, {
+      environment: { namespace: "test" },
+      identity: { installIdHash: HASHES.historicalInstall },
+      activationId: HISTORICAL_PAID_REPLAYS[0].activation,
+      accountId: IDS.account,
+      platform: "macos",
+      appVersion: "1.0.18",
+      source: "activation_claim",
+    }));
+  if (!accountAttachment.profileId) {
+    throw new Error("Pending-review account profile was not materialized");
+  }
+
+  await writeTransaction((client) => customerIdentity.attachCustomerIdentity(client, {
+    environment: { namespace: "test" },
+    identity: {
+      installIdHash: HASHES.currentInstall,
+      installerReceiptIdHash: HASHES.nativeReceipt,
+    },
+    activationId: IDS.activation,
+    platform: "macos",
+    appVersion: "1.0.18",
+    source: "activation_claim",
+  }));
+  const pendingAttachment = await writeTransaction((client) =>
+    customerIdentity.attachCustomerIdentity(client, {
+      environment: { namespace: "test" },
+      identity: {
+        installIdHash: HASHES.currentInstall,
+        installerReceiptIdHash: HASHES.nativeReceipt,
+      },
+      activationId: IDS.activation,
+      accountId: IDS.account,
+      platform: "macos",
+      appVersion: "1.0.18",
+      source: "activation_claim",
+    }));
+  if (pendingAttachment.profileId !== telemetryOwner || !pendingAttachment.reviewRequired) {
+    throw new Error("Pending-review verified account conflict was not reproduced");
+  }
+
+  await customerCommerce.materializeCustomerCommerceEvent(
+    paymentIntentEvent(),
+    schemaQuery(pool, quotedCrm),
+    "test",
+  );
+
+  const linkageInput = {
+    environment: "test",
+    activationKey: "activation_fixture_paid_handoff",
+    expectedAccountId: IDS.account,
+    receipt: browserReceipt,
+    installIdHash: HASHES.currentInstall,
+    installerReceiptIdHash: HASHES.nativeReceipt,
+    occurredAt: new Date(FIXTURE_TIME.installationClaimed),
+  };
+  const linkageDependencies = {
+    transaction: writeTransaction,
+    recordStage: (input, options) =>
+      acquisitionIntegrity.recordAcquisitionStage(input, options),
+    addEvidence: (input, options) =>
+      acquisitionIntegrity.addTrustedDeliveryEvidence(input, options),
+    mergeProfiles: customerProfiles.mergeCustomerProfilesInTransaction,
+  };
+  const currentFinalizer = await paidAcquisition.associatePaidAcquisitionActivationWithOutcome(
+    linkageInput,
+    linkageDependencies,
+  );
+  const finalizerPendingReviewProbe = await rollbackScenario(
+    pool,
+    quotedCrm,
+    (client) => paidAcquisition.associatePaidAcquisitionActivationWithOutcome(
+      linkageInput,
+      { ...linkageDependencies, transaction: (callback) => callback(client) },
+    ),
+    (client) => markCurrentClaimClaimed(client),
+  );
+
+  const guardedDryRun = await readTransaction((client) =>
+    paidTelemetryRepair.inspectPaidTelemetryHandoffRepair(client, {
+      acquisitionId: IDS.acquisition,
+      namespace: "test",
+    }));
+  const guardedPendingReviewProbe = await rollbackScenario(
+    pool,
+    quotedCrm,
+    (client) => paidTelemetryRepair.inspectPaidTelemetryHandoffRepair(client, {
+      acquisitionId: IDS.acquisition,
+      namespace: "test",
+    }),
+    async (client) => {
+      await markCurrentClaimClaimed(client);
+      await client.query(
+        `delete from public.sidestream_paid_acquisition_claims
+         where id = any($1::uuid[])`,
+        [HISTORICAL_PAID_REPLAYS.map((replay) => replay.claim)],
+      );
+    },
+  );
+
+  return pendingReviewPrivacySafeSummary({
+    pool,
+    quotedCrm,
+    quotedTelemetry,
+    readTransaction,
+    telemetryOwner,
+    accountOwner: accountAttachment.profileId,
+    currentFinalizer,
+    finalizerPendingReviewProbe,
+    guardedDryRun,
+    guardedPendingReviewProbe,
+  });
+}
+
+async function seedHistoricalPaidReplays(pool, schema) {
+  for (const [index, replay] of HISTORICAL_PAID_REPLAYS.entries()) {
+    const createdAt = new Date(
+      Date.parse(FIXTURE_TIME.checkoutStarted) - (index + 1) * 60 * 60 * 1_000,
+    ).toISOString();
+    await pool.query(
+      `insert into ${schema}.sidestream_activation_sessions (
+         id, activation_key, account_id, license_id, device_id_hash, app_version,
+         build_channel, source, status, expires_at, completed_at, created_at, updated_at
+       ) values (
+         $1, $2, $3, $4, $5, '1.0.18', 'production',
+         'paid-acquisition-mc-v1', 'completed', $6, $7, $7, $7
+       )`,
+      [
+        replay.activation,
+        `activation_fixture_paid_handoff_history_${index + 1}`,
+        IDS.account,
+        IDS.license,
+        createHash("sha256").update(`historical-device-${index}`).digest("hex"),
+        FIXTURE_TIME.expiry,
+        createdAt,
+      ],
+    );
+    await pool.query(
+      `insert into ${schema}.sidestream_checkout_intents (
+         id, acquisition_id, account_id, intent_kind, browser_token_hash, state,
+         stripe_customer_id, stripe_checkout_session_id, stripe_checkout_url,
+         stripe_price_id, stripe_product_id, stripe_session_expires_at,
+         confirmed_at, expires_at, created_at, updated_at
+       ) values (
+         $1, $2, $3, 'account', $4, 'completed', $5, $6,
+         'https://checkout.stripe.test/fixture-paid-handoff-history', $7, $8, $9,
+         $10, $9, $11, $10
+       )`,
+      [
+        replay.checkoutIntent,
+        IDS.acquisition,
+        IDS.account,
+        replay.browserToken,
+        PROVIDER.customer,
+        replay.checkoutSession,
+        PROVIDER.price,
+        PROVIDER.product,
+        FIXTURE_TIME.expiry,
+        createdAt,
+        createdAt,
+      ],
+    );
+    await pool.query(
+      `insert into ${schema}.sidestream_paid_acquisition_entries (
+         id, contract_version, environment, experiment_id, cohort,
+         assignment_id_hash, assignment_cookie_signature_hash, entry_path,
+         entry_token_hash, attribution_hash, utm_medium, utm_campaign,
+         expires_at, created_at, updated_at
+       ) values (
+         $1, 1, 'test', 'mc-mobile-paid-v1', 'mc-paid-v1', $2, $3, '/mc',
+         $4, $5, 'social', 'sidestream_direct_offer_test', $6, $7, $7
+       )`,
+      [
+        replay.entry,
+        HASHES.assignment,
+        HASHES.assignmentSignature,
+        replay.entryToken,
+        HASHES.attribution,
+        FIXTURE_TIME.expiry,
+        createdAt,
+      ],
+    );
+    await pool.query(
+      `insert into ${schema}.sidestream_paid_acquisition_checkouts (
+         id, entry_id, contract_version, environment, experiment_id, cohort,
+         assignment_id_hash, entry_token_hash, attribution_hash,
+         checkout_intent_ref, idempotency_key, request_fingerprint,
+         verified_checkout_session_ref, canonical_payment_ref,
+         checkout_email_normalized, verified_product_ref, verified_price_ref,
+         verified_quantity, verified_amount_minor, verified_currency,
+         installer_receipt_hash, payment_state, claim_state, receipt_expires_at,
+         completed_at, expires_at, created_at, updated_at
+       ) values (
+         $1, $2, 1, 'test', 'mc-mobile-paid-v1', 'mc-paid-v1', $3, $4, $5,
+         $6, $7, $8, $9, $10, 'paid-handoff@example.invalid', $11, $12,
+         1, 1999, 'usd', $13, 'active', 'claimed', $14, $15, $14, $16, $15
+       )`,
+      [
+        replay.paidCheckout,
+        replay.entry,
+        HASHES.assignment,
+        replay.entryToken,
+        HASHES.attribution,
+        replay.checkoutIntent,
+        replay.idempotency,
+        replay.requestFingerprint,
+        replay.checkoutSession,
+        replay.paymentIntent,
+        PROVIDER.product,
+        PROVIDER.price,
+        replay.installerReceipt,
+        FIXTURE_TIME.expiry,
+        createdAt,
+        createdAt,
+      ],
+    );
+    await pool.query(
+      `insert into ${schema}.sidestream_paid_acquisition_claims (
+         id, checkout_id, environment, canonical_payment_ref, activation_ref,
+         account_ref, entitlement_ref, google_email_normalized, claim_state,
+         created_at, updated_at, expires_at
+       ) values (
+         $1, $2, 'test', $3, $4, $5, $6, 'paid-handoff@example.invalid',
+         'claimed', $7, $7, $8
+       )`,
+      [
+        replay.claim,
+        replay.paidCheckout,
+        replay.paymentIntent,
+        replay.activation,
+        IDS.account,
+        IDS.license,
+        createdAt,
+        FIXTURE_TIME.expiry,
+      ],
+    );
+  }
+}
+
+async function markCurrentClaimClaimed(client) {
+  await client.query(
+    `update public.sidestream_paid_acquisition_checkouts
+     set claim_state = 'claimed' where id = $1::uuid`,
+    [IDS.paidCheckout],
+  );
+  await client.query(
+    `update public.sidestream_paid_acquisition_claims
+     set claim_state = 'claimed' where id = $1::uuid`,
+    [IDS.claim],
+  );
 }
 
 async function applyMigrations(pool, schema) {
@@ -834,6 +1224,283 @@ async function rollbackScenario(pool, quotedSchema, callback, mutation = null) {
   } finally {
     await client.query("rollback").catch(() => {});
     client.release();
+  }
+}
+
+async function pendingReviewPrivacySafeSummary({
+  pool,
+  quotedCrm,
+  quotedTelemetry,
+  readTransaction,
+  telemetryOwner,
+  accountOwner,
+  currentFinalizer,
+  finalizerPendingReviewProbe,
+  guardedDryRun,
+  guardedPendingReviewProbe,
+}) {
+  const shape = await pool.query(
+    `select
+       (select count(*)::int
+        from ${quotedCrm}.sidestream_checkout_intents
+        where acquisition_id = $1::uuid) as checkout_intents,
+       (select count(*)::int
+        from ${quotedCrm}.sidestream_paid_acquisition_checkouts paid
+        join ${quotedCrm}.sidestream_checkout_intents core
+          on core.id = paid.checkout_intent_ref
+        where core.acquisition_id = $1::uuid) as paid_checkouts,
+       (select count(*)::int
+        from ${quotedCrm}.sidestream_paid_acquisition_claims claim
+        join ${quotedCrm}.sidestream_paid_acquisition_checkouts paid
+          on paid.id = claim.checkout_id
+        join ${quotedCrm}.sidestream_checkout_intents core
+          on core.id = paid.checkout_intent_ref
+        where core.acquisition_id = $1::uuid
+          and claim.activation_ref is not null
+          and claim.activation_ref <> $2::uuid) as historical_activation_claims,
+       (select count(*)::int
+        from ${quotedCrm}.sidestream_paid_acquisition_claims claim
+        join ${quotedCrm}.sidestream_paid_acquisition_checkouts paid
+          on paid.id = claim.checkout_id and paid.environment = claim.environment
+        join ${quotedCrm}.sidestream_licenses entitlement
+          on entitlement.id = claim.entitlement_ref
+        join ${quotedCrm}.sidestream_activation_sessions activation
+          on activation.id = claim.activation_ref
+        where claim.id = $3::uuid
+          and claim.claim_state = 'unclaimed'
+          and claim.expires_at > now()
+          and claim.activation_ref = $2::uuid
+          and claim.account_ref = $4::uuid
+          and claim.entitlement_ref = $5::uuid
+          and paid.payment_state = 'active'
+          and paid.completed_at is not null
+          and paid.receipt_expires_at > now()
+          and entitlement.account_id = $4::uuid
+          and entitlement.entitlement_status = 'active'
+          and activation.account_id = $4::uuid
+          and activation.license_id = $5::uuid
+          and activation.completed_at is not null
+          and activation.expires_at > now()) as active_unclaimed_current_claim,
+       (select count(*)::int
+        from ${quotedCrm}.sidestream_acquisitions acquisition
+        where acquisition.id = $1::uuid
+          and acquisition.license_namespace = 'test'
+          and acquisition.integrity_state = 'intact'
+          and acquisition.first_observed_source = 'meta'
+          and acquisition.first_observed_medium = 'social'
+          and acquisition.first_observed_content_creative = 'paid') as intact_meta_paid_roots`,
+    [IDS.acquisition, IDS.activation, IDS.claim, IDS.account, IDS.license],
+  );
+  const identity = await pool.query(
+    `select
+       (select count(*)::int
+        from ${quotedCrm}.sidestream_customer_installs install
+        where install.profile_id = $1::uuid
+          and install.install_id_hash = $3) as current_install_memberships,
+       (select count(*)::int
+        from ${quotedCrm}.sidestream_customer_identity_links link
+        where link.profile_id = $1::uuid
+          and link.link_type = 'activation_record'
+          and link.link_value = $4::text) as current_activation_links,
+       (select count(*)::int
+        from ${quotedCrm}.sidestream_customer_identity_links link
+        where link.profile_id = $1::uuid
+          and link.link_type = 'installer_receipt_hash'
+          and link.link_value = $5) as current_receipt_links,
+       (select count(*)::int
+        from ${quotedCrm}.sidestream_customer_identity_links link
+        where link.profile_id = $1::uuid
+          and (link.link_type = 'account_identity' or link.link_type like 'stripe_%'))
+         as current_account_or_stripe_links,
+       (select count(*)::int
+        from ${quotedCrm}.sidestream_customer_identity_links link
+        where link.profile_id = $2::uuid
+          and link.link_type = 'account_identity'
+          and link.link_value = $6::text) as exact_account_owner_links,
+       (select count(*)::int
+        from ${quotedCrm}.sidestream_customer_identity_reviews review
+        where review.license_namespace = 'test'
+          and review.candidate_profile_id = $1::uuid
+          and review.existing_profile_id = $2::uuid
+          and review.evidence_type = 'account_identity'
+          and review.evidence_trust = 'verified_server'
+          and review.attachment_source = 'activation_claim'
+          and review.review_state = 'pending_review') as verified_account_reviews,
+       (select count(*)::int
+        from ${quotedCrm}.sidestream_customer_identity_reviews review
+        where review.license_namespace = 'test'
+          and review.candidate_profile_id = $1::uuid
+          and review.existing_profile_id = $2::uuid
+          and review.evidence_type like 'stripe_%'
+          and review.evidence_trust = 'verified_server'
+          and review.attachment_source = 'activation_claim'
+          and review.review_state = 'pending_review') as verified_stripe_reviews`,
+    [
+      telemetryOwner,
+      accountOwner,
+      HASHES.currentInstall,
+      IDS.activation,
+      HASHES.nativeReceipt,
+      IDS.account,
+    ],
+  );
+  const stages = await pool.query(
+    `select
+       count(*) filter (where stage = 'installation_claimed')::int
+         as installation_claimed,
+       count(*) filter (where stage = 'authentication_completed')::int
+         as authentication_completed
+     from ${quotedCrm}.sidestream_acquisition_stages
+     where acquisition_id = $1::uuid`,
+    [IDS.acquisition],
+  );
+  const telemetry = await pool.query(
+    `select
+       count(*) filter (where event_name = 'search_submitted')::int as searches,
+       count(*) filter (
+         where event_name = 'download_attempt_finalized'
+           and payload->>'file_delivered' = 'true'
+       )::int as successful_downloads
+     from ${quotedTelemetry}.sidestream_telemetry_events
+     where install_id_hash = $1`,
+    [HASHES.currentInstall],
+  );
+  const convergence = await pool.query(
+    `select
+       (select count(*)::int
+        from ${quotedCrm}.sidestream_paid_telemetry_profile_bindings
+        where acquisition_id = $1::uuid) as immutable_bindings,
+       (select count(*)::int
+        from ${quotedCrm}.sidestream_customer_commerce_materializations
+        where license_namespace = 'test') as commerce_facts,
+       (select count(*)::int
+        from ${quotedCrm}.sidestream_customer_commerce_materializations
+        where license_namespace = 'test' and profile_id = $2::uuid)
+         as commerce_on_telemetry_profile`,
+    [IDS.acquisition, telemetryOwner],
+  );
+
+  let lookupResolved = false;
+  let lookupOwnsTelemetryProfile = false;
+  try {
+    const lookup = await customerQuery.queryCustomerLookup({
+      licenseNamespace: "test",
+      stripeReference: PROVIDER.checkoutSession,
+    }, { transaction: readTransaction });
+    lookupResolved = Boolean(lookup);
+    lookupOwnsTelemetryProfile = lookup?.customerId === telemetryOwner;
+  } catch {
+    lookupResolved = false;
+  }
+
+  let funnelOwnsExactPaidTelemetryProfile = false;
+  try {
+    const funnel = await acquisitionFunnel.queryAcquisitionFunnel({
+      licenseNamespace: "test",
+      cohortBasis: "first_install",
+      cohortStart: FIXTURE_TIME.cohortStart,
+      cohortEnd: FIXTURE_TIME.cohortEnd,
+      observationEnd: FIXTURE_TIME.observationEnd,
+      journeyLimit: 10,
+    }, ADMIN_SECRET, { transaction: readTransaction });
+    const journey = funnel.journeys.find((item) => item.customerId === telemetryOwner);
+    funnelOwnsExactPaidTelemetryProfile = Boolean(
+      journey?.attributionConfidence === "exact_paid_checkout" && journey?.paidCustomer,
+    );
+  } catch {
+    funnelOwnsExactPaidTelemetryProfile = false;
+  }
+
+  const shapeRow = shape.rows[0];
+  const identityRow = identity.rows[0];
+  const stageRow = stages.rows[0];
+  const telemetryRow = telemetry.rows[0];
+  const convergenceRow = convergence.rows[0];
+  return Object.freeze({
+    observedContract: "pending-review-account-bridge-defect",
+    acquisitionShape: Object.freeze({
+      intactMetaPaidRoots: shapeRow.intact_meta_paid_roots,
+      replayedCheckoutIntents: shapeRow.checkout_intents,
+      replayedPaidCheckouts: shapeRow.paid_checkouts,
+      historicalActivationLinkedClaims: shapeRow.historical_activation_claims,
+      activeUnclaimedCurrentClaim: shapeRow.active_unclaimed_current_claim,
+    }),
+    pendingReviewShape: Object.freeze({
+      currentInstallMemberships: identityRow.current_install_memberships,
+      currentActivationLinks: identityRow.current_activation_links,
+      currentVerifiedReceiptLinks: identityRow.current_receipt_links,
+      currentAccountOrStripeLinks: identityRow.current_account_or_stripe_links,
+      uniqueExactAccountOwnerLinks: identityRow.exact_account_owner_links,
+      verifiedAccountReviews: identityRow.verified_account_reviews,
+      verifiedStripeReviews: identityRow.verified_stripe_reviews,
+    }),
+    stageAndBindingState: Object.freeze({
+      installationClaimed: stageRow.installation_claimed,
+      authenticationCompleted: stageRow.authentication_completed,
+      immutableBindings: convergenceRow.immutable_bindings,
+    }),
+    anonymousTelemetry: Object.freeze({
+      searches: telemetryRow.searches,
+      successfulDownloads: telemetryRow.successful_downloads,
+      commerceFacts: convergenceRow.commerce_facts,
+      commerceOnTelemetryProfile: convergenceRow.commerce_on_telemetry_profile,
+      lookupResolved,
+      lookupOwnsTelemetryProfile,
+      funnelOwnsExactPaidTelemetryProfile,
+    }),
+    currentCodeFailure: Object.freeze({
+      activeUnclaimedOutcome: currentFinalizer.outcome,
+      pendingReviewProbeOutcome: finalizerPendingReviewProbe.outcome,
+    }),
+    guardedDryRunFailure: Object.freeze({
+      structuralBoundary: "verified_account_pending_review",
+      fullReplayReasonCode: guardedDryRun.reasonCode,
+      fullReplayEligible: guardedDryRun.eligible,
+      pendingReviewProbeReasonCode: guardedPendingReviewProbe.reasonCode,
+      pendingReviewProbeEligible: guardedPendingReviewProbe.eligible,
+    }),
+  });
+}
+
+function assertPendingReviewBrokenExpectation(summary) {
+  const observed =
+    summary.observedContract === "pending-review-account-bridge-defect" &&
+    summary.acquisitionShape.intactMetaPaidRoots === 1 &&
+    summary.acquisitionShape.replayedCheckoutIntents === 3 &&
+    summary.acquisitionShape.replayedPaidCheckouts === 3 &&
+    summary.acquisitionShape.historicalActivationLinkedClaims === 2 &&
+    summary.acquisitionShape.activeUnclaimedCurrentClaim === 1 &&
+    summary.pendingReviewShape.currentInstallMemberships === 1 &&
+    summary.pendingReviewShape.currentActivationLinks === 1 &&
+    summary.pendingReviewShape.currentVerifiedReceiptLinks === 1 &&
+    summary.pendingReviewShape.currentAccountOrStripeLinks === 0 &&
+    summary.pendingReviewShape.uniqueExactAccountOwnerLinks === 1 &&
+    summary.pendingReviewShape.verifiedAccountReviews === 1 &&
+    summary.pendingReviewShape.verifiedStripeReviews >= 3 &&
+    summary.stageAndBindingState.installationClaimed === 1 &&
+    summary.stageAndBindingState.authenticationCompleted === 0 &&
+    summary.stageAndBindingState.immutableBindings === 0 &&
+    summary.anonymousTelemetry.searches === 1 &&
+    summary.anonymousTelemetry.successfulDownloads === 1 &&
+    summary.anonymousTelemetry.commerceFacts >= 1 &&
+    summary.anonymousTelemetry.commerceOnTelemetryProfile === 0 &&
+    summary.anonymousTelemetry.lookupOwnsTelemetryProfile === false &&
+    summary.anonymousTelemetry.funnelOwnsExactPaidTelemetryProfile === false &&
+    summary.currentCodeFailure.activeUnclaimedOutcome === "claim_binding_conflict" &&
+    summary.currentCodeFailure.pendingReviewProbeOutcome ===
+      "installation_identity_missing" &&
+    summary.guardedDryRunFailure.fullReplayReasonCode ===
+      "paid_path_missing_or_ambiguous" &&
+    summary.guardedDryRunFailure.structuralBoundary ===
+      "verified_account_pending_review" &&
+    summary.guardedDryRunFailure.fullReplayEligible === false &&
+    summary.guardedDryRunFailure.pendingReviewProbeReasonCode ===
+      "exact_identity_missing_or_ambiguous" &&
+    summary.guardedDryRunFailure.pendingReviewProbeEligible === false;
+  if (!observed) {
+    throw new Error(
+      `Expected pending-review-broken paid telemetry handoff contract; observed ${JSON.stringify(summary)}`,
+    );
   }
 }
 
