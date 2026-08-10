@@ -1,14 +1,19 @@
 #!/usr/bin/env node
 
+import { createHash } from "node:crypto";
 import { execFile as execFileCallback } from "node:child_process";
-import fs from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
 import { pathToFileURL } from "node:url";
 
 const execFile = promisify(execFileCallback);
 
-export const APPLY_CONFIRMATION = "DELETE-ALEX-GARRETT-UPGRADE-STATE";
+export const FRESH_PAID_OPERATION = "fresh-meta-paid-production";
+export const RECOVERY_OPERATION = "prepare-fresh-meta-paid-recovery";
+export const PRODUCTION_NAMESPACE = "production";
+export const FIXED_QA_IDENTITY_CONFIRMATION = "alex-garrett-fixed-qa";
+export const APPLY_CONFIRMATION = "DELETE-FRESH-META-PAID-ALEX-ONLY";
+export const RECOVERY_CONFIRMATION = "CREATE-RECOVERABLE-NEON-CHILD";
 export const TARGET_IDENTITY = Object.freeze({
   displayName: "Alex Garrett",
   emails: Object.freeze([
@@ -17,30 +22,20 @@ export const TARGET_IDENTITY = Object.freeze({
     "alexgarrett2468@gmail.com",
   ]),
 });
+export const PRODUCTION_TARGET = Object.freeze({
+  environment: PRODUCTION_NAMESPACE,
+  neonProjectId: "dark-butterfly-59697025",
+  neonDatabase: "neondb",
+  neonRole: "neondb_owner",
+  stripeAccountId: "acct_1Tp340DFKjeGlioX",
+  stripeKeyEnvironmentVariable:
+    "SIDESTREAM_RESET_PRODUCTION_STRIPE_SECRET_KEY",
+});
 
-export const RESET_TARGETS = Object.freeze([
-  Object.freeze({
-    environment: "production",
-    neonProjectId: "dark-butterfly-59697025",
-    neonDatabase: "neondb",
-    neonRole: "neondb_owner",
-    stripeAccountId: "acct_1Tp340DFKjeGlioX",
-    stripeKeyEnvironmentVariable:
-      "SIDESTREAM_RESET_PRODUCTION_STRIPE_SECRET_KEY",
-    requiredIdentityTable: "sidestream_customer_identity_links",
-  }),
-  Object.freeze({
-    environment: "test",
-    neonProjectId: "ancient-breeze-53489732",
-    neonDatabase: "neondb",
-    neonRole: "neondb_owner",
-    stripeAccountId: "acct_1TuyMKDNXvmQYu29",
-    stripeKeyEnvironmentVariable: "SIDESTREAM_RESET_TEST_STRIPE_SECRET_KEY",
-    requiredIdentityTable: "sidestream_telemetry_identity_links",
-  }),
-]);
-
-const CORE_TABLES = Object.freeze([
+const NEON_CLI_PACKAGE = "neonctl@2.37.1";
+const DATABASE_LOCK = "sidestream:fresh-meta-paid-production:v1";
+const MAX_TARGET_ROWS = 250;
+const REQUIRED_TABLES = Object.freeze([
   "sidestream_accounts",
   "sidestream_account_sessions",
   "sidestream_licenses",
@@ -49,67 +44,216 @@ const CORE_TABLES = Object.freeze([
   "sidestream_checkout_intents",
   "sidestream_account_devices",
   "sidestream_device_transfers",
-  "sidestream_stripe_events",
-]);
-
-const PAID_ACQUISITION_RESET_TABLES = Object.freeze([
+  "sidestream_paid_acquisition_entries",
   "sidestream_paid_acquisition_checkouts",
   "sidestream_paid_acquisition_email_outbox",
   "sidestream_paid_acquisition_claims",
+  "sidestream_paid_acquisition_events",
+  "sidestream_acquisitions",
+  "sidestream_acquisition_stages",
+  "sidestream_acquisition_conflicts",
+  "sidestream_paid_telemetry_profile_bindings",
+  "sidestream_customer_profiles",
+  "sidestream_customer_installs",
+  "sidestream_customer_identity_links",
+  "sidestream_customer_identity_reviews",
+  "sidestream_customer_profile_merges",
+  "sidestream_customer_commerce_materializations",
+  "sidestream_customer_commerce_aliases",
+  "sidestream_customer_commerce_invoice_payments",
+  "sidestream_customer_money_totals",
+  "sidestream_customer_usage_daily",
+  "sidestream_customer_usage_sync_state",
+  "sidestream_anonymous_acquisition_sessions",
+  "sidestream_anonymous_acquisition_conflicts",
+  "sidestream_stripe_events",
 ]);
-
-const NEON_CLI_PACKAGE = "neonctl@2.37.1";
-const RESET_SECRET_ENVIRONMENT_VARIABLES = Object.freeze(
-  RESET_TARGETS.map((target) => target.stripeKeyEnvironmentVariable),
-);
-export const RESET_KEYCHAIN_ACCOUNT = "alex@alexg.mov";
-const MAX_MATCHING_STRIPE_CUSTOMERS = 25;
-const SETTLE_PASS_COUNT = 3;
-const SETTLE_DELAY_MS = 1_500;
-const DATABASE_LOCK = "sidestream:reset-alex-upgrade-state:v1";
 
 export class ResetCliError extends Error {}
 
 export function parseArgs(argv) {
+  let operationExplicit = false;
   const options = {
+    operation: FRESH_PAID_OPERATION,
     apply: false,
-    confirmation: "",
     help: false,
+    branchName: "",
+    branchId: "",
+    endpointId: "",
+    connectedTargetFingerprint: "",
+    namespaceConfirmation: "",
+    identityConfirmation: "",
+    applyConfirmation: "",
+    recoveryBranchId: "",
+    recoveryBranchConfirmation: "",
   };
+  const valueOptions = new Map([
+    ["--operation", "operation"],
+    ["--branch-name", "branchName"],
+    ["--branch-id", "branchId"],
+    ["--endpoint-id", "endpointId"],
+    ["--connected-target-fingerprint", "connectedTargetFingerprint"],
+    ["--confirm-namespace", "namespaceConfirmation"],
+    ["--confirm-identity", "identityConfirmation"],
+    ["--confirm", "applyConfirmation"],
+    ["--recovery-branch-id", "recoveryBranchId"],
+    ["--confirm-recovery-branch", "recoveryBranchConfirmation"],
+  ]);
 
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
     if (argument === "--apply") {
       options.apply = true;
-    } else if (argument === "--help" || argument === "-h") {
-      options.help = true;
-    } else if (argument === "--confirm" || argument.startsWith("--confirm=")) {
-      [options.confirmation, index] = readOption(
-        argv,
-        index,
-        "--confirm",
-      );
-    } else {
-      throw new ResetCliError(`Unknown argument: ${argument}`);
+      continue;
     }
+    if (argument === "--help" || argument === "-h") {
+      options.help = true;
+      continue;
+    }
+    const option = [...valueOptions.keys()].find((name) =>
+      argument === name || argument.startsWith(`${name}=`)
+    );
+    if (!option) throw new ResetCliError(`Unknown argument: ${argument}`);
+    const [value, nextIndex] = readOption(argv, index, option);
+    options[valueOptions.get(option)] = value;
+    if (option === "--operation") operationExplicit = true;
+    index = nextIndex;
   }
 
-  if (
-    options.apply &&
-    options.confirmation !== APPLY_CONFIRMATION
-  ) {
-    throw new ResetCliError(
-      `Apply mode requires --confirm ${APPLY_CONFIRMATION}.`,
-    );
+  if (options.help) return options;
+  if (![FRESH_PAID_OPERATION, RECOVERY_OPERATION].includes(options.operation)) {
+    throw new ResetCliError("The reset operation is not allowlisted.");
+  }
+  validateExplicitTargetSelectors(options);
+
+  if (options.operation === RECOVERY_OPERATION) {
+    if (options.apply && !operationExplicit) {
+      throw new ResetCliError("Recovery apply requires the exact explicit operation name.");
+    }
+    if (options.apply && options.applyConfirmation !== RECOVERY_CONFIRMATION) {
+      throw new ResetCliError(
+        `Recovery creation requires --confirm ${RECOVERY_CONFIRMATION}.`,
+      );
+    }
+    return options;
+  }
+
+  if (options.apply) {
+    if (!operationExplicit) {
+      throw new ResetCliError("Apply mode requires the exact explicit operation name.");
+    }
+    const exact = [
+      [options.namespaceConfirmation, PRODUCTION_NAMESPACE, "namespace"],
+      [options.identityConfirmation, FIXED_QA_IDENTITY_CONFIRMATION, "identity"],
+      [options.applyConfirmation, APPLY_CONFIRMATION, "operation"],
+      [options.recoveryBranchConfirmation, options.recoveryBranchId, "recovery branch"],
+    ];
+    for (const [actual, expected, label] of exact) {
+      if (!expected || actual !== expected) {
+        throw new ResetCliError(`Apply mode requires the exact ${label} confirmation.`);
+      }
+    }
+    if (!isSafeFingerprint(options.connectedTargetFingerprint)) {
+      throw new ResetCliError(
+        "Apply mode requires the exact dry-run connected target fingerprint.",
+      );
+    }
   }
   return options;
 }
 
-export function matchesTargetIdentity(customer) {
-  const email = normalizeIdentityValue(customer?.email);
-  const name = normalizeIdentityValue(customer?.name);
-  return TARGET_IDENTITY.emails.includes(email) ||
-    name === normalizeIdentityValue(TARGET_IDENTITY.displayName);
+export function validateExplicitTargetSelectors(options) {
+  if (!isNeonBranchId(options.branchId)) {
+    throw new ResetCliError("An explicit Neon branch ID is required.");
+  }
+  if (!isNeonEndpointId(options.endpointId)) {
+    throw new ResetCliError("An explicit direct Neon endpoint ID is required.");
+  }
+  if (
+    typeof options.branchName !== "string" ||
+    !/^[A-Za-z0-9][A-Za-z0-9._ -]{0,62}$/.test(options.branchName) ||
+    options.branchName.trim().toLowerCase() === "main"
+  ) {
+    throw new ResetCliError(
+      "An explicit deployed non-main Neon branch name is required.",
+    );
+  }
+}
+
+export function parseNeonBranchInventory(output) {
+  let parsed;
+  try {
+    parsed = JSON.parse(String(output || ""));
+  } catch {
+    throw new ResetCliError("Authenticated Neon branch metadata was not valid JSON.");
+  }
+  const candidates = Array.isArray(parsed)
+    ? parsed
+    : Array.isArray(parsed?.branches)
+      ? parsed.branches
+      : Array.isArray(parsed?.data)
+        ? parsed.data
+        : parsed?.branch
+          ? [parsed.branch]
+          : parsed?.id
+            ? [parsed]
+            : [];
+  return candidates.map((branch) => ({
+    id: String(branch.id || branch.branch_id || ""),
+    name: String(branch.name || branch.branch_name || ""),
+    parentId: branch.parent_id || branch.parentId || null,
+    state: String(branch.current_state || branch.state || ""),
+    endpoints: (
+      branch.endpoints || branch.compute_endpoints ||
+      (branch.compute_endpoint ? [branch.compute_endpoint] : []) ||
+      (branch.endpoint ? [branch.endpoint] : [])
+    )
+      .map((endpoint) => String(endpoint.id || endpoint.endpoint_id || endpoint))
+      .filter(Boolean),
+  }));
+}
+
+export function parseNeonEndpointInventory(output) {
+  let parsed;
+  try {
+    parsed = JSON.parse(String(output || ""));
+  } catch {
+    throw new ResetCliError("Authenticated Neon endpoint metadata was not valid JSON.");
+  }
+  const candidates = Array.isArray(parsed)
+    ? parsed
+    : Array.isArray(parsed?.endpoints)
+      ? parsed.endpoints
+      : Array.isArray(parsed?.data)
+        ? parsed.data
+        : [];
+  return candidates.map((endpoint) => ({
+    id: String(endpoint.id || endpoint.endpoint_id || ""),
+    branchId: String(endpoint.branch_id || endpoint.branchId || ""),
+  })).filter((endpoint) => endpoint.id && endpoint.branchId);
+}
+
+export function verifyNeonBranchMetadata(branches, selectors, {
+  recoveryParentId = "",
+} = {}) {
+  const matches = branches.filter((branch) => branch.id === selectors.branchId);
+  if (matches.length !== 1) {
+    throw new ResetCliError("The explicit Neon branch ID did not resolve exactly once.");
+  }
+  const branch = matches[0];
+  if (branch.name !== selectors.branchName || branch.name.trim().toLowerCase() === "main") {
+    throw new ResetCliError("The explicit Neon branch name did not attest.");
+  }
+  if (!branch.endpoints.includes(selectors.endpointId)) {
+    throw new ResetCliError("The explicit Neon endpoint does not belong to the branch.");
+  }
+  if (recoveryParentId && branch.parentId !== recoveryParentId) {
+    throw new ResetCliError("The recovery branch is not a child of the deployed branch.");
+  }
+  if (branch.state && !["ready", "idle", "active"].includes(branch.state.toLowerCase())) {
+    throw new ResetCliError("The Neon branch is not ready.");
+  }
+  return Object.freeze(branch);
 }
 
 export function extractNeonConnectionString(output) {
@@ -117,1198 +261,801 @@ export function extractNeonConnectionString(output) {
   if (trimmed.startsWith("postgres://") || trimmed.startsWith("postgresql://")) {
     return trimmed;
   }
-
   let parsed;
   try {
     parsed = JSON.parse(trimmed);
   } catch {
-    throw new ResetCliError(
-      "Authenticated Neon CLI did not return a connection string.",
-    );
+    throw new ResetCliError("Authenticated Neon did not return a connection string.");
   }
-
-  if (typeof parsed === "string") return extractNeonConnectionString(parsed);
-  if (!parsed || typeof parsed !== "object") {
-    throw new ResetCliError(
-      "Authenticated Neon CLI did not return a connection string.",
-    );
-  }
-  const candidate = [
-    parsed.connection_string,
-    parsed.connectionString,
-    parsed.url,
-    ...Object.values(parsed),
-  ].find((value) =>
-    typeof value === "string" &&
-    (value.startsWith("postgres://") || value.startsWith("postgresql://"))
+  const values = parsed && typeof parsed === "object"
+    ? [parsed.connection_string, parsed.connectionString, parsed.url, ...Object.values(parsed)]
+    : [parsed];
+  const value = values.find((candidate) =>
+    typeof candidate === "string" && /^postgres(?:ql)?:\/\//.test(candidate)
   );
-  if (!candidate) {
-    throw new ResetCliError(
-      "Authenticated Neon CLI did not return a connection string.",
-    );
-  }
-  return candidate;
+  if (!value) throw new ResetCliError("Authenticated Neon did not return a connection string.");
+  return value;
 }
 
-export function verifyNeonConnectionString(connectionString, target) {
+export function verifyNeonConnectionString(connectionString, target, selectors) {
   let url;
   try {
     url = new URL(connectionString);
   } catch {
-    throw new ResetCliError(
-      `${target.environment} Neon returned an invalid connection string.`,
-    );
+    throw new ResetCliError("Neon returned an invalid connection string.");
   }
-
   const hostname = url.hostname.toLowerCase();
+  const endpointId = hostname.split(".")[0];
   if (
-    (url.protocol !== "postgres:" && url.protocol !== "postgresql:") ||
-    !/^ep-[a-z0-9-]+\.[a-z0-9.-]+\.neon\.tech$/.test(hostname)
+    !["postgres:", "postgresql:"].includes(url.protocol) ||
+    !/^ep-[a-z0-9-]+\.[a-z0-9.-]+\.neon\.tech$/.test(hostname) ||
+    endpointId !== selectors.endpointId
   ) {
-    throw new ResetCliError(
-      `${target.environment} connection is not a direct Neon endpoint.`,
-    );
+    throw new ResetCliError("The connection is not the explicit direct Neon endpoint.");
   }
   if (
-    hostname.includes("-pooler.") ||
-    hostname.includes("-pool.") ||
-    url.port === "6543" ||
-    url.searchParams.has("pgbouncer") ||
+    hostname.includes("-pooler.") || hostname.includes("-pool.") ||
+    url.port === "6543" || url.searchParams.has("pgbouncer") ||
     url.searchParams.has("connection_limit")
   ) {
-    throw new ResetCliError(
-      `${target.environment} reset refuses pooled/runtime Postgres endpoints.`,
-    );
+    throw new ResetCliError("The operation refuses pooled/runtime Postgres endpoints.");
   }
   if (
     decodeURIComponent(url.username) !== target.neonRole ||
     decodeURIComponent(url.pathname.slice(1)) !== target.neonDatabase
   ) {
-    throw new ResetCliError(
-      `${target.environment} Neon role or database does not match the fixed reset target.`,
-    );
+    throw new ResetCliError("The connected Neon role or database is unexpected.");
   }
-
   url.searchParams.set("sslmode", "verify-full");
-  return Object.freeze({
-    connectionString: url.toString(),
-    endpointId: hostname.split(".")[0],
-  });
+  return Object.freeze({ connectionString: url.toString(), endpointId });
 }
 
-export function validateStripeKey(key, environment) {
-  const expectedPrefix = environment === "production" ? "sk_live_" : "sk_test_";
-  if (!configuredValue(key) || !key.trim().startsWith(expectedPrefix)) {
+export function buildConnectedTargetFingerprint(attestation) {
+  const ordered = [
+    attestation.projectId,
+    attestation.branchName,
+    attestation.branchId,
+    attestation.endpointId,
+    attestation.database,
+    attestation.role,
+    attestation.namespace,
+  ];
+  if (ordered.some((value) => typeof value !== "string" || !value)) {
+    throw new ResetCliError("Connected target attestation is incomplete.");
+  }
+  return createHash("sha256")
+    .update(`sidestream-fresh-paid-target-v1\0${ordered.join("\0")}`)
+    .digest("hex");
+}
+
+export async function attestConnectedTarget(client, target, selectors) {
+  const result = await client.query(`
+    /* fresh-paid:connected-target-attestation */
+    select current_database() as database_name,
+      current_user as role_name,
+      count(*) filter (where license_namespace = $1)::integer as namespace_rows,
+      count(*) filter (where license_namespace <> $1)::integer as other_namespace_rows
+    from public.sidestream_customer_profiles
+  `, [PRODUCTION_NAMESPACE]);
+  const row = result.rows[0] || {};
+  if (row.database_name !== target.neonDatabase || row.role_name !== target.neonRole) {
+    throw new ResetCliError("Connected database attestation did not match.");
+  }
+  const attestation = {
+    projectId: target.neonProjectId,
+    branchName: selectors.branchName,
+    branchId: selectors.branchId,
+    endpointId: selectors.endpointId,
+    database: row.database_name,
+    role: row.role_name,
+    namespace: PRODUCTION_NAMESPACE,
+  };
+  return {
+    fingerprint: buildConnectedTargetFingerprint(attestation),
+    namespaceRows: Number(row.namespace_rows || 0),
+  };
+}
+
+export async function assertExpectedSchema(client) {
+  const result = await client.query(`
+    /* fresh-paid:expected-schema */
+    select table_name
+    from information_schema.tables
+    where table_schema = 'public' and table_name = any($1::text[])
+  `, [REQUIRED_TABLES]);
+  const found = new Set(result.rows.map((row) => row.table_name));
+  const missing = REQUIRED_TABLES.filter((table) => !found.has(table));
+  if (missing.length) {
     throw new ResetCliError(
-      `${environment} reset requires a ${expectedPrefix} secret key.`,
+      `Production schema is missing ${missing.length} required reset tables.`,
     );
+  }
+}
+
+export async function inventoryFreshPaidClosure(client, stripeCustomerIds = []) {
+  await assertExpectedSchema(client);
+  const emails = [...TARGET_IDENTITY.emails];
+  const result = await client.query(`
+    /* fresh-paid:inventory-closure */
+    with recursive
+    target_accounts as (
+      select id, stripe_customer_id
+      from public.sidestream_accounts
+      where lower(btrim(email)) = any($1::text[])
+        or stripe_customer_id = any($3::text[])
+    ),
+    customer_ids as (
+      select unnest($3::text[]) as id
+      union select stripe_customer_id from target_accounts where stripe_customer_id is not null
+    ),
+    target_licenses as (
+      select license.* from public.sidestream_licenses license
+      where license.account_id in (select id from target_accounts)
+         or license.stripe_customer_id in (select id from customer_ids)
+    ),
+    target_activations as (
+      select activation.* from public.sidestream_activation_sessions activation
+      where activation.account_id in (select id from target_accounts)
+         or activation.license_id in (select id from target_licenses)
+    ),
+    target_core as (
+      select core.* from public.sidestream_checkout_intents core
+      where core.account_id in (select id from target_accounts)
+         or core.activation_session_id in (select id from target_activations)
+         or core.stripe_customer_id in (select id from customer_ids)
+         or core.stripe_checkout_session_id in (
+           select stripe_checkout_session_id from target_licenses
+           where stripe_checkout_session_id is not null
+         )
+    ),
+    target_paid as (
+      select distinct paid.*
+      from public.sidestream_paid_acquisition_checkouts paid
+      left join public.sidestream_paid_acquisition_claims claim
+        on claim.checkout_id = paid.id
+      where paid.environment = 'production'
+        and (
+          paid.checkout_intent_ref in (select id from target_core)
+          or claim.account_ref in (select id from target_accounts)
+          or claim.entitlement_ref in (select id from target_licenses)
+          or lower(btrim(coalesce(claim.google_email_normalized, ''))) = any($1::text[])
+          or lower(btrim(coalesce(paid.checkout_email_normalized, ''))) = any($1::text[])
+        )
+    ),
+    target_claims as (
+      select claim.* from public.sidestream_paid_acquisition_claims claim
+      where claim.checkout_id in (select id from target_paid)
+    ),
+    expanded_core as (
+      select * from target_core
+      union
+      select core.* from public.sidestream_checkout_intents core
+      where core.id in (select checkout_intent_ref from target_paid)
+    ),
+    target_acquisitions as (
+      select acquisition.* from public.sidestream_acquisitions acquisition
+      where acquisition.id in (
+        select acquisition_id from expanded_core where acquisition_id is not null
+      )
+    ),
+    target_bindings as (
+      select binding.* from public.sidestream_paid_telemetry_profile_bindings binding
+      where binding.license_namespace = 'production' and (
+        binding.claim_id in (select id from target_claims)
+        or binding.checkout_id in (select id from target_paid)
+        or binding.acquisition_id in (select id from target_acquisitions)
+        or binding.account_id in (select id from target_accounts)
+        or binding.entitlement_id in (select id from target_licenses)
+        or binding.activation_ref in (select id from target_activations)
+      )
+    ),
+    seed_profiles as (
+      select profile_id_at_binding as id from target_bindings
+      union select profile_id from public.sidestream_customer_identity_links
+        where license_namespace = 'production' and (
+          (link_type = 'account_identity' and link_value in (
+            select id::text from target_accounts
+          )) or (link_type = 'stripe_customer' and link_value in (
+            select id from customer_ids
+          )) or (link_type = 'activation_record' and link_value in (
+            select id::text from target_activations
+          ))
+        )
+      union select id from public.sidestream_customer_profiles
+        where license_namespace = 'production' and (
+          lower(btrim(coalesce(contact_email, ''))) = any($1::text[])
+        )
+    ),
+    profile_closure(id) as (
+      select id from seed_profiles
+      union
+      select profile.merged_into
+      from public.sidestream_customer_profiles profile
+      join profile_closure closure on profile.id = closure.id
+      where profile.merged_into is not null
+      union
+      select profile.id
+      from public.sidestream_customer_profiles profile
+      join profile_closure closure on profile.merged_into = closure.id
+      where profile.license_namespace = 'production'
+    ),
+    target_installs as (
+      select install.* from public.sidestream_customer_installs install
+      where install.license_namespace = 'production'
+        and install.profile_id in (select id from profile_closure)
+    ),
+    target_commerce as (
+      select materialization.*
+      from public.sidestream_customer_commerce_materializations materialization
+      where materialization.license_namespace = 'production'
+        and materialization.profile_id in (select id from profile_closure)
+    ),
+    target_paid_events as (
+      select event.* from public.sidestream_paid_acquisition_events event
+      where event.environment = 'production'
+        and event.utm_medium = 'social'
+        and event.utm_campaign = 'sidestream_direct_offer_test'
+        and event.occurred_at between
+          (select min(created_at) from target_paid)
+          and (select max(updated_at) + interval '5 minutes' from target_paid)
+    )
+    select jsonb_build_object(
+      'accountIds', coalesce((select jsonb_agg(id order by id) from target_accounts), '[]'),
+      'customerIds', coalesce((select jsonb_agg(id order by id) from customer_ids), '[]'),
+      'checkoutSessionRefs', coalesce((select jsonb_agg(value order by value) from (select stripe_checkout_session_id as value from expanded_core where stripe_checkout_session_id is not null union select verified_checkout_session_ref from target_paid where verified_checkout_session_ref is not null union select stripe_checkout_session_id from target_licenses where stripe_checkout_session_id is not null) refs), '[]'),
+      'paymentRefs', coalesce((select jsonb_agg(value order by value) from (select canonical_payment_ref as value from target_paid where canonical_payment_ref is not null union select stripe_payment_intent_id from target_licenses where stripe_payment_intent_id is not null) refs), '[]'),
+      'subscriptionRefs', coalesce((select jsonb_agg(stripe_subscription_id order by stripe_subscription_id) from target_licenses where stripe_subscription_id is not null), '[]'),
+      'licenseIds', coalesce((select jsonb_agg(id order by id) from target_licenses), '[]'),
+      'activationIds', coalesce((select jsonb_agg(id order by id) from target_activations), '[]'),
+      'checkoutIntentIds', coalesce((select jsonb_agg(id order by id) from expanded_core), '[]'),
+      'paidCheckoutIds', coalesce((select jsonb_agg(id order by id) from target_paid), '[]'),
+      'paidEntryIds', coalesce((select jsonb_agg(entry_id order by entry_id) from target_paid), '[]'),
+      'paidClaimIds', coalesce((select jsonb_agg(id order by id) from target_claims), '[]'),
+      'paidOutboxIds', coalesce((select jsonb_agg(id order by id) from public.sidestream_paid_acquisition_email_outbox where checkout_id in (select id from target_paid)), '[]'),
+      'paidEventIds', coalesce((select jsonb_agg(event_id order by event_id) from target_paid_events), '[]'),
+      'acquisitionIds', coalesce((select jsonb_agg(id order by id) from target_acquisitions), '[]'),
+      'stageIds', coalesce((select jsonb_agg(id order by id) from public.sidestream_acquisition_stages where acquisition_id in (select id from target_acquisitions)), '[]'),
+      'acquisitionConflictIds', coalesce((select jsonb_agg(id order by id) from public.sidestream_acquisition_conflicts where acquisition_id in (select id from target_acquisitions)), '[]'),
+      'bindingIds', coalesce((select jsonb_agg(id order by id) from target_bindings), '[]'),
+      'profileIds', coalesce((select jsonb_agg(id order by id) from profile_closure), '[]'),
+      'installIds', coalesce((select jsonb_agg(id order by id) from target_installs), '[]'),
+      'installHashes', coalesce((select jsonb_agg(install_id_hash order by install_id_hash) from target_installs), '[]'),
+      'identityLinkIds', coalesce((select jsonb_agg(id order by id) from public.sidestream_customer_identity_links where license_namespace = 'production' and profile_id in (select id from profile_closure)), '[]'),
+      'identityReviewIds', coalesce((select jsonb_agg(id order by id) from public.sidestream_customer_identity_reviews where license_namespace = 'production' and (candidate_profile_id in (select id from profile_closure) or existing_profile_id in (select id from profile_closure))), '[]'),
+      'profileMergeIds', coalesce((select jsonb_agg(id order by id) from public.sidestream_customer_profile_merges where license_namespace = 'production' and (source_profile_id in (select id from profile_closure) or target_profile_id in (select id from profile_closure))), '[]'),
+      'commerceMaterializationIds', coalesce((select jsonb_agg(id order by id) from target_commerce), '[]'),
+      'commercePaymentKeys', coalesce((select jsonb_agg(distinct payment_key order by payment_key) from target_commerce), '[]'),
+      'commerceInvoicePaymentIds', coalesce((select jsonb_agg(invoice_payment_id order by invoice_payment_id) from public.sidestream_customer_commerce_invoice_payments where license_namespace = 'production' and (instrument_id in (select source_object_id from target_commerce) or invoice_id in (select source_object_id from target_commerce))), '[]'),
+      'moneyProfileIds', coalesce((select jsonb_agg(distinct profile_id order by profile_id) from public.sidestream_customer_money_totals where license_namespace = 'production' and profile_id in (select id from profile_closure)), '[]'),
+      'anonymousSessionIds', coalesce((select jsonb_agg(id order by id) from public.sidestream_anonymous_acquisition_sessions where license_namespace = 'production' and claimed_profile_id in (select id from profile_closure)), '[]'),
+      'tokenIds', coalesce((select jsonb_agg(id order by id) from public.sidestream_license_tokens where account_id in (select id from target_accounts) or license_id in (select id from target_licenses) or activation_session_id in (select id from target_activations)), '[]'),
+      'deviceIds', coalesce((select jsonb_agg(id order by id) from public.sidestream_account_devices where account_id in (select id from target_accounts)), '[]'),
+      'transferIds', coalesce((select jsonb_agg(id order by id) from public.sidestream_device_transfers where account_id in (select id from target_accounts)), '[]')
+    ) as closure
+  `, [emails, "fixed-email-only", uniqueStrings(stripeCustomerIds)]);
+  const closure = normalizeClosure(result.rows[0]?.closure || {});
+  enforceClosureLimits(closure);
+  await assertClosureDoesNotCrossCustomers(client, closure);
+  return closure;
+}
+
+export async function assertClosureDoesNotCrossCustomers(client, closure) {
+  const result = await client.query(`
+    /* fresh-paid:ownership-boundary */
+    select
+      (select count(*) from public.sidestream_customer_identity_links link
+       where link.license_namespace = 'production'
+         and link.profile_id = any($1::uuid[])
+         and ((link.link_type = 'account_identity' and not (link.link_value = any($2::text[])))
+           or (link.link_type = 'stripe_customer' and not (link.link_value = any($3::text[])))
+           or (link.link_type = 'stripe_checkout_session' and not (link.link_value = any($9::text[])))
+           or (link.link_type = 'stripe_payment_intent' and not (link.link_value = any($10::text[])))
+           or (link.link_type = 'stripe_subscription' and not (link.link_value = any($11::text[])))
+           or (link.link_type = 'activation_record' and not (link.link_value = any($12::text[])))))::integer as foreign_identity_links,
+      (select count(*) from public.sidestream_paid_telemetry_profile_bindings binding
+       where binding.license_namespace = 'production'
+         and binding.profile_id_at_binding = any($1::uuid[])
+         and not (binding.id = any($4::uuid[])))::integer as foreign_bindings,
+      (select count(*) from public.sidestream_checkout_intents core
+       where core.acquisition_id = any($5::uuid[])
+         and not (core.id = any($6::uuid[])))::integer as foreign_checkout_intents,
+      (select count(*) from public.sidestream_paid_acquisition_checkouts paid
+       where paid.entry_id = any($7::uuid[])
+         and not (paid.id = any($8::uuid[])))::integer as foreign_paid_checkouts,
+      (select count(*) from public.sidestream_paid_acquisition_checkouts other
+        join public.sidestream_paid_acquisition_entries entry on entry.id = other.entry_id
+       where other.environment = 'production'
+         and not (other.id = any($8::uuid[]))
+         and entry.utm_medium = 'social'
+         and entry.utm_campaign = 'sidestream_direct_offer_test'
+         and other.created_at <= (select max(updated_at) + interval '5 minutes' from public.sidestream_paid_acquisition_checkouts where id = any($8::uuid[]))
+         and other.updated_at >= (select min(created_at) from public.sidestream_paid_acquisition_checkouts where id = any($8::uuid[])))::integer as ambiguous_paid_event_window
+  `, [
+    closure.profileIds,
+    closure.accountIds.map(String),
+    closure.customerIds,
+    closure.bindingIds,
+    closure.acquisitionIds,
+    closure.checkoutIntentIds,
+    closure.paidEntryIds,
+    closure.paidCheckoutIds,
+    closure.checkoutSessionRefs,
+    closure.paymentRefs,
+    closure.subscriptionRefs,
+    closure.activationIds.map(String),
+  ]);
+  const crossings = Object.values(result.rows[0] || {}).reduce(
+    (sum, value) => sum + Number(value || 0),
+    0,
+  );
+  if (crossings !== 0) {
+    throw new ResetCliError(
+      "Fresh-paid ownership is ambiguous or crosses an unrelated live customer.",
+    );
+  }
+}
+
+export async function capturePreservationInvariants(client, closure) {
+  const result = await client.query(`
+    /* fresh-paid:preservation-invariants */
+    select
+      (select count(*)::integer from public.sidestream_customer_profiles
+       where license_namespace = 'production' and not (id = any($1::uuid[]))) as unrelated_profiles,
+      (select md5(coalesce(string_agg(id::text, ',' order by id), ''))
+       from public.sidestream_customer_profiles
+       where license_namespace = 'production' and not (id = any($1::uuid[]))) as unrelated_profiles_fingerprint,
+      (select count(*)::integer from public.sidestream_accounts
+       where not (id = any($2::uuid[]))) as unrelated_accounts,
+      (select md5(coalesce(string_agg(id::text, ',' order by id), ''))
+       from public.sidestream_accounts where not (id = any($2::uuid[]))) as unrelated_accounts_fingerprint,
+      (select count(*)::integer from public.sidestream_stripe_events) as stripe_event_history,
+      (select md5(coalesce(string_agg(event_id, ',' order by event_id), ''))
+       from public.sidestream_stripe_events) as stripe_event_history_fingerprint,
+      (select count(*)::integer from public.sidestream_customer_usage_sync_state) as global_usage_sync_rows,
+      (select md5(coalesce(string_agg(license_namespace || ':' || committed_batch_count::text, ',' order by license_namespace), ''))
+       from public.sidestream_customer_usage_sync_state) as global_usage_sync_fingerprint,
+      (select count(*)::integer from public.sidestream_installer_requests) as installer_analytics_rows,
+      (select count(*)::integer from public.sidestream_download_leads) as download_analytics_rows
+  `, [closure.profileIds, closure.accountIds]);
+  return Object.freeze({ ...result.rows[0] });
+}
+
+export async function applyFreshPaidDatabaseReset(pool, closure) {
+  const client = await pool.connect();
+  try {
+    await client.query("begin transaction isolation level serializable read write");
+    await client.query("select pg_advisory_xact_lock(hashtext($1))", [DATABASE_LOCK]);
+    const locked = await inventoryFreshPaidClosure(client, closure.customerIds);
+    if (closureFingerprint(locked) !== closureFingerprint(closure)) {
+      throw new ResetCliError("Fresh-paid target closure changed after dry-run inventory.");
+    }
+    const before = await capturePreservationInvariants(client, locked);
+    const deleted = {};
+
+    await setImmutableAuditTriggers(client, false);
+    deleted.bindings = await deleteIds(client, "sidestream_paid_telemetry_profile_bindings", "id", locked.bindingIds, "uuid");
+    deleted.usage = await deleteIds(client, "sidestream_customer_usage_daily", "install_id_hash", locked.installHashes, "text");
+    deleted.identityReviews = await deleteIds(client, "sidestream_customer_identity_reviews", "id", locked.identityReviewIds, "uuid");
+    deleted.profileMerges = await deleteIds(client, "sidestream_customer_profile_merges", "id", locked.profileMergeIds, "uuid");
+    deleted.moneyTotals = await deleteIds(client, "sidestream_customer_money_totals", "profile_id", locked.profileIds, "uuid");
+    deleted.commerceAliases = await deleteIds(client, "sidestream_customer_commerce_aliases", "payment_key", locked.commercePaymentKeys, "text");
+    deleted.commerceInvoicePayments = await deleteIds(client, "sidestream_customer_commerce_invoice_payments", "invoice_payment_id", locked.commerceInvoicePaymentIds, "text");
+    deleted.commerceMaterializations = await deleteIds(client, "sidestream_customer_commerce_materializations", "id", locked.commerceMaterializationIds, "uuid");
+    deleted.anonymousConflicts = await deleteByParent(client, "sidestream_anonymous_acquisition_conflicts", "session_id", locked.anonymousSessionIds);
+    deleted.anonymousSessions = await deleteIds(client, "sidestream_anonymous_acquisition_sessions", "id", locked.anonymousSessionIds, "uuid");
+    deleted.identityLinks = await deleteIds(client, "sidestream_customer_identity_links", "id", locked.identityLinkIds, "uuid");
+    deleted.installs = await deleteIds(client, "sidestream_customer_installs", "id", locked.installIds, "uuid");
+    deleted.acquisitionStages = await deleteIds(client, "sidestream_acquisition_stages", "id", locked.stageIds, "uuid");
+    deleted.acquisitionConflicts = await deleteIds(client, "sidestream_acquisition_conflicts", "id", locked.acquisitionConflictIds, "uuid");
+    deleted.paidEvents = await deleteIds(client, "sidestream_paid_acquisition_events", "event_id", locked.paidEventIds, "uuid");
+    deleted.paidOutbox = await deleteIds(client, "sidestream_paid_acquisition_email_outbox", "id", locked.paidOutboxIds, "uuid");
+    deleted.paidClaims = await deleteIds(client, "sidestream_paid_acquisition_claims", "id", locked.paidClaimIds, "uuid");
+    deleted.paidCheckouts = await deleteIds(client, "sidestream_paid_acquisition_checkouts", "id", locked.paidCheckoutIds, "uuid");
+    deleted.paidEntries = await deleteIds(client, "sidestream_paid_acquisition_entries", "id", locked.paidEntryIds, "uuid");
+    deleted.transfers = await deleteIds(client, "sidestream_device_transfers", "id", locked.transferIds, "uuid");
+    deleted.tokens = await deleteIds(client, "sidestream_license_tokens", "id", locked.tokenIds, "uuid");
+    deleted.devices = await deleteIds(client, "sidestream_account_devices", "id", locked.deviceIds, "uuid");
+    deleted.checkoutIntents = await deleteIds(client, "sidestream_checkout_intents", "id", locked.checkoutIntentIds, "uuid");
+    deleted.activations = await deleteIds(client, "sidestream_activation_sessions", "id", locked.activationIds, "uuid");
+    deleted.licenses = await deleteIds(client, "sidestream_licenses", "id", locked.licenseIds, "uuid");
+    deleted.accountSessions = await deleteIds(client, "sidestream_account_sessions", "account_id", locked.accountIds, "uuid");
+    deleted.accounts = await deleteIds(client, "sidestream_accounts", "id", locked.accountIds, "uuid");
+    deleted.profiles = await deleteIds(client, "sidestream_customer_profiles", "id", locked.profileIds, "uuid");
+    deleted.acquisitions = await deleteIds(client, "sidestream_acquisitions", "id", locked.acquisitionIds, "uuid");
+    await setImmutableAuditTriggers(client, true);
+
+    const after = await capturePreservationInvariants(client, emptyLike(locked));
+    if (!invariantsEqual(before, after)) {
+      throw new ResetCliError("A preservation invariant changed; reset rolled back.");
+    }
+    await client.query("commit");
+    return { deleted, before, after };
+  } catch (error) {
+    await client.query("rollback");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export function buildResetReport({
+  mode,
+  targetFingerprint,
+  closure,
+  deleted = null,
+  clean = null,
+  financialInvariant = null,
+}) {
+  return {
+    operation: FRESH_PAID_OPERATION,
+    mode,
+    namespace: PRODUCTION_NAMESPACE,
+    connectedTargetFingerprint: targetFingerprint,
+    fixedQaIdentityFingerprint: safeFingerprint(
+      [TARGET_IDENTITY.displayName, ...TARGET_IDENTITY.emails].join("\0"),
+    ),
+    targetStateFingerprint: closureFingerprint(closure),
+    counts: closureCounts(closure),
+    financialInvariant,
+    deletedCounts: deleted,
+    clean,
+    preserved: {
+      unrelatedCustomers: true,
+      globalUsageSync: true,
+      downloadAndReferralAnalytics: true,
+      rawTelemetry: true,
+      stripeFinancialAndEventHistory: true,
+    },
+  };
+}
+
+export function closureCounts(closure) {
+  return Object.fromEntries(
+    Object.entries(closure).map(([key, value]) => [key, value.length]),
+  );
+}
+
+export function closureFingerprint(closure) {
+  const canonical = Object.keys(closure).sort().map((key) =>
+    `${key}:${[...closure[key]].sort().join(",")}`
+  ).join("\n");
+  return safeFingerprint(canonical);
+}
+
+export function allCountsZero(counts) {
+  return Object.values(counts).every((count) => Number(count) === 0);
+}
+
+export function validateStripeKey(key) {
+  if (typeof key !== "string" || !key.trim().startsWith("sk_live_")) {
+    throw new ResetCliError("The Production reset requires an explicit live Stripe secret key.");
   }
   return key.trim();
-}
-
-export function parseResetEnvironmentFile(contents) {
-  if (typeof contents !== "string" || contents.includes("\0")) {
-    throw new ResetCliError("Reset environment file is not valid text.");
-  }
-  if (Buffer.byteLength(contents, "utf8") > 16 * 1024) {
-    throw new ResetCliError("Reset environment file exceeds 16 KiB.");
-  }
-
-  const parsed = {};
-  for (const [lineIndex, line] of contents.split(/\r?\n/).entries()) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith("#")) continue;
-    const match = line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)=(.*)\s*$/);
-    if (!match) {
-      throw new ResetCliError(
-        `Malformed reset environment entry on line ${lineIndex + 1}.`,
-      );
-    }
-    const [, key, rawValue] = match;
-    if (!RESET_SECRET_ENVIRONMENT_VARIABLES.includes(key)) {
-      throw new ResetCliError(
-        `Reset environment file contains unsupported key ${key}.`,
-      );
-    }
-    if (Object.hasOwn(parsed, key)) {
-      throw new ResetCliError(
-        `Reset environment file repeats key ${key}.`,
-      );
-    }
-    const value = rawValue.trim().replace(/^(['"])(.*)\1$/, "$2");
-    if (!value) {
-      throw new ResetCliError(
-        `Reset environment file has an empty value for ${key}.`,
-      );
-    }
-    parsed[key] = value;
-  }
-  return parsed;
-}
-
-export function buildNeonCliEnvironment(environment = process.env) {
-  const sanitized = { ...environment };
-  for (const key of RESET_SECRET_ENVIRONMENT_VARIABLES) delete sanitized[key];
-  delete sanitized.SIDESTREAM_RESET_ENV_FILE;
-  return sanitized;
-}
-
-async function readMacOSKeychainSecret(service) {
-  try {
-    const { stdout } = await execFile(
-      "security",
-      [
-        "find-generic-password",
-        "-w",
-        "-a",
-        RESET_KEYCHAIN_ACCOUNT,
-        "-s",
-        service,
-      ],
-      {
-        encoding: "utf8",
-        maxBuffer: 16 * 1024,
-        timeout: 10_000,
-      },
-    );
-    return stdout.trim();
-  } catch (error) {
-    if (error?.code === 44) return "";
-    throw new ResetCliError(
-      `Could not read the macOS Keychain item for ${service}.`,
-    );
-  }
-}
-
-export async function loadResetSecretCredentials(
-  environment,
-  {
-    platform = process.platform,
-    readKeychainSecret = readMacOSKeychainSecret,
-  } = {},
-) {
-  if (platform !== "darwin") return environment;
-  for (const service of RESET_SECRET_ENVIRONMENT_VARIABLES) {
-    if (configuredValue(environment[service])) continue;
-    const secret = await readKeychainSecret(service);
-    if (configuredValue(secret)) environment[service] = secret;
-  }
-  return environment;
 }
 
 export async function listMatchingStripeCustomers(stripe) {
   const matches = [];
   let startingAfter;
-
   do {
     const page = await stripe.customers.list({
       limit: 100,
       ...(startingAfter ? { starting_after: startingAfter } : {}),
     });
     for (const customer of page.data || []) {
-      if (!customer?.deleted && matchesTargetIdentity(customer)) {
-        matches.push(customer);
-      }
+      if (!customer?.deleted && matchesTargetIdentity(customer)) matches.push(customer);
     }
     if (!page.has_more) break;
     const last = page.data?.at(-1);
-    if (!last?.id) {
-      throw new ResetCliError("Stripe customer pagination did not advance.");
-    }
+    if (!last?.id) throw new ResetCliError("Stripe pagination did not advance.");
     startingAfter = last.id;
   } while (true);
-
-  if (matches.length > MAX_MATCHING_STRIPE_CUSTOMERS) {
-    throw new ResetCliError(
-      `Refusing to continue after matching ${matches.length} Stripe customers; ` +
-      `the fixed safety limit is ${MAX_MATCHING_STRIPE_CUSTOMERS}.`,
-    );
-  }
+  if (matches.length > 25) throw new ResetCliError("Too many Stripe Customer matches.");
   return matches;
 }
 
-export function buildResetReport({
-  mode,
-  runtimes,
-  finalVerification = null,
-}) {
-  return {
-    mode,
-    target: {
-      displayName: TARGET_IDENTITY.displayName,
-      emails: [...TARGET_IDENTITY.emails],
-    },
-    environments: runtimes.map((runtime) => ({
-      environment: runtime.target.environment,
-      neonProjectId: runtime.target.neonProjectId,
-      neonEndpointId: runtime.database.endpointId,
-      stripeAccountId: runtime.target.stripeAccountId,
-      stripeCustomers: {
-        identityMatches: runtime.stripeIdentityCustomerIds.length,
-        databaseLinked: runtime.databaseLinkedCustomerIds.length,
-        total: runtime.stripeCustomerIds.length,
-        ids: [...runtime.stripeCustomerIds],
-        deleted: runtime.deletedStripeCustomerIds?.length || 0,
-      },
-      database: {
-        before: runtime.inventory.counts,
-        deleted: runtime.deletedCounts || null,
-      },
-    })),
-    preserved: [
-      "Stripe invoices, payments, charges, refunds, disputes, and event history outside the app-owned webhook queue",
-      "Customer 360 profiles, installs, commerce projections, merge history, and immutable identity reviews",
-      "Download leads and installer/referral analytics",
-      "Local CEP/plugin installations, caches, receipts, and application state",
-    ],
-    finalVerification,
-  };
+export function matchesTargetIdentity(customer) {
+  const email = normalizeIdentityValue(customer?.email);
+  return TARGET_IDENTITY.emails.includes(email);
 }
 
-export async function inventoryDatabase(
-  client,
-  target,
-  stripeCustomerIds,
-  {
-    forUpdate = false,
-    hints = {},
-  } = {},
-) {
-  const schema = await assertExpectedSchema(client, target);
-  const lockClause = forUpdate ? " for update" : "";
-  const emails = [...TARGET_IDENTITY.emails];
-  const displayName = normalizeIdentityValue(TARGET_IDENTITY.displayName);
-  const knownAccountIds = uniqueStrings(hints.accountIds);
-  const knownLicenseIds = uniqueStrings(hints.licenseIds);
-  const knownActivationIds = uniqueStrings(hints.activationIds);
-  const knownCheckoutIntentIds = uniqueStrings(hints.checkoutIntentIds);
-  const knownTokenIds = uniqueStrings(hints.tokenIds);
-  const knownDeviceIds = uniqueStrings(hints.deviceIds);
-  const knownTransferIds = uniqueStrings(hints.transferIds);
-  const knownIdentityLinkIds = uniqueStrings(hints.identityLinkIds);
-  const knownTelemetryIdentityLinkIds = uniqueStrings(
-    hints.telemetryIdentityLinkIds,
-  );
-  const knownPaidAcquisitionCheckoutIds = uniqueStrings(
-    hints.paidAcquisitionCheckoutIds,
-  );
-  const knownPaidAcquisitionEmailOutboxIds = uniqueStrings(
-    hints.paidAcquisitionEmailOutboxIds,
-  );
-  const knownPaidAcquisitionClaimIds = uniqueStrings(
-    hints.paidAcquisitionClaimIds,
-  );
-  const knownEventIds = uniqueStrings(hints.eventIds);
-
-  const accounts = (await client.query(
-    `
-      select id, email, display_name, stripe_customer_id
-      from public.sidestream_accounts
-      where id = any($1::uuid[])
-        or lower(btrim(email)) = any($2::text[])
-        or lower(btrim(coalesce(display_name, ''))) = $3
-        or stripe_customer_id = any($4::text[])
-      order by id
-      ${lockClause}
-    `,
-    [
-      knownAccountIds,
-      emails,
-      displayName,
-      uniqueStrings(stripeCustomerIds),
-    ],
-  )).rows;
-  const accountIds = uniqueStrings([
-    ...knownAccountIds,
-    ...accounts.map((row) => row.id),
-  ]);
-  const linkedAccountCustomerIds = uniqueStripeIds(
-    accounts.map((row) => row.stripe_customer_id),
-  );
-  const customerIds = uniqueStripeIds([
-    ...stripeCustomerIds,
-    ...linkedAccountCustomerIds,
-  ]);
-
-  const licenses = (await client.query(
-    `
-      select
-        id,
-        account_id,
-        stripe_customer_id,
-        stripe_subscription_id,
-        stripe_checkout_session_id,
-        stripe_payment_intent_id,
-        stripe_charge_id,
-        stripe_state_event_id
-      from public.sidestream_licenses
-      where id = any($1::uuid[])
-        or account_id = any($2::uuid[])
-        or stripe_customer_id = any($3::text[])
-      order by id
-      ${lockClause}
-    `,
-    [knownLicenseIds, accountIds, customerIds],
-  )).rows;
-  const licenseIds = uniqueStrings([
-    ...knownLicenseIds,
-    ...licenses.map((row) => row.id),
-  ]);
-  const linkedLicenseCustomerIds = uniqueStripeIds(
-    licenses.map((row) => row.stripe_customer_id),
-  );
-  const allCustomerIds = uniqueStripeIds([
-    ...customerIds,
-    ...linkedLicenseCustomerIds,
-  ]);
-  const checkoutSessionIds = uniqueStripeIds([
-    ...hints.checkoutSessionIds || [],
-    ...licenses.map((row) => row.stripe_checkout_session_id),
-  ], "cs_");
-
-  let checkoutIntents = (await client.query(
-    `
-      select
-        id,
-        account_id,
-        activation_session_id,
-        stripe_customer_id,
-        stripe_checkout_session_id
-      from public.sidestream_checkout_intents
-      where id = any($1::uuid[])
-        or account_id = any($2::uuid[])
-        or stripe_customer_id = any($3::text[])
-        or stripe_checkout_session_id = any($4::text[])
-      order by id
-      ${lockClause}
-    `,
-    [
-      knownCheckoutIntentIds,
-      accountIds,
-      allCustomerIds,
-      checkoutSessionIds,
-    ],
-  )).rows;
-  const intentActivationIds = uniqueStrings(
-    checkoutIntents.map((row) => row.activation_session_id),
-  );
-  const expandedCheckoutSessionIds = uniqueStripeIds([
-    ...checkoutSessionIds,
-    ...checkoutIntents.map((row) => row.stripe_checkout_session_id),
-  ], "cs_");
-
-  const activationSessions = (await client.query(
-    `
-      select id, account_id, license_id, device_id_hash, stripe_checkout_session_id
-      from public.sidestream_activation_sessions
-      where id = any($1::uuid[])
-        or account_id = any($2::uuid[])
-        or license_id = any($3::uuid[])
-        or stripe_checkout_session_id = any($4::text[])
-      order by id
-      ${lockClause}
-    `,
-    [
-      uniqueStrings([...knownActivationIds, ...intentActivationIds]),
-      accountIds,
-      licenseIds,
-      expandedCheckoutSessionIds,
-    ],
-  )).rows;
-  const activationIds = uniqueStrings([
-    ...knownActivationIds,
-    ...intentActivationIds,
-    ...activationSessions.map((row) => row.id),
-  ]);
-
-  checkoutIntents = (await client.query(
-    `
-      select
-        id,
-        account_id,
-        activation_session_id,
-        stripe_customer_id,
-        stripe_checkout_session_id
-      from public.sidestream_checkout_intents
-      where id = any($1::uuid[])
-        or account_id = any($2::uuid[])
-        or activation_session_id = any($3::uuid[])
-        or stripe_customer_id = any($4::text[])
-        or stripe_checkout_session_id = any($5::text[])
-      order by id
-      ${lockClause}
-    `,
-    [
-      knownCheckoutIntentIds,
-      accountIds,
-      activationIds,
-      allCustomerIds,
-      expandedCheckoutSessionIds,
-    ],
-  )).rows;
-  let checkoutIntentIds = uniqueStrings([
-    ...knownCheckoutIntentIds,
-    ...checkoutIntents.map((row) => row.id),
-  ]);
-
-  let paidAcquisitionCheckouts = [];
-  let paidAcquisitionEmailOutbox = [];
-  let paidAcquisitionClaims = [];
-  if (schema.hasPaidAcquisition) {
-    paidAcquisitionCheckouts = (await client.query(
-      `
-        select id, checkout_intent_ref
-        from public.sidestream_paid_acquisition_checkouts
-        where id = any($1::uuid[])
-          or checkout_intent_ref = any($2::uuid[])
-        order by id
-        ${lockClause}
-      `,
-      [knownPaidAcquisitionCheckoutIds, checkoutIntentIds],
-    )).rows;
-    let paidAcquisitionCheckoutIds = uniqueStrings([
-      ...knownPaidAcquisitionCheckoutIds,
-      ...paidAcquisitionCheckouts.map((row) => row.id),
-    ]);
-
-    paidAcquisitionClaims = (await client.query(
-      `
-        select id, checkout_id
-        from public.sidestream_paid_acquisition_claims
-        where id = any($1::uuid[])
-          or checkout_id = any($2::uuid[])
-          or account_ref = any($3::uuid[])
-          or activation_ref = any($4::uuid[])
-          or entitlement_ref = any($5::uuid[])
-          or lower(btrim(coalesce(google_email_normalized, ''))) =
-            any($6::text[])
-        order by id
-        ${lockClause}
-      `,
-      [
-        knownPaidAcquisitionClaimIds,
-        paidAcquisitionCheckoutIds,
-        accountIds,
-        activationIds,
-        licenseIds,
-        emails,
-      ],
-    )).rows;
-    paidAcquisitionCheckoutIds = uniqueStrings([
-      ...paidAcquisitionCheckoutIds,
-      ...paidAcquisitionClaims.map((row) => row.checkout_id),
-    ]);
-
-    paidAcquisitionCheckouts = (await client.query(
-      `
-        select id, checkout_intent_ref
-        from public.sidestream_paid_acquisition_checkouts
-        where id = any($1::uuid[])
-          or checkout_intent_ref = any($2::uuid[])
-        order by id
-        ${lockClause}
-      `,
-      [paidAcquisitionCheckoutIds, checkoutIntentIds],
-    )).rows;
-    paidAcquisitionCheckoutIds = uniqueStrings([
-      ...paidAcquisitionCheckoutIds,
-      ...paidAcquisitionCheckouts.map((row) => row.id),
-    ]);
-    checkoutIntentIds = uniqueStrings([
-      ...checkoutIntentIds,
-      ...paidAcquisitionCheckouts.map((row) => row.checkout_intent_ref),
-    ]);
-
-    paidAcquisitionEmailOutbox = (await client.query(
-      `
-        select id, checkout_id
-        from public.sidestream_paid_acquisition_email_outbox
-        where id = any($1::uuid[])
-          or checkout_id = any($2::uuid[])
-        order by id
-        ${lockClause}
-      `,
-      [
-        knownPaidAcquisitionEmailOutboxIds,
-        paidAcquisitionCheckoutIds,
-      ],
-    )).rows;
-  }
-  const paidAcquisitionCheckoutIds = uniqueStrings([
-    ...knownPaidAcquisitionCheckoutIds,
-    ...paidAcquisitionCheckouts.map((row) => row.id),
-    ...paidAcquisitionClaims.map((row) => row.checkout_id),
-    ...paidAcquisitionEmailOutbox.map((row) => row.checkout_id),
-  ]);
-  const paidAcquisitionEmailOutboxIds = uniqueStrings([
-    ...knownPaidAcquisitionEmailOutboxIds,
-    ...paidAcquisitionEmailOutbox.map((row) => row.id),
-  ]);
-  const paidAcquisitionClaimIds = uniqueStrings([
-    ...knownPaidAcquisitionClaimIds,
-    ...paidAcquisitionClaims.map((row) => row.id),
-  ]);
-
-  const licenseTokens = (await client.query(
-    `
-      select id, account_id, license_id, activation_session_id, device_id_hash
-      from public.sidestream_license_tokens
-      where id = any($1::uuid[])
-        or account_id = any($2::uuid[])
-        or license_id = any($3::uuid[])
-        or activation_session_id = any($4::uuid[])
-      order by id
-      ${lockClause}
-    `,
-    [knownTokenIds, accountIds, licenseIds, activationIds],
-  )).rows;
-  const tokenIds = uniqueStrings([
-    ...knownTokenIds,
-    ...licenseTokens.map((row) => row.id),
-  ]);
-
-  const devices = (await client.query(
-    `
-      select id, account_id, device_id_hash
-      from public.sidestream_account_devices
-      where id = any($1::uuid[]) or account_id = any($2::uuid[])
-      order by id
-      ${lockClause}
-    `,
-    [knownDeviceIds, accountIds],
-  )).rows;
-  const deviceIds = uniqueStrings([
-    ...knownDeviceIds,
-    ...devices.map((row) => row.id),
-  ]);
-  const deviceHashes = uniqueStrings([
-    ...hints.deviceHashes || [],
-    ...devices.map((row) => row.device_id_hash),
-    ...activationSessions.map((row) => row.device_id_hash),
-    ...licenseTokens.map((row) => row.device_id_hash),
-  ]);
-
-  const transfers = (await client.query(
-    `
-      select id, account_id
-      from public.sidestream_device_transfers
-      where id = any($1::uuid[])
-        or account_id = any($2::uuid[])
-        or from_device_id = any($3::uuid[])
-        or to_device_id = any($3::uuid[])
-      order by id
-      ${lockClause}
-    `,
-    [knownTransferIds, accountIds, deviceIds],
-  )).rows;
-  const transferIds = uniqueStrings([
-    ...knownTransferIds,
-    ...transfers.map((row) => row.id),
-  ]);
-
-  const accountSessions = (await client.query(
-    `
-      select id, account_id
-      from public.sidestream_account_sessions
-      where account_id = any($1::uuid[])
-      order by id
-      ${lockClause}
-    `,
-    [accountIds],
-  )).rows;
-
-  const checkoutIds = uniqueStripeIds([
-    ...expandedCheckoutSessionIds,
-    ...checkoutIntents.map((row) => row.stripe_checkout_session_id),
-    ...activationSessions.map((row) => row.stripe_checkout_session_id),
-  ], "cs_");
-  const paymentIntentIds = uniqueStripeIds([
-    ...hints.paymentIntentIds || [],
-    ...licenses.map((row) => row.stripe_payment_intent_id),
-  ], "pi_");
-  const chargeIds = uniqueStripeIds([
-    ...hints.chargeIds || [],
-    ...licenses.map((row) => row.stripe_charge_id),
-  ], "ch_");
-  const subscriptionIds = uniqueStripeIds([
-    ...hints.subscriptionIds || [],
-    ...licenses.map((row) => row.stripe_subscription_id),
-  ], "sub_");
-  const stateEventIds = uniqueStripeIds([
-    ...hints.stateEventIds || [],
-    ...licenses.map((row) => row.stripe_state_event_id),
-  ], "evt_");
-
-  const seeds = uniqueStrings([
-    ...hints.seeds || [],
-    TARGET_IDENTITY.displayName,
-    ...emails,
-    ...accountIds,
-    ...licenseIds,
-    ...activationIds,
-    ...allCustomerIds,
-    ...checkoutIds,
-    ...paymentIntentIds,
-    ...chargeIds,
-    ...subscriptionIds,
-    ...stateEventIds,
-  ]);
-
-  let identityLinks = [];
-  let telemetryIdentityLinks = [];
-  if (target.environment === "production") {
-    identityLinks = (await client.query(
-      `
-        select id
-        from public.sidestream_customer_identity_links
-        where id = any($1::uuid[]) or link_value = any($2::text[])
-        order by id
-        ${lockClause}
-      `,
-      [knownIdentityLinkIds, seeds],
-    )).rows;
-  } else {
-    telemetryIdentityLinks = (await client.query(
-      `
-        select id
-        from public.sidestream_telemetry_identity_links
-        where id = any($1::uuid[])
-          or account_id = any($2::uuid[])
-          or device_id_hash = any($3::text[])
-        order by id
-        ${lockClause}
-      `,
-      [knownTelemetryIdentityLinkIds, accountIds, deviceHashes],
-    )).rows;
-  }
-  const identityLinkIds = uniqueStrings([
-    ...knownIdentityLinkIds,
-    ...identityLinks.map((row) => row.id),
-  ]);
-  const telemetryIdentityLinkIds = uniqueStrings([
-    ...knownTelemetryIdentityLinkIds,
-    ...telemetryIdentityLinks.map((row) => row.id),
-  ]);
-
-  const stripeEvents = (await client.query(
-    `
-      select event_id
-      from public.sidestream_stripe_events event
-      where event_id = any($1::text[])
-        or exists (
-          select 1
-          from unnest($2::text[]) seed
-          where strpos(lower(to_jsonb(event)::text), lower(seed)) > 0
-        )
-      order by event_id
-      ${lockClause}
-    `,
-    [uniqueStrings([...knownEventIds, ...stateEventIds]), seeds],
-  )).rows;
-  const eventIds = uniqueStrings([
-    ...knownEventIds,
-    ...stripeEvents.map((row) => row.event_id),
-  ]);
-
-  const counts = {
-    accounts: accounts.length,
-    accountSessions: accountSessions.length,
-    licenses: licenses.length,
-    licenseTokens: licenseTokens.length,
-    activationSessions: activationSessions.length,
-    checkoutIntents: checkoutIntents.length,
-    paidAcquisitionCheckouts: paidAcquisitionCheckouts.length,
-    paidAcquisitionEmailOutbox: paidAcquisitionEmailOutbox.length,
-    paidAcquisitionClaims: paidAcquisitionClaims.length,
-    accountDevices: devices.length,
-    deviceTransfers: transfers.length,
-    stripeEvents: stripeEvents.length,
-    customerIdentityLinks: identityLinks.length,
-    telemetryIdentityLinks: telemetryIdentityLinks.length,
-  };
-
-  return {
-    counts,
-    ids: {
-      accountIds,
-      licenseIds,
-      activationIds,
-      checkoutIntentIds,
-      paidAcquisitionCheckoutIds,
-      paidAcquisitionEmailOutboxIds,
-      paidAcquisitionClaimIds,
-      tokenIds,
-      deviceIds,
-      transferIds,
-      identityLinkIds,
-      telemetryIdentityLinkIds,
-      eventIds,
-      checkoutSessionIds: checkoutIds,
-      paymentIntentIds,
-      chargeIds,
-      subscriptionIds,
-      stateEventIds,
-      deviceHashes,
-      seeds,
-    },
-    linkedStripeCustomerIds: uniqueStripeIds([
-      ...linkedAccountCustomerIds,
-      ...linkedLicenseCustomerIds,
-      ...checkoutIntents.map((row) => row.stripe_customer_id),
-    ]),
-  };
-}
-
-export async function applyDatabaseReset(
-  pool,
-  target,
-  stripeCustomerIds,
-  hints = {},
-) {
-  const client = await pool.connect();
-  try {
-    await client.query(
-      "begin transaction isolation level serializable read write",
-    );
-    await client.query("select pg_advisory_xact_lock(hashtext($1))", [
-      DATABASE_LOCK,
-    ]);
-    const inventory = await inventoryDatabase(
-      client,
-      target,
-      stripeCustomerIds,
-      { forUpdate: true, hints },
-    );
-    const ids = inventory.ids;
-    const deleted = {};
-
-    deleted.deviceTransfers = await deleteUuidRows(
-      client,
-      "sidestream_device_transfers",
-      ids.transferIds,
-    );
-    deleted.licenseTokens = await deleteUuidRows(
-      client,
-      "sidestream_license_tokens",
-      ids.tokenIds,
-    );
-    deleted.paidAcquisitionEmailOutbox = await deleteUuidRows(
-      client,
-      "sidestream_paid_acquisition_email_outbox",
-      ids.paidAcquisitionEmailOutboxIds,
-    );
-    deleted.paidAcquisitionClaims = await deleteUuidRows(
-      client,
-      "sidestream_paid_acquisition_claims",
-      ids.paidAcquisitionClaimIds,
-    );
-    deleted.paidAcquisitionCheckouts = await deleteUuidRows(
-      client,
-      "sidestream_paid_acquisition_checkouts",
-      ids.paidAcquisitionCheckoutIds,
-    );
-    deleted.checkoutIntents = await deleteUuidRows(
-      client,
-      "sidestream_checkout_intents",
-      ids.checkoutIntentIds,
-    );
-    deleted.accountDevices = await deleteUuidRows(
-      client,
-      "sidestream_account_devices",
-      ids.deviceIds,
-    );
-    deleted.activationSessions = await deleteUuidRows(
-      client,
-      "sidestream_activation_sessions",
-      ids.activationIds,
-    );
-    deleted.telemetryIdentityLinks = target.environment === "test"
-      ? await deleteUuidRows(
-        client,
-        "sidestream_telemetry_identity_links",
-        ids.telemetryIdentityLinkIds,
-      )
-      : 0;
-    deleted.licenses = await deleteUuidRows(
-      client,
-      "sidestream_licenses",
-      ids.licenseIds,
-    );
-    deleted.accountSessions = await deleteAccountRows(
-      client,
-      "sidestream_account_sessions",
-      ids.accountIds,
-    );
-    deleted.accounts = await deleteUuidRows(
-      client,
-      "sidestream_accounts",
-      ids.accountIds,
-    );
-    deleted.customerIdentityLinks = target.environment === "production"
-      ? await deleteUuidRows(
-        client,
-        "sidestream_customer_identity_links",
-        ids.identityLinkIds,
-      )
-      : 0;
-    deleted.stripeEvents = await deleteTextRows(
-      client,
-      "sidestream_stripe_events",
-      "event_id",
-      ids.eventIds,
-    );
-
-    await client.query("commit");
-    return { inventory, deleted };
-  } catch (error) {
-    await client.query("rollback");
-    throw error;
-  } finally {
-    client.release();
-  }
-}
-
-export function mergeInventoryHints(...inventories) {
-  const keys = [
-    "accountIds",
-    "licenseIds",
-    "activationIds",
-    "checkoutIntentIds",
-    "paidAcquisitionCheckoutIds",
-    "paidAcquisitionEmailOutboxIds",
-    "paidAcquisitionClaimIds",
-    "tokenIds",
-    "deviceIds",
-    "transferIds",
-    "identityLinkIds",
-    "telemetryIdentityLinkIds",
-    "eventIds",
-    "checkoutSessionIds",
-    "paymentIntentIds",
-    "chargeIds",
-    "subscriptionIds",
-    "stateEventIds",
-    "deviceHashes",
-    "seeds",
-  ];
-  return Object.fromEntries(keys.map((key) => [
-    key,
-    uniqueStrings(inventories.flatMap((inventory) => inventory?.ids?.[key] || [])),
-  ]));
-}
-
-export function allCountsZero(counts) {
-  return Object.values(counts).every((count) => count === 0);
-}
-
-async function main(argv = process.argv.slice(2), environment = process.env) {
-  const options = parseArgs(argv);
-  if (options.help) {
-    printHelp();
-    return;
-  }
-  loadEnvFile(environment.SIDESTREAM_RESET_ENV_FILE, environment);
-  await loadResetSecretCredentials(environment);
-
-  const runtimes = [];
-  try {
-    for (const target of RESET_TARGETS) {
-      runtimes.push(await createRuntime(target, environment));
+export async function deleteMatchingStripeCustomerObjects(stripe, customers, allowedIds) {
+  let deleted = 0;
+  for (const customer of customers) {
+    if (!allowedIds.has(customer.id)) {
+      throw new ResetCliError("A Stripe Customer escaped the fixed QA identity boundary.");
     }
-    if (
-      new Set(runtimes.map((runtime) => runtime.database.endpointId)).size !==
-        runtimes.length
-    ) {
-      throw new ResetCliError(
-        "Production and Test Neon targets resolved to the same endpoint.",
-      );
+    const result = await stripe.customers.del(customer.id);
+    if (result?.id !== customer.id || result?.deleted !== true) {
+      throw new ResetCliError("Stripe did not confirm Customer identity deletion.");
     }
-    for (const runtime of runtimes) {
-      await validateRuntime(runtime);
-      const matchingCustomers = await listMatchingStripeCustomers(runtime.stripe);
-      runtime.stripeIdentityCustomerIds = matchingCustomers.map(
-        (customer) => customer.id,
-      );
-      runtime.inventory = await withReadOnlyTransaction(
-        runtime.pool,
-        (client) => inventoryDatabase(
-          client,
-          runtime.target,
-          runtime.stripeIdentityCustomerIds,
-        ),
-      );
-      runtime.databaseLinkedCustomerIds =
-        runtime.inventory.linkedStripeCustomerIds;
-      runtime.stripeCustomerIds = uniqueStripeIds([
-        ...runtime.stripeIdentityCustomerIds,
-        ...runtime.databaseLinkedCustomerIds,
-      ]);
-      if (runtime.stripeCustomerIds.length > MAX_MATCHING_STRIPE_CUSTOMERS) {
-        throw new ResetCliError(
-          `${runtime.target.environment} resolved too many Stripe customers.`,
-        );
-      }
-    }
-
-    if (!options.apply) {
-      console.log(JSON.stringify(buildResetReport({
-        mode: "dry-run",
-        runtimes,
-      }), null, 2));
-      console.log(
-        `Dry-run only. Re-run with --apply --confirm ${APPLY_CONFIRMATION}.`,
-      );
-      return;
-    }
-
-    let verificationFailed = false;
-    for (const runtime of runtimes) {
-      runtime.deletedStripeCustomerIds = await deleteStripeCustomers(
-        runtime.stripe,
-        runtime.stripeCustomerIds,
-        new Set(runtime.databaseLinkedCustomerIds),
-      );
-    }
-
-    for (const runtime of runtimes) {
-      const inventories = [runtime.inventory];
-      const deletedCounts = {};
-      for (let pass = 0; pass < SETTLE_PASS_COUNT; pass += 1) {
-        if (pass > 0) await delay(SETTLE_DELAY_MS);
-        const result = await applyDatabaseReset(
-          runtime.pool,
-          runtime.target,
-          runtime.stripeCustomerIds,
-          mergeInventoryHints(...inventories),
-        );
-        inventories.push(result.inventory);
-        addCounts(deletedCounts, result.deleted);
-      }
-      runtime.deletedCounts = deletedCounts;
-      runtime.inventoryHints = mergeInventoryHints(...inventories);
-    }
-
-    const finalVerification = {};
-    for (const runtime of runtimes) {
-      const [remainingCustomers, inventory] = await Promise.all([
-        listMatchingStripeCustomers(runtime.stripe),
-        withReadOnlyTransaction(
-          runtime.pool,
-          (client) => inventoryDatabase(
-            client,
-            runtime.target,
-            runtime.stripeCustomerIds,
-            { hints: runtime.inventoryHints },
-          ),
-        ),
-      ]);
-      const clean = remainingCustomers.length === 0 &&
-        allCountsZero(inventory.counts);
-      finalVerification[runtime.target.environment] = {
-        clean,
-        matchingStripeCustomers: remainingCustomers.length,
-        database: inventory.counts,
-      };
-      if (!clean) verificationFailed = true;
-    }
-
-    console.log(JSON.stringify(buildResetReport({
-      mode: "apply",
-      runtimes,
-      finalVerification,
-    }), null, 2));
-    if (verificationFailed) {
-      throw new ResetCliError(
-        "Post-reset verification found remaining state; inspect the report above.",
-      );
-    }
-  } finally {
-    await Promise.allSettled(runtimes.map((runtime) => runtime.pool.end()));
-  }
-}
-
-async function createRuntime(target, environment) {
-  const stripeKey = validateStripeKey(
-    environment[target.stripeKeyEnvironmentVariable],
-    target.environment,
-  );
-  const database = await resolveNeonDatabase(target);
-  const [{ Pool }, { default: Stripe }] = await Promise.all([
-    import("pg"),
-    import("stripe"),
-  ]);
-  return {
-    target,
-    database,
-    pool: new Pool({
-      connectionString: database.connectionString,
-      max: 1,
-      connectionTimeoutMillis: 10_000,
-      idleTimeoutMillis: 10_000,
-      statement_timeout: 30_000,
-    }),
-    stripe: new Stripe(stripeKey, {
-      apiVersion: Stripe.API_VERSION,
-      maxNetworkRetries: 2,
-      timeout: 20_000,
-    }),
-    stripeIdentityCustomerIds: [],
-    databaseLinkedCustomerIds: [],
-    stripeCustomerIds: [],
-    inventory: null,
-  };
-}
-
-async function resolveNeonDatabase(target) {
-  let stdout;
-  try {
-    ({ stdout } = await execFile(
-      "npx",
-      [
-        "--yes",
-        NEON_CLI_PACKAGE,
-        "connection-string",
-        "--project-id",
-        target.neonProjectId,
-        "--role-name",
-        target.neonRole,
-        "--database-name",
-        target.neonDatabase,
-        "--output",
-        "json",
-        "--no-color",
-      ],
-      {
-        encoding: "utf8",
-        env: buildNeonCliEnvironment(),
-        maxBuffer: 1024 * 1024,
-        timeout: 30_000,
-      },
-    ));
-  } catch {
-    throw new ResetCliError(
-      `Could not resolve authenticated Neon project ${target.neonProjectId}. ` +
-      `Run \`npx --yes ${NEON_CLI_PACKAGE} auth\` and retry.`,
-    );
-  }
-  return verifyNeonConnectionString(
-    extractNeonConnectionString(stdout),
-    target,
-  );
-}
-
-async function validateRuntime(runtime) {
-  const [databaseResult, stripeAccount] = await Promise.all([
-    runtime.pool.query(
-      "select current_database() as database_name, current_user as role_name",
-    ),
-    runtime.stripe.accounts.retrieve(),
-  ]);
-  const databaseIdentity = databaseResult.rows[0];
-  if (
-    databaseIdentity?.database_name !== runtime.target.neonDatabase ||
-    databaseIdentity?.role_name !== runtime.target.neonRole
-  ) {
-    throw new ResetCliError(
-      `${runtime.target.environment} connected database identity mismatch.`,
-    );
-  }
-  if (stripeAccount?.id !== runtime.target.stripeAccountId) {
-    throw new ResetCliError(
-      `${runtime.target.environment} Stripe account mismatch: expected ` +
-      `${runtime.target.stripeAccountId}.`,
-    );
-  }
-  if (
-    runtime.target.environment === "production" &&
-    stripeAccount?.charges_enabled !== true
-  ) {
-    throw new ResetCliError(
-      "Production Stripe account is not the expected live charges-enabled account.",
-    );
-  }
-}
-
-async function deleteStripeCustomers(stripe, customerIds, databaseLinkedIds) {
-  const deleted = [];
-  for (const customerId of customerIds) {
-    let customer;
-    try {
-      customer = await stripe.customers.retrieve(customerId);
-    } catch (error) {
-      if (isMissingStripeResource(error)) continue;
-      throw error;
-    }
-    if (customer?.deleted) continue;
-    if (
-      !matchesTargetIdentity(customer) &&
-      !databaseLinkedIds.has(customerId)
-    ) {
-      throw new ResetCliError(
-        `Stripe customer ${customerId} no longer matches the fixed identity or database link.`,
-      );
-    }
-    const result = await stripe.customers.del(customerId);
-    if (result?.id !== customerId || result?.deleted !== true) {
-      throw new ResetCliError(
-        `Stripe did not confirm deletion of customer ${customerId}.`,
-      );
-    }
-    deleted.push(customerId);
+    deleted += 1;
   }
   return deleted;
 }
 
-async function assertExpectedSchema(client, target) {
-  const requiredTables = [...CORE_TABLES, target.requiredIdentityTable];
-  const expectedTables = [
-    ...requiredTables,
-    ...PAID_ACQUISITION_RESET_TABLES,
-  ];
-  const result = await client.query(
-    `
-      select table_name
-      from information_schema.tables
-      where table_schema = 'public' and table_name = any($1::text[])
-    `,
-    [expectedTables],
-  );
-  const found = new Set(result.rows.map((row) => row.table_name));
-  const missing = requiredTables.filter((table) => !found.has(table));
-  if (missing.length > 0) {
-    throw new ResetCliError(
-      `${target.environment} schema is missing required tables: ${missing.join(", ")}.`,
-    );
+export async function loadClosureStripeCustomers(stripe, customerIds, known = []) {
+  const byId = new Map(known.map((customer) => [customer.id, customer]));
+  for (const customerId of customerIds) {
+    if (byId.has(customerId)) continue;
+    const customer = await stripe.customers.retrieve(customerId);
+    if (!customer?.deleted && customer?.id === customerId) byId.set(customerId, customer);
   }
-  const paidAcquisitionTablesFound = PAID_ACQUISITION_RESET_TABLES.filter(
-    (table) => found.has(table),
-  );
-  if (
-    paidAcquisitionTablesFound.length > 0 &&
-    paidAcquisitionTablesFound.length !== PAID_ACQUISITION_RESET_TABLES.length
-  ) {
-    const missingPaidAcquisitionTables =
-      PAID_ACQUISITION_RESET_TABLES.filter((table) => !found.has(table));
-    throw new ResetCliError(
-      `${target.environment} schema has a partial paid-acquisition table set; ` +
-      `missing: ${missingPaidAcquisitionTables.join(", ")}.`,
-    );
+  return [...byId.values()].filter((customer) => customerIds.includes(customer.id));
+}
+
+export async function captureStripeFinancialInvariants(stripe, customerIds) {
+  const objects = [];
+  for (const customer of customerIds) {
+    for (const [type, service] of [
+      ["invoice", stripe.invoices],
+      ["payment_intent", stripe.paymentIntents],
+      ["charge", stripe.charges],
+    ]) {
+      if (!service?.list) continue;
+      for (const object of await listAllStripe(service, { customer })) {
+        objects.push(financialObjectSnapshot(type, object));
+        if (type === "charge") {
+          if (stripe.refunds?.list) {
+            for (const refund of await listAllStripe(stripe.refunds, { charge: object.id })) {
+              objects.push(financialObjectSnapshot("refund", refund));
+            }
+          }
+          if (stripe.disputes?.list) {
+            for (const dispute of await listAllStripe(stripe.disputes, { charge: object.id })) {
+              objects.push(financialObjectSnapshot("dispute", dispute));
+            }
+          }
+        }
+      }
+    }
   }
+  const unique = [...new Map(objects.map((object) => [`${object.type}:${object.id}`, object])).values()]
+    .sort((left, right) => `${left.type}:${left.id}`.localeCompare(`${right.type}:${right.id}`));
   return {
-    hasPaidAcquisition:
-      paidAcquisitionTablesFound.length === PAID_ACQUISITION_RESET_TABLES.length,
+    privateObjects: unique,
+    report: {
+      counts: Object.fromEntries(["invoice", "payment_intent", "charge", "refund", "dispute"]
+        .map((type) => [type, unique.filter((object) => object.type === type).length])),
+      fingerprint: safeFingerprint(JSON.stringify(unique)),
+    },
   };
 }
 
-async function withReadOnlyTransaction(pool, callback) {
+export async function verifyStripeFinancialInvariants(stripe, invariant) {
+  const services = {
+    invoice: stripe.invoices,
+    payment_intent: stripe.paymentIntents,
+    charge: stripe.charges,
+    refund: stripe.refunds,
+    dispute: stripe.disputes,
+  };
+  const after = [];
+  for (const expected of invariant.privateObjects) {
+    const service = services[expected.type];
+    if (!service?.retrieve) {
+      throw new ResetCliError("Stripe financial verification service is unavailable.");
+    }
+    const current = financialObjectSnapshot(
+      expected.type,
+      await service.retrieve(expected.id),
+    );
+    after.push(current);
+  }
+  after.sort((left, right) => `${left.type}:${left.id}`.localeCompare(`${right.type}:${right.id}`));
+  if (safeFingerprint(JSON.stringify(after)) !== invariant.report.fingerprint) {
+    throw new ResetCliError("Stripe financial preservation invariant changed.");
+  }
+  return invariant.report;
+}
+
+export async function verifyRecoveryBranch(branches, options) {
+  if (!isNeonBranchId(options.recoveryBranchId)) {
+    throw new ResetCliError("Apply requires a verified recovery branch ID.");
+  }
+  const matches = branches.filter((branch) => branch.id === options.recoveryBranchId);
+  if (matches.length !== 1 || matches[0].parentId !== options.branchId) {
+    throw new ResetCliError("Recovery branch verification failed.");
+  }
+  if (matches[0].state && !["ready", "idle", "active"].includes(matches[0].state.toLowerCase())) {
+    throw new ResetCliError("Recovery branch is not ready.");
+  }
+  return safeFingerprint([
+    PRODUCTION_TARGET.neonProjectId,
+    matches[0].id,
+    matches[0].parentId,
+    matches[0].name,
+  ].join("\0"));
+}
+
+async function main(argv = process.argv.slice(2), environment = process.env) {
+  const options = parseArgs(argv);
+  if (options.help) return printHelp();
+  const branches = await loadNeonBranches(PRODUCTION_TARGET.neonProjectId, environment);
+  verifyNeonBranchMetadata(branches, options);
+
+  if (options.operation === RECOVERY_OPERATION) {
+    if (!options.apply) {
+      console.log(JSON.stringify({
+        operation: RECOVERY_OPERATION,
+        mode: "dry-run",
+        parentTargetFingerprint: safeFingerprint([
+          PRODUCTION_TARGET.neonProjectId,
+          options.branchId,
+          options.endpointId,
+        ].join("\0")),
+        wouldCreateChildBranch: true,
+      }, null, 2));
+      return;
+    }
+    const recovery = await createRecoveryBranch(options, environment);
+    console.log(JSON.stringify({
+      operation: RECOVERY_OPERATION,
+      mode: "apply",
+      recoveryBranchFingerprint: safeFingerprint([
+        PRODUCTION_TARGET.neonProjectId,
+        recovery.id,
+        recovery.parentId,
+        recovery.name,
+      ].join("\0")),
+      verified: recovery.parentId === options.branchId,
+    }, null, 2));
+    return;
+  }
+
+  if (options.apply) await verifyRecoveryBranch(branches, options);
+  const database = await resolveNeonDatabase(options, environment);
+  const [{ Pool }, { default: Stripe }] = await Promise.all([
+    import("pg"),
+    import("stripe"),
+  ]);
+  const pool = new Pool({
+    connectionString: database.connectionString,
+    max: 1,
+    connectionTimeoutMillis: 10_000,
+    idleTimeoutMillis: 5_000,
+    statement_timeout: 30_000,
+    query_timeout: 30_000,
+  });
+  const stripe = new Stripe(validateStripeKey(
+    environment[PRODUCTION_TARGET.stripeKeyEnvironmentVariable],
+  ), { apiVersion: Stripe.API_VERSION, maxNetworkRetries: 2, timeout: 20_000 });
+  try {
+    const attestation = await attestConnectedTarget(pool, PRODUCTION_TARGET, options);
+    if (options.apply && options.connectedTargetFingerprint !== attestation.fingerprint) {
+      throw new ResetCliError("Connected target fingerprint does not match the dry-run.");
+    }
+    const account = await stripe.accounts.retrieve();
+    if (account?.id !== PRODUCTION_TARGET.stripeAccountId || account?.charges_enabled !== true) {
+      throw new ResetCliError("Production Stripe account attestation failed.");
+    }
+    let customers = await listMatchingStripeCustomers(stripe);
+    const closure = await withReadOnlyTransaction(pool, (client) =>
+      inventoryFreshPaidClosure(client, customers.map((customer) => customer.id))
+    );
+    customers = await loadClosureStripeCustomers(stripe, closure.customerIds, customers);
+    const stripeFinancial = await captureStripeFinancialInvariants(
+      stripe,
+      closure.customerIds,
+    );
+    if (!options.apply) {
+      console.log(JSON.stringify(buildResetReport({
+        mode: "dry-run",
+        targetFingerprint: attestation.fingerprint,
+        closure,
+        financialInvariant: stripeFinancial.report,
+      }), null, 2));
+      return;
+    }
+
+    const result = await applyFreshPaidDatabaseReset(pool, closure);
+    const allowedCustomers = new Set(closure.customerIds);
+    const deletedStripeCustomers = await deleteMatchingStripeCustomerObjects(
+      stripe,
+      customers,
+      allowedCustomers,
+    );
+    await verifyStripeFinancialInvariants(stripe, stripeFinancial);
+    const [remaining, remainingStripeCustomers] = await Promise.all([
+      withReadOnlyTransaction(pool, (client) => inventoryFreshPaidClosure(client, [])),
+      listMatchingStripeCustomers(stripe),
+    ]);
+    const clean = allCountsZero(closureCounts(remaining)) &&
+      remainingStripeCustomers.length === 0;
+    console.log(JSON.stringify(buildResetReport({
+      mode: "apply",
+      targetFingerprint: attestation.fingerprint,
+      closure: remaining,
+      deleted: { ...result.deleted, stripeCustomers: deletedStripeCustomers },
+      clean,
+      financialInvariant: stripeFinancial.report,
+    }), null, 2));
+    if (!clean) throw new ResetCliError("Second-run verification found target state.");
+  } finally {
+    await pool.end();
+  }
+}
+
+export async function loadNeonBranches(projectId, environment) {
+  const branchResult = await runNeon([
+    "branches", "list", "--project-id", projectId, "--output", "json", "--no-color",
+  ], environment, "Could not read authenticated Neon branch metadata.");
+  const endpointResult = await runNeon([
+    "endpoints", "list", "--project-id", projectId, "--output", "json", "--no-color",
+  ], environment, "Could not read authenticated Neon endpoint metadata.");
+  const endpoints = parseNeonEndpointInventory(endpointResult.stdout);
+  return parseNeonBranchInventory(branchResult.stdout).map((branch) => ({
+    ...branch,
+    endpoints: uniqueStrings([
+      ...branch.endpoints,
+      ...endpoints.filter((endpoint) => endpoint.branchId === branch.id)
+        .map((endpoint) => endpoint.id),
+    ]),
+  }));
+}
+
+export async function resolveNeonDatabase(options, environment) {
+  const { stdout } = await runNeon([
+    "connection-string",
+    options.branchId,
+    "--project-id", PRODUCTION_TARGET.neonProjectId,
+    "--role-name", PRODUCTION_TARGET.neonRole,
+    "--database-name", PRODUCTION_TARGET.neonDatabase,
+    "--output", "json",
+    "--no-color",
+  ], environment, "Could not resolve the explicit deployed Neon branch.");
+  return verifyNeonConnectionString(
+    extractNeonConnectionString(stdout),
+    PRODUCTION_TARGET,
+    options,
+  );
+}
+
+async function createRecoveryBranch(options, environment) {
+  const name = `fresh-meta-paid-recovery-${new Date().toISOString().replace(/[-:TZ.]/g, "").slice(0, 14)}`;
+  const { stdout } = await runNeon([
+    "branches", "create",
+    "--project-id", PRODUCTION_TARGET.neonProjectId,
+    "--parent", options.branchId,
+    "--name", name,
+    "--output", "json",
+    "--no-color",
+  ], environment, "Could not create the recoverable Neon child branch.");
+  const branches = parseNeonBranchInventory(stdout);
+  const branch = branches[0];
+  if (!branch || branch.parentId !== options.branchId || branch.name !== name) {
+    throw new ResetCliError("Created recovery branch did not attest as the exact child.");
+  }
+  return branch;
+}
+
+async function runNeon(args, environment, message) {
+  try {
+    return await execFile("npx", ["--yes", NEON_CLI_PACKAGE, ...args], {
+      encoding: "utf8",
+      env: buildNeonCliEnvironment(environment),
+      maxBuffer: 1024 * 1024,
+      timeout: 30_000,
+    });
+  } catch {
+    throw new ResetCliError(message);
+  }
+}
+
+export function buildNeonCliEnvironment(environment = process.env) {
+  const sanitized = { ...environment };
+  delete sanitized[PRODUCTION_TARGET.stripeKeyEnvironmentVariable];
+  delete sanitized.SIDESTREAM_TELEMETRY_POSTGRES_URL;
+  delete sanitized.SIDESTREAM_FRESH_PAID_TELEMETRY_POSTGRES_URL;
+  return sanitized;
+}
+
+export async function withReadOnlyTransaction(pool, callback) {
   const client = await pool.connect();
   try {
-    await client.query(
-      "begin transaction isolation level repeatable read read only",
-    );
-    const result = await callback(client);
+    await client.query("begin transaction isolation level repeatable read read only");
+    const value = await callback(client);
     await client.query("commit");
-    return result;
+    return value;
   } catch (error) {
     await client.query("rollback");
     throw error;
@@ -1317,58 +1064,117 @@ async function withReadOnlyTransaction(pool, callback) {
   }
 }
 
-async function deleteUuidRows(client, table, ids) {
-  if (ids.length === 0) return 0;
+async function setImmutableAuditTriggers(client, enabled) {
+  const action = enabled ? "enable" : "disable";
+  for (const table of [
+    "sidestream_customer_identity_reviews",
+    "sidestream_customer_profile_merges",
+    "sidestream_acquisition_stages",
+    "sidestream_acquisition_conflicts",
+  ]) {
+    await client.query(`alter table public.${table} ${action} trigger user`);
+  }
+}
+
+async function deleteIds(client, table, column, ids, cast) {
+  if (!ids.length) return 0;
   const result = await client.query(
-    `delete from public.${table} where id = any($1::uuid[])`,
+    `delete from public.${table} where ${column} = any($1::${cast}[])`,
     [ids],
   );
   return result.rowCount || 0;
 }
 
-async function deleteAccountRows(client, table, accountIds) {
-  if (accountIds.length === 0) return 0;
-  const result = await client.query(
-    `delete from public.${table} where account_id = any($1::uuid[])`,
-    [accountIds],
-  );
-  return result.rowCount || 0;
+async function deleteByParent(client, table, column, ids) {
+  return deleteIds(client, table, column, ids, "uuid");
 }
 
-async function deleteTextRows(client, table, column, ids) {
-  if (ids.length === 0) return 0;
-  const result = await client.query(
-    `delete from public.${table} where ${column} = any($1::text[])`,
-    [ids],
-  );
-  return result.rowCount || 0;
+function normalizeClosure(value) {
+  const keys = [
+    "accountIds", "customerIds", "checkoutSessionRefs", "paymentRefs",
+    "subscriptionRefs", "licenseIds", "activationIds",
+    "checkoutIntentIds", "paidCheckoutIds", "paidEntryIds", "paidClaimIds",
+    "paidOutboxIds", "paidEventIds", "acquisitionIds", "stageIds",
+    "acquisitionConflictIds", "bindingIds", "profileIds", "installIds",
+    "installHashes", "identityLinkIds", "identityReviewIds", "profileMergeIds",
+    "commerceMaterializationIds", "commercePaymentKeys", "commerceInvoicePaymentIds", "moneyProfileIds",
+    "anonymousSessionIds", "tokenIds", "deviceIds", "transferIds",
+  ];
+  return Object.fromEntries(keys.map((key) => [key, uniqueStrings(value[key])]));
+}
+
+async function listAllStripe(service, parameters) {
+  const rows = [];
+  let startingAfter;
+  do {
+    const page = await service.list({
+      ...parameters,
+      limit: 100,
+      ...(startingAfter ? { starting_after: startingAfter } : {}),
+    });
+    rows.push(...page.data || []);
+    if (!page.has_more) break;
+    const last = page.data?.at(-1);
+    if (!last?.id) throw new ResetCliError("Stripe financial pagination did not advance.");
+    startingAfter = last.id;
+  } while (true);
+  return rows;
+}
+
+function financialObjectSnapshot(type, object) {
+  return {
+    type,
+    id: String(object?.id || ""),
+    amount: Number(object?.amount ?? object?.amount_paid ?? object?.amount_due ?? 0),
+    currency: String(object?.currency || ""),
+    status: String(object?.status || ""),
+    created: Number(object?.created || 0),
+  };
+}
+
+function emptyLike(closure) {
+  return Object.fromEntries(Object.keys(closure).map((key) => [key, []]));
+}
+
+function enforceClosureLimits(closure) {
+  for (const [key, values] of Object.entries(closure)) {
+    if (values.length > MAX_TARGET_ROWS) {
+      throw new ResetCliError(`Fresh-paid closure exceeded the safety limit for ${key}.`);
+    }
+  }
+}
+
+function invariantsEqual(left, right) {
+  return JSON.stringify(left) === JSON.stringify(right);
 }
 
 function uniqueStrings(values = []) {
-  return [...new Set(
-    values
-      .filter((value) => value !== null && value !== undefined)
-      .map((value) => String(value).trim())
-      .filter(Boolean),
-  )];
+  return [...new Set((Array.isArray(values) ? values : [])
+    .filter((value) => value !== null && value !== undefined)
+    .map((value) => String(value).trim())
+    .filter(Boolean))];
 }
 
-function uniqueStripeIds(values = [], prefix = "") {
-  return uniqueStrings(values).filter((value) =>
-    (!prefix || value.startsWith(prefix)) &&
-    /^[a-z]+_[A-Za-z0-9_]+$/.test(value)
-  );
+function safeFingerprint(value) {
+  return createHash("sha256")
+    .update(`sidestream-safe-report-v1\0${String(value)}`)
+    .digest("hex");
+}
+
+function isSafeFingerprint(value) {
+  return typeof value === "string" && /^[0-9a-f]{64}$/.test(value);
+}
+
+function isNeonBranchId(value) {
+  return typeof value === "string" && /^br-[a-z0-9-]{4,80}$/.test(value);
+}
+
+function isNeonEndpointId(value) {
+  return typeof value === "string" && /^ep-[a-z0-9-]{4,80}$/.test(value);
 }
 
 function normalizeIdentityValue(value) {
   return typeof value === "string" ? value.trim().toLowerCase() : "";
-}
-
-function configuredValue(value) {
-  return typeof value === "string" &&
-    Boolean(value.trim()) &&
-    !value.includes("[YOUR-") &&
-    value.trim() !== "changeme";
 }
 
 function readOption(argv, index, name) {
@@ -1385,69 +1191,15 @@ function readOption(argv, index, name) {
   return [value, index + 1];
 }
 
-function loadEnvFile(filePath, environment) {
-  if (!filePath) return;
-  const absolutePath = path.resolve(filePath);
-  let contents;
-  try {
-    contents = fs.readFileSync(absolutePath, "utf8");
-  } catch {
-    throw new ResetCliError(
-      `Could not read reset environment file ${absolutePath}.`,
-    );
-  }
-  const parsed = parseResetEnvironmentFile(contents);
-  for (const [key, value] of Object.entries(parsed)) {
-    if (configuredValue(environment[key])) {
-      throw new ResetCliError(
-        `${key} is configured both in the process and reset environment file.`,
-      );
-    }
-    environment[key] = value;
-  }
-}
-
-function isMissingStripeResource(error) {
-  return Boolean(
-    error &&
-    error.type === "StripeInvalidRequestError" &&
-    (error.statusCode === 404 || /^No such /.test(error.message || "")),
-  );
-}
-
-function addCounts(target, source) {
-  for (const [key, value] of Object.entries(source)) {
-    target[key] = (target[key] || 0) + value;
-  }
-}
-
-function delay(milliseconds) {
-  return new Promise((resolve) => setTimeout(resolve, milliseconds));
-}
-
 function printHelp() {
   console.log(`Usage:
-  npm run account:reset:alex
-  npm run account:reset:alex -- --apply --confirm ${APPLY_CONFIRMATION}
+  npm run fresh-paid:reset -- --branch-name <deployed-name> --branch-id <br-id> --endpoint-id <ep-id>
+  npm run fresh-paid:reset -- --operation ${RECOVERY_OPERATION} --branch-name <deployed-name> --branch-id <br-id> --endpoint-id <ep-id>
+  npm run fresh-paid:reset -- --apply --operation ${FRESH_PAID_OPERATION} <exact dry-run and recovery confirmations>
 
-Dry-run is the default. The command always targets only:
-  Production Neon: dark-butterfly-59697025
-  Test Neon:       ancient-breeze-53489732
-  Live Stripe:     acct_1Tp340DFKjeGlioX
-  Test Stripe:     acct_1TuyMKDNXvmQYu29
-
-Required environment variables:
-  SIDESTREAM_RESET_PRODUCTION_STRIPE_SECRET_KEY
-  SIDESTREAM_RESET_TEST_STRIPE_SECRET_KEY
-
-Optional:
-  SIDESTREAM_RESET_ENV_FILE=<ignored env file containing the two keys>
-  On macOS, missing variables fall back to Keychain items whose service names
-  match the variables above and whose account is ${RESET_KEYCHAIN_ACCOUNT}.
-
-The pinned authenticated Neon CLI supplies direct verify-full connections for
-the two fixed projects. Run \`npx --yes ${NEON_CLI_PACKAGE} auth\` first if
-necessary.`);
+Dry-run is the default. No implicit/default Neon branch is accepted. Apply also
+requires the dry-run target fingerprint, fixed Production namespace and QA
+identity confirmations, and the exact verified child recovery branch.`);
 }
 
 const entryUrl = process.argv[1]
@@ -1455,7 +1207,11 @@ const entryUrl = process.argv[1]
   : "";
 if (import.meta.url === entryUrl) {
   main().catch((error) => {
-    console.error(error instanceof ResetCliError ? error.message : error);
+    console.error(
+      error instanceof ResetCliError
+        ? error.message
+        : "Fresh-paid reset failed closed before a safe report was available.",
+    );
     process.exitCode = 1;
   });
 }
