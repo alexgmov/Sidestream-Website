@@ -406,12 +406,24 @@ per-Checkout receipt and FlowState's locally verified installer receipt are
 different identifiers and must never be compared or substituted. The dedicated
 claim GET remains read-only. Only after the authenticated, same-origin,
 CSRF-protected reconnect or confirmed-transfer POST succeeds may the server use
-the browser receipt to bind the paid Checkout to the exact paid-source activation.
-Canonical `installation_claimed` and `verified_installation_claim` evidence are
-then written only when Customer 360 resolves exactly one install identity and one
-local installer-receipt identity on that activation. Missing, expired, ambiguous,
-or conflicting attribution evidence fails linkage closed without reversing an
-otherwise valid entitlement recovery.
+the browser receipt to bind the paid Checkout to the exact paid-source
+activation. That same POST's normalized `installIdHash` and
+`installerReceiptIdHash` are the only current installation pair eligible for
+binding; the server must not select an arbitrary pair from activation-profile
+history. If exact paid/account evidence and the telemetry install begin on two
+compatible live profiles, they converge under the existing deterministic
+Customer 360 merge order before one immutable paid-telemetry binding records
+the exact claim, activation, install membership/link, and native-receipt link.
+Missing, expired, ambiguous, refunded, disputed, cross-namespace, or
+contradictory ownership fails linkage closed without reversing an otherwise
+valid entitlement recovery.
+
+Google callback and already-signed-in Checkout entry both persist the same
+acquisition/account-scoped `authentication_completed` stage. The final live
+Customer 360 root must then be the common owner selected by current-install
+telemetry, commerce materialization, exact Stripe lookup, and funnel
+attribution. Retries and concurrency converge on one binding, one merge audit,
+and one copy of every stage.
 
 ### Bounded activation-linkage diagnostics
 
@@ -430,14 +442,18 @@ account/license identifier, Stripe reference, token, or database error.
 | `receipt_activation_no_match` | No active, unexpired receipt/activation association matched in the trusted environment. |
 | `activation_source_mismatch` | The selected activation did not retain exact source `paid-acquisition-mc-v1`; no canonical install evidence was written. |
 | `claim_binding_conflict` | The paid receipt/claim is already bound incompatibly. |
-| `installation_identity_not_unique_or_missing` | The activation did not resolve exactly one activation-linked install identity and one locally verified installer-receipt identity. |
+| `installation_identity_not_unique_or_missing` | The POST omitted the exact current install/receipt pair, or those exact values did not resolve one install membership and one locally verified native-receipt identity. |
 | `acquisition_identity_missing` | The paid acquisition could not resolve its canonical acquisition identity after claim binding. |
 | `acquisition_ownership_conflict` | The resolved acquisition is owned by a different Customer 360 profile. |
-| `installation_claimed_recorded` | Both canonical `installation_claimed` and `verified_installation_claim` were committed for the resolved acquisition/install identity. |
+| `installation_claimed_recorded` | Canonical `installation_claimed` and `verified_installation_claim` were committed for the POST's exact current install/receipt pair after deterministic live-profile convergence. |
 | `linkage_unavailable` | The additive association attempt failed outside the bounded domain outcomes; the valid entitlement result remains intact. |
 
-Only `installation_claimed_recorded` is positive canonical installation-linkage
-evidence. `installation_identity_not_unique_or_missing`,
+`installation_claimed_recorded` is necessary but is not sufficient end-to-end
+handoff success. The immutable exact binding and the telemetry-owning live
+profile must also agree with the acquisition, commerce, exact lookup, and
+funnel root. A positive outcome attached to a historical install while the
+current telemetry install remains on another live profile fails qualification.
+`installation_identity_not_unique_or_missing`,
 `acquisition_identity_missing`, and `acquisition_ownership_conflict` occur after
 the paid claim was bound but before verified installation evidence completed;
 they must not be reported as a completed installation claim.
@@ -714,3 +730,13 @@ Production alias. This contract itself grants no such authorization.
 Passing repository gates does not mean that any live provider, payment, email,
 artifact, installer, Premiere, Customer 360, telemetry, deployment, or
 Production gate ran.
+
+The post-audit rollout ladder is fixed and human-gated: review the complete
+integration snapshot; merge it to current `main`; publish only the clean pushed
+`main` commit through the Git-linked canonical deployment; verify live
+`/version.json` reports that exact SHA; run one read-only journey dry-run;
+separately confirm and apply only that same journey; then verify its exact
+Customer 360 lookup and funnel root, commerce, stages, and post-claim usage.
+The repair uses the existing purchase and must not create a new Checkout or
+payment. Each stage requires fresh evidence and separate authority; this
+contract does not execute or authorize the ladder.

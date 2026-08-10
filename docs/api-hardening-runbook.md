@@ -43,6 +43,10 @@ history or tickets.
   hashes, sparse Customer 360 profile, and later verified account/contact
   separate. Tracking is nonblocking, installer bytes remain static, and missing
   configuration fails association and protected reads closed.
+- Authenticated paid claim finalization binds only the POST's exact current
+  install/native-receipt pair. Compatible paid and telemetry profiles converge
+  deterministically before one immutable binding, stage set, commerce owner,
+  exact lookup owner, and funnel root are accepted.
 - The repository does not currently contain a production maintenance rule,
   operator WAF bypass, per-job cron kill switch, Stripe dead-letter reset/replay
   tool, qualified runtime-distinct rollback artifact, failed-refund recovery
@@ -138,6 +142,16 @@ user agent, or campaign proximity may not. No acquisition-history backfill tool
 exists. Preserve unproved historical nulls as `historical_unlinked`; any future
 operator must be separately reviewed, append-only, idempotent, checkpointed,
 conflict-preserving, and prove a no-op rerun.
+
+For the exact paid handoff, `installation_claimed_recorded` is not sufficient
+by itself. Success also requires one append-only
+`sidestream_paid_telemetry_profile_bindings` row for the POST's current
+install/receipt row IDs and one live Customer 360 profile shared by that
+install's telemetry, acquisition, commerce payment-key group, exact lookup, and
+funnel journey. Google callback and already-signed-in Checkout paths persist
+the same acquisition/account-scoped `authentication_completed` stage. Missing,
+stale, refunded, disputed, cross-namespace, ambiguous, or contradictory facts
+fail closed; no operator may substitute profile history or a nearby identity.
 
 ## HTTP and release contract
 
@@ -823,6 +837,38 @@ nothing. Email, names, IP, timing, behavior, search text, and campaign HMACs are
 discarded before planning, hashing, reporting, checkpointing, or database
 access. These exact forms are capabilities, not evidence that a backfill ran.
 
+### Guarded single paid-telemetry journey repair
+
+`scripts/reconcile-paid-telemetry-handoff.mjs` inspects or repairs only one
+canonical acquisition UUID in one trusted namespace. Dry-run is the default,
+connects read-only, and rolls back. It accepts only
+`SIDESTREAM_TEST_POSTGRES_URL` for Test or
+`SIDESTREAM_POSTGRES_URL_NON_POOLING` for Production, rejects pooled URLs,
+weak remote TLS, and target/runtime/source collisions, and prints no selected
+UUID, provider reference, email, activation/device value, install/receipt hash,
+or connection string.
+
+```bash
+npm run reconcile:paid-telemetry-handoff -- --dry-run \
+  --acquisition <canonical-uuid> --namespace production \
+  --target-url-env SIDESTREAM_POSTGRES_URL_NON_POOLING
+
+npm run reconcile:paid-telemetry-handoff -- --apply \
+  --acquisition <same-canonical-uuid> --namespace production \
+  --target-url-env SIDESTREAM_POSTGRES_URL_NON_POOLING \
+  --confirm-operation RECONCILE_ONE_PAID_TELEMETRY_HANDOFF \
+  --confirm-namespace production --confirm-target pg-... \
+  --confirm-journey journey-...
+```
+
+Apply requires a separately reviewed current dry-run, revalidates all exact
+eligibility under one serializable transaction plus namespace/journey advisory
+locks, and may repair only missing authentication/current-install stages and
+evidence, exact claim/activation linkage, deterministic merge/audit, immutable
+binding, and merge-triggered commerce refresh. An identical confirmed replay
+is a no-op. This command shape is capability, not authorization or evidence of
+a Production repair.
+
 ### Production device support and backfill
 
 The device-domain behavior and privacy/support facts live in
@@ -896,6 +942,15 @@ an agent session. A Ready or Preview deployment is not proof. Canonical
 `https://sidestream.tv/version.json` must report the pushed SHA, and the live
 `/api/checkout/start` path must still prove Upgrade -> Google authentication ->
 Stripe before completion is reported.
+
+For the audited one-journey repair, the remaining order is strict: human review
+of the integration snapshot; merge onto current `main`; canonical Git-linked
+main-only deployment; live `/version.json` verification of the pushed SHA;
+read-only one-journey dry-run; separately confirmed apply of only that journey;
+then exact Customer 360 lookup and funnel verification of its commerce, stages,
+immutable current install/receipt binding, and post-claim usage. Reuse the
+existing purchase; do not create a new Checkout or payment for repair proof.
+No stage in that ladder was executed by this documentation change.
 
 Stop before migration, deployment, traffic, or the next rollout stage on any:
 
