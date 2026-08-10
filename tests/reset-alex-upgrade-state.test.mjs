@@ -17,6 +17,7 @@ import {
   extractNeonConnectionString,
   parseArgs,
   parseNeonBranchInventory,
+  parseNeonEndpointInventory,
   verifyNeonBranchMetadata,
   verifyNeonConnectionString,
   verifyRecoveryBranch,
@@ -140,6 +141,25 @@ test("Neon metadata verifies project-scoped branch, endpoint, and recovery paren
     branchId: "br-other-1234",
     recoveryBranchId: "br-recovery-1234",
   }), /verification failed/);
+});
+
+test("Neon API endpoint inventory parses the real project response shape", () => {
+  const endpoints = parseNeonEndpointInventory(JSON.stringify({ endpoints: [
+    {
+      id: SELECTORS.endpointId,
+      branch_id: SELECTORS.branchId,
+      connection_uri: "postgresql://private:secret@example.invalid/neondb",
+    },
+    {
+      id: "ep-other-1234",
+      branch_id: "br-other-1234",
+    },
+  ] }));
+  assert.deepEqual(endpoints, [
+    { id: SELECTORS.endpointId, branchId: SELECTORS.branchId },
+    { id: "ep-other-1234", branchId: "br-other-1234" },
+  ]);
+  assert.equal(JSON.stringify(endpoints).includes("secret"), false);
 });
 
 test("connection verification accepts only the explicit direct endpoint, role, and database", () => {

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { createHash } from "node:crypto";
-import { execFile as execFileCallback } from "node:child_process";
+import { execFile as execFileCallback, execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -14,6 +14,9 @@ export const LOCAL_RESET_OPERATION = "fresh-meta-paid-production-local";
 export const LOCAL_APPLY_CONFIRMATION = "RESET-PRODUCTION-CEP-STATE";
 
 export class LocalResetError extends Error {}
+
+const PRODUCTION_CACHE_NAME =
+  /^PPRO_[A-Za-z0-9._-]+_com\.sidestream\.downloader\.panel$/;
 
 export function parseLocalResetArgs(argv) {
   const options = {
@@ -53,24 +56,72 @@ export function parseLocalResetArgs(argv) {
   return options;
 }
 
+export function resolveOperatorHome({
+  effectiveUid = typeof process.geteuid === "function" ? process.geteuid() : process.getuid?.(),
+  environment = process.env,
+  currentHomeDir = os.homedir(),
+  lookupUser = defaultLookupUser,
+  fileSystem = fs,
+} = {}) {
+  if (effectiveUid !== 0) return path.resolve(currentHomeDir);
+  const sudoUser = String(environment.SUDO_USER || "").trim();
+  if (!/^[A-Za-z_][A-Za-z0-9._-]{0,63}$/.test(sudoUser) || sudoUser === "root") {
+    throw new LocalResetError(
+      "Root invocation requires an attested non-root SUDO_USER; no local paths were resolved.",
+    );
+  }
+  const account = lookupUser(sudoUser);
+  const expectedUid = Number(account?.uid);
+  const configuredHome = String(account?.homeDir || "");
+  if (!Number.isSafeInteger(expectedUid) || expectedUid <= 0 || !path.isAbsolute(configuredHome)) {
+    throw new LocalResetError("The original sudo user home could not be attested.");
+  }
+  let resolvedHome;
+  let stat;
+  try {
+    resolvedHome = fileSystem.realpathSync(configuredHome);
+    stat = fileSystem.statSync(resolvedHome);
+  } catch {
+    throw new LocalResetError("The original sudo user home could not be attested.");
+  }
+  if (
+    !stat.isDirectory() ||
+    stat.uid !== expectedUid ||
+    resolvedHome === path.parse(resolvedHome).root ||
+    resolvedHome === "/var/root"
+  ) {
+    throw new LocalResetError("The original sudo user home could not be attested.");
+  }
+  return resolvedHome;
+}
+
 export function resolveLocalResetPaths({
-  homeDir = os.homedir(),
+  homeDir = resolveOperatorHome(),
   systemRoot = "/Library",
+  fileSystem = fs,
 } = {}) {
   const userApplicationSupport = path.join(homeDir, "Library", "Application Support");
   const systemApplicationSupport = path.join(systemRoot, "Application Support");
   const stateDir = path.join(userApplicationSupport, "Sidestream");
   const systemCepRoot = path.join(systemApplicationSupport, "Adobe", "CEP", "extensions");
   const userCepRoot = path.join(userApplicationSupport, "Adobe", "CEP", "extensions");
-  const adobeCepCache = path.join(homeDir, "Library", "Caches", "Adobe", "CEP");
+  const cepCacheRoot = path.join(homeDir, "Library", "Caches", "CSXS", "cep_cache");
+  let productionCacheNames = [];
+  try {
+    productionCacheNames = fileSystem.readdirSync(cepCacheRoot)
+      .filter((name) => PRODUCTION_CACHE_NAME.test(name))
+      .sort();
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+  }
 
   const targets = [
     target("system-production-extension", path.join(systemCepRoot, "Sidestream")),
     target("user-production-extension", path.join(userCepRoot, "Sidestream")),
     target("legacy-user-production-extension", path.join(userCepRoot, "com.sidestream.downloader")),
-    target("production-cep-cache", path.join(adobeCepCache, "com.sidestream.downloader.panel")),
-    target("production-cep-html-cache", path.join(adobeCepCache, "CEPHtmlEngine", "com.sidestream.downloader.panel")),
-    target("production-named-cep-cache", path.join(adobeCepCache, "Sidestream")),
+    ...productionCacheNames.map((name, index) =>
+      target(`production-cep-cache-${index + 1}`, path.join(cepCacheRoot, name))
+    ),
     target("production-license-device", path.join(stateDir, "license-device-id.production.v1.json")),
     target("production-license-state", path.join(stateDir, "license-state.production.v1.json")),
     target("production-paid-onboarding-state", path.join(stateDir, "paid-onboarding-state.production.v1.json")),
@@ -79,8 +130,10 @@ export function resolveLocalResetPaths({
     target("system-production-installer-receipt", path.join(systemApplicationSupport, "Sidestream", "installer-receipt.json")),
   ];
   const preserved = [
-    target("system-test-extension", path.join(systemCepRoot, "Sidestream Test")),
-    target("user-test-extension", path.join(userCepRoot, "Sidestream Test")),
+    target("system-sidestream-test-bundle-extension", path.join(systemCepRoot, "Sidestream Test")),
+    target("system-id-test-bundle-extension", path.join(systemCepRoot, "com.sidestream.downloader.test")),
+    target("user-sidestream-test-bundle-extension", path.join(userCepRoot, "Sidestream Test")),
+    target("user-id-test-bundle-extension", path.join(userCepRoot, "com.sidestream.downloader.test")),
     target("test-license-device", path.join(stateDir, "license-device-id.test.v1.json")),
     target("downloaded-media", path.join(homeDir, "Downloads")),
     target("premiere-projects", path.join(homeDir, "Documents", "Adobe")),
@@ -89,6 +142,7 @@ export function resolveLocalResetPaths({
     stateDir,
     backupRoot: path.join(stateDir, "cep-backups"),
     cepRoots: [systemCepRoot, userCepRoot],
+    cepCacheRoot,
     targets,
     preserved,
   };
@@ -119,13 +173,12 @@ export function findBlockingProductionProcesses(psOutput) {
     const match = trimmed.match(/^(\d+)\s+(.+)$/);
     if (!match) continue;
     const command = match[2];
-    const lower = command.toLowerCase();
-    const premiere = lower.includes("adobe premiere pro");
-    const productionCep = lower.includes("cephtmlengine") &&
-      (lower.includes("com.sidestream.downloader.panel") ||
-        /(?:^|[\\/])sidestream(?:[\\/]|$)/i.test(command)) &&
-      !lower.includes("sidestream test") &&
-      !lower.includes("com.sidestream.downloader.test");
+    const premiere = (
+      /(?:^|[\\/])Adobe Premiere Pro(?: \d{4})?\.app[\\/]Contents[\\/]MacOS[\\/]Adobe Premiere Pro(?: \d{4})?(?:\s|$)/i.test(command) ||
+      /^Adobe Premiere Pro(?: \d{4})?$/i.test(command)
+    );
+    const productionCep = /\bCEPHtmlEngine\b/i.test(command) &&
+      /(?:^|\s)(?:--params_extensionid=)?com\.sidestream\.downloader\.panel(?:\s|$)/i.test(command);
     if (premiere || productionCep) {
       blockers.push({ pid: Number(match[1]), kind: premiere ? "premiere" : "production-cep" });
     }
@@ -153,6 +206,7 @@ export async function runLocalProductionReset(options, {
   now = () => new Date(),
   readProcesses = defaultReadProcesses,
   requestPremiereQuit = defaultRequestPremiereQuit,
+  terminateProductionCep = defaultTerminateProductionCep,
   wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
 } = {}) {
   const extraPreserved = options.preservePaths.map((value, index) =>
@@ -163,6 +217,7 @@ export async function runLocalProductionReset(options, {
   const beforePreserved = snapshotPreservedState(
     preservedPaths,
     roots.cepRoots,
+    roots.cepCacheRoot,
     fileSystem,
   );
   if (!options.apply) {
@@ -174,16 +229,19 @@ export async function runLocalProductionReset(options, {
   }
 
   const initialBlockers = findBlockingProductionProcesses(await readProcesses());
-  if (initialBlockers.length) await requestPremiereQuit(initialBlockers);
-  for (let attempt = 0; attempt < 20; attempt += 1) {
-    const blockers = findBlockingProductionProcesses(await readProcesses());
-    if (!blockers.length) break;
-    if (attempt === 19) {
-      throw new LocalResetError(
-        "Premiere or a Production CEP process is still running; nothing was moved.",
-      );
-    }
-    await wait(250);
+  if (initialBlockers.some((process) => process.kind === "premiere")) {
+    await requestPremiereQuit(initialBlockers);
+  }
+  let blockers = await waitForBlockers(readProcesses, wait, 10);
+  const productionCep = blockers.filter((process) => process.kind === "production-cep");
+  if (productionCep.length) {
+    await terminateProductionCep(productionCep);
+    blockers = await waitForBlockers(readProcesses, wait, 20);
+  }
+  if (blockers.length) {
+    throw new LocalResetError(
+      "Premiere or a Production CEP process is still running; nothing was moved.",
+    );
   }
 
   const slug = utcTimestampSlug(now());
@@ -211,6 +269,7 @@ export async function runLocalProductionReset(options, {
     const afterPreserved = snapshotPreservedState(
       preservedPaths,
       roots.cepRoots,
+      roots.cepCacheRoot,
       fileSystem,
     );
     if (beforePreserved.fingerprint !== afterPreserved.fingerprint) {
@@ -237,7 +296,7 @@ export async function runLocalProductionReset(options, {
   }
 }
 
-function snapshotPreservedState(paths, cepRoots, fileSystem) {
+function snapshotPreservedState(paths, cepRoots, cepCacheRoot, fileSystem) {
   const items = inventoryLocalPaths(paths, fileSystem);
   const unrelatedCep = [];
   for (const root of cepRoots) {
@@ -253,13 +312,27 @@ function snapshotPreservedState(paths, cepRoots, fileSystem) {
     }
   }
   unrelatedCep.sort();
-  const canonical = JSON.stringify({ items, unrelatedCep });
+  const unrelatedCaches = [];
+  let cacheNames = [];
+  try {
+    cacheNames = fileSystem.readdirSync(cepCacheRoot);
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+  }
+  for (const name of cacheNames) {
+    if (PRODUCTION_CACHE_NAME.test(name)) continue;
+    unrelatedCaches.push(fingerprint(path.join(cepCacheRoot, name)));
+  }
+  unrelatedCaches.sort();
+  const canonical = JSON.stringify({ items, unrelatedCep, unrelatedCaches });
   return {
     fingerprint: fingerprint(canonical),
     report: {
       paths: items,
       unrelatedCepCount: unrelatedCep.length,
       unrelatedCepFingerprint: fingerprint(unrelatedCep.join("\0")),
+      unrelatedCacheCount: unrelatedCaches.length,
+      unrelatedCacheFingerprint: fingerprint(unrelatedCaches.join("\0")),
     },
   };
 }
@@ -284,6 +357,48 @@ async function defaultRequestPremiereQuit(blockers) {
     throw new LocalResetError(
       "Could not ask Premiere to quit normally; no local state was moved.",
     );
+  }
+}
+
+async function defaultTerminateProductionCep(processes) {
+  for (const processEntry of processes) {
+    try {
+      process.kill(processEntry.pid, "SIGTERM");
+    } catch (error) {
+      if (error?.code !== "ESRCH") {
+        throw new LocalResetError(
+          "Could not terminate an exact Production CEP process; no local state was moved.",
+        );
+      }
+    }
+  }
+}
+
+async function waitForBlockers(readProcesses, wait, attempts) {
+  let blockers = [];
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    blockers = findBlockingProductionProcesses(await readProcesses());
+    if (!blockers.length) return blockers;
+    if (attempt + 1 < attempts) await wait(250);
+  }
+  return blockers;
+}
+
+function defaultLookupUser(user) {
+  try {
+    const homeOutput = execFileSync(
+      "/usr/bin/dscl",
+      [".", "-read", `/Users/${user}`, "NFSHomeDirectory"],
+      { encoding: "utf8", timeout: 5_000 },
+    );
+    const uidOutput = execFileSync("/usr/bin/id", ["-u", user], {
+      encoding: "utf8",
+      timeout: 5_000,
+    });
+    const homeMatch = homeOutput.match(/^NFSHomeDirectory:\s+(.+)$/m);
+    return { homeDir: homeMatch?.[1]?.trim() || "", uid: Number(uidOutput.trim()) };
+  } catch {
+    throw new LocalResetError("The original sudo user home could not be attested.");
   }
 }
 
