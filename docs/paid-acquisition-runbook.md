@@ -585,9 +585,14 @@ filtering to Production, and converging through `UNION`. The classified
 disposable-Postgres regression applies the complete schema in an isolated
 schema, reproduces the foreign-account refusal, then proves an Alex seed reaches
 every merged ancestor and descendant plus its historical activation,
-deleted-Customer license, and exact-acquisition retry intent. It executes the
-real reset transaction, proves unrelated account/profile/acquisition rows and
-anonymous paid events are unchanged, and proves the empty replay is stable. Its
+deleted-Customer license, exact-acquisition retry intent, and a validator-approved
+exact paid-telemetry binding. It proves ordinary binding deletion is still
+refused with SQLSTATE `55000`; guarded apply adds that table to the same
+transaction-scoped user-trigger suspension and restoration as the other
+immutable audit tables, deletes only the inventoried binding and full fixed-QA
+closure, and restores normal immutability on commit. It also proves unrelated
+account/profile/acquisition rows and anonymous paid events are unchanged and
+the second inventory is empty and stable. Its
 aggregate command self-provisions and removes a loopback PostgreSQL cluster
 when no explicit disposable test URL is selected, then applies the existing
 external-network guard to every child suite. This repository proof

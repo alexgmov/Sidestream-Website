@@ -127,11 +127,26 @@ test("fresh-paid reset closes profile-owned history and preserves anonymous even
       `delete from ${quotedSchema}.sidestream_customer_identity_links where id = $1`,
       [foreignIdentityLink],
     );
-    await insertIdentityLink(pool, quotedSchema, {
+    const accountIdentityLink = await insertIdentityLink(pool, quotedSchema, {
       profileId: root,
       linkType: "account_identity",
       linkValue: fixedAccount,
     });
+    const exactBinding = await insertExactPaidTelemetryBinding(pool, quotedSchema, {
+      profileId: root,
+      accountId: fixedAccount,
+      accountIdentityLink,
+      licenseId: deletedCustomerLicense,
+      acquisitionId: targetAcquisition,
+      checkoutIntentId: ownedIntent,
+    });
+    await assert.rejects(
+      pool.query(
+        `delete from ${quotedSchema}.sidestream_paid_telemetry_profile_bindings where id = $1`,
+        [exactBinding.id],
+      ),
+      (error) => error?.code === "55000",
+    );
 
     const first = await inventoryFreshPaidClosure(inventoryClient, []);
     assert.deepEqual(
@@ -148,6 +163,7 @@ test("fresh-paid reset closes profile-owned history and preserves anonymous even
     assert.equal(first.checkoutIntentIds.includes(sameRootRetryIntent), true);
     assert.equal(first.checkoutIntentIds.includes(unrelatedIntent), false);
     assert.deepEqual(first.acquisitionIds, [targetAcquisition]);
+    assert.deepEqual(first.bindingIds, [exactBinding.id]);
 
     const beforeUnrelated = await snapshotUnrelatedRows(pool, quotedSchema, {
       accountId: foreignAccount,
@@ -163,6 +179,7 @@ test("fresh-paid reset closes profile-owned history and preserves anonymous even
     assert.equal(applied.deleted.activations >= 1, true);
     assert.equal(applied.deleted.licenses, 1);
     assert.equal(applied.deleted.checkoutIntents, 2);
+    assert.equal(applied.deleted.bindings, 1);
     assert.equal("paidEvents" in applied.deleted, false);
     assert.deepEqual(
       await snapshotUnrelatedRows(pool, quotedSchema, {
@@ -173,6 +190,15 @@ test("fresh-paid reset closes profile-owned history and preserves anonymous even
         paidEventId: anonymousPaidEvent,
       }),
       beforeUnrelated,
+    );
+    assert.equal(
+      await rowExists(
+        pool,
+        quotedSchema,
+        "sidestream_paid_telemetry_profile_bindings",
+        exactBinding.id,
+      ),
+      false,
     );
 
     const replay = await inventoryFreshPaidClosure(inventoryClient, []);
@@ -213,8 +239,12 @@ async function insertAccount(pool, schema, { email, stripeCustomerId }) {
 async function insertLicense(pool, schema, { accountId, stripeCustomerId }) {
   const result = await pool.query(
     `insert into ${schema}.sidestream_licenses (
-       account_id, stripe_customer_id, plan_key, status
-     ) values ($1, $2, 'sidestream_pro', 'active')
+       account_id, stripe_customer_id, plan_key, status, entitlement_status,
+       status_reason
+     ) values (
+       $1, $2, 'sidestream_pro', 'active', 'active',
+       'paid_checkout_fulfilled'
+     )
      returning id`,
     [accountId, stripeCustomerId],
   );
@@ -293,6 +323,143 @@ async function insertAnonymousPaidEvent(pool, schema) {
     ["9".repeat(64)],
   );
   return result.rows[0].event_id;
+}
+
+async function insertExactPaidTelemetryBinding(pool, schema, {
+  profileId,
+  accountId,
+  accountIdentityLink,
+  licenseId,
+  acquisitionId,
+  checkoutIntentId,
+}) {
+  const installHash = "1".repeat(64);
+  const receiptHash = "2".repeat(64);
+  const activation = await pool.query(
+    `insert into ${schema}.sidestream_activation_sessions (
+       activation_key, account_id, license_id, source, status,
+       completed_at, expires_at
+     ) values (
+       $1, $2, $3, 'paid-acquisition-mc-v1', 'completed',
+       now(), now() + interval '1 day'
+     ) returning id`,
+    [`exact-binding-${randomBytes(8).toString("hex")}`, accountId, licenseId],
+  );
+  const activationId = activation.rows[0].id;
+  const install = await pool.query(
+    `insert into ${schema}.sidestream_customer_installs (
+       profile_id, license_namespace, install_id_hash, platform, app_version
+     ) values ($1, 'production', $2, 'macos', '1.0.17')
+     returning id`,
+    [profileId, installHash],
+  );
+  const installIdentityLink = await insertIdentityLink(pool, schema, {
+    profileId,
+    linkType: "install_identity_hash",
+    linkValue: installHash,
+  });
+  const activationIdentityLink = await insertIdentityLink(pool, schema, {
+    profileId,
+    linkType: "activation_record",
+    linkValue: activationId,
+  });
+  const receiptIdentityLink = await insertIdentityLink(pool, schema, {
+    profileId,
+    linkType: "installer_receipt_hash",
+    linkValue: receiptHash,
+  });
+  const paidEntry = await pool.query(
+    `insert into ${schema}.sidestream_paid_acquisition_entries (
+       contract_version, environment, experiment_id, cohort,
+       assignment_id_hash, assignment_cookie_signature_hash, entry_path,
+       entry_token_hash, attribution_hash, utm_medium, utm_campaign, expires_at
+     ) values (
+       1, 'production', 'mc-mobile-paid-v1', 'mc-paid-v1',
+       $1, $2, '/mc', $3, $4, 'social',
+       'sidestream_direct_offer_test', now() + interval '1 day'
+     ) returning id`,
+    ["3".repeat(64), "4".repeat(64), "5".repeat(64), "6".repeat(64)],
+  );
+  const paymentRef = `pi_fixture_${randomBytes(8).toString("hex")}`;
+  const paidCheckout = await pool.query(
+    `insert into ${schema}.sidestream_paid_acquisition_checkouts (
+       entry_id, contract_version, environment, experiment_id, cohort,
+       assignment_id_hash, entry_token_hash, attribution_hash,
+       checkout_intent_ref, idempotency_key, request_fingerprint,
+       verified_checkout_session_ref, canonical_payment_ref,
+       checkout_email_normalized, verified_product_ref, verified_price_ref,
+       verified_quantity, verified_amount_minor, verified_currency,
+       installer_receipt_hash, payment_state, claim_state, receipt_expires_at,
+       completed_at, expires_at
+     ) values (
+       $1, 1, 'production', 'mc-mobile-paid-v1', 'mc-paid-v1',
+       $2, $3, $4, $5, gen_random_uuid(), $6, $7, $8,
+       'alex@alexg.mov', 'prod_fixture', 'price_fixture', 1, 1999, 'usd',
+       $9, 'active', 'claimed', now() + interval '1 day', now(),
+       now() + interval '1 day'
+     ) returning id`,
+    [
+      paidEntry.rows[0].id,
+      "3".repeat(64),
+      "5".repeat(64),
+      "6".repeat(64),
+      checkoutIntentId,
+      "7".repeat(64),
+      `cs_fixture_${randomBytes(8).toString("hex")}`,
+      paymentRef,
+      receiptHash,
+    ],
+  );
+  const claim = await pool.query(
+    `insert into ${schema}.sidestream_paid_acquisition_claims (
+       checkout_id, environment, canonical_payment_ref, activation_ref,
+       account_ref, entitlement_ref, google_email_normalized, claim_state,
+       expires_at
+     ) values (
+       $1, 'production', $2, $3, $4, $5, 'alex@alexg.mov', 'claimed',
+       now() + interval '1 day'
+     ) returning id`,
+    [paidCheckout.rows[0].id, paymentRef, activationId, accountId, licenseId],
+  );
+  const binding = await pool.query(
+    `insert into ${schema}.sidestream_paid_telemetry_profile_bindings (
+       license_namespace, claim_id, checkout_id, acquisition_id,
+       account_id, entitlement_id, activation_ref, profile_id_at_binding,
+       install_membership_id, install_id_hash, install_identity_link_id,
+       activation_identity_link_id, account_identity_link_id,
+       installer_receipt_identity_link_id, installer_receipt_id_hash,
+       binding_key, bound_at
+     ) values (
+       'production', $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
+       $12, $13, $14, $15, now()
+     ) returning id`,
+    [
+      claim.rows[0].id,
+      paidCheckout.rows[0].id,
+      acquisitionId,
+      accountId,
+      licenseId,
+      activationId,
+      profileId,
+      install.rows[0].id,
+      installHash,
+      installIdentityLink,
+      activationIdentityLink,
+      accountIdentityLink,
+      receiptIdentityLink,
+      receiptHash,
+      "8".repeat(64),
+    ],
+  );
+  return { id: binding.rows[0].id };
+}
+
+async function rowExists(pool, schema, table, id) {
+  const result = await pool.query(
+    `select exists(select 1 from ${schema}.${table} where id = $1) as exists`,
+    [id],
+  );
+  return result.rows[0].exists;
 }
 
 async function snapshotUnrelatedRows(pool, schema, ids) {

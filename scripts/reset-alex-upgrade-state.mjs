@@ -1161,6 +1161,7 @@ export async function withReadOnlyTransaction(pool, callback) {
 async function setImmutableAuditTriggers(client, enabled) {
   const action = enabled ? "enable" : "disable";
   for (const table of [
+    "sidestream_paid_telemetry_profile_bindings",
     "sidestream_customer_identity_reviews",
     "sidestream_customer_profile_merges",
     "sidestream_acquisition_stages",
