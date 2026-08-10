@@ -93,6 +93,18 @@ test("profile-owned history and exact acquisition roots expand without anonymous
   assert.doesNotMatch(source, /ambiguous_paid_event_window/);
 });
 
+test("guarded apply suspends the exact paid telemetry binding trigger", () => {
+  const source = readFileSync(
+    new URL("../scripts/reset-alex-upgrade-state.mjs", import.meta.url),
+    "utf8",
+  );
+  const triggerHelper = /async function setImmutableAuditTriggers[\s\S]*?\n}/.exec(source)?.[0];
+  assert.ok(triggerHelper, "immutable trigger helper must remain inspectable");
+  assert.match(triggerHelper, /"sidestream_paid_telemetry_profile_bindings"/);
+  assert.match(source, /setImmutableAuditTriggers\(client, false\);[\s\S]*deleted\.bindings/);
+  assert.match(source, /deleted\.acquisitions[\s\S]*setImmutableAuditTriggers\(client, true\);/);
+});
+
 test("profile-owned live Stripe Customers must keep a fixed-QA email", async () => {
   const stripe = {
     customers: {
