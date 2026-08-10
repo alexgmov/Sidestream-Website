@@ -26,6 +26,7 @@ test("ordinary Upgrade remains Google authentication followed by shared Stripe C
   assert.match(checkoutStart, /createCheckoutIntent/);
   assert.match(checkoutStart, /createOrReuseCheckoutSession/);
   assert.match(checkoutStart, /resolveRequiredCheckoutAcquisition/);
+  assert.match(checkoutStart, /recordAuthenticatedAccountAcquisition/);
   assert.doesNotMatch(checkoutStart, /anonymous-acquisition|installation\/claim/);
 });
 
@@ -38,6 +39,10 @@ test("OAuth, locked intents, Stripe metadata, and fulfillment share one acquisit
   assert.match(authStart, /acquisitionCookieValue/);
   assert.match(authCallback, /completeGoogleAuthenticationAcquisition/);
   assert.match(accountSource, /stage:\s*"authentication_completed"/);
+  assert.match(
+    accountSource,
+    /google-account:\$\{acquisitionId\}:\$\{accountId\}/,
+  );
   assert.match(accountSource, /id, acquisition_id, intent_kind/);
   assert.match(accountSource, /sidestream_acquisition_id:\s*row\.acquisition_id/);
   assert.match(accountSource, /invoice_data:\s*\{ metadata \}/);

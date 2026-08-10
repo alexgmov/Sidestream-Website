@@ -86,7 +86,7 @@ test("the dedicated route constrains server-side source and changes only inactiv
   );
 });
 
-test("paid install attribution uses the signed browser receipt after authenticated confirmation", () => {
+test("paid POST finalization carries the normalized exact pair and account", () => {
   assert.match(
     dedicatedRouteSource,
     /validatePaidAcquisitionReceiptCookie/,
@@ -97,7 +97,7 @@ test("paid install attribution uses the signed browser receipt after authenticat
   );
   assert.match(
     claimSource,
-    /await finalizePaidAcquisitionLinkage\([\s\S]*?receipt: options\.paidAcquisitionReceipt/,
+    /expectedAccountId: session\.accountId,[\s\S]*?identity/,
   );
   assert.match(
     paidAcquisitionSource,
@@ -105,19 +105,19 @@ test("paid install attribution uses the signed browser receipt after authenticat
   );
   assert.match(
     paidAcquisitionSource,
-    /activation\.activation_key = \$3/,
+    /activation\.activation_key = \$1/,
   );
   assert.match(
     paidAcquisitionSource,
-    /activation\.source = \$4 as activation_source_matches/,
+    /activation\.source = \$2 as activation_source_matches/,
   );
   assert.match(
     paidAcquisitionSource,
-    /stage: "installation_claimed"[\s\S]*?evidence: "verified_installation_claim"/,
+    /stableServerReference: `installation:\$\{installIdHash\}`[\s\S]*?evidence: "verified_installation_claim"/,
   );
-  assert.doesNotMatch(
-    accountSource,
-    /installerReceiptIdHash:[\s\S]{0,200}associatePaidAcquisitionActivation/,
+  assert.match(
+    claimSource,
+    /installIdHash: options\.identity\.installIdHash,[\s\S]*?installerReceiptIdHash: options\.identity\.installerReceiptIdHash/,
   );
 });
 
@@ -142,7 +142,8 @@ test("paid POST linkage records only bounded outcomes and ordinary claims stay q
     "receipt_activation_no_match",
     "activation_source_mismatch",
     "claim_binding_conflict",
-    "installation_identity_not_unique_or_missing",
+    "installation_identity_missing",
+    "installation_identity_conflict",
     "acquisition_ownership_conflict",
     "installation_claimed_recorded",
   ]) {

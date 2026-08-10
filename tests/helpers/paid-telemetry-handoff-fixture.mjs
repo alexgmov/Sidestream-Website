@@ -83,6 +83,10 @@ const customerIdentity = await loadInjectedModule(
   new URL("../../api/_lib/customer-identity.ts", import.meta.url),
   {},
 );
+const customerProfiles = await loadInjectedModule(
+  new URL("../../api/_lib/customer-profiles.ts", import.meta.url),
+  {},
+);
 const customerCommerce = await loadInjectedModule(
   new URL("../../api/_lib/customer-commerce.ts", import.meta.url),
   {},
@@ -179,6 +183,17 @@ export async function runPaidTelemetryHandoffFixture({
     });
     await seedAuthenticatedPaidJourney(pool, quotedCrm, browserReceipt);
 
+    await acquisitionIntegrity.addTrustedDeliveryEvidence({
+      acquisitionId: IDS.acquisition,
+      evidence: "authenticated_account",
+    }, integrityDependencies);
+    await acquisitionIntegrity.recordAcquisitionStage({
+      acquisitionId: IDS.acquisition,
+      stage: "authentication_completed",
+      stableServerReference: `google-account:${IDS.acquisition}:${IDS.account}`,
+      occurredAt: FIXTURE_TIME.checkoutStarted,
+    }, integrityDependencies);
+
     for (const [stage, stableServerReference, occurredAt] of [
       ["checkout_started", `checkout-intent:${IDS.checkoutIntent}`, FIXTURE_TIME.checkoutStarted],
       ["checkout_completed", `checkout-session:${PROVIDER.checkoutSession}`, FIXTURE_TIME.checkoutCompleted],
@@ -252,18 +267,33 @@ export async function runPaidTelemetryHandoffFixture({
       "test",
     );
 
-    const linkage = await paidAcquisition.associatePaidAcquisitionActivationWithOutcome({
+    const linkageInput = {
       environment: "test",
       activationKey: "activation_fixture_paid_handoff",
+      expectedAccountId: IDS.account,
       receipt: browserReceipt,
+      installIdHash: HASHES.currentInstall,
+      installerReceiptIdHash: HASHES.nativeReceipt,
       occurredAt: new Date(FIXTURE_TIME.installationClaimed),
-    }, {
+    };
+    const linkageDependencies = {
       transaction: writeTransaction,
       recordStage: (input, options) =>
         acquisitionIntegrity.recordAcquisitionStage(input, options),
       addEvidence: (input, options) =>
         acquisitionIntegrity.addTrustedDeliveryEvidence(input, options),
-    });
+      mergeProfiles: customerProfiles.mergeCustomerProfilesInTransaction,
+    };
+    const linkageAttempts = await Promise.all([
+      paidAcquisition.associatePaidAcquisitionActivationWithOutcome(
+        linkageInput,
+        linkageDependencies,
+      ),
+      paidAcquisition.associatePaidAcquisitionActivationWithOutcome(
+        linkageInput,
+        linkageDependencies,
+      ),
+    ]);
 
     const summary = await privacySafeSummary({
       pool,
@@ -274,7 +304,7 @@ export async function runPaidTelemetryHandoffFixture({
       exactIdentityAttachment,
       usageSummary,
       commerceResult,
-      linkage,
+      linkageAttempts,
     });
     assertExpectation(summary, expectation);
     return summary;
@@ -564,7 +594,7 @@ async function privacySafeSummary({
   exactIdentityAttachment,
   usageSummary,
   commerceResult,
-  linkage,
+  linkageAttempts,
 }) {
   const checkoutLookup = await customerQuery.queryCustomerLookup({
     licenseNamespace: "test",
@@ -655,6 +685,14 @@ async function privacySafeSummary({
      where acquisition_id = $1 and stage = 'installation_claimed'`,
     [IDS.acquisition, currentInstallationKey, historicalInstallationKey],
   );
+  const lineageRows = await pool.query(
+    `select
+       (select count(*)::int
+        from ${quotedCrm}.sidestream_paid_telemetry_profile_bindings) as bindings,
+       (select count(*)::int
+        from ${quotedCrm}.sidestream_customer_profile_merges
+        where merge_evidence_type = 'installer_receipt_hash') as merge_audits`,
+  );
 
   const currentMoneyRows = currentDetail.money.filter(
     (money) => BigInt(money.netPaidMinor) > 0n,
@@ -695,7 +733,12 @@ async function privacySafeSummary({
         Number(currentDetail.usage.downloadOutcomeNumerator || 0),
     }),
     paidActivation: Object.freeze({
-      outcome: linkage.outcome,
+      outcome: linkageAttempts[0].outcome,
+      successfulReplayAttempts: linkageAttempts.filter(
+        (attempt) => attempt.outcome === "installation_claimed_recorded",
+      ).length,
+      immutableBindings: lineageRows.rows[0].bindings,
+      mergeAudits: lineageRows.rows[0].merge_audits,
       exactIdentityReviewRequired: exactIdentityAttachment.reviewRequired === true,
       commerceObservationsApplied: commerceResult.applied,
     }),
@@ -710,6 +753,7 @@ async function privacySafeSummary({
 
 function assertExpectation(summary, expectation) {
   const common = summary.paidActivation.outcome === "installation_claimed_recorded" &&
+    summary.paidActivation.successfulReplayAttempts === 2 &&
     summary.stageCounts.checkoutStarted === 1 &&
     summary.stageCounts.checkoutCompleted === 1 &&
     summary.stageCounts.paymentSettled === 1 &&
@@ -733,6 +777,8 @@ function assertExpectation(summary, expectation) {
     summary.observedContract === "repaired-single-profile-handoff" &&
     summary.profileCounts.splitCheckoutFromCurrentInstall === 0 &&
     summary.profileCounts.exactIdentityPairProfiles === 1 &&
+    summary.paidActivation.immutableBindings === 1 &&
+    summary.paidActivation.mergeAudits === 1 &&
     summary.stageCounts.authenticationCompleted === 1 &&
     summary.installationBindingCounts.currentInstall === 1 &&
     summary.installationBindingCounts.historicalInstall === 0 &&

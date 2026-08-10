@@ -480,23 +480,11 @@ export async function completeGoogleAuthenticationAcquisition(options: Readonly<
     { secret, now },
   );
   await ensureBrowserCheckoutAcquisition(resolved.cookie);
-  await addTrustedDeliveryEvidence({
+  await recordAuthenticatedAccountAcquisition({
     acquisitionId: resolved.cookie.acquisitionId,
-    evidence: "authenticated_account",
-  });
-  const stage = await recordAcquisitionStage({
-    acquisitionId: resolved.cookie.acquisitionId,
-    stage: "authentication_completed",
-    stableServerReference:
-      `google-account:${resolved.cookie.acquisitionId}:${options.accountId}`,
+    accountId: options.accountId,
     occurredAt: now,
   });
-  if (stage.ownerConflict) {
-    throw new AcquisitionIntegrityError(
-      "authentication_acquisition_conflict",
-      "Authentication acquisition ownership conflicted.",
-    );
-  }
 
   let possibleForwardedHandoff = false;
   const handoffToken = readCheckoutHandoffFromNextPath(options.nextPath);
@@ -520,6 +508,48 @@ export async function completeGoogleAuthenticationAcquisition(options: Readonly<
     acquisitionId: resolved.cookie.acquisitionId,
     possibleForwardedHandoff,
   });
+}
+
+/**
+ * Records one exact authenticated account against one canonical acquisition.
+ * OAuth callbacks and already-signed-in Checkout entries share the same
+ * acquisition/account-scoped key, so retries remain durable and idempotent.
+ */
+export async function recordAuthenticatedAccountAcquisition(options: Readonly<{
+  acquisitionId: string;
+  accountId: string;
+  occurredAt?: Date;
+}>) {
+  const acquisitionId = requiredAcquisitionId(options.acquisitionId);
+  const accountId = cleanString(options.accountId, 36);
+  if (!ACQUISITION_ID.test(accountId)) {
+    throw new AcquisitionIntegrityError(
+      "authenticated_account_invalid",
+      "Authenticated account identity is invalid.",
+    );
+  }
+  const occurredAt = options.occurredAt || new Date();
+  assertCheckoutAcquisitionIntact(
+    await requireCanonicalAcquisition(acquisitionId),
+  );
+  await addTrustedDeliveryEvidence({
+    acquisitionId,
+    evidence: "authenticated_account",
+  });
+  const stage = await recordAcquisitionStage({
+    acquisitionId,
+    stage: "authentication_completed",
+    stableServerReference:
+      `google-account:${acquisitionId}:${accountId}`,
+    occurredAt,
+  });
+  if (stage.ownerConflict) {
+    throw new AcquisitionIntegrityError(
+      "authentication_acquisition_conflict",
+      "Authentication acquisition ownership conflicted.",
+    );
+  }
+  return stage;
 }
 
 function readCheckoutHandoffFromNextPath(nextPath: string) {

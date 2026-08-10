@@ -38,7 +38,7 @@ function knownBaselineSnapshot(rowSecurityEnabled = false) {
 
 test("migration files are ordered, checksummed, and append-only baseline files are pinned", async () => {
   const migrations = validateMigrationFiles(await loadMigrationFiles());
-  assert.equal(migrations.length, 30);
+  assert.equal(migrations.length, 31);
   assert.deepEqual(
     migrations.map((migration) => migration.filename),
     [...migrations.map((migration) => migration.filename)].sort(),
@@ -67,9 +67,43 @@ test("migration files are ordered, checksummed, and append-only baseline files a
     "20260729010000_allow_two_active_account_devices.sql",
     "20260729120000_add_regional_checkout_offer_snapshots.sql",
     "20260803120000_add_acquisition_integrity.sql",
+    "20260810120000_bind_paid_telemetry_profile.sql",
   ]) {
     assert.ok(migrations.some((migration) => migration.filename === filename));
   }
+});
+
+test("paid telemetry binding is exact, immutable, private, and replay-safe", async () => {
+  const migration = await readFile(new URL(
+    "../db/migrations/20260810120000_bind_paid_telemetry_profile.sql",
+    import.meta.url,
+  ), "utf8");
+  assert.match(
+    migration,
+    /create table public\.sidestream_paid_telemetry_profile_bindings/,
+  );
+  for (const column of [
+    "claim_id",
+    "acquisition_id",
+    "account_id",
+    "activation_ref",
+    "install_membership_id",
+    "install_id_hash",
+    "installer_receipt_identity_link_id",
+    "installer_receipt_id_hash",
+    "binding_key",
+  ]) {
+    assert.match(migration, new RegExp(`\\b${column}\\b`));
+  }
+  assert.match(migration, /unique \(license_namespace, binding_key\)/);
+  assert.match(migration, /before insert on public\.sidestream_paid_telemetry_profile_bindings/);
+  assert.match(migration, /before update or delete on public\.sidestream_paid_telemetry_profile_bindings/);
+  assert.match(migration, /enable row level security/);
+  assert.match(migration, /revoke all on table .* from public/);
+  assert.doesNotMatch(
+    migration,
+    /\b(raw_ip|ip_address|user_agent|email|display_name|campaign|referrer)\b/i,
+  );
 });
 
 test("acquisition migration requires future Checkout linkage without inferring history", async () => {

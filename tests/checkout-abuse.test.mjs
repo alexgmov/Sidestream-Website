@@ -63,6 +63,7 @@ test("Upgrade authenticates and then redirects the signed-in buyer to Stripe", a
   let limiterCalls = 0;
   let allowed = true;
   let selectedCountry = "";
+  const authenticationCalls = [];
   const start = await loadInjectedHandler(
     new URL("../api/checkout/start.ts", import.meta.url),
     {
@@ -97,6 +98,9 @@ test("Upgrade authenticates and then redirects the signed-in buyer to Stripe", a
             : "ZZ";
         },
         methodNotAllowed,
+        async recordAuthenticatedAccountAcquisition(options) {
+          authenticationCalls.push(options);
+        },
         redirect,
         async resolveRequiredCheckoutAcquisition() {
           return {
@@ -137,6 +141,7 @@ test("Upgrade authenticates and then redirects the signed-in buyer to Stripe", a
   );
   assert.equal(intentCalls, 0);
   assert.equal(checkoutCalls, 0);
+  assert.equal(authenticationCalls.length, 0);
 
   const legacyBare = await invokeHandler(start, {
     method: "GET",
@@ -174,6 +179,10 @@ test("Upgrade authenticates and then redirects the signed-in buyer to Stripe", a
   assert.equal(checkoutCalls, 1);
   assert.equal(limiterCalls, 1);
   assert.equal(selectedCountry, "ZZ");
+  assert.deepEqual(authenticationCalls[0], {
+    acquisitionId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    accountId: session.accountId,
+  });
 
   const trustedIndia = await invokeHandler(start, {
     method: "GET",
