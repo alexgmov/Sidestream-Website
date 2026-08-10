@@ -541,6 +541,64 @@ payload, or Stripe `cus_`/`cs_`/`pi_`/`ch_` identifier. The canonical UUID and
 deduplication/conflict hashes are private server/database facts; public URLs and
 installer packages contain neither.
 
+### Fixed-QA fresh Meta-paid reset exception
+
+The general Customer 360 contract remains no-delete. One explicit exception is
+the `fresh-meta-paid-production` operator used to return the code-owned Alex QA
+identity to a zero state before a separately authorized live qualification. It
+is not a retention tool, support shortcut, email-search command, or template for
+deleting another customer. Its initial authority is the fixed allowlisted QA
+email set in source; a display name never selects rows. From that seed it derives
+the complete closure only through server-owned edges: account/session/token,
+entitlement, activation, device/transfer, core and paid Checkout,
+entry/event/outbox/claim, canonical acquisition/stage/conflict, anonymous claim,
+exact paid telemetry binding, live/merged profile, install, identity
+link/review/merge audit, commerce materialization/alias/invoice-payment/totals,
+and usage rows.
+
+The operator refuses any foreign account, provider-customer, Checkout, payment,
+subscription, activation, binding, entry, acquisition, or overlapping Meta
+event-window ownership. Only matching provider Customer identity objects may be
+removed. Invoices, payment intents, charges, refunds, and disputes must re-read
+unchanged; provider webhook history, unrelated profiles/accounts, global usage
+sync state, download leads, installer analytics, and all unrelated Customer 360
+facts are invariant-checked. Reports expose counts and SHA-256 fingerprints,
+not raw emails, Customer 360 IDs, acquisition UUIDs, provider references,
+install/receipt hashes, URLs, or secrets.
+
+Remote reset safety is bound to the explicit deployed non-`main` Production
+branch name/ID and direct endpoint ID, authenticated project/endpoint inventory,
+connected database/role/namespace attestation, and the dry-run connected-target
+fingerprint. Apply also requires the exact operation
+`fresh-meta-paid-production`, namespace confirmation `production`, QA identity
+confirmation `alex-garrett-fixed-qa`, destructive confirmation
+`DELETE-FRESH-META-PAID-ALEX-ONLY`, and one ready verified child recovery branch
+created through the separate dry-run-first operation
+`prepare-fresh-meta-paid-recovery` with confirmation
+`CREATE-RECOVERABLE-NEON-CHILD`. The recovery branch ID is repeated exactly as
+its apply confirmation. `main`, a pooled URL, implicit selection, changed
+fingerprint, or a recovery branch with the wrong parent fails closed.
+
+Apply deletes the locked closure in one serializable transaction, restores the
+append-only trigger state before commit, verifies preservation invariants, and
+performs a second target inventory. `clean=true` requires every closure count
+and matching provider Customer count to be zero. A second dry-run against the
+unchanged selectors must reproduce the connected-target fingerprint and all
+zero counts; that no-op inventory is the idempotent zero-state proof. Until it
+passes, `/meta-paid` and Checkout must not begin.
+
+After Checkout, paid installation, and authentication on the newly reset local
+Production panel, `fresh-meta-paid-post-auth-preflight` is the only download
+permission boundary. `GO` requires exactly one claim, activation,
+authentication stage, installation stage, immutable current install/receipt
+binding, telemetry/install owner, and exact receipt owner on one live profile
+with exact Meta/social/direct-offer dimensions. Only then may the first in-panel
+media download begin. Its separate read-only raw-telemetry follow-up must find
+the same exact install/receipt plus a completed download. Fixture tests prove
+these decisions only; they do not prove a live reset, live Customer 360 state,
+or readiness. The exact operator order, local Production backup, clean-browser
+stop, and sanitized command forms live in `docs/paid-acquisition-runbook.md`.
+
 ### Profiles, installs, and identity
 
 - A live profile is a stable UUID in exactly one `production` or `test` license

@@ -477,14 +477,264 @@ this document.
     Any Production proposal requires a separate plan, independent review, and
     explicit authorization.
 
+## Guarded fresh Meta-paid Production reset and handoff
+
+This is the only supported way to prepare the fixed Alex QA identity for one
+fresh live Meta-paid qualification. It is a narrow, destructive Production
+operator, not a general customer-deletion tool. Running it requires separate
+human authorization for the exact live attempt. Repository fixtures and local
+tests prove only fail-closed code behavior; they do not prove the live target,
+a completed reset, a clean machine, or readiness to start Checkout.
+
+The stop/go sequence is fixed:
+
+```text
+attest deployed non-main branch + direct endpoint
+                    |
+       sanitized reset dry-run
+                    |
+     verified child recovery branch
+                    |
+ exact confirmed apply -> zero-state dry-run
+                    |
+ Production-only local backup/reset
+                    |
+ rotate to a clean browser profile
+                    |
+ /meta-paid -> Checkout -> paid install -> authentication
+                    |
+ post-auth preflight: STOP or GO / download-may-begin
+                    |
+        one in-panel media download
+                    |
+ exact-install raw telemetry follow-up: STOP or GO
+```
+
+Stop at the first missing or mismatched gate. Do not open `/meta-paid` or begin
+Checkout until the live database zero-state, local reset, and browser-rotation
+gates pass. The receipt-gated installer is needed for installation and the
+post-auth check; “download” in the preflight decision means the first media
+download inside the panel, which must not begin before `GO` with instruction
+`download-may-begin`.
+
+### Production target and report contract
+
+`npm run fresh-paid:reset` is dry-run by default and operates only as
+`fresh-meta-paid-production`. The operator accepts an explicit deployed Neon
+branch name, branch ID, and direct endpoint ID. The branch must be non-`main`.
+Authenticated project branch/endpoint inventory, the direct connection host,
+connected database, connected role, and `production` namespace must all agree
+with the fixed code-owned Production target. Omitted selectors, pooled URLs,
+an unexpected endpoint, database or role drift, and connected-target
+fingerprint drift fail closed.
+
+Record only the reviewed branch name/ID, direct endpoint ID, connected-target
+fingerprint, recovery fingerprint, row counts, financial-object counts, and
+safe SHA-256 fingerprints. Never copy a connection URL, secret, customer
+address, account/payment/Checkout identifier, receipt/install hash, or raw
+recovery branch ID into the report. The raw recovery branch ID is obtained
+separately from authenticated Neon tooling and kept only for the apply command.
+
+The fixed Alex-only closure begins from the code-owned allowlisted QA email set;
+display name alone is never a selector. It then follows only server-owned links
+through:
+
+- accounts, sessions, license tokens, entitlements, activations, devices, and
+  transfers;
+- core and paid Checkout rows, paid entries/events/outbox/claims, canonical
+  acquisitions, stages, conflicts, and anonymous claimed sessions;
+- exact paid telemetry bindings, live or merged Customer 360 profiles,
+  installs, identity links/reviews, and merge audits;
+- commerce materializations, aliases, invoice-payment edges, money totals, and
+  customer usage rows.
+
+Any foreign account, provider-customer, Checkout, payment, subscription,
+activation, binding, entry, acquisition, or overlapping Meta-event window
+aborts before deletion. Apply may delete only matching provider Customer
+identity objects. Existing invoices, payment intents, charges, refunds, and
+disputes are inventoried and re-read unchanged. Provider webhook history,
+unrelated profiles/accounts, global usage-sync state, download leads, installer
+analytics, and every unrelated customer or financial record are preservation
+invariants. A changed invariant rolls back the database transaction or fails
+the operation.
+
+### Exact remote reset procedure
+
+Prepare the live secret only in the operator environment and confirm the
+authenticated Neon CLI is scoped to the expected project. Substitute only the
+reviewed safe branch selectors below; do not paste secrets or connection URLs
+into command history or evidence.
+
+1. Independently obtain and review `<deployed-name>`, `<br-id>`, and the direct
+   `<ep-id>`. Run the sanitized reset dry-run:
+
+   ```bash
+   npm run fresh-paid:reset -- \
+     --branch-name '<deployed-name>' \
+     --branch-id '<br-id>' \
+     --endpoint-id '<ep-id>'
+   ```
+
+   Retain the returned `<website-target-sha256>` and bounded counts only. Stop
+   on unexpected scope, ownership refusal, target drift, or a non-sanitized
+   value.
+
+2. Dry-run the recovery operation against the same selectors, then explicitly
+   create one recoverable child branch:
+
+   ```bash
+   npm run fresh-paid:reset -- \
+     --operation prepare-fresh-meta-paid-recovery \
+     --branch-name '<deployed-name>' \
+     --branch-id '<br-id>' \
+     --endpoint-id '<ep-id>'
+
+   npm run fresh-paid:reset -- \
+     --apply \
+     --operation prepare-fresh-meta-paid-recovery \
+     --branch-name '<deployed-name>' \
+     --branch-id '<br-id>' \
+     --endpoint-id '<ep-id>' \
+     --confirm CREATE-RECOVERABLE-NEON-CHILD
+   ```
+
+   Confirm authenticated Neon inventory shows exactly one ready child whose
+   parent is `<br-id>`. Obtain its raw `<recovery-br-id>` from that inventory;
+   the sanitized command report intentionally exposes only a fingerprint.
+
+3. Apply once with every exact confirmation. The recovery ID must be repeated
+   byte-for-byte as its own confirmation:
+
+   ```bash
+   npm run fresh-paid:reset -- \
+     --apply \
+     --operation fresh-meta-paid-production \
+     --branch-name '<deployed-name>' \
+     --branch-id '<br-id>' \
+     --endpoint-id '<ep-id>' \
+     --connected-target-fingerprint '<website-target-sha256>' \
+     --confirm-namespace production \
+     --confirm-identity alex-garrett-fixed-qa \
+     --recovery-branch-id '<recovery-br-id>' \
+     --confirm-recovery-branch '<recovery-br-id>' \
+     --confirm DELETE-FRESH-META-PAID-ALEX-ONLY
+   ```
+
+   Apply performs its own second inventory and reports `clean=true` only when
+   every closure count and the matching provider Customer count are zero.
+
+4. Re-run the step 1 dry-run against the unchanged selectors. Require the same
+   connected-target fingerprint, every target count equal to zero, a zero
+   matching Customer count, and unchanged preservation fingerprints. This is
+   the idempotent zero-state proof. Any nonzero count or changed fingerprint is
+   `STOP`; do not repeat apply speculatively and do not begin Checkout.
+
+### Production-only local reset and browser rotation
+
+The server reset does not clean Premiere, CEP, installer receipt, or browser
+state. First save Premiere projects and run the local dry-run. Add a repeated
+`--preserve-path` for every project or media location outside the default
+Downloads and Documents/Adobe paths:
+
+```bash
+npm run fresh-paid:reset-local -- \
+  --operation fresh-meta-paid-production-local \
+  --preserve-path '<additional-project-or-media-path>'
+```
+
+Review the inventory, then run the same preserve arguments with exact apply
+confirmation:
+
+```bash
+npm run fresh-paid:reset-local -- \
+  --apply \
+  --operation fresh-meta-paid-production-local \
+  --confirm RESET-PRODUCTION-CEP-STATE \
+  --preserve-path '<additional-project-or-media-path>'
+```
+
+Apply asks Premiere to quit normally and waits for Premiere plus Production CEP
+processes to stop. If either remains, nothing moves. It moves only Production
+system/user/legacy CEP extensions, Production CEP caches, Production
+device/license/paid-onboarding state, telemetry state/queue, and the system
+`/Library/Application Support/Sidestream/installer-receipt.json` into a
+timestamped mode-`0700` recovery backup. It never deletes them. On a partial
+failure it rolls moved paths back. Test extensions/device state, Downloads,
+Premiere projects, explicit preserve paths, and unrelated CEP extensions must
+have identical before/after fingerprints.
+
+After both resets pass, close every browser window or profile that has prior
+Sidestream session/acquisition state and rotate to a new clean browser profile.
+Do not clear or rotate that new profile after `/meta-paid` has created the fresh
+root: it must carry the same browser continuity through Checkout and
+authentication. If an old Sidestream cookie/session remains, or the new profile
+is lost mid-journey, stop and restart from a separately reviewed zero-state
+attempt rather than splicing evidence.
+
+### Single post-auth STOP/GO gate and telemetry follow-up
+
+Open `/meta-paid` only after the preceding live gates pass. Complete the one
+authorized Checkout, retrieve and install its receipt-gated paid-onboarding
+artifact, load the Production panel in Premiere, and complete Google
+authentication. Before the first in-panel media download, run exactly one
+read-only post-auth preflight against the same attested Website target and
+fingerprint:
+
+```bash
+npm run fresh-paid:preflight -- \
+  --branch-name '<deployed-name>' \
+  --branch-id '<br-id>' \
+  --endpoint-id '<ep-id>' \
+  --connected-target-fingerprint '<website-target-sha256>'
+```
+
+The preflight silently reads the current verified paid-onboarding Production
+package, system installer receipt, and local telemetry identity. It returns
+`GO` only when exactly one claimed paid claim and activation, one
+`authentication_completed` stage, one `installation_claimed` stage, one
+immutable current install/receipt binding, one telemetry/install profile owner,
+one exact receipt owner, and exact server-owned `meta` / `social` /
+`sidestream_direct_offer_test` dimensions agree. Reports contain only counts,
+the connected-target fingerprint, and a local-identity fingerprint. `STOP`, an
+error, any count other than one, target drift, or an instruction other than
+`download-may-begin` means do not download.
+
+After `GO`, perform exactly one in-panel media download. Then rerun the command
+with `--raw-telemetry-follow-up`, the separately attested read-only telemetry
+target selectors, its connected-target fingerprint, and the secret telemetry
+URL supplied only through `SIDESTREAM_FRESH_PAID_TELEMETRY_POSTGRES_URL`:
+
+```bash
+npm run fresh-paid:preflight -- \
+  --raw-telemetry-follow-up \
+  --branch-name '<deployed-name>' \
+  --branch-id '<br-id>' \
+  --endpoint-id '<ep-id>' \
+  --connected-target-fingerprint '<website-target-sha256>' \
+  --telemetry-project-id '<telemetry-project-id>' \
+  --telemetry-branch-name '<telemetry-branch-name>' \
+  --telemetry-branch-id '<telemetry-br-id>' \
+  --telemetry-endpoint-id '<telemetry-ep-id>' \
+  --telemetry-database '<telemetry-database>' \
+  --telemetry-role '<telemetry-read-role>' \
+  --telemetry-connected-target-fingerprint '<telemetry-target-sha256>'
+```
+
+The follow-up is `GO` only when raw Production telemetry contains at least one
+event with the same exact local install/receipt identity and at least one
+`download_completed` for that install. It does not accept account-level,
+pre-reset, or another-install activity. Preserve the sanitized evidence and
+stop on any mismatch.
+
 ## Final live Meta-paid release qualification
 
-Run this only after the separately authorized live Test or release environment,
-providers, payment, recipient, artifacts, and Premiere machines are ready. The
-repository and fixture gates above are prerequisites, not substitutes. Start
-fresh and keep one evidence record keyed by the same canonical acquisition and
-install identity; do not combine earlier screenshots, provider records, or
-installations from different journeys.
+Run this only after the guarded reset, zero-state, local reset, and clean-browser
+gates above have passed and the separately authorized live providers, payment,
+recipient, artifacts, and Premiere machine are ready. Repository and fixture
+gates are prerequisites, not substitutes. Start fresh and keep one evidence
+record keyed by the same canonical acquisition and install identity; do not
+combine earlier screenshots, provider records, or installations from different
+journeys.
 
 1. Open the exact `/meta-paid` destination in a clean browser and record the new
    canonical acquisition UUID plus its server-owned Meta paid dimensions. Do not
@@ -498,7 +748,9 @@ installations from different journeys.
    package, process, source tree, or panel build outside Premiere is insufficient.
 4. Complete authenticated Google restore from that panel with the authorized
    account and observe the final active loaded-panel result. A redirect URL or
-   OAuth start is not authentication proof.
+   OAuth start is not authentication proof. Run the single post-auth preflight
+   above now; do not start an in-panel download unless it returns `GO` and
+   `download-may-begin`.
 5. Query Customer 360 by the exact Checkout/payment reference and confirm its
    exact-priority acquisition is the fresh Meta-paid root. On that same lineage,
    require `installation_claimed=1` and `verified_installation_claim`. The
@@ -506,9 +758,10 @@ installations from different journeys.
    immutable exact current install/receipt binding and telemetry-owning live
    profile agree. Any other outcome or a positive stage on a historical/split
    profile fails this gate.
-6. After the claim, generate a new panel telemetry event and verify it appears
-   on the same install identity as step 5. Pre-claim telemetry, another install,
-   or account-level activity does not prove continuity.
+6. After post-auth `GO`, complete one in-panel media download and run the raw
+   telemetry follow-up above. Require `GO` / `follow-up-complete` for the same
+   exact install/receipt identity and a completed download. Pre-claim telemetry,
+   another install, or account-level activity does not prove continuity.
 
 Record timestamps and redacted identifiers sufficient to join all six
 observations. Stop on any broken join. This Orchestra documentation/integration
