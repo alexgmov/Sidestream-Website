@@ -223,6 +223,105 @@ test("ambiguous reviewed boundaries fail closed before paid-path reads or writes
   }
 });
 
+test("the unique reviewed legacy entitlement placeholder fails before fingerprint or writes", async () => {
+  const statements = [];
+  const exactBoundary = {
+    review_id: "8c000000-0000-4000-8000-000000000001",
+    activation_id: IDS.activation,
+    account_id: IDS.account,
+    candidate_profile_id: IDS.telemetryProfile,
+    existing_profile_id: IDS.paidProfile,
+    candidate_root_id: IDS.telemetryProfile,
+    existing_root_id: IDS.paidProfile,
+    activation_profile_id: IDS.telemetryProfile,
+    direct_account_or_stripe_count: 0,
+    existing_account_owner_count: 1,
+    exact_account_owner_count: 1,
+    exact_binding_count: 0,
+  };
+  const legacyPath = {
+    acquisition_id: IDS.acquisition,
+    integrity_state: "intact",
+    checkout_intent_id: IDS.checkoutIntent,
+    checkout_created_at: TIME.checkoutStarted,
+    checkout_state: "completed",
+    checkout_account_id: IDS.account,
+    checkout_session_id: PROVIDER.checkoutSession,
+    checkout_price_id: PROVIDER.price,
+    checkout_product_id: PROVIDER.product,
+    paid_checkout_id: IDS.paidCheckout,
+    paid_environment: "test",
+    paid_payment_state: "active",
+    paid_claim_state: "unclaimed",
+    paid_completed: true,
+    paid_authorization_active: true,
+    paid_checkout_session_ref: PROVIDER.checkoutSession,
+    paid_payment_ref: PROVIDER.paymentIntent,
+    paid_product_ref: PROVIDER.product,
+    paid_price_ref: PROVIDER.price,
+    paid_quantity: 1,
+    paid_amount_minor: "1999",
+    paid_currency: "usd",
+    paid_email: "repair-fixture@example.invalid",
+    claim_id: IDS.claim,
+    claim_state: "unclaimed",
+    claim_active: true,
+    claim_payment_ref: PROVIDER.paymentIntent,
+    claim_activation_ref: IDS.activation,
+    claim_account_ref: IDS.account,
+    claim_entitlement_ref: IDS.license,
+    claim_email: null,
+    account_id: IDS.account,
+    account_email: "repair-fixture@example.invalid",
+    entitlement_id: IDS.license,
+    entitlement_account_id: IDS.account,
+    entitlement_status: "active",
+    entitlement_plan_key: "sidestream_unlimited",
+    entitlement_checkout_session_id: PROVIDER.checkoutSession,
+    entitlement_payment_intent_id: PROVIDER.paymentIntent,
+    entitlement_product_id: null,
+    entitlement_price_id: null,
+    entitlement_amount_paid: "0",
+    entitlement_amount_refunded: "0",
+    entitlement_currency: "usd",
+    activation_id: IDS.activation,
+    activation_account_id: IDS.account,
+    activation_entitlement_id: IDS.license,
+    activation_source: "paid-acquisition-mc-v1",
+    activation_status: "completed",
+    activation_completed: true,
+    activation_active: true,
+  };
+  const client = {
+    async query(sql, params = []) {
+      statements.push(sql);
+      if (/select id, integrity_state\s+from public\.sidestream_acquisitions/.test(sql)) {
+        return { rows: [{ id: IDS.acquisition, integrity_state: "intact" }] };
+      }
+      if (/as exact_binding_count/.test(sql)) return { rows: [exactBoundary] };
+      if (/paid\.verified_amount_minor::text as paid_amount_minor/.test(sql)) {
+        assert.equal(params[3], IDS.activation);
+        return { rows: [legacyPath] };
+      }
+      throw new Error("Legacy placeholder rejection should stop before identity reads");
+    },
+  };
+
+  const report = await repair.inspectPaidTelemetryHandoffRepair(client, {
+    acquisitionId: IDS.acquisition,
+    namespace: "test",
+  });
+  assert.equal(report.reasonCode, "payment_or_account_conflict");
+  assert.equal(report.eligible, false);
+  assert.equal(report.wouldMutate, false);
+  assert.equal(report.journeyFingerprint, null);
+  assert.equal(report.booleans.canonicalAcquisition, true);
+  assert.equal(report.booleans.exactPaidPath, true);
+  assert.equal(report.booleans.activePayment, false);
+  assert.equal(statements.length, 3);
+  assert.ok(statements.every((sql) => /^\s*select\b/i.test(sql)));
+});
+
 test("disposable Postgres repair is dry-run first, exact, private, and idempotent", async () => {
   const databaseUrl = requireSafeTestDatabaseUrl();
   const schema = `sidestream_paid_repair_${randomBytes(8).toString("hex")}`;

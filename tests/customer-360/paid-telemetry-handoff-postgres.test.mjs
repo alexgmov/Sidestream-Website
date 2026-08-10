@@ -92,3 +92,35 @@ test("a unique reviewed path excludes the direct historical path and replays as 
   assert.doesNotMatch(serialized, /@example\.invalid\b/);
   assert.doesNotMatch(serialized, /postgres(?:ql)?:\/\//i);
 });
+
+test("the exact legacy entitlement placeholder is selected and rejected without mutation", {
+  timeout: 120_000,
+}, async () => {
+  const summary = await runPaidTelemetryHandoffFixture({
+    expectation: "legacy-entitlement-broken",
+  });
+  assert.equal(
+    summary.observedContract,
+    "unique-reviewed-legacy-entitlement-rejected",
+  );
+  assert.deepEqual(summary.guardedOperator, {
+    reasonCode: "payment_or_account_conflict",
+    eligible: false,
+    wouldMutate: false,
+    hasJourneyFingerprint: false,
+    canonicalAcquisitionSelected: true,
+    exactPaidPathSelected: true,
+  });
+  assert.ok(Object.values(summary.reviewedLegacyPath).every(Boolean));
+  assert.equal(summary.reviewedPath.verifiedAccountReviews, 1);
+  assert.equal(summary.reviewedPath.directAccountOrStripeLinks, 0);
+  assert.equal(summary.mutationBoundary.stateUnchanged, true);
+  assert.equal(summary.mutationBoundary.legacyStateUnchanged, true);
+  assert.deepEqual(summary.mutationBoundary.after, summary.mutationBoundary.before);
+  const serialized = JSON.stringify(summary);
+  assert.doesNotMatch(serialized, /\b(?:cus|cs|pi|ch)_[A-Za-z0-9_]+\b/);
+  assert.doesNotMatch(serialized, /\b[0-9a-f]{8}-[0-9a-f-]{27,}\b/i);
+  assert.doesNotMatch(serialized, /\b[0-9a-f]{64}\b/i);
+  assert.doesNotMatch(serialized, /@example\.invalid\b/);
+  assert.doesNotMatch(serialized, /postgres(?:ql)?:\/\//i);
+});

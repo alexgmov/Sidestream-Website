@@ -184,9 +184,10 @@ export async function runPaidTelemetryHandoffFixture({
     "broken",
     "pending-review-repaired",
     "reviewed-path-repaired",
+    "legacy-entitlement-broken",
   ].includes(expectation)) {
     throw new TypeError(
-      "Paid telemetry handoff expectation must be repaired, broken, pending-review-repaired, or reviewed-path-repaired",
+      "Paid telemetry handoff expectation must be repaired, broken, pending-review-repaired, reviewed-path-repaired, or legacy-entitlement-broken",
     );
   }
 
@@ -217,7 +218,8 @@ export async function runPaidTelemetryHandoffFixture({
 
     if (
       expectation === "pending-review-repaired" ||
-      expectation === "reviewed-path-repaired"
+      expectation === "reviewed-path-repaired" ||
+      expectation === "legacy-entitlement-broken"
     ) {
       const summary = await runPendingReviewRepairedScenario({
         pool,
@@ -228,9 +230,15 @@ export async function runPaidTelemetryHandoffFixture({
         writeTransaction,
         readTransaction,
         integrityDependencies,
-        repairUniqueReviewedPath: expectation === "reviewed-path-repaired",
+        repairUniqueReviewedPath:
+          expectation === "reviewed-path-repaired" ||
+          expectation === "legacy-entitlement-broken",
+        expectLegacyEntitlementBroken:
+          expectation === "legacy-entitlement-broken",
       });
-      if (expectation === "reviewed-path-repaired") {
+      if (expectation === "legacy-entitlement-broken") {
+        assertLegacyEntitlementBrokenExpectation(summary);
+      } else if (expectation === "reviewed-path-repaired") {
         assertReviewedPathRepairedExpectation(summary);
       } else {
         assertPendingReviewRepairedExpectation(summary);
@@ -483,6 +491,7 @@ async function runPendingReviewRepairedScenario({
   readTransaction,
   integrityDependencies,
   repairUniqueReviewedPath,
+  expectLegacyEntitlementBroken,
 }) {
   await acquisitionIntegrity.createCanonicalAcquisitionRoot({
     acquisitionId: IDS.acquisition,
@@ -616,6 +625,48 @@ async function runPendingReviewRepairedScenario({
     schemaQuery(pool, quotedCrm),
     "test",
   );
+
+  if (expectLegacyEntitlementBroken) {
+    await pool.query(
+      `update ${quotedCrm}.sidestream_licenses
+       set stripe_product_id = null, stripe_price_id = null, amount_paid = 0
+       where id = $1::uuid`,
+      [IDS.license],
+    );
+    await pool.query(
+      `update ${quotedCrm}.sidestream_paid_acquisition_claims
+       set google_email_normalized = null
+       where id = $1::uuid`,
+      [IDS.claim],
+    );
+    const mutableBefore = await paidTelemetryAmbiguityMutationCounts(pool, quotedCrm);
+    const legacyBefore = await legacyEntitlementPlaceholderPrivacySafeSummary({
+      pool,
+      quotedCrm,
+      telemetryOwner,
+      accountOwner: accountAttachment.profileId,
+    });
+    const guardedDryRun = await readTransaction((client) =>
+      paidTelemetryRepair.inspectPaidTelemetryHandoffRepair(client, {
+        acquisitionId: IDS.acquisition,
+        namespace: "test",
+      }));
+    const mutableAfter = await paidTelemetryAmbiguityMutationCounts(pool, quotedCrm);
+    const legacyAfter = await legacyEntitlementPlaceholderPrivacySafeSummary({
+      pool,
+      quotedCrm,
+      telemetryOwner,
+      accountOwner: accountAttachment.profileId,
+    });
+    return legacyEntitlementBrokenPrivacySafeSummary({
+      legacyShape: legacyBefore,
+      guardedDryRun,
+      mutableBefore,
+      mutableAfter,
+      legacyStateUnchanged:
+        JSON.stringify(legacyBefore) === JSON.stringify(legacyAfter),
+    });
+  }
 
   if (repairUniqueReviewedPath) {
     const mutableBefore = await paidTelemetryAmbiguityMutationCounts(pool, quotedCrm);
@@ -1652,6 +1703,174 @@ function assertReviewedPathRepairedExpectation(summary) {
   if (!observed) {
     throw new Error(
       `Expected reviewed-path-repaired paid telemetry handoff contract; observed ${JSON.stringify(summary)}`,
+    );
+  }
+}
+
+async function legacyEntitlementPlaceholderPrivacySafeSummary({
+  pool,
+  quotedCrm,
+  telemetryOwner,
+  accountOwner,
+}) {
+  const boundary = await reviewedPathSelectionPrivacySafeSummary({
+    pool,
+    quotedCrm,
+    telemetryOwner,
+    accountOwner,
+  });
+  const result = await pool.query(
+    `select
+       acquisition.integrity_state = 'intact'
+         and acquisition.license_namespace = 'test' as canonical_acquisition,
+       core.state = 'completed'
+         and paid.completed_at is not null
+         and paid.receipt_expires_at > now()
+         and claim.expires_at > now() as completed_active_checkout,
+       paid.payment_state = 'active'
+         and paid.verified_quantity = 1
+         and paid.verified_amount_minor > 0
+         and paid.verified_checkout_session_ref is not null
+         and paid.canonical_payment_ref is not null
+         and paid.verified_product_ref is not null
+         and paid.verified_price_ref is not null
+         and paid.verified_currency ~ '^[a-z]{3}$' as active_positive_verified_paid_row,
+       paid.verified_checkout_session_ref = core.stripe_checkout_session_id
+         and paid.verified_product_ref = core.stripe_product_id
+         and paid.verified_price_ref = core.stripe_price_id
+         and paid.canonical_payment_ref = claim.canonical_payment_ref
+         and paid.canonical_payment_ref = entitlement.stripe_payment_intent_id
+         and paid.verified_currency = entitlement.currency as exact_core_paid_boundaries,
+       paid.claim_state = claim.claim_state
+         and paid.claim_state = 'unclaimed' as matching_unclaimed_claim_state,
+       claim.account_ref = account.id
+         and claim.entitlement_ref = entitlement.id
+         and claim.activation_ref = activation.id
+         and entitlement.account_id = account.id
+         and activation.account_id = account.id
+         and activation.license_id = entitlement.id as exact_ownership,
+       entitlement.entitlement_status = 'active'
+         and entitlement.plan_key in ('sidestream_pro', 'sidestream_unlimited')
+         as active_exact_plan,
+       entitlement.amount_refunded = 0 as zero_refund,
+       activation.source = 'paid-acquisition-mc-v1'
+         and activation.status in ('paid', 'linked', 'restored', 'completed')
+         and activation.completed_at is not null
+         and activation.expires_at > now() as active_paid_activation,
+       lower(trim(paid.checkout_email_normalized)) = lower(trim(account.email))
+         as account_checkout_email_equal,
+       entitlement.stripe_product_id is null
+         and entitlement.stripe_price_id is null as null_entitlement_product_and_price,
+       entitlement.amount_paid = 0 as zero_entitlement_amount_paid,
+       claim.google_email_normalized is null as null_claim_google_email
+     from ${quotedCrm}.sidestream_acquisitions acquisition
+     join ${quotedCrm}.sidestream_checkout_intents core
+       on core.acquisition_id = acquisition.id
+     join ${quotedCrm}.sidestream_paid_acquisition_checkouts paid
+       on paid.checkout_intent_ref = core.id
+     join ${quotedCrm}.sidestream_paid_acquisition_claims claim
+       on claim.checkout_id = paid.id and claim.environment = paid.environment
+     join ${quotedCrm}.sidestream_accounts account
+       on account.id = claim.account_ref
+     join ${quotedCrm}.sidestream_licenses entitlement
+       on entitlement.id = claim.entitlement_ref
+     join ${quotedCrm}.sidestream_activation_sessions activation
+       on activation.id = claim.activation_ref
+     where claim.id = $1::uuid`,
+    [IDS.claim],
+  );
+  const row = result.rows[0];
+  return Object.freeze({
+    ...boundary,
+    reviewedLegacyPath: Object.freeze({
+      canonicalAcquisition: row.canonical_acquisition,
+      completedActiveCheckout: row.completed_active_checkout,
+      activePositiveVerifiedPaidRow: row.active_positive_verified_paid_row,
+      exactCorePaidBoundaries: row.exact_core_paid_boundaries,
+      matchingUnclaimedClaimState: row.matching_unclaimed_claim_state,
+      exactOwnership: row.exact_ownership,
+      activeExactPlan: row.active_exact_plan,
+      zeroRefund: row.zero_refund,
+      activePaidActivation: row.active_paid_activation,
+      verifiedInstallAndReceipt:
+        boundary.reviewedPath.currentInstallMemberships === 1 &&
+        boundary.reviewedPath.activationLinks === 1 &&
+        boundary.reviewedPath.exactVerifiedReceiptLinks === 1,
+      accountCheckoutEmailEqual: row.account_checkout_email_equal,
+      nullEntitlementProductAndPrice: row.null_entitlement_product_and_price,
+      zeroEntitlementAmountPaid: row.zero_entitlement_amount_paid,
+      nullClaimGoogleEmail: row.null_claim_google_email,
+    }),
+  });
+}
+
+function legacyEntitlementBrokenPrivacySafeSummary({
+  legacyShape,
+  guardedDryRun,
+  mutableBefore,
+  mutableAfter,
+  legacyStateUnchanged,
+}) {
+  return Object.freeze({
+    observedContract: "unique-reviewed-legacy-entitlement-rejected",
+    ...legacyShape,
+    guardedOperator: Object.freeze({
+      reasonCode: guardedDryRun.reasonCode,
+      eligible: guardedDryRun.eligible,
+      wouldMutate: guardedDryRun.wouldMutate,
+      hasJourneyFingerprint: guardedDryRun.journeyFingerprint !== null,
+      canonicalAcquisitionSelected:
+        guardedDryRun.booleans.canonicalAcquisition,
+      exactPaidPathSelected: guardedDryRun.booleans.exactPaidPath,
+    }),
+    mutationBoundary: Object.freeze({
+      stateUnchanged:
+        JSON.stringify(mutableBefore) === JSON.stringify(mutableAfter),
+      legacyStateUnchanged,
+      before: mutableBefore,
+      after: mutableAfter,
+    }),
+  });
+}
+
+function assertLegacyEntitlementBrokenExpectation(summary) {
+  const expectedMutationCounts = {
+    authenticationStages: 0,
+    installationStages: 1,
+    bindings: 0,
+    mergeAudits: 0,
+    claimedCheckouts: 1,
+    unclaimedCheckouts: 1,
+    claimedClaims: 1,
+    unclaimedClaims: 1,
+  };
+  const pathChecksPass = Object.values(summary.reviewedLegacyPath)
+    .every((value) => value === true);
+  const observed =
+    summary.observedContract === "unique-reviewed-legacy-entitlement-rejected" &&
+    summary.acquisitionShape.paidPaths === 2 &&
+    summary.acquisitionShape.activeConsistentPaths === 1 &&
+    summary.acquisitionShape.activationPaths === 2 &&
+    summary.reviewedPath.directAccountOrStripeLinks === 0 &&
+    summary.reviewedPath.verifiedAccountReviews === 1 &&
+    summary.reviewedPath.uniqueExactAccountOwnerLinks === 1 &&
+    summary.bridgeKindsNonOverlapping === true &&
+    pathChecksPass &&
+    summary.guardedOperator.reasonCode === "payment_or_account_conflict" &&
+    summary.guardedOperator.eligible === false &&
+    summary.guardedOperator.wouldMutate === false &&
+    summary.guardedOperator.hasJourneyFingerprint === false &&
+    summary.guardedOperator.canonicalAcquisitionSelected === true &&
+    summary.guardedOperator.exactPaidPathSelected === true &&
+    summary.mutationBoundary.stateUnchanged === true &&
+    summary.mutationBoundary.legacyStateUnchanged === true &&
+    JSON.stringify(summary.mutationBoundary.before) ===
+      JSON.stringify(expectedMutationCounts) &&
+    JSON.stringify(summary.mutationBoundary.after) ===
+      JSON.stringify(expectedMutationCounts);
+  if (!observed) {
+    throw new Error(
+      `Expected legacy-entitlement-broken paid telemetry handoff contract; observed ${JSON.stringify(summary)}`,
     );
   }
 }
