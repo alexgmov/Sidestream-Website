@@ -545,6 +545,24 @@ Deployed `19c242d` had repaired exact Checkout Session/PaymentIntent commerce
 ownership while leaving this exact legacy Customer lookup absent; that is
 historical scope evidence, not Production apply authorization.
 
+A seventh boundary governs only the read-only acquisition-funnel projection.
+Once a paid-telemetry binding has passed the immutable namespace, Checkout,
+acquisition, account, entitlement, activation, live-profile, install-membership,
+install-hash, and native-receipt contract, exactly one matching binding must
+outrank every older receipt, Checkout Session, activation, and broad account
+edge for that profile. Zero bindings preserve the established deterministic
+first-touch/entry/Checkout fallback. Multiple exact bindings fail the profile
+to unknown; selection must not use newest time, email, Stripe Customer,
+account-wide historical installs, or row order.
+
+The disposable first-purchase regression and paid-handoff fixture must both
+produce Meta/social/`sidestream_direct_offer_test`, `exact_paid_checkout`,
+`intact`, `paidCustomer=true`, attributed `1/1`, exact paid `1/1`, and unknown
+`0/1`, while older paid rows remain unchanged. Deployed `5a4cf55` produced the
+same numerically correct coverage but selected ManyChat/`historical_unlinked`,
+making its result dimensionally wrong. This seventh boundary changes no repair,
+commerce, entitlement, or provider state.
+
 ### Bounded activation-linkage diagnostics
 
 The authenticated paid-claim POST emits exactly one bounded operational outcome

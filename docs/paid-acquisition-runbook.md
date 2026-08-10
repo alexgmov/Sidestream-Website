@@ -330,6 +330,23 @@ ownership but left this exact legacy Customer lookup absent. Preserve that as
 scope evidence only. This runbook does not authorize a Production query, apply,
 provider call, deployment, push, migration, or FlowState change.
 
+The seventh boundary is a read-only funnel gate, not another repair mode. For
+one live profile, exactly one immutable binding must make its Checkout's
+canonical Meta dimensions outrank historical receipt, Checkout Session,
+activation, and broad account edges. With no binding, preserve the existing
+first-touch/entry/Checkout fallback. With multiple exact bindings, require
+unknown rather than selecting by timestamp, email, Stripe Customer,
+account-wide install history, or row order. Run both focused acquisition-funnel
+suites and all six replay forms. The first-purchase regression and paid-handoff
+fixture must each show Meta/social/`sidestream_direct_offer_test`,
+`exact_paid_checkout`, `intact`, `paidCustomer=true`, attributed `1/1`, exact
+paid `1/1`, and unknown `0/1`, while the historical candidate remains stored.
+
+Deployed `5a4cf55` had those numerically correct coverage counts but selected
+ManyChat/`historical_unlinked`, so it did not pass this dimensional gate. This
+runbook entry records the source boundary only and authorizes no Production
+query, repair, provider call, deployment, push, migration, or FlowState change.
+
 The earlier read-only Production dry-run on deployed commit `aa5a604` rejected
 the actual pending-review topology as ineligible and wrote nothing. Record that
 as proof the old simple-split operator failed closed, not as a successful repair

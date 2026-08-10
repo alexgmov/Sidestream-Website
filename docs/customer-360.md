@@ -347,12 +347,13 @@ Apply revalidates all live eligibility facts and requires the operation,
 namespace, connected-target fingerprint, and journey fingerprint copied from a
 fresh dry-run. An identical confirmed replay is a no-op.
 
-#### Six exact paid-telemetry repair boundaries
+#### Six repair boundaries plus one reporting boundary
 
-The guarded correction recognizes six exact boundaries. The first four are
-compared below; the fifth is a transaction-scoped commerce extension and the
-sixth is an exact-current-Customer identity extension, not a looser version of
-any earlier boundary.
+The guarded correction recognizes six exact repair boundaries. The first four
+are compared below; the fifth is a transaction-scoped commerce extension and
+the sixth is an exact-current-Customer identity extension, not a looser version
+of any earlier boundary. A seventh boundary is read-only reporting precedence;
+it does not expand the repair operator or authorize a write.
 
 | Boundary | Simple install-profile split | Single pending-review path | Direct historical plus reviewed active path | Exact legacy entitlement snapshot |
 | --- | --- | --- | --- | --- |
@@ -493,6 +494,37 @@ before `already_repaired`; replay is a no-op. Disposable proof is
 Deployed `19c242d` repaired exact Checkout Session and PaymentIntent commerce
 ownership but left this exact legacy Customer lookup absent. That deployed fact
 is not authorization to query or mutate Production from this runbook.
+
+The seventh boundary applies only after the immutable binding already exists.
+For paid candidates attached to one live profile, the report first resolves
+binding namespace, Checkout, canonical acquisition, bound profile, exact
+install membership, and install hash through the append-only binding row. That
+row's account, activation, entitlement, and native receipt were already
+validated together by the binding contract. Exactly one such row selects its
+Checkout before historical receipt, Checkout Session, activation, or broad
+account edges. With zero exact rows, the existing first-touch, entry-ID, and
+Checkout-ID fallback is unchanged. With more than one, the report suppresses
+all attribution for that profile and places it in unknown rather than choosing
+by time, email, Stripe Customer, account-wide install history, or row order.
+
+```text
+paid candidates for one live profile
+              |
+      exact binding count
+       /        |        \
+      0         1        >1
+ stable old   bound       unknown
+ fallback    Checkout     fail-closed
+```
+
+The focused first-purchase regression and the existing paid-handoff fixture
+must both resolve Meta/social/`sidestream_direct_offer_test`, confidence
+`exact_paid_checkout`, integrity `intact`, `paidCustomer=true`, attributed
+`1/1`, exact paid `1/1`, and unknown `0/1`. Historical candidates remain stored
+unchanged. Deployed `5a4cf55` returned those numerators and denominators but
+selected the older ManyChat/`historical_unlinked` dimensions, so it was
+numerically correct and dimensionally wrong. This boundary is the source fix;
+it is not evidence of a new Production query or deployment.
 
 Historical evidence is deliberately separate: against deployed commit
 `aa5a604`, the earlier read-only Production dry-run rejected the real journey as
@@ -874,9 +906,11 @@ Attribution is deterministic and deliberately narrow:
    paid-acquisition Checkout joined to the exact entry/environment/experiment/
    cohort/assignment/token/attribution proof. That verified Checkout must link
    to the profile through an exact installer-receipt hash, verified Checkout
-   Session reference, or claimed activation/account record. The source is
-   `manychat`; medium, campaign, experiment, cohort, and first-attributed time
-   come from the verified paid entry.
+   Session reference, or claimed activation/account record. When exactly one
+   immutable paid-telemetry binding resolves the current live profile's exact
+   Checkout/acquisition/install membership, its canonical acquisition
+   dimensions win. Without a binding, canonical dimensions remain preferred
+   when present and the historical paid entry provides the stable fallback.
 2. `exact_anonymous_claim` is next. It requires a non-marker anonymous
    acquisition session whose one-time browser-to-install claim is complete,
    whose first installer request exists, and whose claimed profile is in the
@@ -896,8 +930,9 @@ Attribution is deterministic and deliberately narrow:
 
 Paid attribution wins over anonymous claim and verified email even when either
 was captured earlier; exact anonymous claim wins over verified email. Within
-paid candidates, the earliest exact paid entry wins with stable entry/Checkout
-tie-breakers. Within anonymous candidates, the earliest first visit wins with a
+paid candidates, one exact immutable binding wins first; with no binding, the
+earliest exact paid entry retains stable entry/Checkout tie-breakers, and with
+multiple exact bindings the complete profile fails to unknown. Within anonymous candidates, the earliest first visit wins with a
 stable acquisition-session ID tie-breaker. Within freemium candidates, the
 earliest lead wins with a stable lead-ID tie-breaker.
 
