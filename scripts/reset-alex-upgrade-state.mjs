@@ -382,10 +382,10 @@ export async function inventoryFreshPaidClosure(client, stripeCustomerIds = []) 
       select id, stripe_customer_id
       from public.sidestream_accounts
       where lower(btrim(email)) = any($1::text[])
-        or stripe_customer_id = any($3::text[])
+        or stripe_customer_id = any($2::text[])
     ),
     customer_ids as (
-      select unnest($3::text[]) as id
+      select unnest($2::text[]) as id
       union select stripe_customer_id from target_accounts where stripe_customer_id is not null
     ),
     target_licenses as (
@@ -469,15 +469,17 @@ export async function inventoryFreshPaidClosure(client, stripeCustomerIds = []) 
     profile_closure(id) as (
       select id from seed_profiles
       union
-      select profile.merged_into
-      from public.sidestream_customer_profiles profile
-      join profile_closure closure on profile.id = closure.id
-      where profile.merged_into is not null
-      union
-      select profile.id
-      from public.sidestream_customer_profiles profile
-      join profile_closure closure on profile.merged_into = closure.id
-      where profile.license_namespace = 'production'
+      select case
+        when profile.id = closure.id then profile.merged_into
+        else profile.id
+      end
+      from profile_closure closure
+      join public.sidestream_customer_profiles profile
+        on profile.license_namespace = 'production'
+       and (
+         (profile.id = closure.id and profile.merged_into is not null)
+         or profile.merged_into = closure.id
+       )
     ),
     target_installs as (
       select install.* from public.sidestream_customer_installs install
@@ -532,7 +534,7 @@ export async function inventoryFreshPaidClosure(client, stripeCustomerIds = []) 
       'deviceIds', coalesce((select jsonb_agg(id order by id) from public.sidestream_account_devices where account_id in (select id from target_accounts)), '[]'),
       'transferIds', coalesce((select jsonb_agg(id order by id) from public.sidestream_device_transfers where account_id in (select id from target_accounts)), '[]')
     ) as closure
-  `, [emails, "fixed-email-only", uniqueStrings(stripeCustomerIds)]);
+  `, [emails, uniqueStrings(stripeCustomerIds)]);
   const closure = normalizeClosure(result.rows[0]?.closure || {});
   enforceClosureLimits(closure);
   await assertClosureDoesNotCrossCustomers(client, closure);

@@ -1,7 +1,10 @@
 #!/usr/bin/env node
 
-import { spawn } from "node:child_process";
-import { readdir } from "node:fs/promises";
+import { execFileSync, spawn } from "node:child_process";
+import { constants as fsConstants } from "node:fs";
+import { access, mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import { createServer } from "node:net";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { Pool } from "pg";
@@ -40,6 +43,7 @@ export const CUSTOMER_360_POSTGRES_TESTS = Object.freeze([
   "customer-360/backfill-postgres.test.mjs",
   "customer-360/commerce-postgres.test.mjs",
   "customer-360/core-postgres.test.mjs",
+  "customer-360/fresh-paid-reset-postgres.test.mjs",
   "customer-360/identity.test.mjs",
   "customer-360/paid-telemetry-handoff-postgres.test.mjs",
   "customer-360/pipeline-postgres.test.mjs",
@@ -73,19 +77,34 @@ export async function assertCustomer360TestsClassified(directory = TESTS_DIRECTO
 
 export async function runCustomer360Tests({ postgres = false } = {}) {
   await assertCustomer360TestsClassified();
-  if (postgres) requireSafeTestDatabaseUrl(process.env);
-  const tests = postgres ? CUSTOMER_360_POSTGRES_TESTS : CUSTOMER_360_NON_POSTGRES_TESTS;
-  const childEnvironment = postgres
-    ? await createCustomer360PostgresEnvironment(process.env)
-    : { ...process.env };
-  for (const testFile of tests) {
-    const arguments_ = ["--experimental-strip-types"];
-    if (postgres) arguments_.push("--import", NETWORK_GUARD);
-    arguments_.push("--test", "--test-concurrency=1", path.join(TESTS_DIRECTORY, testFile));
-    const exitCode = await runChild(arguments_, childEnvironment);
-    if (exitCode !== 0) {
-      throw new Error(`Customer 360 suite failed: ${testFile}`);
+  let disposablePostgres;
+  try {
+    let selectedEnvironment = process.env;
+    if (postgres && !configuredValue(process.env[TEST_DATABASE_ENV])) {
+      disposablePostgres = await startDisposablePostgres();
+      selectedEnvironment = {
+        ...process.env,
+        [TEST_DATABASE_ENV]: disposablePostgres.connectionString,
+      };
+    } else if (postgres) {
+      requireSafeTestDatabaseUrl(process.env);
     }
+
+    const tests = postgres ? CUSTOMER_360_POSTGRES_TESTS : CUSTOMER_360_NON_POSTGRES_TESTS;
+    const childEnvironment = postgres
+      ? await createCustomer360PostgresEnvironment(selectedEnvironment)
+      : { ...process.env };
+    for (const testFile of tests) {
+      const arguments_ = ["--experimental-strip-types"];
+      if (postgres) arguments_.push("--import", NETWORK_GUARD);
+      arguments_.push("--test", "--test-concurrency=1", path.join(TESTS_DIRECTORY, testFile));
+      const exitCode = await runChild(arguments_, childEnvironment);
+      if (exitCode !== 0) {
+        throw new Error(`Customer 360 suite failed: ${testFile}`);
+      }
+    }
+  } finally {
+    await disposablePostgres?.stop();
   }
 }
 
@@ -131,6 +150,88 @@ async function runChild(arguments_, environment) {
       else resolve(code ?? 1);
     });
   });
+}
+
+async function startDisposablePostgres() {
+  const initdb = await findExecutable("initdb");
+  const pgCtl = await findExecutable("pg_ctl");
+  const port = await reservePort();
+  const root = await mkdtemp(path.join(tmpdir(), "sidestream-customer-360-pg-"));
+  const dataDirectory = path.join(root, "data");
+  const logPath = path.join(root, "postgres.log");
+  try {
+    execFileSync(initdb, [
+      "--pgdata", dataDirectory,
+      "--username", "postgres",
+      "--auth", "trust",
+      "--encoding", "UTF8",
+      "--no-locale",
+      "--no-sync",
+    ], { stdio: "pipe" });
+    execFileSync(pgCtl, [
+      "--pgdata", dataDirectory,
+      "--log", logPath,
+      "--options", `-F -p ${port} -h 127.0.0.1 -k /tmp`,
+      "--wait", "--timeout", "20", "start",
+    ], { stdio: "pipe" });
+  } catch (error) {
+    const log = await readFile(logPath, "utf8").catch(() => "");
+    await rm(root, { recursive: true, force: true });
+    throw new Error(`Unable to start disposable Customer 360 Postgres: ${error.message}\n${log}`);
+  }
+
+  let stopped = false;
+  return {
+    connectionString: `postgresql://postgres@127.0.0.1:${port}/postgres?sslmode=disable`,
+    async stop() {
+      if (stopped) return;
+      stopped = true;
+      try {
+        execFileSync(pgCtl, [
+          "--pgdata", dataDirectory,
+          "--wait", "--timeout", "20", "--mode", "immediate", "stop",
+        ], { stdio: "pipe" });
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+  };
+}
+
+async function findExecutable(name) {
+  for (const directory of (process.env.PATH || "").split(path.delimiter)) {
+    if (!directory) continue;
+    const candidate = path.join(directory, name);
+    try {
+      await access(candidate, fsConstants.X_OK);
+      return candidate;
+    } catch {
+      // Keep searching PATH.
+    }
+  }
+  throw new Error(
+    `${name} is required when ${TEST_DATABASE_ENV} is absent; install local PostgreSQL or provide an approved disposable URL`,
+  );
+}
+
+async function reservePort() {
+  const server = createServer();
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const address = server.address();
+  const port = typeof address === "object" && address ? address.port : 0;
+  await new Promise((resolve, reject) => server.close((error) => {
+    if (error) reject(error);
+    else resolve();
+  }));
+  if (!port) throw new Error("Unable to reserve a local Customer 360 Postgres port");
+  return port;
+}
+
+function configuredValue(value) {
+  return typeof value === "string" ? value.trim() : "";
 }
 
 const entryUrl = process.argv[1] ? pathToFileURL(path.resolve(process.argv[1])).href : "";
