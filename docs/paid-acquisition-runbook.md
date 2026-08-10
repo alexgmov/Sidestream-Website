@@ -554,14 +554,27 @@ through:
   customer usage rows.
 
 Any foreign account, provider-customer, Checkout, payment, subscription,
-activation, binding, entry, acquisition, or overlapping Meta-event window
-aborts before deletion. Apply may delete only matching provider Customer
-identity objects. Existing invoices, payment intents, charges, refunds, and
-disputes are inventoried and re-read unchanged. Provider webhook history,
-unrelated profiles/accounts, global usage-sync state, download leads, installer
-analytics, and every unrelated customer or financial record are preservation
-invariants. A changed invariant rolls back the database transaction or fails
-the operation.
+activation, binding, entry, or acquisition aborts before deletion. A selected
+fixed-QA profile contributes only its server-owned historical
+`activation_record` and `stripe_customer` identity roots. Those roots may add
+unbound historical activations and retained licenses only when every owning
+live account still has an allowlisted normalized email. A profile-owned Stripe
+Customer that still exists at the provider must also have an allowlisted
+normalized email; deleted provider Customers are not recreated. Every Checkout
+intent sharing an already-selected exact canonical acquisition enters the
+closure, and a different account/profile owner on that root refuses the whole
+operation.
+
+Paid-acquisition event rows are anonymous aggregates with no exact lineage key.
+They are never selected by time window, never deleted, and do not create an
+overlap refusal; the complete table count and fingerprint are instead checked
+before and after as a global invariant. Apply may delete only matching provider
+Customer identity objects. Existing invoices, payment intents, charges,
+refunds, and disputes are inventoried and re-read unchanged. Provider webhook
+history, anonymous paid-acquisition events, unrelated profiles/accounts, global
+usage-sync state, download leads, installer analytics, and every unrelated
+customer or financial record are preservation invariants. A changed invariant
+rolls back the database transaction or fails the operation.
 
 The 2026-08-10 live dry-run discovered that the bidirectional Customer 360
 profile closure was rejected by PostgreSQL with SQLSTATE `42P19` before any
@@ -570,11 +583,14 @@ which exposed more than one recursive term/reference. The closure now uses one
 legal recursive reference while still following both `merged_into` directions,
 filtering to Production, and converging through `UNION`. The classified
 disposable-Postgres regression applies the complete schema in an isolated
-schema, proves an Alex seed reaches every merged ancestor and descendant but no
-unrelated or Test profile, and proves replay is stable. Its aggregate command
-self-provisions and removes a loopback PostgreSQL cluster when no explicit
-disposable test URL is selected, then applies the existing external-network
-guard to every child suite. This repository proof
+schema, reproduces the foreign-account refusal, then proves an Alex seed reaches
+every merged ancestor and descendant plus its historical activation,
+deleted-Customer license, and exact-acquisition retry intent. It executes the
+real reset transaction, proves unrelated account/profile/acquisition rows and
+anonymous paid events are unchanged, and proves the empty replay is stable. Its
+aggregate command self-provisions and removes a loopback PostgreSQL cluster
+when no explicit disposable test URL is selected, then applies the existing
+external-network guard to every child suite. This repository proof
 does not authorize or establish a provider backup, live reset, local-state
 change, Checkout, installation, authentication, deployment, or push.
 

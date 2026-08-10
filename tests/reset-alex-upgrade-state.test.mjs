@@ -16,6 +16,7 @@ import {
   buildResetReport,
   closureFingerprint,
   extractNeonConnectionString,
+  loadClosureStripeCustomers,
   parseArgs,
   parseNeonBranchInventory,
   parseNeonEndpointInventory,
@@ -70,12 +71,50 @@ test("profile closure exposes one recursive reference for both merge directions"
     new URL("../scripts/reset-alex-upgrade-state.mjs", import.meta.url),
     "utf8",
   );
-  const closure = /profile_closure\(id\) as \(([\s\S]*?)\n    \),\n    target_installs/.exec(source)?.[1];
+  const closure = /profile_closure\(id\) as \(([\s\S]*?)\n    \),\n    profile_identity_links/.exec(source)?.[1];
   assert.ok(closure, "profile_closure CTE must remain inspectable");
   assert.equal((closure.match(/\bfrom profile_closure closure\b/g) || []).length, 1);
   assert.match(closure, /profile\.id = closure\.id/);
   assert.match(closure, /profile\.merged_into = closure\.id/);
   assert.match(closure, /profile\.license_namespace = 'production'/);
+});
+
+test("profile-owned history and exact acquisition roots expand without anonymous event deletion", () => {
+  const source = readFileSync(
+    new URL("../scripts/reset-alex-upgrade-state.mjs", import.meta.url),
+    "utf8",
+  );
+  assert.match(source, /profile_customer_ids as/);
+  assert.match(source, /profile_activation_ids as/);
+  assert.match(source, /core\.acquisition_id in \(select id from root_acquisition_ids\)/);
+  assert.match(source, /paid_acquisition_event_history/);
+  assert.doesNotMatch(source, /target_paid_events as/);
+  assert.doesNotMatch(source, /deleted\.paidEvents/);
+  assert.doesNotMatch(source, /ambiguous_paid_event_window/);
+});
+
+test("profile-owned live Stripe Customers must keep a fixed-QA email", async () => {
+  const stripe = {
+    customers: {
+      async retrieve(id) {
+        return { id, email: "different@example.com", deleted: false };
+      },
+    },
+  };
+  await assert.rejects(
+    loadClosureStripeCustomers(stripe, ["cus_profile_owned"]),
+    /outside the fixed QA identity boundary/,
+  );
+  assert.deepEqual(
+    await loadClosureStripeCustomers({
+      customers: {
+        async retrieve(id) {
+          return { id, deleted: true };
+        },
+      },
+    }, ["cus_deleted_profile_owned"]),
+    [],
+  );
 });
 
 test("apply binds operation, namespace, QA identity, target fingerprint, and recovery branch", () => {
@@ -230,6 +269,7 @@ test("reports contain only counts and safe fingerprints", () => {
   assert.equal(serialized.includes("postgresql://"), false);
   assert.match(report.targetStateFingerprint, /^[0-9a-f]{64}$/);
   assert.equal(report.counts.customerIds, 1);
+  assert.equal(report.preserved.anonymousPaidAcquisitionEvents, true);
   assert.equal(closureFingerprint(closure), report.targetStateFingerprint);
   assert.equal(allCountsZero({ accounts: 0, profiles: 0 }), true);
   assert.equal(allCountsZero({ accounts: 0, profiles: 1 }), false);
