@@ -62,6 +62,7 @@ const NEON_CLI_PACKAGE = "neonctl@2.37.1";
 const RESET_SECRET_ENVIRONMENT_VARIABLES = Object.freeze(
   RESET_TARGETS.map((target) => target.stripeKeyEnvironmentVariable),
 );
+export const RESET_KEYCHAIN_ACCOUNT = "alex@alexg.mov";
 const MAX_MATCHING_STRIPE_CUSTOMERS = 25;
 const SETTLE_PASS_COUNT = 3;
 const SETTLE_DELAY_MS = 1_500;
@@ -250,6 +251,49 @@ export function buildNeonCliEnvironment(environment = process.env) {
   for (const key of RESET_SECRET_ENVIRONMENT_VARIABLES) delete sanitized[key];
   delete sanitized.SIDESTREAM_RESET_ENV_FILE;
   return sanitized;
+}
+
+async function readMacOSKeychainSecret(service) {
+  try {
+    const { stdout } = await execFile(
+      "security",
+      [
+        "find-generic-password",
+        "-w",
+        "-a",
+        RESET_KEYCHAIN_ACCOUNT,
+        "-s",
+        service,
+      ],
+      {
+        encoding: "utf8",
+        maxBuffer: 16 * 1024,
+        timeout: 10_000,
+      },
+    );
+    return stdout.trim();
+  } catch (error) {
+    if (error?.code === 44) return "";
+    throw new ResetCliError(
+      `Could not read the macOS Keychain item for ${service}.`,
+    );
+  }
+}
+
+export async function loadResetSecretCredentials(
+  environment,
+  {
+    platform = process.platform,
+    readKeychainSecret = readMacOSKeychainSecret,
+  } = {},
+) {
+  if (platform !== "darwin") return environment;
+  for (const service of RESET_SECRET_ENVIRONMENT_VARIABLES) {
+    if (configuredValue(environment[service])) continue;
+    const secret = await readKeychainSecret(service);
+    if (configuredValue(secret)) environment[service] = secret;
+  }
+  return environment;
 }
 
 export async function listMatchingStripeCustomers(stripe) {
@@ -964,6 +1008,7 @@ async function main(argv = process.argv.slice(2), environment = process.env) {
     return;
   }
   loadEnvFile(environment.SIDESTREAM_RESET_ENV_FILE, environment);
+  await loadResetSecretCredentials(environment);
 
   const runtimes = [];
   try {
@@ -1397,6 +1442,8 @@ Required environment variables:
 
 Optional:
   SIDESTREAM_RESET_ENV_FILE=<ignored env file containing the two keys>
+  On macOS, missing variables fall back to Keychain items whose service names
+  match the variables above and whose account is ${RESET_KEYCHAIN_ACCOUNT}.
 
 The pinned authenticated Neon CLI supplies direct verify-full connections for
 the two fixed projects. Run \`npx --yes ${NEON_CLI_PACKAGE} auth\` first if

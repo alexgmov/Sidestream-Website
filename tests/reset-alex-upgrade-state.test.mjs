@@ -9,6 +9,7 @@ import {
   buildNeonCliEnvironment,
   buildResetReport,
   extractNeonConnectionString,
+  loadResetSecretCredentials,
   listMatchingStripeCustomers,
   matchesTargetIdentity,
   mergeInventoryHints,
@@ -41,6 +42,34 @@ test("reset CLI is dry-run by default and strongly confirms apply", () => {
     /Apply mode requires --confirm/,
   );
   assert.throws(() => parseArgs(["--production-only"]), /Unknown argument/);
+});
+
+test("macOS Keychain fills only missing reset credentials", async () => {
+  const reads = [];
+  const environment = {
+    SIDESTREAM_RESET_PRODUCTION_STRIPE_SECRET_KEY: "sk_live_from_env",
+  };
+  await loadResetSecretCredentials(environment, {
+    platform: "darwin",
+    readKeychainSecret: async (service) => {
+      reads.push(service);
+      return "sk_test_from_keychain";
+    },
+  });
+  assert.deepEqual(reads, ["SIDESTREAM_RESET_TEST_STRIPE_SECRET_KEY"]);
+  assert.deepEqual(environment, {
+    SIDESTREAM_RESET_PRODUCTION_STRIPE_SECRET_KEY: "sk_live_from_env",
+    SIDESTREAM_RESET_TEST_STRIPE_SECRET_KEY: "sk_test_from_keychain",
+  });
+
+  const linuxEnvironment = {};
+  await loadResetSecretCredentials(linuxEnvironment, {
+    platform: "linux",
+    readKeychainSecret: async () => {
+      throw new Error("must not read Keychain");
+    },
+  });
+  assert.deepEqual(linuxEnvironment, {});
 });
 
 test("identity matching is exact after case and whitespace normalization", () => {
