@@ -378,87 +378,74 @@ export async function inventoryFreshPaidClosure(client, stripeCustomerIds = []) 
   const result = await client.query(`
     /* fresh-paid:inventory-closure */
     with recursive
-    target_accounts as (
+    seed_accounts as (
       select id, stripe_customer_id
       from public.sidestream_accounts
       where lower(btrim(email)) = any($1::text[])
         or stripe_customer_id = any($2::text[])
     ),
-    customer_ids as (
+    seed_customer_ids as (
       select unnest($2::text[]) as id
-      union select stripe_customer_id from target_accounts where stripe_customer_id is not null
+      union select stripe_customer_id from seed_accounts where stripe_customer_id is not null
     ),
-    target_licenses as (
+    seed_licenses as (
       select license.* from public.sidestream_licenses license
-      where license.account_id in (select id from target_accounts)
-         or license.stripe_customer_id in (select id from customer_ids)
+      where license.account_id in (select id from seed_accounts)
+         or license.stripe_customer_id in (select id from seed_customer_ids)
     ),
-    target_activations as (
+    seed_activations as (
       select activation.* from public.sidestream_activation_sessions activation
-      where activation.account_id in (select id from target_accounts)
-         or activation.license_id in (select id from target_licenses)
+      where activation.account_id in (select id from seed_accounts)
+         or activation.license_id in (select id from seed_licenses)
     ),
-    target_core as (
+    seed_core as (
       select core.* from public.sidestream_checkout_intents core
-      where core.account_id in (select id from target_accounts)
-         or core.activation_session_id in (select id from target_activations)
-         or core.stripe_customer_id in (select id from customer_ids)
+      where core.account_id in (select id from seed_accounts)
+         or core.activation_session_id in (select id from seed_activations)
+         or core.stripe_customer_id in (select id from seed_customer_ids)
          or core.stripe_checkout_session_id in (
-           select stripe_checkout_session_id from target_licenses
+           select stripe_checkout_session_id from seed_licenses
            where stripe_checkout_session_id is not null
          )
     ),
-    target_paid as (
+    seed_paid as (
       select distinct paid.*
       from public.sidestream_paid_acquisition_checkouts paid
       left join public.sidestream_paid_acquisition_claims claim
         on claim.checkout_id = paid.id
       where paid.environment = 'production'
         and (
-          paid.checkout_intent_ref in (select id from target_core)
-          or claim.account_ref in (select id from target_accounts)
-          or claim.entitlement_ref in (select id from target_licenses)
+          paid.checkout_intent_ref in (select id from seed_core)
+          or claim.account_ref in (select id from seed_accounts)
+          or claim.entitlement_ref in (select id from seed_licenses)
           or lower(btrim(coalesce(claim.google_email_normalized, ''))) = any($1::text[])
           or lower(btrim(coalesce(paid.checkout_email_normalized, ''))) = any($1::text[])
         )
     ),
-    target_claims as (
+    seed_claims as (
       select claim.* from public.sidestream_paid_acquisition_claims claim
-      where claim.checkout_id in (select id from target_paid)
+      where claim.checkout_id in (select id from seed_paid)
     ),
-    expanded_core as (
-      select * from target_core
-      union
-      select core.* from public.sidestream_checkout_intents core
-      where core.id in (select checkout_intent_ref from target_paid)
-    ),
-    target_acquisitions as (
-      select acquisition.* from public.sidestream_acquisitions acquisition
-      where acquisition.id in (
-        select acquisition_id from expanded_core where acquisition_id is not null
-      )
-    ),
-    target_bindings as (
+    seed_bindings as (
       select binding.* from public.sidestream_paid_telemetry_profile_bindings binding
       where binding.license_namespace = 'production' and (
-        binding.claim_id in (select id from target_claims)
-        or binding.checkout_id in (select id from target_paid)
-        or binding.acquisition_id in (select id from target_acquisitions)
-        or binding.account_id in (select id from target_accounts)
-        or binding.entitlement_id in (select id from target_licenses)
-        or binding.activation_ref in (select id from target_activations)
+        binding.claim_id in (select id from seed_claims)
+        or binding.checkout_id in (select id from seed_paid)
+        or binding.account_id in (select id from seed_accounts)
+        or binding.entitlement_id in (select id from seed_licenses)
+        or binding.activation_ref in (select id from seed_activations)
       )
     ),
     seed_profiles as (
-      select profile_id_at_binding as id from target_bindings
+      select profile_id_at_binding as id from seed_bindings
       union select profile_id from public.sidestream_customer_identity_links
         where license_namespace = 'production' and (
           (link_type = 'account_identity' and link_value in (
-            select id::text from target_accounts
+            select id::text from seed_accounts
           )) or (link_type = 'stripe_customer' and link_value in (
-            select id from customer_ids
+            select id from seed_customer_ids
           )) or (link_type = 'activation_record' and link_value in (
-            select id::text from target_activations
+            select id::text from seed_activations
           ))
         )
       union select id from public.sidestream_customer_profiles
@@ -481,6 +468,98 @@ export async function inventoryFreshPaidClosure(client, stripeCustomerIds = []) 
          or profile.merged_into = closure.id
        )
     ),
+    profile_identity_links as (
+      select link.* from public.sidestream_customer_identity_links link
+      where link.license_namespace = 'production'
+        and link.profile_id in (select id from profile_closure)
+    ),
+    profile_customer_ids as (
+      select link_value as id from profile_identity_links
+      where link_type = 'stripe_customer'
+    ),
+    profile_activation_ids as (
+      select link_value::uuid as id from profile_identity_links
+      where link_type = 'activation_record'
+        and link_value ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+    ),
+    target_accounts as (
+      select id, stripe_customer_id
+      from public.sidestream_accounts
+      where lower(btrim(email)) = any($1::text[])
+         or stripe_customer_id in (
+           select id from seed_customer_ids
+           union select id from profile_customer_ids
+         )
+    ),
+    customer_ids as (
+      select id from seed_customer_ids
+      union select id from profile_customer_ids
+      union select stripe_customer_id from target_accounts where stripe_customer_id is not null
+    ),
+    target_licenses as (
+      select license.* from public.sidestream_licenses license
+      where license.account_id in (select id from target_accounts)
+         or license.stripe_customer_id in (select id from customer_ids)
+    ),
+    target_activations as (
+      select activation.* from public.sidestream_activation_sessions activation
+      where activation.account_id in (select id from target_accounts)
+         or activation.license_id in (select id from target_licenses)
+         or activation.id in (select id from profile_activation_ids)
+    ),
+    root_core as (
+      select core.* from public.sidestream_checkout_intents core
+      where core.account_id in (select id from target_accounts)
+         or core.activation_session_id in (select id from target_activations)
+         or core.stripe_customer_id in (select id from customer_ids)
+         or core.stripe_checkout_session_id in (
+           select stripe_checkout_session_id from target_licenses
+           where stripe_checkout_session_id is not null
+         )
+         or core.id in (select checkout_intent_ref from seed_paid)
+    ),
+    root_acquisition_ids as (
+      select acquisition_id as id from root_core where acquisition_id is not null
+    ),
+    expanded_core as (
+      select * from root_core
+      union
+      select core.* from public.sidestream_checkout_intents core
+      where core.acquisition_id in (select id from root_acquisition_ids)
+    ),
+    target_acquisitions as (
+      select acquisition.* from public.sidestream_acquisitions acquisition
+      where acquisition.id in (select id from root_acquisition_ids)
+    ),
+    target_paid as (
+      select distinct paid.*
+      from public.sidestream_paid_acquisition_checkouts paid
+      left join public.sidestream_paid_acquisition_claims claim
+        on claim.checkout_id = paid.id
+      where paid.environment = 'production'
+        and (
+          paid.checkout_intent_ref in (select id from expanded_core)
+          or claim.account_ref in (select id from target_accounts)
+          or claim.entitlement_ref in (select id from target_licenses)
+          or lower(btrim(coalesce(claim.google_email_normalized, ''))) = any($1::text[])
+          or lower(btrim(coalesce(paid.checkout_email_normalized, ''))) = any($1::text[])
+        )
+    ),
+    target_claims as (
+      select claim.* from public.sidestream_paid_acquisition_claims claim
+      where claim.checkout_id in (select id from target_paid)
+    ),
+    target_bindings as (
+      select binding.* from public.sidestream_paid_telemetry_profile_bindings binding
+      where binding.license_namespace = 'production' and (
+        binding.claim_id in (select id from target_claims)
+        or binding.checkout_id in (select id from target_paid)
+        or binding.acquisition_id in (select id from target_acquisitions)
+        or binding.account_id in (select id from target_accounts)
+        or binding.entitlement_id in (select id from target_licenses)
+        or binding.activation_ref in (select id from target_activations)
+      )
+    ),
     target_installs as (
       select install.* from public.sidestream_customer_installs install
       where install.license_namespace = 'production'
@@ -491,15 +570,6 @@ export async function inventoryFreshPaidClosure(client, stripeCustomerIds = []) 
       from public.sidestream_customer_commerce_materializations materialization
       where materialization.license_namespace = 'production'
         and materialization.profile_id in (select id from profile_closure)
-    ),
-    target_paid_events as (
-      select event.* from public.sidestream_paid_acquisition_events event
-      where event.environment = 'production'
-        and event.utm_medium = 'social'
-        and event.utm_campaign = 'sidestream_direct_offer_test'
-        and event.occurred_at between
-          (select min(created_at) from target_paid)
-          and (select max(updated_at) + interval '5 minutes' from target_paid)
     )
     select jsonb_build_object(
       'accountIds', coalesce((select jsonb_agg(id order by id) from target_accounts), '[]'),
@@ -514,7 +584,6 @@ export async function inventoryFreshPaidClosure(client, stripeCustomerIds = []) 
       'paidEntryIds', coalesce((select jsonb_agg(entry_id order by entry_id) from target_paid), '[]'),
       'paidClaimIds', coalesce((select jsonb_agg(id order by id) from target_claims), '[]'),
       'paidOutboxIds', coalesce((select jsonb_agg(id order by id) from public.sidestream_paid_acquisition_email_outbox where checkout_id in (select id from target_paid)), '[]'),
-      'paidEventIds', coalesce((select jsonb_agg(event_id order by event_id) from target_paid_events), '[]'),
       'acquisitionIds', coalesce((select jsonb_agg(id order by id) from target_acquisitions), '[]'),
       'stageIds', coalesce((select jsonb_agg(id order by id) from public.sidestream_acquisition_stages where acquisition_id in (select id from target_acquisitions)), '[]'),
       'acquisitionConflictIds', coalesce((select jsonb_agg(id order by id) from public.sidestream_acquisition_conflicts where acquisition_id in (select id from target_acquisitions)), '[]'),
@@ -522,7 +591,7 @@ export async function inventoryFreshPaidClosure(client, stripeCustomerIds = []) 
       'profileIds', coalesce((select jsonb_agg(id order by id) from profile_closure), '[]'),
       'installIds', coalesce((select jsonb_agg(id order by id) from target_installs), '[]'),
       'installHashes', coalesce((select jsonb_agg(install_id_hash order by install_id_hash) from target_installs), '[]'),
-      'identityLinkIds', coalesce((select jsonb_agg(id order by id) from public.sidestream_customer_identity_links where license_namespace = 'production' and profile_id in (select id from profile_closure)), '[]'),
+      'identityLinkIds', coalesce((select jsonb_agg(id order by id) from profile_identity_links), '[]'),
       'identityReviewIds', coalesce((select jsonb_agg(id order by id) from public.sidestream_customer_identity_reviews where license_namespace = 'production' and (candidate_profile_id in (select id from profile_closure) or existing_profile_id in (select id from profile_closure))), '[]'),
       'profileMergeIds', coalesce((select jsonb_agg(id order by id) from public.sidestream_customer_profile_merges where license_namespace = 'production' and (source_profile_id in (select id from profile_closure) or target_profile_id in (select id from profile_closure))), '[]'),
       'commerceMaterializationIds', coalesce((select jsonb_agg(id order by id) from target_commerce), '[]'),
@@ -558,20 +627,32 @@ export async function assertClosureDoesNotCrossCustomers(client, closure) {
        where binding.license_namespace = 'production'
          and binding.profile_id_at_binding = any($1::uuid[])
          and not (binding.id = any($4::uuid[])))::integer as foreign_bindings,
+      (select count(*) from public.sidestream_paid_telemetry_profile_bindings binding
+       where binding.id = any($4::uuid[])
+         and (not (binding.profile_id_at_binding = any($1::uuid[]))
+           or binding.acquisition_id is null
+           or not (binding.acquisition_id = any($5::uuid[]))))::integer as foreign_binding_owners,
+      (select count(*) from public.sidestream_accounts account
+       where account.id = any($2::uuid[])
+         and not (lower(btrim(account.email)) = any($13::text[])))::integer as foreign_live_accounts,
+      (select count(*) from public.sidestream_licenses license
+       where license.id = any($14::uuid[])
+         and not (license.account_id = any($2::uuid[])))::integer as foreign_license_accounts,
+      (select count(*) from public.sidestream_activation_sessions activation
+       where activation.id = any($12::uuid[])
+         and ((activation.account_id is not null and not (activation.account_id = any($2::uuid[])))
+           or (activation.license_id is not null and not (activation.license_id = any($14::uuid[])))))::integer as foreign_activation_owners,
+      (select count(*) from public.sidestream_checkout_intents core
+       where core.id = any($6::uuid[])
+         and ((core.account_id is not null and not (core.account_id = any($2::uuid[])))
+           or (core.activation_session_id is not null and not (core.activation_session_id = any($12::uuid[])))
+           or (core.stripe_customer_id is not null and not (core.stripe_customer_id = any($3::text[])))))::integer as foreign_checkout_owners,
       (select count(*) from public.sidestream_checkout_intents core
        where core.acquisition_id = any($5::uuid[])
          and not (core.id = any($6::uuid[])))::integer as foreign_checkout_intents,
       (select count(*) from public.sidestream_paid_acquisition_checkouts paid
        where paid.entry_id = any($7::uuid[])
-         and not (paid.id = any($8::uuid[])))::integer as foreign_paid_checkouts,
-      (select count(*) from public.sidestream_paid_acquisition_checkouts other
-        join public.sidestream_paid_acquisition_entries entry on entry.id = other.entry_id
-       where other.environment = 'production'
-         and not (other.id = any($8::uuid[]))
-         and entry.utm_medium = 'social'
-         and entry.utm_campaign = 'sidestream_direct_offer_test'
-         and other.created_at <= (select max(updated_at) + interval '5 minutes' from public.sidestream_paid_acquisition_checkouts where id = any($8::uuid[]))
-         and other.updated_at >= (select min(created_at) from public.sidestream_paid_acquisition_checkouts where id = any($8::uuid[])))::integer as ambiguous_paid_event_window
+         and not (paid.id = any($8::uuid[])))::integer as foreign_paid_checkouts
   `, [
     closure.profileIds,
     closure.accountIds.map(String),
@@ -585,6 +666,8 @@ export async function assertClosureDoesNotCrossCustomers(client, closure) {
     closure.paymentRefs,
     closure.subscriptionRefs,
     closure.activationIds.map(String),
+    [...TARGET_IDENTITY.emails],
+    closure.licenseIds,
   ]);
   const crossings = Object.values(result.rows[0] || {}).reduce(
     (sum, value) => sum + Number(value || 0),
@@ -613,6 +696,9 @@ export async function capturePreservationInvariants(client, closure) {
       (select count(*)::integer from public.sidestream_stripe_events) as stripe_event_history,
       (select md5(coalesce(string_agg(event_id, ',' order by event_id), ''))
        from public.sidestream_stripe_events) as stripe_event_history_fingerprint,
+      (select count(*)::integer from public.sidestream_paid_acquisition_events) as paid_acquisition_event_history,
+      (select md5(coalesce(string_agg(row_to_json(event)::text, ',' order by event.event_id), ''))
+       from public.sidestream_paid_acquisition_events event) as paid_acquisition_event_history_fingerprint,
       (select count(*)::integer from public.sidestream_customer_usage_sync_state) as global_usage_sync_rows,
       (select md5(coalesce(string_agg(license_namespace || ':' || committed_batch_count::text, ',' order by license_namespace), ''))
        from public.sidestream_customer_usage_sync_state) as global_usage_sync_fingerprint,
@@ -649,7 +735,6 @@ export async function applyFreshPaidDatabaseReset(pool, closure) {
     deleted.installs = await deleteIds(client, "sidestream_customer_installs", "id", locked.installIds, "uuid");
     deleted.acquisitionStages = await deleteIds(client, "sidestream_acquisition_stages", "id", locked.stageIds, "uuid");
     deleted.acquisitionConflicts = await deleteIds(client, "sidestream_acquisition_conflicts", "id", locked.acquisitionConflictIds, "uuid");
-    deleted.paidEvents = await deleteIds(client, "sidestream_paid_acquisition_events", "event_id", locked.paidEventIds, "uuid");
     deleted.paidOutbox = await deleteIds(client, "sidestream_paid_acquisition_email_outbox", "id", locked.paidOutboxIds, "uuid");
     deleted.paidClaims = await deleteIds(client, "sidestream_paid_acquisition_claims", "id", locked.paidClaimIds, "uuid");
     deleted.paidCheckouts = await deleteIds(client, "sidestream_paid_acquisition_checkouts", "id", locked.paidCheckoutIds, "uuid");
@@ -706,6 +791,7 @@ export function buildResetReport({
       globalUsageSync: true,
       downloadAndReferralAnalytics: true,
       rawTelemetry: true,
+      anonymousPaidAcquisitionEvents: true,
       stripeFinancialAndEventHistory: true,
     },
   };
@@ -782,7 +868,13 @@ export async function loadClosureStripeCustomers(stripe, customerIds, known = []
     const customer = await stripe.customers.retrieve(customerId);
     if (!customer?.deleted && customer?.id === customerId) byId.set(customerId, customer);
   }
-  return [...byId.values()].filter((customer) => customerIds.includes(customer.id));
+  const live = [...byId.values()].filter((customer) => customerIds.includes(customer.id));
+  if (live.some((customer) => !matchesTargetIdentity(customer))) {
+    throw new ResetCliError(
+      "A profile-owned live Stripe Customer is outside the fixed QA identity boundary.",
+    );
+  }
+  return live;
 }
 
 export async function captureStripeFinancialInvariants(stripe, customerIds) {
@@ -1096,7 +1188,7 @@ function normalizeClosure(value) {
     "accountIds", "customerIds", "checkoutSessionRefs", "paymentRefs",
     "subscriptionRefs", "licenseIds", "activationIds",
     "checkoutIntentIds", "paidCheckoutIds", "paidEntryIds", "paidClaimIds",
-    "paidOutboxIds", "paidEventIds", "acquisitionIds", "stageIds",
+    "paidOutboxIds", "acquisitionIds", "stageIds",
     "acquisitionConflictIds", "bindingIds", "profileIds", "installIds",
     "installHashes", "identityLinkIds", "identityReviewIds", "profileMergeIds",
     "commerceMaterializationIds", "commercePaymentKeys", "commerceInvoicePaymentIds", "moneyProfileIds",
