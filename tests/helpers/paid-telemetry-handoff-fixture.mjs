@@ -84,6 +84,7 @@ const HASHES = Object.freeze({
 
 const PROVIDER = Object.freeze({
   customer: "cus_fixture_paid_handoff",
+  olderCustomer: "cus_fixture_paid_handoff_older",
   checkoutSession: "cs_fixture_paid_handoff",
   paymentIntent: "pi_fixture_paid_handoff",
   charge: "ch_fixture_paid_handoff",
@@ -186,9 +187,10 @@ export async function runPaidTelemetryHandoffFixture({
     "reviewed-path-repaired",
     "legacy-entitlement-repaired",
     "unowned-commerce-repaired",
+    "missing-current-customer-broken",
   ].includes(expectation)) {
     throw new TypeError(
-      "Paid telemetry handoff expectation must be repaired, broken, pending-review-repaired, reviewed-path-repaired, legacy-entitlement-repaired, or unowned-commerce-repaired",
+      "Paid telemetry handoff expectation must be repaired, broken, pending-review-repaired, reviewed-path-repaired, legacy-entitlement-repaired, unowned-commerce-repaired, or missing-current-customer-broken",
     );
   }
 
@@ -222,7 +224,8 @@ export async function runPaidTelemetryHandoffFixture({
       expectation === "pending-review-repaired" ||
       expectation === "reviewed-path-repaired" ||
       expectation === "legacy-entitlement-repaired" ||
-      expectation === "unowned-commerce-repaired"
+      expectation === "unowned-commerce-repaired" ||
+      expectation === "missing-current-customer-broken"
     ) {
       const summary = await runPendingReviewRepairedScenario({
         pool,
@@ -237,13 +240,19 @@ export async function runPaidTelemetryHandoffFixture({
         repairUniqueReviewedPath:
           expectation === "reviewed-path-repaired" ||
           expectation === "legacy-entitlement-repaired" ||
-          expectation === "unowned-commerce-repaired",
+          expectation === "unowned-commerce-repaired" ||
+          expectation === "missing-current-customer-broken",
         expectLegacyEntitlementRepaired:
           expectation === "legacy-entitlement-repaired",
         expectUnownedCommerceRepaired:
-          expectation === "unowned-commerce-repaired",
+          expectation === "unowned-commerce-repaired" ||
+          expectation === "missing-current-customer-broken",
+        expectMissingCurrentCustomerBroken:
+          expectation === "missing-current-customer-broken",
       });
-      if (expectation === "unowned-commerce-repaired") {
+      if (expectation === "missing-current-customer-broken") {
+        assertMissingCurrentCustomerBrokenExpectation(summary);
+      } else if (expectation === "unowned-commerce-repaired") {
         assertUnownedCommerceRepairedExpectation(summary);
       } else if (expectation === "legacy-entitlement-repaired") {
         assertLegacyEntitlementRepairedExpectation(summary);
@@ -503,6 +512,7 @@ async function runPendingReviewRepairedScenario({
   repairUniqueReviewedPath,
   expectLegacyEntitlementRepaired,
   expectUnownedCommerceRepaired,
+  expectMissingCurrentCustomerBroken,
 }) {
   await acquisitionIntegrity.createCanonicalAcquisitionRoot({
     acquisitionId: IDS.acquisition,
@@ -735,7 +745,7 @@ async function runPendingReviewRepairedScenario({
         telemetryOwner,
         accountOwner: accountAttachment.profileId,
       });
-      return unownedCommerceRepairedPrivacySafeSummary({
+      const repairedSummary = unownedCommerceRepairedPrivacySafeSummary({
         legacyShape: legacyShapeBefore,
         unownedCommerceBefore,
         unownedCommerceAfterDryRun,
@@ -757,6 +767,26 @@ async function runPendingReviewRepairedScenario({
         ].every((key) =>
           legacyShapeBefore.reviewedLegacyPath[key] === true &&
             legacyShapeAfter.reviewedLegacyPath[key] === true),
+      });
+      if (!expectMissingCurrentCustomerBroken) return repairedSummary;
+
+      await reproduceMissingCurrentCustomerLink({
+        pool,
+        quotedCrm,
+        telemetryOwner,
+      });
+      const guardedMissingCurrentCustomer = await readTransaction((client) =>
+        paidTelemetryRepair.inspectPaidTelemetryHandoffRepair(client, {
+          acquisitionId: IDS.acquisition,
+          namespace: "test",
+        }));
+      return missingCurrentCustomerBrokenPrivacySafeSummary({
+        pool,
+        quotedCrm,
+        readTransaction,
+        telemetryOwner,
+        repairedSummary,
+        guardedMissingCurrentCustomer,
       });
     }
     const boundary = legacyShapeBefore ||
@@ -2010,6 +2040,162 @@ async function repairedCommercePrivacySafeSummary({ pool, quotedCrm }) {
   });
 }
 
+async function reproduceMissingCurrentCustomerLink({
+  pool,
+  quotedCrm,
+  telemetryOwner,
+}) {
+  const removed = await pool.query(
+    `delete from ${quotedCrm}.sidestream_customer_identity_links
+     where license_namespace = 'test'
+       and link_type = 'stripe_customer'
+       and link_value = $1
+     returning profile_id`,
+    [PROVIDER.customer],
+  );
+  if (
+    removed.rowCount !== 1 ||
+    removed.rows[0]?.profile_id !== telemetryOwner
+  ) {
+    throw new Error("Exact current Stripe Customer link was not on the live paid profile");
+  }
+  await pool.query(
+    `insert into ${quotedCrm}.sidestream_customer_identity_links (
+       profile_id, license_namespace, link_type, link_value, created_at
+     ) values ($1::uuid, 'test', 'stripe_customer', $2, $3)`,
+    [telemetryOwner, PROVIDER.olderCustomer, FIXTURE_TIME.firstObserved],
+  );
+}
+
+async function missingCurrentCustomerBrokenPrivacySafeSummary({
+  pool,
+  quotedCrm,
+  readTransaction,
+  telemetryOwner,
+  repairedSummary,
+  guardedMissingCurrentCustomer,
+}) {
+  const state = await pool.query(
+    `select
+       core.stripe_customer_id = account.stripe_customer_id
+         and paid.claim_state = 'claimed'
+         and claim.claim_state = 'claimed' as exact_server_customer_agreement,
+       (select count(*)::int
+        from ${quotedCrm}.sidestream_customer_profiles
+        where license_namespace = 'test' and merged_into is null) as live_profiles,
+       (select count(*)::int
+        from ${quotedCrm}.sidestream_customer_profiles
+        where license_namespace = 'test' and merged_into is not null) as merged_profiles,
+       (select count(*)::int
+        from ${quotedCrm}.sidestream_acquisition_stages
+        where acquisition_id = $2::uuid
+          and stage = 'authentication_completed') as authentication_stages,
+       (select count(*)::int
+        from ${quotedCrm}.sidestream_acquisition_stages
+        where acquisition_id = $2::uuid
+          and stage = 'installation_claimed') as installation_stages,
+       (select count(*)::int
+        from ${quotedCrm}.sidestream_paid_telemetry_profile_bindings
+        where acquisition_id = $2::uuid) as immutable_bindings,
+       (select count(*)::int
+        from ${quotedCrm}.sidestream_customer_profile_merges) as merge_audits,
+       (select count(*)::int
+        from ${quotedCrm}.sidestream_customer_commerce_materializations fact
+        where fact.license_namespace = 'test'
+          and fact.profile_id = $3::uuid
+          and fact.gross_paid_minor > 0
+          and fact.net_paid_minor > 0
+          and not fact.identity_conflict) as positive_commerce_facts,
+       (select count(*)::int
+        from ${quotedCrm}.sidestream_customer_money_totals total
+        where total.license_namespace = 'test'
+          and total.profile_id = $3::uuid
+          and total.gross_paid_minor > 0
+          and total.net_paid_minor > 0) as positive_money_totals,
+       (select count(*)::int
+        from ${quotedCrm}.sidestream_customer_identity_links link
+        where link.license_namespace = 'test'
+          and link.link_type = 'stripe_customer'
+          and link.link_value = $4) as current_customer_links,
+       (select count(*)::int
+        from ${quotedCrm}.sidestream_customer_commerce_aliases alias
+        where alias.license_namespace = 'test'
+          and alias.alias_id = $4) as current_customer_aliases,
+       (select count(*)::int
+        from ${quotedCrm}.sidestream_customer_identity_links link
+        join ${quotedCrm}.sidestream_customer_profiles profile
+          on profile.id = link.profile_id
+          and profile.license_namespace = link.license_namespace
+          and profile.merged_into is null
+        where link.license_namespace = 'test'
+          and link.profile_id = $3::uuid
+          and link.link_type = 'stripe_customer'
+          and link.link_value = $5) as older_customer_links
+     from ${quotedCrm}.sidestream_checkout_intents core
+     join ${quotedCrm}.sidestream_paid_acquisition_checkouts paid
+       on paid.checkout_intent_ref = core.id
+     join ${quotedCrm}.sidestream_paid_acquisition_claims claim
+       on claim.checkout_id = paid.id
+     join ${quotedCrm}.sidestream_accounts account
+       on account.id = claim.account_ref
+     where core.id = $1::uuid`,
+    [
+      IDS.checkoutIntent,
+      IDS.acquisition,
+      telemetryOwner,
+      PROVIDER.customer,
+      PROVIDER.olderCustomer,
+    ],
+  );
+  const [currentCustomerLookup, checkoutLookup, paymentLookup, olderCustomerLookup] =
+    await Promise.all([
+      PROVIDER.customer,
+      PROVIDER.checkoutSession,
+      PROVIDER.paymentIntent,
+      PROVIDER.olderCustomer,
+    ].map((stripeReference) => customerQuery.queryCustomerLookup({
+      licenseNamespace: "test",
+      stripeReference,
+    }, { transaction: readTransaction })));
+  const row = state.rows[0];
+  return Object.freeze({
+    observedContract: "repaired-handoff-missing-exact-current-customer-link",
+    repairedScenario: repairedSummary,
+    convergedState: Object.freeze({
+      profilesAlreadyConverged:
+        row.live_profiles === 1 && row.merged_profiles === 1,
+      authenticationAndInstallationStagesExactlyOnce:
+        row.authentication_stages === 1 && row.installation_stages === 1,
+      immutableBindingExactlyOnce: row.immutable_bindings === 1,
+      mergeAuditExactlyOnce: row.merge_audits === 1,
+      positiveCommerceExactlyOnce: row.positive_commerce_facts === 1,
+      positiveMoneyTotalsExactlyOnce: row.positive_money_totals === 1,
+      checkoutAndPaymentLookupsResolveLivePaidProfile:
+        checkoutLookup?.customerId === telemetryOwner &&
+        paymentLookup?.customerId === telemetryOwner,
+    }),
+    exactCurrentCustomerGap: Object.freeze({
+      checkoutIntentMatchesClaimedAuthenticatedAccountCustomer:
+        row.exact_server_customer_agreement === true,
+      absentFromIdentityLinks: row.current_customer_links === 0,
+      absentFromCommerceAliases: row.current_customer_aliases === 0,
+      exactCurrentCustomerLookupReturnsNull: currentCustomerLookup === null,
+      olderUnrelatedCustomerLinkExistsOnLiveProfile:
+        row.older_customer_links === 1,
+      olderUnrelatedCustomerLookupStillResolvesLiveProfile:
+        olderCustomerLookup?.customerId === telemetryOwner,
+    }),
+    guardedOperator: Object.freeze({
+      reasonCode: guardedMissingCurrentCustomer.reasonCode,
+      eligible: guardedMissingCurrentCustomer.eligible,
+      wouldMutate: guardedMissingCurrentCustomer.wouldMutate,
+      hasJourneyFingerprint:
+        guardedMissingCurrentCustomer.journeyFingerprint !== null,
+      counts: guardedMissingCurrentCustomer.counts,
+    }),
+  });
+}
+
 async function unownedCommerceRefusalMatrix({
   pool,
   quotedCrm,
@@ -2282,6 +2468,36 @@ function assertUnownedCommerceRepairedExpectation(summary) {
   if (!observed) {
     throw new Error(
       `Expected unowned-commerce-repaired paid telemetry handoff contract; observed ${JSON.stringify(summary)}`,
+    );
+  }
+}
+
+function assertMissingCurrentCustomerBrokenExpectation(summary) {
+  assertUnownedCommerceRepairedExpectation(summary.repairedScenario);
+  const expectedCounts = {
+    authenticationStages: 1,
+    installationStages: 1,
+    bindings: 1,
+    mergeAudits: 1,
+    acquisitionConflicts: 0,
+    lifecycleStops: 0,
+    commerceFacts: 1,
+    commerceProfiles: 1,
+    commerceConflicts: 0,
+  };
+  const observed =
+    summary.observedContract ===
+      "repaired-handoff-missing-exact-current-customer-link" &&
+    Object.values(summary.convergedState).every((value) => value === true) &&
+    Object.values(summary.exactCurrentCustomerGap).every((value) => value === true) &&
+    summary.guardedOperator.reasonCode === "already_repaired" &&
+    summary.guardedOperator.eligible === true &&
+    summary.guardedOperator.wouldMutate === false &&
+    summary.guardedOperator.hasJourneyFingerprint === true &&
+    JSON.stringify(summary.guardedOperator.counts) === JSON.stringify(expectedCounts);
+  if (!observed) {
+    throw new Error(
+      `Expected missing-current-customer-broken paid telemetry handoff contract; observed ${JSON.stringify(summary)}`,
     );
   }
 }

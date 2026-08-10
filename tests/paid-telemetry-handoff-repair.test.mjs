@@ -52,6 +52,7 @@ const HASHES = Object.freeze({
 
 const PROVIDER = Object.freeze({
   customer: "cus_repair_fixture",
+  olderCustomer: "cus_repair_fixture_older",
   checkoutSession: "cs_repair_fixture",
   paymentIntent: "pi_repair_fixture",
   charge: "ch_repair_fixture",
@@ -632,6 +633,73 @@ test("disposable Postgres repair is dry-run first, exact, private, and idempoten
     assert.equal(replay.reasonCode, "already_repaired");
     assert.equal(replay.journeyFingerprint, dryRun.journeyFingerprint);
     assert.deepEqual(await repairCounts(pool, quoted), firstAppliedRows);
+
+    const missingCurrentCustomer = await inTransaction(
+      pool,
+      quoted,
+      false,
+      async (client) => {
+        const removed = await client.query(
+          `delete from public.sidestream_customer_identity_links
+           where license_namespace = 'test'
+             and link_type = 'stripe_customer'
+             and link_value = $1
+           returning profile_id`,
+          [PROVIDER.customer],
+        );
+        assert.equal(removed.rowCount, 1);
+        await client.query(
+          `insert into public.sidestream_customer_identity_links (
+             profile_id, license_namespace, link_type, link_value, created_at
+           ) values ($1::uuid, 'test', 'stripe_customer', $2, $3)`,
+          [removed.rows[0].profile_id, PROVIDER.olderCustomer, TIME.firstObserved],
+        );
+        const exactLinkState = await client.query(
+          `select
+             core.stripe_customer_id = account.stripe_customer_id
+               as exact_server_customer_agreement,
+             (select count(*)::int
+              from public.sidestream_customer_identity_links link
+              where link.license_namespace = 'test'
+                and link.link_type = 'stripe_customer'
+                and link.link_value = $2) as exact_current_links,
+             (select count(*)::int
+              from public.sidestream_customer_identity_links link
+              where link.license_namespace = 'test'
+                and link.profile_id = $3::uuid
+                and link.link_type = 'stripe_customer'
+                and link.link_value = $4) as older_links
+           from public.sidestream_checkout_intents core
+           join public.sidestream_paid_acquisition_checkouts paid
+             on paid.checkout_intent_ref = core.id
+           join public.sidestream_paid_acquisition_claims claim
+             on claim.checkout_id = paid.id
+           join public.sidestream_accounts account
+             on account.id = claim.account_ref
+           where core.id = $1::uuid`,
+          [
+            IDS.checkoutIntent,
+            PROVIDER.customer,
+            removed.rows[0].profile_id,
+            PROVIDER.olderCustomer,
+          ],
+        );
+        const report = await repair.inspectPaidTelemetryHandoffRepair(client, {
+          acquisitionId: IDS.acquisition,
+          namespace: "test",
+        });
+        return { report, exactLinkState: exactLinkState.rows[0] };
+      },
+    );
+    assert.equal(
+      missingCurrentCustomer.exactLinkState.exact_server_customer_agreement,
+      true,
+    );
+    assert.equal(missingCurrentCustomer.exactLinkState.exact_current_links, 0);
+    assert.equal(missingCurrentCustomer.exactLinkState.older_links, 1);
+    assert.equal(missingCurrentCustomer.report.reasonCode, "already_repaired");
+    assert.equal(missingCurrentCustomer.report.eligible, true);
+    assert.equal(missingCurrentCustomer.report.wouldMutate, false);
   } finally {
     if (created) await pool.query(`drop schema if exists ${quoted} cascade`).catch(() => {});
     await pool.end().catch(() => {});

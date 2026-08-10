@@ -160,3 +160,40 @@ test("the exact reviewed legacy path repairs one verified unowned zero-total Che
   assert.doesNotMatch(serialized, /@example\.invalid\b/);
   assert.doesNotMatch(serialized, /postgres(?:ql)?:\/\//i);
 });
+
+test("the repaired live shape can still omit the exact current Stripe Customer link", {
+  timeout: 120_000,
+}, async () => {
+  const summary = await runPaidTelemetryHandoffFixture({
+    expectation: "missing-current-customer-broken",
+  });
+  assert.equal(
+    summary.observedContract,
+    "repaired-handoff-missing-exact-current-customer-link",
+  );
+  assert.ok(Object.values(summary.convergedState).every(Boolean));
+  assert.ok(Object.values(summary.exactCurrentCustomerGap).every(Boolean));
+  assert.deepEqual(summary.guardedOperator, {
+    reasonCode: "already_repaired",
+    eligible: true,
+    wouldMutate: false,
+    hasJourneyFingerprint: true,
+    counts: {
+      authenticationStages: 1,
+      installationStages: 1,
+      bindings: 1,
+      mergeAudits: 1,
+      acquisitionConflicts: 0,
+      lifecycleStops: 0,
+      commerceFacts: 1,
+      commerceProfiles: 1,
+      commerceConflicts: 0,
+    },
+  });
+  const serialized = JSON.stringify(summary);
+  assert.doesNotMatch(serialized, /\b(?:cus|cs|pi|ch)_[A-Za-z0-9_]+\b/);
+  assert.doesNotMatch(serialized, /\b[0-9a-f]{8}-[0-9a-f-]{27,}\b/i);
+  assert.doesNotMatch(serialized, /\b[0-9a-f]{64}\b/i);
+  assert.doesNotMatch(serialized, /@example\.invalid\b/);
+  assert.doesNotMatch(serialized, /postgres(?:ql)?:\/\//i);
+});
