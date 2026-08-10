@@ -122,6 +122,57 @@ test("connection guards reject pooling, weak TLS, and runtime/source collisions"
   );
 });
 
+test("two discovered paid paths fail closed before identity reads or writes", async () => {
+  const statements = [];
+  const client = {
+    async query(sql) {
+      statements.push(sql);
+      if (/select id, integrity_state\s+from public\.sidestream_acquisitions/.test(sql)) {
+        return { rows: [{ id: IDS.acquisition, integrity_state: "intact" }] };
+      }
+      if (/from public\.sidestream_acquisitions acquisition/.test(sql)) {
+        return { rows: [{}, {}] };
+      }
+      throw new Error("Ambiguous paid-path discovery should stop before later reads");
+    },
+  };
+
+  const report = await repair.inspectPaidTelemetryHandoffRepair(client, {
+    acquisitionId: IDS.acquisition,
+    namespace: "test",
+  });
+  assert.deepEqual(report, {
+    reasonCode: "paid_path_missing_or_ambiguous",
+    eligible: false,
+    wouldMutate: false,
+    journeyFingerprint: null,
+    booleans: {
+      canonicalAcquisition: true,
+      exactPaidPath: false,
+      activePayment: false,
+      exactIdentity: false,
+      profilesConverged: false,
+      authenticationRecorded: false,
+      installationRecorded: false,
+      immutableBinding: false,
+      commerceConsistent: true,
+    },
+    counts: {
+      authenticationStages: 0,
+      installationStages: 0,
+      bindings: 0,
+      mergeAudits: 0,
+      acquisitionConflicts: 0,
+      lifecycleStops: 0,
+      commerceFacts: 0,
+      commerceProfiles: 0,
+      commerceConflicts: 0,
+    },
+  });
+  assert.equal(statements.length, 2);
+  assert.ok(statements.every((sql) => /^\s*select\b/i.test(sql)));
+});
+
 test("disposable Postgres repair is dry-run first, exact, private, and idempotent", async () => {
   const databaseUrl = requireSafeTestDatabaseUrl();
   const schema = `sidestream_paid_repair_${randomBytes(8).toString("hex")}`;
