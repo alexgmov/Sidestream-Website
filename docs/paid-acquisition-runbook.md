@@ -231,9 +231,10 @@ npm run replay:paid-telemetry-handoff
 npm run replay:paid-telemetry-handoff -- --expect-pending-review-repaired
 npm run replay:paid-telemetry-handoff -- --expect-reviewed-path-repaired
 npm run replay:paid-telemetry-handoff -- --expect-legacy-entitlement-repaired
+npm run replay:paid-telemetry-handoff -- --expect-unowned-commerce-repaired
 ```
 
-All four forms require the approved disposable `SIDESTREAM_TEST_POSTGRES_URL`, use
+All five forms require the approved disposable `SIDESTREAM_TEST_POSTGRES_URL`, use
 real migration, identity, usage, commerce, exact lookup, and funnel code, and
 print privacy-safe summaries. The default replay proves the simple
 install-profile split: one live/one merged profile, eight expected stages
@@ -252,7 +253,7 @@ rollback-contained operator apply, runtime convergence, matching
 stable journey fingerprint, and common commerce/lookup/funnel ownership. A
 second eligible activation path, second reviewed owner, mismatched claim states,
 or any stale eligibility fact fails closed and rolls back the whole transaction.
-All four summaries omit fixture UUIDs, hashes, email, Stripe references,
+All five summaries omit fixture UUIDs, hashes, email, Stripe references,
 tokens, and connection strings. No form inspects or repairs a deployed database.
 
 The third replay keeps two independently valid active paths: one direct
@@ -293,6 +294,21 @@ in a read-only Production dry-run without mutation. Preserve that as historical
 fail-closed evidence only: it does not prove this revision is deployed,
 authorize apply, establish current Production eligibility, or qualify the live
 journey.
+
+The fifth replay starts from the fourth path plus exactly one verified
+Checkout payment fact on one payment key with null owner and zero gross/net.
+Its currency, exact Checkout identity evidence, and canonical payment-intent
+evidence must match the already positive paid snapshot. Apply merges first,
+then conditionally updates only that locked fact to the verified paid amount,
+attaches/confirms the survivor, sets paid and upgrade timing from paid
+completion, preserves provider identifiers/provenance and legacy entitlement
+placeholders, refreshes totals, and requires positive attached rediscovery.
+The replay proves no-op idempotence plus atomic refusal for a second key/fact,
+wrong source/currency/evidence, nonzero or owner mismatch, conflict, refund,
+dispute, inquiry, missing positive paid truth, and failed totals refresh.
+Deployed `6118a87` rejected this exact pre-state read-only without mutation;
+preserve that only as fail-closed history, not deployment, authorization,
+current Production eligibility, or live qualification.
 
 The earlier read-only Production dry-run on deployed commit `aa5a604` rejected
 the actual pending-review topology as ineligible and wrote nothing. Record that

@@ -931,6 +931,22 @@ exact shape read-only without mutation. That is historical fail-closed evidence,
 not proof of deployment, apply authorization, current Production eligibility,
 or live qualification.
 
+The fifth boundary is disposable-proved with
+`npm run replay:paid-telemetry-handoff -- --expect-unowned-commerce-repaired`.
+Only one verified exact-Checkout payment fact on one canonical key may recover
+from null owner and zero gross/net, and only behind matching paid currency,
+Checkout/payment-intent evidence, a strictly positive completed paid snapshot,
+exact account/entitlement/activation/reviewed install/receipt ownership, zero
+entitlement refund, and clear conflict/refund/dispute/inquiry/lifecycle state.
+After deterministic merge, the serializable transaction conditionally updates
+only that locked fact to the verified paid amount and completion timing,
+confirms its survivor owner, preserves provider identifiers/provenance and
+legacy placeholders, refreshes existing totals, and requires one positive
+attached owner on rediscovery. Every nearby mismatch and refresh failure rolls
+back; replay is a no-op. Deployed `6118a87` rejected the pre-state read-only
+without mutation. That historical result does not prove deployment, authorize
+apply, establish current Production eligibility, or qualify a live journey.
+
 ### Production device support and backfill
 
 The device-domain behavior and privacy/support facts live in

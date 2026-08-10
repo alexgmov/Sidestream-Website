@@ -345,10 +345,11 @@ Apply revalidates all live eligibility facts and requires the operation,
 namespace, connected-target fingerprint, and journey fingerprint copied from a
 fresh dry-run. An identical confirmed replay is a no-op.
 
-#### Four exact paid-telemetry repair boundaries
+#### Five exact paid-telemetry repair boundaries
 
-The guarded correction recognizes four exact boundaries; neither reviewed
-form nor the legacy snapshot is a looser version of the simple split.
+The guarded correction recognizes five exact boundaries. The first four are
+compared below; the fifth is a transaction-scoped commerce extension of the
+fourth, not a looser version of any earlier boundary.
 
 | Boundary | Simple install-profile split | Single pending-review path | Direct historical plus reviewed active path | Exact legacy entitlement snapshot |
 | --- | --- | --- | --- | --- |
@@ -387,7 +388,9 @@ trusted activation + exact current install/receipt
                     |
  strict entitlement snapshot OR exact null/null/zero legacy tuple
                     |
- authentication + claim state + merge + binding (one transaction)
+ positive attached commerce OR one exact zero/unowned Checkout fact
+                    |
+ authentication + claim state + merge + commerce + binding (one transaction)
                     |
  one live telemetry / commerce / lookup / funnel root
 ```
@@ -438,6 +441,30 @@ Deployed `812cf96` rejected this exact shape in a read-only Production dry-run
 without mutation. That historical fail-closed result does not prove this
 revision is deployed, authorize apply, establish current Production
 eligibility, or qualify a live journey.
+
+The fifth boundary accepts only one recoverable commerce pre-state layered on
+the exact fourth path: one canonical payment key owns exactly one verified
+payment fact for the exact Checkout Session; its currency and Checkout identity
+evidence match the paid row, and when the canonical payment differs from the
+Checkout Session its payment-intent evidence also matches exactly. The fact has
+no owner, zero gross/net, and no conflict, refund, dispute, inquiry, competing
+key/fact/profile, or lifecycle stop. The paid snapshot must already prove the
+strictly positive amount, active completed payment, canonical provider
+references, account, entitlement with zero refund, activation, and reviewed
+install/receipt.
+
+After deterministic profile merge moves the exact Stripe links, apply locks and
+updates only that fact: it confirms the survivor owner, uses the verified paid
+minor amount for gross/net, copies paid and upgrade timing from paid completion,
+preserves provider identifiers and verified provenance, and calls the existing
+commerce totals refresh in the same serializable transaction. Rediscovery must
+show one positive attached exact owner before `already_repaired`; otherwise all
+writes roll back. Disposable proof is
+`npm run replay:paid-telemetry-handoff -- --expect-unowned-commerce-repaired`.
+Its refusal matrix covers every nearby mismatch and failed totals refresh, and
+replay is a no-op. Deployed `6118a87` rejected this exact pre-state read-only
+without mutation; that is historical fail-closed evidence only, not deployment,
+apply authorization, current Production eligibility, or live qualification.
 
 Historical evidence is deliberately separate: against deployed commit
 `aa5a604`, the earlier read-only Production dry-run rejected the real journey as
