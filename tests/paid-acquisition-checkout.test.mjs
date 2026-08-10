@@ -501,6 +501,7 @@ test("authenticated paid activation binds the browser receipt and records the ve
   const identity = {
     paid_profile_id: paidProfileId,
     install_profile_id: installProfileId,
+    account_profile_id: paidProfileId,
     install_membership_id: "40000000-0000-4000-8000-000000000009",
     install_id_hash: installIdHash,
     install_identity_link_id: "40000000-0000-4000-8000-000000000010",
@@ -534,6 +535,7 @@ test("authenticated paid activation binds the browser receipt and records the ve
             claim_account_ref: accountId,
             claim_entitlement_ref: entitlementRef,
             claim_state: "claimed",
+            paid_claim_state: "claimed",
             claim_expired: false,
             payment_state: "active",
             payment_verified: true,
@@ -554,6 +556,9 @@ test("authenticated paid activation binds the browser receipt and records the ve
       }
       if (sql.includes("paid-telemetry-binding:bind-claim")) {
         return { rows: [{ id: claimId }] };
+      }
+      if (sql.includes("paid-telemetry-binding:claim-checkout")) {
+        return { rows: [{ id: checkoutId }] };
       }
       if (sql.includes("paid-telemetry-binding:insert-binding")) {
         binding = {
@@ -601,6 +606,7 @@ test("authenticated paid activation binds the browser receipt and records the ve
       mergeCalls.push({ runner, environment, input });
       identity.paid_profile_id = installProfileId;
       identity.install_profile_id = installProfileId;
+      identity.account_profile_id = installProfileId;
       identity.install_owner_account_id = accountId;
       return {
         merged: true,
@@ -611,7 +617,7 @@ test("authenticated paid activation binds the browser receipt and records the ve
   });
 
   assert.deepEqual(result, { associated: true, installationClaimed: true });
-  assert.equal(queries.length, 8);
+  assert.equal(queries.length, 9);
   assert.deepEqual(queries[0].params, [
     "activation-test-key",
     PAID_ACQUISITION_SOURCE,
@@ -646,14 +652,24 @@ test("authenticated paid activation binds the browser receipt and records the ve
   assert.equal(binding.account_id, accountId);
   assert.equal(binding.install_id_hash, installIdHash);
   assert.equal(binding.installer_receipt_id_hash, installerReceiptIdHash);
-  assert.equal(integrityCalls[0][0], "stage");
+  assert.equal(integrityCalls.length, 4);
   assert.deepEqual(integrityCalls[0][1], {
+    acquisitionId: ACQUISITION_ID,
+    stage: "authentication_completed",
+    stableServerReference: `google-account:${ACQUISITION_ID}:${accountId}`,
+    occurredAt,
+  });
+  assert.deepEqual(integrityCalls[1][1], {
+    acquisitionId: ACQUISITION_ID,
+    evidence: "authenticated_account",
+  });
+  assert.deepEqual(integrityCalls[2][1], {
     acquisitionId: ACQUISITION_ID,
     stage: "installation_claimed",
     stableServerReference: `installation:${installIdHash}`,
     occurredAt,
   });
-  assert.deepEqual(integrityCalls[1][1], {
+  assert.deepEqual(integrityCalls[3][1], {
     acquisitionId: ACQUISITION_ID,
     evidence: "verified_installation_claim",
   });

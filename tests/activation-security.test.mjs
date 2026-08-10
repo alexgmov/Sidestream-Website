@@ -870,11 +870,23 @@ async function loadRuntimeModules() {
         "./postgres.js": helperImports["./postgres.js"],
       },
     );
+    const customerProfilesModuleUrl = await writeRouteModule(
+      temporaryModuleDirectory,
+      "customer-profiles",
+      join(repositoryRoot, "api", "_lib", "customer-profiles.ts"),
+      {
+        "./license-environment.js": helperImports["./license-environment.js"],
+        "./postgres.js": helperImports["./postgres.js"],
+      },
+    );
     helperImports["./paid-acquisition.js"] = await writeRouteModule(
       temporaryModuleDirectory,
       "paid-acquisition",
       join(repositoryRoot, "api", "_lib", "paid-acquisition.ts"),
-      { "./postgres.js": helperImports["./postgres.js"] },
+      {
+        "./customer-profiles.js": customerProfilesModuleUrl,
+        "./postgres.js": helperImports["./postgres.js"],
+      },
     );
     let accountSource = await readFile(accountSourcePath, "utf8");
     accountSource = replaceImports(accountSource, helperImports);

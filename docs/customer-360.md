@@ -334,7 +334,8 @@ activation keys, device values, or a time window as selectors. Dry-run is the
 default, connects read-only, and rolls back. Apply uses one serializable
 transaction plus namespace/journey advisory locks and may add only missing
 authentication/current-install stages and trusted evidence, the exact claim
-activation edge, deterministic merge/audit, immutable binding, and the existing
+activation edge, an exact matching Checkout/claim transition from `unclaimed`
+to `claimed`, deterministic merge/audit, immutable binding, and the existing
 merge-triggered commerce refresh. It never guesses or rewrites first touch.
 
 The operator emits only mode, namespace, sanitized target and immutable-journey
@@ -343,6 +344,63 @@ the selected acquisition UUID and every underlying identity/provider value.
 Apply revalidates all live eligibility facts and requires the operation,
 namespace, connected-target fingerprint, and journey fingerprint copied from a
 fresh dry-run. An identical confirmed replay is a no-op.
+
+#### Simple profile split versus pending verified-account review
+
+The guarded correction recognizes two exact topologies; the second is not a
+looser form of the first.
+
+| Boundary | Simple install-profile split | Live pending-review topology |
+| --- | --- | --- |
+| Paid attempts | One eligible paid activation path is already direct. | The acquisition may retain historical Checkout/paid/activation attempts; those rows remain history and do not vote for an owner. |
+| Current telemetry root | The activation/account evidence and current install/receipt evidence begin on two compatible live profiles. | The current install, activation, and verified native receipt are on a telemetry profile with no direct account or Stripe identity; the exact authenticated account is on one other live profile. |
+| Account bridge | The exact direct `account_identity` link selects the owner. | Exactly one `pending_review` row must join the activation profile to the live exact-account owner with `evidence_type=account_identity`, `evidence_trust=verified_server`, and `attachment_source=activation_claim`. Stripe review rows are corroboration only and never selectors. |
+| Claim state | The exact Checkout and claim already agree as `claimed/claimed`. | The exact current Checkout and claim may agree as `unclaimed/unclaimed`; both become claimed only inside the successful convergence transaction. Mixed or unsupported states fail closed. |
+
+Current-path selection never chooses the newest, oldest, first, or most common
+attempt. Before a binding exists, the active activation must own the exact
+verified receipt and either the direct account link or the single eligible
+verified-account review. A second eligible activation path or reviewed account
+owner is ambiguous. After convergence, the immutable binding identifies the
+current activation/install/receipt pair even though historical activation links
+may now resolve through the same merged survivor.
+
+```text
+trusted activation + exact current install/receipt
+                    |
+      matching active Checkout/claim state
+                    |
+ direct account link OR one exact verified-account review
+                    |
+ authentication + claim state + merge + binding (one transaction)
+                    |
+ one live telemetry / commerce / lookup / funnel root
+```
+
+Every account, payment, entitlement, expiry, namespace, receipt, ownership,
+stage, merge, and binding fact is revalidated under lock. Claim-state updates,
+stage/evidence writes, merge/audit, commerce movement, and binding creation roll
+back together on any later conflict. Entitlement is required but remains
+read-only. Successful retries converge on one authentication stage, one
+installation stage, one merge audit, one immutable binding, and the same
+journey fingerprint; the operator then reports `already_repaired`.
+
+The disposable replay for this second boundary is
+`npm run replay:paid-telemetry-handoff -- --expect-pending-review-repaired`.
+It proves a privacy-safe `repair_ready` dry-run, rollback-contained operator
+apply, runtime convergence and replay, exact claim-state repair, and common
+commerce/lookup/funnel ownership while preserving the historical attempts. Its
+summary exposes only bounded counts, booleans, classifications, reason codes,
+and sanitized fingerprints; fixture UUIDs, hashes, email, and Stripe references
+must not appear.
+
+Historical evidence is deliberately separate: against deployed commit
+`aa5a604`, the earlier read-only Production dry-run rejected the real journey as
+ineligible and made no mutation because the then-current simple-split contract
+did not cover this pending verified-account-review topology. That rejection is
+fail-closed evidence only. It does not prove this revised code is deployed,
+authorize apply, establish current Production eligibility, or qualify the live
+journey.
 
 Acquisition roots, stages, conflicts, lookup responses, funnel groups, and
 journeys must not retain or expose raw email, IP, user agent, cookie, browser
