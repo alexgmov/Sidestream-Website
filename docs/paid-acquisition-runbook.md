@@ -563,6 +563,18 @@ analytics, and every unrelated customer or financial record are preservation
 invariants. A changed invariant rolls back the database transaction or fails
 the operation.
 
+The 2026-08-10 live dry-run discovered that the bidirectional Customer 360
+profile closure was rejected by PostgreSQL with SQLSTATE `42P19` before any
+delete could begin: its recursive CTE had separate ancestor and descendant arms,
+which exposed more than one recursive term/reference. The closure now uses one
+legal recursive reference while still following both `merged_into` directions,
+filtering to Production, and converging through `UNION`. The classified
+disposable-Postgres regression applies the complete schema in an isolated
+schema, proves an Alex seed reaches every merged ancestor and descendant but no
+unrelated or Test profile, and proves replay is stable. This repository proof
+does not authorize or establish a provider backup, live reset, local-state
+change, Checkout, installation, authentication, deployment, or push.
+
 ### Exact remote reset procedure
 
 Prepare the live secret only in the operator environment and confirm the

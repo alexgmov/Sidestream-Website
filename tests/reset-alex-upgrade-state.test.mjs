@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
@@ -62,6 +63,19 @@ test("fresh-paid reset is dry-run by default and refuses implicit or main branch
     "--branch-name", SELECTORS.branchName,
     "--endpoint-id", SELECTORS.endpointId,
   ]), /branch ID/);
+});
+
+test("profile closure exposes one recursive reference for both merge directions", () => {
+  const source = readFileSync(
+    new URL("../scripts/reset-alex-upgrade-state.mjs", import.meta.url),
+    "utf8",
+  );
+  const closure = /profile_closure\(id\) as \(([\s\S]*?)\n    \),\n    target_installs/.exec(source)?.[1];
+  assert.ok(closure, "profile_closure CTE must remain inspectable");
+  assert.equal((closure.match(/\bfrom profile_closure closure\b/g) || []).length, 1);
+  assert.match(closure, /profile\.id = closure\.id/);
+  assert.match(closure, /profile\.merged_into = closure\.id/);
+  assert.match(closure, /profile\.license_namespace = 'production'/);
 });
 
 test("apply binds operation, namespace, QA identity, target fingerprint, and recovery branch", () => {
