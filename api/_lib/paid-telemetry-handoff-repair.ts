@@ -73,6 +73,7 @@ type PaidPathRow = Readonly<{
 }>;
 
 type ExactIdentityRow = Readonly<{
+  review_kind: "install_bridge" | "account_bridge";
   review_id: string;
   candidate_profile_id: string;
   existing_profile_id: string;
@@ -333,16 +334,35 @@ export async function applyPaidTelemetryHandoffRepair(
      where id = $1::uuid and license_namespace = $2 and integrity_state = 'intact'`,
     [selector.acquisitionId, selector.namespace],
   );
+  const paidCheckout = await client.query(
+    `update public.sidestream_paid_acquisition_checkouts
+     set claim_state = 'claimed', updated_at = now()
+     where id = $1::uuid
+       and environment = $2
+       and payment_state = 'active'
+       and claim_state in ('unclaimed', 'claimed')
+     returning id`,
+    [journey.path.paid_checkout_id, selector.namespace],
+  );
   const claim = await client.query(
     `update public.sidestream_paid_acquisition_claims
-     set activation_ref = $2::uuid, updated_at = now()
+     set activation_ref = $2::uuid, claim_state = 'claimed', updated_at = now()
      where id = $1::uuid
        and environment = $3
+       and account_ref = $4::uuid
+       and entitlement_ref = $5::uuid
+       and claim_state in ('unclaimed', 'claimed')
        and (activation_ref is null or activation_ref = $2::uuid)
      returning id`,
-    [journey.path.claim_id, journey.path.activation_id, selector.namespace],
+    [
+      journey.path.claim_id,
+      journey.path.activation_id,
+      selector.namespace,
+      journey.path.account_id,
+      journey.path.entitlement_id,
+    ],
   );
-  if (claim.rows.length !== 1) {
+  if (paidCheckout.rows.length !== 1 || claim.rows.length !== 1) {
     throw new PaidTelemetryRepairError(
       "claim_changed_while_locked",
       "The exact paid claim changed while the repair was locked.",
@@ -705,6 +725,76 @@ function paidPathSql(lock: boolean): string {
     where acquisition.id = $1::uuid
       and acquisition.license_namespace = $2
       and activation.source = $3
+      and exists (
+        select 1
+        from public.sidestream_customer_identity_links current_activation
+        join public.sidestream_customer_profiles current_profile
+          on current_profile.id = current_activation.profile_id
+          and current_profile.license_namespace = current_activation.license_namespace
+          and current_profile.merged_into is null
+        join public.sidestream_customer_identity_links current_receipt
+          on current_receipt.license_namespace = current_activation.license_namespace
+          and current_receipt.profile_id = current_activation.profile_id
+          and current_receipt.link_type = 'installer_receipt_hash'
+        where current_activation.license_namespace = acquisition.license_namespace
+          and current_activation.link_type = 'activation_record'
+          and current_activation.link_value = activation.id::text
+          and (
+            not exists (
+              select 1
+              from public.sidestream_paid_telemetry_profile_bindings any_binding
+              where any_binding.license_namespace = acquisition.license_namespace
+                and any_binding.acquisition_id = acquisition.id
+            )
+            or exists (
+              select 1
+              from public.sidestream_paid_telemetry_profile_bindings exact_binding
+              where exact_binding.license_namespace = acquisition.license_namespace
+                and exact_binding.acquisition_id = acquisition.id
+                and exact_binding.activation_ref = activation.id
+                and exact_binding.installer_receipt_id_hash = current_receipt.link_value
+            )
+          )
+          and (
+            exists (
+              select 1
+              from public.sidestream_customer_identity_links direct_account
+              where direct_account.license_namespace = acquisition.license_namespace
+                and direct_account.profile_id = current_activation.profile_id
+                and direct_account.link_type = 'account_identity'
+                and direct_account.link_value = account.id::text
+            )
+            or exists (
+              select 1
+              from public.sidestream_customer_identity_reviews account_review
+              join public.sidestream_customer_profiles reviewed_candidate
+                on reviewed_candidate.id = account_review.candidate_profile_id
+                and reviewed_candidate.license_namespace = account_review.license_namespace
+              join public.sidestream_customer_profiles reviewed_existing
+                on reviewed_existing.id = account_review.existing_profile_id
+                and reviewed_existing.license_namespace = account_review.license_namespace
+              join public.sidestream_customer_identity_links reviewed_account
+                on reviewed_account.license_namespace = account_review.license_namespace
+                and reviewed_account.profile_id = coalesce(
+                  reviewed_existing.merged_into,
+                  reviewed_existing.id
+                )
+                and reviewed_account.link_type = 'account_identity'
+                and reviewed_account.link_value = account.id::text
+              where account_review.license_namespace = acquisition.license_namespace
+                and coalesce(reviewed_candidate.merged_into, reviewed_candidate.id) =
+                  current_activation.profile_id
+                and account_review.evidence_type = 'account_identity'
+                and account_review.evidence_value_hash = encode(
+                  digest('account_identity:' || account.id::text, 'sha256'),
+                  'hex'
+                )
+                and account_review.evidence_trust = 'verified_server'
+                and account_review.attachment_source = 'activation_claim'
+                and account_review.review_state = 'pending_review'
+            )
+          )
+      )
     order by core.created_at, core.id, paid.created_at, paid.id, claim.created_at, claim.id
     limit 3${lock ? " for update of acquisition, core, paid, claim, account, entitlement, activation" : ""}
   `;
@@ -712,7 +802,11 @@ function paidPathSql(lock: boolean): string {
 
 function exactIdentitySql(lock: boolean): string {
   return `
-    select review.id as review_id,
+    select case
+        when review.evidence_type = 'account_identity' then 'account_bridge'
+        else 'install_bridge'
+      end as review_kind,
+      review.id as review_id,
       review.candidate_profile_id,
       review.existing_profile_id,
       coalesce(candidate.merged_into, candidate.id) as candidate_root_id,
@@ -747,8 +841,11 @@ function exactIdentitySql(lock: boolean): string {
       and existing.license_namespace = review.license_namespace
     join public.sidestream_customer_installs install
       on install.license_namespace = review.license_namespace
-      and encode(digest('install_identity_hash:' || install.install_id_hash, 'sha256'), 'hex') =
-        review.evidence_value_hash
+      and install.profile_id = case
+        when review.evidence_type = 'account_identity'
+          then coalesce(candidate.merged_into, candidate.id)
+        else coalesce(existing.merged_into, existing.id)
+      end
     join public.sidestream_customer_identity_links install_link
       on install_link.license_namespace = install.license_namespace
       and install_link.profile_id = install.profile_id
@@ -761,20 +858,55 @@ function exactIdentitySql(lock: boolean): string {
       and activation_link.link_value = $2::text
     join public.sidestream_customer_identity_links account_link
       on account_link.license_namespace = review.license_namespace
-      and account_link.profile_id = activation_link.profile_id
+      and account_link.profile_id = case
+        when review.evidence_type = 'account_identity'
+          then coalesce(existing.merged_into, existing.id)
+        else activation_link.profile_id
+      end
       and account_link.link_type = 'account_identity'
       and account_link.link_value = $3::text
     join public.sidestream_customer_identity_links receipt_link
       on receipt_link.license_namespace = review.license_namespace
       and receipt_link.profile_id = activation_link.profile_id
       and receipt_link.link_type = 'installer_receipt_hash'
-      and receipt_link.created_at = review.created_at
+      and (
+        review.evidence_type = 'account_identity'
+        or receipt_link.created_at = review.created_at
+      )
     where review.license_namespace = $1
-      and review.evidence_type = 'install_identity_hash'
-      and review.evidence_trust = 'client_association'
       and review.attachment_source = 'activation_claim'
       and review.review_state = 'pending_review'
-      and install.profile_id = coalesce(existing.merged_into, existing.id)
+      and (
+        (
+          review.evidence_type = 'install_identity_hash'
+          and review.evidence_trust = 'client_association'
+          and review.evidence_value_hash = encode(
+            digest('install_identity_hash:' || install.install_id_hash, 'sha256'),
+            'hex'
+          )
+        )
+        or (
+          review.evidence_type = 'account_identity'
+          and review.evidence_trust = 'verified_server'
+          and review.evidence_value_hash = encode(
+            digest('account_identity:' || $3::text, 'sha256'),
+            'hex'
+          )
+          and (
+            coalesce(candidate.merged_into, candidate.id) <>
+              coalesce(existing.merged_into, existing.id)
+            or exists (
+              select 1
+              from public.sidestream_paid_telemetry_profile_bindings exact_binding
+              where exact_binding.license_namespace = $1
+                and exact_binding.activation_ref = $2::uuid
+                and exact_binding.account_id = $3::uuid
+                and exact_binding.install_id_hash = install.install_id_hash
+                and exact_binding.installer_receipt_id_hash = receipt_link.link_value
+            )
+          )
+        )
+      )
     order by review.created_at, review.id, receipt_link.id
     limit 3${lock ? " for update of review, candidate, existing, install, install_link, activation_link, account_link, receipt_link" : ""}
   `;
@@ -871,10 +1003,10 @@ function paidPathAgrees(path: PaidPathRow, namespace: PaidTelemetryRepairNamespa
     path.checkout_state === "completed" &&
     (path.checkout_account_id === null || path.checkout_account_id === path.account_id) &&
     path.paid_payment_state === "active" &&
-    path.paid_claim_state === "claimed" &&
+    path.paid_claim_state === path.claim_state &&
+    ["unclaimed", "claimed"].includes(path.paid_claim_state) &&
     path.paid_completed &&
     path.paid_authorization_active &&
-    path.claim_state === "claimed" &&
     path.claim_active &&
     path.claim_account_ref === path.account_id &&
     path.claim_entitlement_ref === path.entitlement_id &&
@@ -910,15 +1042,20 @@ function exactIdentityAgrees(identity: ExactIdentityRow): boolean {
     HASH.test(identity.install_id_hash) &&
     HASH.test(identity.receipt_id_hash) &&
     identity.candidate_root_id === identity.activation_profile_id &&
-    identity.existing_root_id === identity.install_profile_id &&
-    identity.candidate_account_count === 1 &&
-    (
-      identity.candidate_root_id === identity.existing_root_id
-        ? identity.existing_account_count === 1
-        : identity.existing_account_count === 0
-    ) &&
-    new Date(identity.review_created_at).toISOString() ===
-      new Date(identity.receipt_created_at).toISOString();
+    (identity.review_kind === "install_bridge"
+      ? identity.existing_root_id === identity.install_profile_id &&
+        identity.candidate_account_count === 1 &&
+        (identity.candidate_root_id === identity.existing_root_id
+          ? identity.existing_account_count === 1
+          : identity.existing_account_count === 0) &&
+        new Date(identity.review_created_at).toISOString() ===
+          new Date(identity.receipt_created_at).toISOString()
+      : identity.review_kind === "account_bridge" &&
+        identity.candidate_root_id === identity.install_profile_id &&
+        identity.existing_account_count === 1 &&
+        (identity.candidate_root_id === identity.existing_root_id
+          ? identity.candidate_account_count === 1
+          : identity.candidate_account_count === 0));
 }
 
 function bindingAgrees(

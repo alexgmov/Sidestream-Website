@@ -243,12 +243,60 @@ test("paid activation binds only one exact account/install/receipt lineage", asy
     assert.equal(replay.outcome, "installation_claimed_recorded");
     assert.equal(database.bindings.length, 1);
     assert.equal(database.mergeAudits, 1);
-    assert.equal(database.stageValues.size, 1);
+    assert.equal(database.stageValues.size, 2);
     assert.deepEqual(database.identityLookups[0], [
       INSTALL_ID_HASH,
       INSTALLER_RECEIPT_ID_HASH,
       ACCOUNT_ID,
     ]);
+  });
+
+  await t.test("one verified pending account owner converges an unclaimed current path", async () => {
+    const database = createPaidBindingDatabase({
+      claimRows: [matchingClaim({
+        claim_state: "unclaimed",
+        paid_claim_state: "unclaimed",
+        claim_activation_ref: ACTIVATION_REF,
+      })],
+      identityRows: [exactIdentity({
+        paidProfileId: INSTALL_PROFILE_ID,
+        installProfileId: INSTALL_PROFILE_ID,
+        accountProfileId: PAID_PROFILE_ID,
+      })],
+    });
+    const first = await runPaidActivationLinkage(database);
+    const replay = await runPaidActivationLinkage(database);
+    assert.equal(first.outcome, "installation_claimed_recorded");
+    assert.equal(replay.outcome, "installation_claimed_recorded");
+    assert.equal(database.claimRows[0].claim_state, "claimed");
+    assert.equal(database.claimRows[0].paid_claim_state, "claimed");
+    assert.equal(database.bindings.length, 1);
+    assert.equal(database.mergeAudits, 1);
+    assert.equal(database.stageValues.size, 2);
+  });
+
+  await t.test("a second eligible reviewed account owner aborts before mutation", async () => {
+    const first = exactIdentity({
+      paidProfileId: INSTALL_PROFILE_ID,
+      installProfileId: INSTALL_PROFILE_ID,
+      accountProfileId: PAID_PROFILE_ID,
+    });
+    const database = createPaidBindingDatabase({
+      claimRows: [matchingClaim({
+        claim_state: "unclaimed",
+        paid_claim_state: "unclaimed",
+        claim_activation_ref: ACTIVATION_REF,
+      })],
+      identityRows: [first, {
+        ...first,
+        account_profile_id: "70000000-0000-4000-8000-000000000099",
+      }],
+    });
+    const result = await runPaidActivationLinkage(database);
+    assert.equal(result.outcome, "installation_identity_conflict");
+    assert.equal(database.bindings.length, 0);
+    assert.equal(database.mergeAudits, 0);
+    assert.equal(database.stageValues.size, 0);
   });
 
   await t.test("malformed current identity fails before database access", async () => {
@@ -469,6 +517,7 @@ function matchingClaim(overrides = {}) {
     claim_account_ref: ACCOUNT_ID,
     claim_entitlement_ref: ENTITLEMENT_ID,
     claim_state: "claimed",
+    paid_claim_state: "claimed",
     claim_expired: false,
     payment_state: "active",
     payment_verified: true,
@@ -487,11 +536,13 @@ function exactIdentity({
   installerReceiptIdHash = INSTALLER_RECEIPT_ID_HASH,
   paidProfileId = PAID_PROFILE_ID,
   installProfileId = INSTALL_PROFILE_ID,
+  accountProfileId = PAID_PROFILE_ID,
   installOwnerAccountId = null,
 } = {}) {
   return {
     paid_profile_id: paidProfileId,
     install_profile_id: installProfileId,
+    account_profile_id: accountProfileId,
     install_membership_id: "90000000-0000-4000-8000-000000000009",
     install_id_hash: installIdHash,
     install_identity_link_id: "a0000000-0000-4000-8000-000000000010",
@@ -524,12 +575,16 @@ function createPaidBindingDatabase({
   database.mergeProfiles = async (_client, environment, input) => {
     assert.equal(environment, "production");
     assert.equal(input.leftProfileId, database.identityRows[0].paid_profile_id);
-    assert.equal(input.rightProfileId, database.identityRows[0].install_profile_id);
+    assert.equal(input.rightProfileId,
+      database.identityRows[0].paid_profile_id === database.identityRows[0].install_profile_id
+        ? database.identityRows[0].account_profile_id
+        : database.identityRows[0].install_profile_id);
     const survivorId = database.identityRows[0].install_profile_id;
     if (input.leftProfileId !== input.rightProfileId) database.mergeAudits += 1;
     for (const row of database.identityRows) {
       row.paid_profile_id = survivorId;
       row.install_profile_id = survivorId;
+      row.account_profile_id = survivorId;
       row.install_owner_account_id = ACCOUNT_ID;
     }
     return {
@@ -566,7 +621,14 @@ function createPaidBindingDatabase({
           return { rows: [] };
         }
         claim.claim_activation_ref = params[1];
+        claim.claim_state = "claimed";
         return { rows: [{ id: claim.claim_id }] };
+      }
+      if (sql.includes("paid-telemetry-binding:claim-checkout")) {
+        const claim = database.claimRows.find((row) => row.checkout_id === params[0]);
+        if (!claim || claim.payment_state !== "active") return { rows: [] };
+        claim.paid_claim_state = "claimed";
+        return { rows: [{ id: claim.checkout_id }] };
       }
       if (sql.includes("paid-telemetry-binding:insert-binding")) {
         if (database.bindings.length === 0) {

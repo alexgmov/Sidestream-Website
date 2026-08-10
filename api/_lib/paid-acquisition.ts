@@ -1636,6 +1636,7 @@ export async function associatePaidAcquisitionActivationWithOutcome(
       claim_account_ref: string | null;
       claim_entitlement_ref: string | null;
       claim_state: string;
+      paid_claim_state: string;
       claim_expired: boolean;
       payment_state: string;
       payment_verified: boolean;
@@ -1654,6 +1655,7 @@ export async function associatePaidAcquisitionActivationWithOutcome(
           claim.account_ref as claim_account_ref,
           claim.entitlement_ref as claim_entitlement_ref,
           claim.claim_state,
+          paid.claim_state as paid_claim_state,
           claim.expires_at <= now() as claim_expired,
           paid.payment_state,
           (
@@ -1707,7 +1709,8 @@ export async function associatePaidAcquisitionActivationWithOutcome(
       return { outcome: "receipt_activation_no_match" };
     }
     if (
-      claim.claim_state !== "claimed" ||
+      claim.claim_state !== claim.paid_claim_state ||
+      !["unclaimed", "claimed"].includes(claim.claim_state) ||
       claim.claim_account_ref !== expectedAccountId ||
       claim.claim_entitlement_ref !== activation.activation_entitlement_ref ||
       claim.entitlement_account_ref !== expectedAccountId ||
@@ -1795,6 +1798,21 @@ export async function associatePaidAcquisitionActivationWithOutcome(
     const addEvidence = dependencies.addEvidence || integrity.addTrustedDeliveryEvidence;
     const nestedTransaction = <T>(callback: (runner: PoolClient) => Promise<T>) =>
       callback(client);
+    const authenticationStage = await recordStage({
+      acquisitionId: claim.acquisition_id,
+      stage: "authentication_completed",
+      stableServerReference:
+        `google-account:${claim.acquisition_id}:${expectedAccountId}`,
+      occurredAt,
+    }, { transaction: nestedTransaction, namespace: environment });
+    if (authenticationStage.ownerConflict) {
+      return { outcome: "acquisition_ownership_conflict" };
+    }
+    await addEvidence({
+      acquisitionId: claim.acquisition_id,
+      evidence: "authenticated_account",
+    }, { transaction: nestedTransaction, namespace: environment });
+
     const stage = await recordStage({
       acquisitionId: claim.acquisition_id,
       stage: "installation_claimed",
@@ -1814,9 +1832,11 @@ export async function associatePaidAcquisitionActivationWithOutcome(
         /* paid-telemetry-binding:bind-claim */
         update public.sidestream_paid_acquisition_claims
         set activation_ref = $2::uuid,
+            claim_state = 'claimed',
             updated_at = now()
         where id = $1::uuid
           and (activation_ref is null or activation_ref = $2::uuid)
+          and claim_state in ('unclaimed', 'claimed')
         returning id
       `,
       [claim.claim_id, activation.activation_ref],
@@ -1824,12 +1844,30 @@ export async function associatePaidAcquisitionActivationWithOutcome(
     if (associated.rows.length !== 1) {
       throw new Error("Paid activation claim changed while locked");
     }
+    const claimedCheckout = await client.query<{ id: string }>(
+      `
+        /* paid-telemetry-binding:claim-checkout */
+        update public.sidestream_paid_acquisition_checkouts
+        set claim_state = 'claimed', updated_at = now()
+        where id = $1::uuid
+          and environment = $2
+          and payment_state = 'active'
+          and claim_state in ('unclaimed', 'claimed')
+        returning id
+      `,
+      [claim.checkout_id, environment],
+    );
+    if (claimedCheckout.rows.length !== 1) {
+      throw new Error("Paid Checkout claim changed while locked");
+    }
 
     const mergeProfiles = dependencies.mergeProfiles ||
       (await import("./customer-profiles.js")).mergeCustomerProfilesInTransaction;
     const merge = await mergeProfiles(client, environment, {
       leftProfileId: identity.paid_profile_id,
-      rightProfileId: identity.install_profile_id,
+      rightProfileId: identity.paid_profile_id === identity.install_profile_id
+        ? identity.account_profile_id
+        : identity.install_profile_id,
       evidenceType: "installer_receipt_hash",
       evidenceValueHash: bindingKey,
       initiatedBy: "system",
@@ -1851,7 +1889,8 @@ export async function associatePaidAcquisitionActivationWithOutcome(
         installerReceiptIdHash,
       ) ||
       converged[0].paid_profile_id !== merge.survivorId ||
-      converged[0].install_profile_id !== merge.survivorId
+      converged[0].install_profile_id !== merge.survivorId ||
+      converged[0].account_profile_id !== merge.survivorId
     ) {
       throw new Error("Exact paid telemetry identities did not converge");
     }
@@ -1889,6 +1928,7 @@ export async function associatePaidAcquisitionActivationWithOutcome(
 type ExactPaidTelemetryIdentityRow = {
   paid_profile_id: string;
   install_profile_id: string;
+  account_profile_id: string;
   install_membership_id: string;
   install_id_hash: string;
   install_identity_link_id: string;
@@ -1914,11 +1954,13 @@ async function selectExactPaidTelemetryIdentity(
       /* paid-telemetry-binding:select-exact-identities */
       select activation_link.profile_id as paid_profile_id,
         install.profile_id as install_profile_id,
+        coalesce(direct_account.profile_id, reviewed_account.profile_id)
+          as account_profile_id,
         install.id as install_membership_id,
         install.install_id_hash,
         install_link.id as install_identity_link_id,
         activation_link.id as activation_identity_link_id,
-        account_link.id as account_identity_link_id,
+        coalesce(direct_account.id, reviewed_account.id) as account_identity_link_id,
         receipt_link.id as installer_receipt_identity_link_id,
         receipt_link.link_value as installer_receipt_id_hash,
         install_account.link_value as install_owner_account_id
@@ -1942,11 +1984,35 @@ async function selectExactPaidTelemetryIdentity(
         and receipt_link.profile_id = activation_link.profile_id
         and receipt_link.link_type = 'installer_receipt_hash'
         and receipt_link.link_value = $4
-      join public.sidestream_customer_identity_links account_link
-        on account_link.license_namespace = activation_link.license_namespace
-        and account_link.profile_id = activation_link.profile_id
-        and account_link.link_type = 'account_identity'
-        and account_link.link_value = $5::text
+      left join public.sidestream_customer_identity_links direct_account
+        on direct_account.license_namespace = activation_link.license_namespace
+        and direct_account.profile_id = activation_link.profile_id
+        and direct_account.link_type = 'account_identity'
+        and direct_account.link_value = $5::text
+      left join public.sidestream_customer_identity_reviews account_review
+        on account_review.license_namespace = activation_link.license_namespace
+        and account_review.evidence_type = 'account_identity'
+        and account_review.evidence_value_hash = encode(
+          digest('account_identity:' || $5::text, 'sha256'),
+          'hex'
+        )
+        and account_review.evidence_trust = 'verified_server'
+        and account_review.attachment_source = 'activation_claim'
+        and account_review.review_state = 'pending_review'
+      left join public.sidestream_customer_profiles reviewed_candidate
+        on reviewed_candidate.id = account_review.candidate_profile_id
+        and reviewed_candidate.license_namespace = account_review.license_namespace
+      left join public.sidestream_customer_profiles reviewed_existing
+        on reviewed_existing.id = account_review.existing_profile_id
+        and reviewed_existing.license_namespace = account_review.license_namespace
+      left join public.sidestream_customer_identity_links reviewed_account
+        on reviewed_account.license_namespace = account_review.license_namespace
+        and reviewed_account.profile_id = coalesce(
+          reviewed_existing.merged_into,
+          reviewed_existing.id
+        )
+        and reviewed_account.link_type = 'account_identity'
+        and reviewed_account.link_value = $5::text
       left join lateral (
         select conflicting.link_value
         from public.sidestream_customer_identity_links conflicting
@@ -1961,8 +2027,16 @@ async function selectExactPaidTelemetryIdentity(
         and activation_link.license_namespace = $1
         and activation_link.link_type = 'activation_record'
         and activation_link.link_value = $2::text
+        and (
+          direct_account.id is not null
+          or (
+            reviewed_account.id is not null
+            and coalesce(reviewed_candidate.merged_into, reviewed_candidate.id) =
+              activation_link.profile_id
+          )
+        )
       limit 2
-      for update of install, install_link, activation_link, receipt_link, account_link
+      for update of install, install_link, activation_link, receipt_link
     `,
     [
       input.environment,
@@ -1983,11 +2057,20 @@ function exactPaidIdentityOwnersAgree(
 ) {
   return identity.install_id_hash === installIdHash &&
     identity.installer_receipt_id_hash === installerReceiptIdHash &&
+    new Set([
+      identity.paid_profile_id,
+      identity.install_profile_id,
+      identity.account_profile_id,
+    ]).size <= 2 &&
     (
-      identity.paid_profile_id === identity.install_profile_id
+      identity.install_profile_id === identity.account_profile_id
         ? identity.install_owner_account_id === null ||
           identity.install_owner_account_id === expectedAccountId
-        : identity.install_owner_account_id === null
+        : identity.install_owner_account_id === null &&
+          (
+            identity.paid_profile_id === identity.install_profile_id ||
+            identity.paid_profile_id === identity.account_profile_id
+          )
     );
 }
 
