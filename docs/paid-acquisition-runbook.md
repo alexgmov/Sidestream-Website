@@ -729,9 +729,13 @@ other than `/` or `/var/root`. Missing, root, invalid, wrong-owner, or direct-ro
 invocation fails before any local path is resolved; root's home is never a
 fallback.
 
-Apply recognizes only the exact Adobe Premiere Pro executable and a
-`CEPHtmlEngine` command carrying the exact Production extension ID
-`com.sidestream.downloader.panel`. It asks Premiere to quit normally, waits a
+Apply recognizes Premiere only when the process command starts with the actual
+Adobe Premiere Pro app executable under `/Applications`, including the 2025 and
+2026 forms, or is an exact Adobe Premiere Pro process name. An AdobeIPCBroker
+command is not Premiere merely because a later `-launchedbyvulcan` argument
+contains the full Premiere executable path. The separate Production CEP matcher
+still requires a `CEPHtmlEngine` command carrying the exact extension ID
+`com.sidestream.downloader.panel`. Apply asks Premiere to quit normally, waits a
 bounded grace period, then sends `SIGTERM` only to any remaining exact
 Production CEP PIDs and waits once more. It never signals Premiere or Test,
 paidtest, paiduitest, localrc, or unrelated CEP engines. If exact Premiere or
