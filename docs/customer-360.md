@@ -336,7 +336,9 @@ transaction plus namespace/journey advisory locks and may add only missing
 authentication/current-install stages and trusted evidence, the exact claim
 activation edge, an exact matching Checkout/claim transition from `unclaimed`
 to `claimed`, deterministic merge/audit, immutable binding, and the existing
-merge-triggered commerce refresh. It never guesses or rewrites first touch.
+merge-triggered commerce refresh. The sixth boundary may additionally insert
+one exact current `stripe_customer` link on the deterministic live survivor.
+It never guesses or rewrites first touch.
 
 The operator emits only mode, namespace, sanitized target and immutable-journey
 fingerprints, one bounded reason, booleans, and counts capped at three. It omits
@@ -345,11 +347,12 @@ Apply revalidates all live eligibility facts and requires the operation,
 namespace, connected-target fingerprint, and journey fingerprint copied from a
 fresh dry-run. An identical confirmed replay is a no-op.
 
-#### Five exact paid-telemetry repair boundaries
+#### Six exact paid-telemetry repair boundaries
 
-The guarded correction recognizes five exact boundaries. The first four are
-compared below; the fifth is a transaction-scoped commerce extension of the
-fourth, not a looser version of any earlier boundary.
+The guarded correction recognizes six exact boundaries. The first four are
+compared below; the fifth is a transaction-scoped commerce extension and the
+sixth is an exact-current-Customer identity extension, not a looser version of
+any earlier boundary.
 
 | Boundary | Simple install-profile split | Single pending-review path | Direct historical plus reviewed active path | Exact legacy entitlement snapshot |
 | --- | --- | --- | --- | --- |
@@ -390,7 +393,9 @@ trusted activation + exact current install/receipt
                     |
  positive attached commerce OR one exact zero/unowned Checkout fact
                     |
- authentication + claim state + merge + commerce + binding (one transaction)
+ exact Checkout/account cus_ agreement + zero link/review/alias pre-state
+                    |
+ authentication + claim state + merge + commerce + binding + Customer link
                     |
  one live telemetry / commerce / lookup / funnel root
 ```
@@ -465,6 +470,29 @@ Its refusal matrix covers every nearby mismatch and failed totals refresh, and
 replay is a no-op. Deployed `6118a87` rejected this exact pre-state read-only
 without mutation; that is historical fail-closed evidence only, not deployment,
 apply authorization, current Production eligibility, or live qualification.
+
+The sixth boundary accepts only the current Stripe Customer already stored on
+the exact selected path. The completed active Checkout intent and its claimed
+authenticated account must contain the same bounded `cus_` value. Across the
+trusted namespace that value must have either zero identity links, which is the
+single recoverable pre-state, or exactly one `stripe_customer` link on the
+deterministic live survivor, which is the repaired state. A different owner,
+second or differently typed value link, matching identity review, commerce
+alias, invalid/mismatched Customer value, changed locked row, or any earlier
+path, binding, lifecycle, identity, or commerce failure refuses.
+
+On a split journey, the transaction performs the already-proven merge and
+other required recovery first, then inserts the Customer link on the survivor.
+On the deployed post-repair shape, it takes a customer-link-only branch: stages,
+trusted evidence, claim rows, merge/audit, commerce, totals, and immutable
+binding are not written again. The operator does not infer by email, call
+Stripe, create a commerce alias/provider event, or attach older account/install
+history. Rediscovery and exact `cus_` lookup must resolve the same live survivor
+before `already_repaired`; replay is a no-op. Disposable proof is
+`npm run replay:paid-telemetry-handoff -- --expect-missing-current-customer-repaired`.
+Deployed `19c242d` repaired exact Checkout Session and PaymentIntent commerce
+ownership but left this exact legacy Customer lookup absent. That deployed fact
+is not authorization to query or mutate Production from this runbook.
 
 Historical evidence is deliberately separate: against deployed commit
 `aa5a604`, the earlier read-only Production dry-run rejected the real journey as

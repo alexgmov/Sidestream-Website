@@ -232,9 +232,10 @@ npm run replay:paid-telemetry-handoff -- --expect-pending-review-repaired
 npm run replay:paid-telemetry-handoff -- --expect-reviewed-path-repaired
 npm run replay:paid-telemetry-handoff -- --expect-legacy-entitlement-repaired
 npm run replay:paid-telemetry-handoff -- --expect-unowned-commerce-repaired
+npm run replay:paid-telemetry-handoff -- --expect-missing-current-customer-repaired
 ```
 
-All five forms require the approved disposable `SIDESTREAM_TEST_POSTGRES_URL`, use
+All six forms require the approved disposable `SIDESTREAM_TEST_POSTGRES_URL`, use
 real migration, identity, usage, commerce, exact lookup, and funnel code, and
 print privacy-safe summaries. The default replay proves the simple
 install-profile split: one live/one merged profile, eight expected stages
@@ -253,7 +254,7 @@ rollback-contained operator apply, runtime convergence, matching
 stable journey fingerprint, and common commerce/lookup/funnel ownership. A
 second eligible activation path, second reviewed owner, mismatched claim states,
 or any stale eligibility fact fails closed and rolls back the whole transaction.
-All five summaries omit fixture UUIDs, hashes, email, Stripe references,
+All six summaries omit fixture UUIDs, hashes, email, Stripe references,
 tokens, and connection strings. No form inspects or repairs a deployed database.
 
 The third replay keeps two independently valid active paths: one direct
@@ -309,6 +310,25 @@ dispute, inquiry, missing positive paid truth, and failed totals refresh.
 Deployed `6118a87` rejected this exact pre-state read-only without mutation;
 preserve that only as fail-closed history, not deployment, authorization,
 current Production eligibility, or live qualification.
+
+The sixth replay starts from the deployed post-repair topology: one live
+survivor, one merge audit, one authentication stage, one installation stage,
+one immutable binding, and positive attached commerce already exist, but the
+exact current Stripe Customer link is absent. The locked completed Checkout
+intent and claimed authenticated account must share the same bounded `cus_`
+value, with no identity link of any type, matching identity review, or commerce
+alias owning it. Apply inserts only one `stripe_customer` link on the proven
+survivor; it does not repeat merge, stages, claim mutation, commerce recovery,
+totals refresh, or binding, and it preserves an older unrelated Customer link.
+Post-discovery plus exact Customer lookup must converge to `already_repaired`;
+replay is a count-for-count no-op. Invalid/mismatched values, a different or
+second owner, conflicting review/alias/path, changed locked state, and every
+earlier lifecycle/identity/commerce/binding refusal fail closed.
+
+Deployed `19c242d` repaired exact Checkout Session and PaymentIntent commerce
+ownership but left this exact legacy Customer lookup absent. Preserve that as
+scope evidence only. This runbook does not authorize a Production query, apply,
+provider call, deployment, push, migration, or FlowState change.
 
 The earlier read-only Production dry-run on deployed commit `aa5a604` rejected
 the actual pending-review topology as ineligible and wrote nothing. Record that
