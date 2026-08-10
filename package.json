@@ -42,7 +42,8 @@
     "deploy:production": "npm run verify:production-source && npm run test:entitlement && npx vercel@latest build --prod --yes --scope alex-3685s-projects && npm run verify:vercel-build && npx vercel@latest deploy --prebuilt --prod --yes --scope alex-3685s-projects && npm run promote:production-canonical && npm run verify:production-live",
     "preview": "vite preview",
     "pricing:sync": "node scripts/sync-pricing-contract.mjs && node scripts/build-paid-landing.mjs",
-    "pricing:check": "node scripts/sync-pricing-contract.mjs --check && node scripts/build-paid-landing.mjs --check && node --test tests/pricing-contract.test.mjs"
+    "pricing:check": "node scripts/sync-pricing-contract.mjs --check && node scripts/build-paid-landing.mjs --check && node --test tests/pricing-contract.test.mjs",
+    "replay:paid-telemetry-handoff": "node --experimental-strip-types scripts/replay-paid-telemetry-handoff.mjs"
   },
   "dependencies": {
     "@paper-design/shaders-react": "^0.0.76",
