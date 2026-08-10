@@ -318,6 +318,33 @@ test("paid activation binds only one exact account/install/receipt lineage", asy
   });
 });
 
+test("already-entitled settled Checkout without auth, activation, or exact install binding is pre-auth stale state, not a finalizer defect", async () => {
+  const database = createPaidBindingDatabase({
+    activationRows: [],
+    claimRows: [matchingClaim({
+      claim_state: "unclaimed",
+      paid_claim_state: "unclaimed",
+      claim_activation_ref: null,
+      claim_account_ref: ACCOUNT_ID,
+      claim_entitlement_ref: ENTITLEMENT_ID,
+      payment_state: "active",
+      payment_verified: true,
+      entitlement_account_ref: ACCOUNT_ID,
+      entitlement_status: "active",
+    })],
+    identityRows: [],
+  });
+
+  const result = await runPaidActivationLinkage(database);
+
+  assert.equal(result.outcome, "receipt_activation_no_match");
+  assert.equal(database.bindings.length, 0);
+  assert.equal(database.stageValues.size, 0);
+  assert.equal(database.mergeAudits, 0);
+  assert.equal(database.claimRows[0].claim_state, "unclaimed");
+  assert.equal(database.claimRows[0].claim_activation_ref, null);
+});
+
 test("Google OAuth return sanitization admits only the exact paid claim shape", () => {
   assert.equal(
     sanitizeAccountNextPath(
