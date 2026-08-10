@@ -3,12 +3,23 @@
 import { runPaidTelemetryHandoffFixture } from "../tests/helpers/paid-telemetry-handoff-fixture.mjs";
 
 const options = process.argv.slice(2);
-const unknown = options.filter((option) => option !== "--expect-broken");
-if (unknown.length > 0 || options.filter((option) => option === "--expect-broken").length > 1) {
-  console.error("Usage: npm run replay:paid-telemetry-handoff -- [--expect-broken]");
+const diagnosticOptions = new Set([
+  "--expect-broken",
+  "--expect-pending-review-broken",
+]);
+const unknown = options.filter((option) => !diagnosticOptions.has(option));
+if (
+  unknown.length > 0 ||
+  options.length > 1
+) {
+  console.error(
+    "Usage: npm run replay:paid-telemetry-handoff -- [--expect-broken|--expect-pending-review-broken]",
+  );
   process.exitCode = 1;
 } else {
-  const expectation = options.includes("--expect-broken") ? "broken" : "repaired";
+  const expectation = options.includes("--expect-pending-review-broken")
+    ? "pending-review-broken"
+    : options.includes("--expect-broken") ? "broken" : "repaired";
   runPaidTelemetryHandoffFixture({ expectation }).then((summary) => {
     console.log(`Paid telemetry handoff replay observed the expected ${expectation} contract.`);
     console.log(JSON.stringify(summary, null, 2));
