@@ -27,7 +27,7 @@ test("local reset is Production-only, dry-run by default, and strongly confirms 
   ]).apply, true);
 });
 
-test("process check identifies only exact Production CEP and Premiere processes", () => {
+test("process check identifies executable-first Premiere and exact Production CEP only", () => {
   const blockers = findBlockingProductionProcesses(`
 101 /Applications/Adobe Premiere Pro 2025/Adobe Premiere Pro.app/Contents/MacOS/Adobe Premiere Pro
 102 CEPHtmlEngine --extension com.sidestream.downloader.panel /Library/Application Support/Adobe/CEP/extensions/Sidestream
@@ -38,11 +38,20 @@ test("process check identifies only exact Production CEP and Premiere processes"
 107 CEPHtmlEngine --extension com.example.keep.panel
 108 CEPHtmlEngine Helper --params_extensionid=com.sidestream.downloader.panel
 109 crashpad_handler /Applications/Adobe Premiere Pro 2025/Adobe Premiere Pro.app
+110 /Library/Application Support/Adobe/Adobe Desktop Common/IPCBox/AdobeIPCBroker.app/Contents/MacOS/AdobeIPCBroker -launchedbyvulcan /Applications/Adobe Premiere Pro 2025/Adobe Premiere Pro.app/Contents/MacOS/Adobe Premiere Pro
+111 /Applications/Adobe Premiere Pro 2026/Adobe Premiere Pro 2026.app/Contents/MacOS/Adobe Premiere Pro 2026 -psn_0_12345
+112 Adobe Premiere Pro
+113 Adobe Premiere Pro 2025
+114 Adobe Premiere Pro 2026
 `);
   assert.deepEqual(blockers, [
     { pid: 101, kind: "premiere" },
     { pid: 102, kind: "production-cep" },
     { pid: 108, kind: "production-cep" },
+    { pid: 111, kind: "premiere" },
+    { pid: 112, kind: "premiere" },
+    { pid: 113, kind: "premiere" },
+    { pid: 114, kind: "premiere" },
   ]);
 });
 

@@ -174,7 +174,7 @@ export function findBlockingProductionProcesses(psOutput) {
     if (!match) continue;
     const command = match[2];
     const premiere = (
-      /(?:^|[\\/])Adobe Premiere Pro(?: \d{4})?\.app[\\/]Contents[\\/]MacOS[\\/]Adobe Premiere Pro(?: \d{4})?(?:\s|$)/i.test(command) ||
+      /^[/\\]Applications[/\\](?:Adobe Premiere Pro(?: \d{4})?[/\\])?Adobe Premiere Pro(?: \d{4})?\.app[/\\]Contents[/\\]MacOS[/\\]Adobe Premiere Pro(?: \d{4})?(?:\s|$)/i.test(command) ||
       /^Adobe Premiere Pro(?: \d{4})?$/i.test(command)
     );
     const productionCep = /\bCEPHtmlEngine\b/i.test(command) &&
