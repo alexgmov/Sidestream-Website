@@ -177,9 +177,9 @@ export async function runPaidTelemetryHandoffFixture({
   expectation = "repaired",
   environment = process.env,
 } = {}) {
-  if (!["repaired", "broken", "pending-review-broken"].includes(expectation)) {
+  if (!["repaired", "broken", "pending-review-repaired"].includes(expectation)) {
     throw new TypeError(
-      "Paid telemetry handoff expectation must be repaired, broken, or pending-review-broken",
+      "Paid telemetry handoff expectation must be repaired, broken, or pending-review-repaired",
     );
   }
 
@@ -208,8 +208,8 @@ export async function runPaidTelemetryHandoffFixture({
       namespace: "test",
     };
 
-    if (expectation === "pending-review-broken") {
-      const summary = await runPendingReviewBrokenScenario({
+    if (expectation === "pending-review-repaired") {
+      const summary = await runPendingReviewRepairedScenario({
         pool,
         quotedCrm,
         quotedTelemetry,
@@ -219,7 +219,7 @@ export async function runPaidTelemetryHandoffFixture({
         readTransaction,
         integrityDependencies,
       });
-      assertPendingReviewBrokenExpectation(summary);
+      assertPendingReviewRepairedExpectation(summary);
       return summary;
     }
 
@@ -458,7 +458,7 @@ export async function runPaidTelemetryHandoffFixture({
   }
 }
 
-async function runPendingReviewBrokenScenario({
+async function runPendingReviewRepairedScenario({
   pool,
   quotedCrm,
   quotedTelemetry,
@@ -610,41 +610,34 @@ async function runPendingReviewBrokenScenario({
       acquisitionIntegrity.addTrustedDeliveryEvidence(input, options),
     mergeProfiles: customerProfiles.mergeCustomerProfilesInTransaction,
   };
-  const currentFinalizer = await paidAcquisition.associatePaidAcquisitionActivationWithOutcome(
-    linkageInput,
-    linkageDependencies,
-  );
-  const finalizerPendingReviewProbe = await rollbackScenario(
-    pool,
-    quotedCrm,
-    (client) => paidAcquisition.associatePaidAcquisitionActivationWithOutcome(
-      linkageInput,
-      { ...linkageDependencies, transaction: (callback) => callback(client) },
-    ),
-    (client) => markCurrentClaimClaimed(client),
-  );
-
   const guardedDryRun = await readTransaction((client) =>
     paidTelemetryRepair.inspectPaidTelemetryHandoffRepair(client, {
       acquisitionId: IDS.acquisition,
       namespace: "test",
     }));
-  const guardedPendingReviewProbe = await rollbackScenario(
+  const guardedApplyProbe = await rollbackScenario(
     pool,
     quotedCrm,
-    (client) => paidTelemetryRepair.inspectPaidTelemetryHandoffRepair(client, {
+    (client) => paidTelemetryRepair.applyPaidTelemetryHandoffRepair(client, {
       acquisitionId: IDS.acquisition,
       namespace: "test",
+      confirmJourney: guardedDryRun.journeyFingerprint,
     }),
-    async (client) => {
-      await markCurrentClaimClaimed(client);
-      await client.query(
-        `delete from public.sidestream_paid_acquisition_claims
-         where id = any($1::uuid[])`,
-        [HISTORICAL_PAID_REPLAYS.map((replay) => replay.claim)],
-      );
-    },
   );
+
+  const currentFinalizer = await paidAcquisition.associatePaidAcquisitionActivationWithOutcome(
+    linkageInput,
+    linkageDependencies,
+  );
+  const finalizerReplay = await paidAcquisition.associatePaidAcquisitionActivationWithOutcome(
+    linkageInput,
+    linkageDependencies,
+  );
+  const guardedAfterRuntime = await readTransaction((client) =>
+    paidTelemetryRepair.inspectPaidTelemetryHandoffRepair(client, {
+      acquisitionId: IDS.acquisition,
+      namespace: "test",
+    }));
 
   return pendingReviewPrivacySafeSummary({
     pool,
@@ -654,9 +647,10 @@ async function runPendingReviewBrokenScenario({
     telemetryOwner,
     accountOwner: accountAttachment.profileId,
     currentFinalizer,
-    finalizerPendingReviewProbe,
+    finalizerReplay,
     guardedDryRun,
-    guardedPendingReviewProbe,
+    guardedApplyProbe,
+    guardedAfterRuntime,
   });
 }
 
@@ -1235,9 +1229,10 @@ async function pendingReviewPrivacySafeSummary({
   telemetryOwner,
   accountOwner,
   currentFinalizer,
-  finalizerPendingReviewProbe,
+  finalizerReplay,
   guardedDryRun,
-  guardedPendingReviewProbe,
+  guardedApplyProbe,
+  guardedAfterRuntime,
 }) {
   const shape = await pool.query(
     `select
@@ -1267,7 +1262,8 @@ async function pendingReviewPrivacySafeSummary({
         join ${quotedCrm}.sidestream_activation_sessions activation
           on activation.id = claim.activation_ref
         where claim.id = $3::uuid
-          and claim.claim_state = 'unclaimed'
+          and claim.claim_state = 'claimed'
+          and paid.claim_state = 'claimed'
           and claim.expires_at > now()
           and claim.activation_ref = $2::uuid
           and claim.account_ref = $4::uuid
@@ -1280,7 +1276,7 @@ async function pendingReviewPrivacySafeSummary({
           and activation.account_id = $4::uuid
           and activation.license_id = $5::uuid
           and activation.completed_at is not null
-          and activation.expires_at > now()) as active_unclaimed_current_claim,
+          and activation.expires_at > now()) as active_current_claim,
        (select count(*)::int
         from ${quotedCrm}.sidestream_acquisitions acquisition
         where acquisition.id = $1::uuid
@@ -1314,7 +1310,11 @@ async function pendingReviewPrivacySafeSummary({
          as current_account_or_stripe_links,
        (select count(*)::int
         from ${quotedCrm}.sidestream_customer_identity_links link
-        where link.profile_id = $2::uuid
+        join ${quotedCrm}.sidestream_customer_profiles profile
+          on profile.id = link.profile_id
+          and profile.license_namespace = link.license_namespace
+          and profile.merged_into is null
+        where link.license_namespace = 'test'
           and link.link_type = 'account_identity'
           and link.link_value = $6::text) as exact_account_owner_links,
        (select count(*)::int
@@ -1417,13 +1417,13 @@ async function pendingReviewPrivacySafeSummary({
   const telemetryRow = telemetry.rows[0];
   const convergenceRow = convergence.rows[0];
   return Object.freeze({
-    observedContract: "pending-review-account-bridge-defect",
+    observedContract: "pending-review-account-bridge-repaired",
     acquisitionShape: Object.freeze({
       intactMetaPaidRoots: shapeRow.intact_meta_paid_roots,
       replayedCheckoutIntents: shapeRow.checkout_intents,
       replayedPaidCheckouts: shapeRow.paid_checkouts,
       historicalActivationLinkedClaims: shapeRow.historical_activation_claims,
-      activeUnclaimedCurrentClaim: shapeRow.active_unclaimed_current_claim,
+      activeCurrentClaim: shapeRow.active_current_claim,
     }),
     pendingReviewShape: Object.freeze({
       currentInstallMemberships: identityRow.current_install_memberships,
@@ -1448,58 +1448,58 @@ async function pendingReviewPrivacySafeSummary({
       lookupOwnsTelemetryProfile,
       funnelOwnsExactPaidTelemetryProfile,
     }),
-    currentCodeFailure: Object.freeze({
-      activeUnclaimedOutcome: currentFinalizer.outcome,
-      pendingReviewProbeOutcome: finalizerPendingReviewProbe.outcome,
+    runtimeConvergence: Object.freeze({
+      firstOutcome: currentFinalizer.outcome,
+      replayOutcome: finalizerReplay.outcome,
     }),
-    guardedDryRunFailure: Object.freeze({
-      structuralBoundary: "verified_account_pending_review",
-      fullReplayReasonCode: guardedDryRun.reasonCode,
-      fullReplayEligible: guardedDryRun.eligible,
-      pendingReviewProbeReasonCode: guardedPendingReviewProbe.reasonCode,
-      pendingReviewProbeEligible: guardedPendingReviewProbe.eligible,
+    guardedOperator: Object.freeze({
+      beforeReasonCode: guardedDryRun.reasonCode,
+      beforeEligible: guardedDryRun.eligible,
+      beforeWouldMutate: guardedDryRun.wouldMutate,
+      applyProbeReasonCode: guardedApplyProbe.reasonCode,
+      afterReasonCode: guardedAfterRuntime.reasonCode,
+      afterEligible: guardedAfterRuntime.eligible,
+      afterWouldMutate: guardedAfterRuntime.wouldMutate,
     }),
   });
 }
 
-function assertPendingReviewBrokenExpectation(summary) {
+function assertPendingReviewRepairedExpectation(summary) {
   const observed =
-    summary.observedContract === "pending-review-account-bridge-defect" &&
+    summary.observedContract === "pending-review-account-bridge-repaired" &&
     summary.acquisitionShape.intactMetaPaidRoots === 1 &&
     summary.acquisitionShape.replayedCheckoutIntents === 3 &&
     summary.acquisitionShape.replayedPaidCheckouts === 3 &&
     summary.acquisitionShape.historicalActivationLinkedClaims === 2 &&
-    summary.acquisitionShape.activeUnclaimedCurrentClaim === 1 &&
+    summary.acquisitionShape.activeCurrentClaim === 1 &&
     summary.pendingReviewShape.currentInstallMemberships === 1 &&
     summary.pendingReviewShape.currentActivationLinks === 1 &&
     summary.pendingReviewShape.currentVerifiedReceiptLinks === 1 &&
-    summary.pendingReviewShape.currentAccountOrStripeLinks === 0 &&
+    summary.pendingReviewShape.currentAccountOrStripeLinks >= 4 &&
     summary.pendingReviewShape.uniqueExactAccountOwnerLinks === 1 &&
     summary.pendingReviewShape.verifiedAccountReviews === 1 &&
     summary.pendingReviewShape.verifiedStripeReviews >= 3 &&
     summary.stageAndBindingState.installationClaimed === 1 &&
-    summary.stageAndBindingState.authenticationCompleted === 0 &&
-    summary.stageAndBindingState.immutableBindings === 0 &&
+    summary.stageAndBindingState.authenticationCompleted === 1 &&
+    summary.stageAndBindingState.immutableBindings === 1 &&
     summary.anonymousTelemetry.searches === 1 &&
     summary.anonymousTelemetry.successfulDownloads === 1 &&
     summary.anonymousTelemetry.commerceFacts >= 1 &&
-    summary.anonymousTelemetry.commerceOnTelemetryProfile === 0 &&
-    summary.anonymousTelemetry.lookupOwnsTelemetryProfile === false &&
-    summary.anonymousTelemetry.funnelOwnsExactPaidTelemetryProfile === false &&
-    summary.currentCodeFailure.activeUnclaimedOutcome === "claim_binding_conflict" &&
-    summary.currentCodeFailure.pendingReviewProbeOutcome ===
-      "installation_identity_missing" &&
-    summary.guardedDryRunFailure.fullReplayReasonCode ===
-      "paid_path_missing_or_ambiguous" &&
-    summary.guardedDryRunFailure.structuralBoundary ===
-      "verified_account_pending_review" &&
-    summary.guardedDryRunFailure.fullReplayEligible === false &&
-    summary.guardedDryRunFailure.pendingReviewProbeReasonCode ===
-      "exact_identity_missing_or_ambiguous" &&
-    summary.guardedDryRunFailure.pendingReviewProbeEligible === false;
+    summary.anonymousTelemetry.commerceOnTelemetryProfile >= 1 &&
+    summary.anonymousTelemetry.lookupOwnsTelemetryProfile === true &&
+    summary.anonymousTelemetry.funnelOwnsExactPaidTelemetryProfile === true &&
+    summary.runtimeConvergence.firstOutcome === "installation_claimed_recorded" &&
+    summary.runtimeConvergence.replayOutcome === "installation_claimed_recorded" &&
+    summary.guardedOperator.beforeReasonCode === "repair_ready" &&
+    summary.guardedOperator.beforeEligible === true &&
+    summary.guardedOperator.beforeWouldMutate === true &&
+    summary.guardedOperator.applyProbeReasonCode === "already_repaired" &&
+    summary.guardedOperator.afterReasonCode === "already_repaired" &&
+    summary.guardedOperator.afterEligible === true &&
+    summary.guardedOperator.afterWouldMutate === false;
   if (!observed) {
     throw new Error(
-      `Expected pending-review-broken paid telemetry handoff contract; observed ${JSON.stringify(summary)}`,
+      `Expected pending-review-repaired paid telemetry handoff contract; observed ${JSON.stringify(summary)}`,
     );
   }
 }

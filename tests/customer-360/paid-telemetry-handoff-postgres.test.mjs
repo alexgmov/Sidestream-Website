@@ -25,27 +25,29 @@ test("paid activation, commerce, telemetry, and Customer 360 converge on one pro
   assert.doesNotMatch(serialized, /@example\.invalid\b/);
 });
 
-test("pending verified-account review remains a privacy-safe reproduced handoff defect", {
+test("pending verified-account review converges through the exact current paid path", {
   timeout: 120_000,
 }, async () => {
   const summary = await runPaidTelemetryHandoffFixture({
-    expectation: "pending-review-broken",
+    expectation: "pending-review-repaired",
   });
-  assert.equal(summary.observedContract, "pending-review-account-bridge-defect");
-  assert.deepEqual(summary.currentCodeFailure, {
-    activeUnclaimedOutcome: "claim_binding_conflict",
-    pendingReviewProbeOutcome: "installation_identity_missing",
+  assert.equal(summary.observedContract, "pending-review-account-bridge-repaired");
+  assert.deepEqual(summary.runtimeConvergence, {
+    firstOutcome: "installation_claimed_recorded",
+    replayOutcome: "installation_claimed_recorded",
   });
-  assert.deepEqual(summary.guardedDryRunFailure, {
-    structuralBoundary: "verified_account_pending_review",
-    fullReplayReasonCode: "paid_path_missing_or_ambiguous",
-    fullReplayEligible: false,
-    pendingReviewProbeReasonCode: "exact_identity_missing_or_ambiguous",
-    pendingReviewProbeEligible: false,
+  assert.deepEqual(summary.guardedOperator, {
+    beforeReasonCode: "repair_ready",
+    beforeEligible: true,
+    beforeWouldMutate: true,
+    applyProbeReasonCode: "already_repaired",
+    afterReasonCode: "already_repaired",
+    afterEligible: true,
+    afterWouldMutate: false,
   });
   assert.equal(summary.pendingReviewShape.verifiedAccountReviews, 1);
-  assert.equal(summary.pendingReviewShape.currentAccountOrStripeLinks, 0);
-  assert.equal(summary.stageAndBindingState.immutableBindings, 0);
+  assert.ok(summary.pendingReviewShape.currentAccountOrStripeLinks >= 4);
+  assert.equal(summary.stageAndBindingState.immutableBindings, 1);
   const serialized = JSON.stringify(summary);
   assert.doesNotMatch(serialized, /\b(?:cus|cs|pi|ch)_[A-Za-z0-9_]+\b/);
   assert.doesNotMatch(serialized, /\b[0-9a-f]{8}-[0-9a-f-]{27,}\b/i);
