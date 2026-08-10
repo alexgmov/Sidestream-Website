@@ -189,95 +189,85 @@ test("receipt derivation and claim-cookie signing remain environment bound", () 
   );
 });
 
-test("paid activation linkage returns bounded outcomes without weakening joins", async () => {
-  const activationRef = "40000000-0000-4000-8000-000000000004";
-  const claimId = "50000000-0000-4000-8000-000000000005";
-  const acquisitionId = "60000000-0000-4000-8000-000000000006";
-  const receipt = Buffer.alloc(32, 9).toString("base64url");
-  const matchingRow = {
-    claim_id: claimId,
-    claim_activation_ref: null,
-    activation_ref: activationRef,
-    activation_source_matches: true,
-    activation_expired: false,
-    acquisition_id: acquisitionId,
-  };
+test("paid activation binds only one exact account/install/receipt lineage", async (t) => {
+  for (const [name, database, expected] of [
+    ["missing activation", createPaidBindingDatabase({ activationRows: [] }), "receipt_activation_no_match"],
+    ["wrong activation source", createPaidBindingDatabase({
+      activationRows: [matchingActivation({ activation_source_matches: false })],
+    }), "activation_source_mismatch"],
+    ["different account", createPaidBindingDatabase({
+      activationRows: [matchingActivation({
+        activation_account_ref: "70000000-0000-4000-8000-000000000007",
+      })],
+    }), "claim_binding_conflict"],
+    ["expired authorization", createPaidBindingDatabase({
+      claimRows: [matchingClaim({ authorization_expired: true })],
+    }), "receipt_activation_no_match"],
+    ["refunded payment", createPaidBindingDatabase({
+      claimRows: [matchingClaim({ payment_state: "refunded" })],
+    }), "receipt_activation_no_match"],
+    ["disputed payment", createPaidBindingDatabase({
+      claimRows: [matchingClaim({ payment_state: "disputed" })],
+    }), "receipt_activation_no_match"],
+    ["missing exact identity", createPaidBindingDatabase({ identityRows: [] }), "installation_identity_missing"],
+    ["contradictory install owner", createPaidBindingDatabase({
+      identityRows: [exactIdentity({
+        installOwnerAccountId: "70000000-0000-4000-8000-000000000007",
+      })],
+    }), "installation_identity_conflict"],
+    ["wrong exact install", createPaidBindingDatabase({
+      identityRows: [exactIdentity({ installIdHash: "f".repeat(64) })],
+    }), "installation_identity_conflict"],
+  ]) {
+    await t.test(name, async () => {
+      const result = await runPaidActivationLinkage(database);
+      assert.equal(result.outcome, expected);
+      assert.equal(database.bindings.length, 0);
+      assert.equal(database.mergeAudits, 0);
+    });
+  }
 
-  const noMatch = await runPaidActivationLinkage({
-    receipt,
-    selectedRows: [],
+  await t.test("ledger ownership conflict cannot merge or bind", async () => {
+    const database = createPaidBindingDatabase({ ownerConflict: true });
+    const result = await runPaidActivationLinkage(database);
+    assert.equal(result.outcome, "acquisition_ownership_conflict");
+    assert.equal(database.bindings.length, 0);
+    assert.equal(database.mergeAudits, 0);
   });
-  assert.equal(noMatch.outcome, "receipt_activation_no_match");
 
-  const sourceMismatch = await runPaidActivationLinkage({
-    receipt,
-    selectedRows: [{
-      ...matchingRow,
-      claim_id: null,
-      activation_source_matches: false,
-    }],
+  await t.test("valid replay converges on one binding, merge, and stage", async () => {
+    const database = createPaidBindingDatabase();
+    const first = await runPaidActivationLinkage(database);
+    const replay = await runPaidActivationLinkage(database);
+    assert.equal(first.outcome, "installation_claimed_recorded");
+    assert.equal(replay.outcome, "installation_claimed_recorded");
+    assert.equal(database.bindings.length, 1);
+    assert.equal(database.mergeAudits, 1);
+    assert.equal(database.stageValues.size, 1);
+    assert.deepEqual(database.identityLookups[0], [
+      INSTALL_ID_HASH,
+      INSTALLER_RECEIPT_ID_HASH,
+      ACCOUNT_ID,
+    ]);
   });
-  assert.equal(sourceMismatch.outcome, "activation_source_mismatch");
 
-  const bindingConflict = await runPaidActivationLinkage({
-    receipt,
-    selectedRows: [{
-      ...matchingRow,
-      claim_activation_ref: "70000000-0000-4000-8000-000000000007",
-    }],
+  await t.test("malformed current identity fails before database access", async () => {
+    const database = createPaidBindingDatabase();
+    await assert.rejects(
+      associatePaidAcquisitionActivationWithOutcome({
+        environment: "production",
+        activationKey: "activation-test-key",
+        expectedAccountId: ACCOUNT_ID,
+        receipt: BROWSER_RECEIPT,
+        installIdHash: "NOT-A-HASH",
+        installerReceiptIdHash: INSTALLER_RECEIPT_ID_HASH,
+      }, {
+        transaction: async (callback) => callback(database.client),
+      }),
+      (error) => error?.code === "invalid_request",
+    );
+    assert.equal(database.queries.length, 0);
   });
-  assert.equal(bindingConflict.outcome, "claim_binding_conflict");
-
-  const missingIdentity = await runPaidActivationLinkage({
-    receipt,
-    selectedRows: [matchingRow],
-    identityRows: [],
-  });
-  assert.equal(
-    missingIdentity.outcome,
-    "installation_identity_not_unique_or_missing",
-  );
-
-  const nonUniqueIdentity = await runPaidActivationLinkage({
-    receipt,
-    selectedRows: [matchingRow],
-    identityRows: [
-      {
-        install_id_hash: "a".repeat(64),
-        installer_receipt_id_hash: "b".repeat(64),
-      },
-      {
-        install_id_hash: "c".repeat(64),
-        installer_receipt_id_hash: "b".repeat(64),
-      },
-    ],
-  });
-  assert.equal(
-    nonUniqueIdentity.outcome,
-    "installation_identity_not_unique_or_missing",
-  );
-
-  const ownerConflict = await runPaidActivationLinkage({
-    receipt,
-    selectedRows: [matchingRow],
-    ownerConflict: true,
-  });
-  assert.equal(ownerConflict.outcome, "acquisition_ownership_conflict");
-
-  const recorded = await runPaidActivationLinkage({
-    receipt,
-    selectedRows: [matchingRow],
-  });
-  assert.equal(recorded.outcome, "installation_claimed_recorded");
-  assert.deepEqual(recorded.integrityCalls.map(([kind]) => kind), [
-    "stage",
-    "evidence",
-  ]);
-  assert.match(recorded.queries[0].sql, /activation\.source = \$4/);
-  assert.match(recorded.queries[0].sql, /paid\.installer_receipt_hash = \$2/);
-  assert.match(recorded.queries[2].sql, /link_type = 'install_identity_hash'/);
-  assert.match(recorded.queries[2].sql, /link_type = 'installer_receipt_hash'/);
-  assert.match(recorded.queries[2].sql, /limit 2/);
 });
 
 test("Google OAuth return sanitization admits only the exact paid claim shape", () => {
@@ -421,40 +411,188 @@ function paidNonce() {
   throw new Error("Unable to find paid nonce");
 }
 
-async function runPaidActivationLinkage({
-  receipt,
-  selectedRows,
-  identityRows = [{
-    install_id_hash: "a".repeat(64),
-    installer_receipt_id_hash: "b".repeat(64),
-  }],
-  ownerConflict = false,
-}) {
-  const queries = [];
-  const integrityCalls = [];
-  const client = {
-    async query(sql, params) {
-      queries.push({ sql, params });
-      if (queries.length === 1) return { rows: selectedRows };
-      if (queries.length === 2) return { rows: [{ id: params[0] }] };
-      if (queries.length === 3) return { rows: identityRows };
-      throw new Error("Unexpected paid activation diagnostic query");
-    },
-  };
-  const outcome = await associatePaidAcquisitionActivationWithOutcome({
+const ACCOUNT_ID = "10000000-0000-4000-8000-000000000001";
+const ENTITLEMENT_ID = "20000000-0000-4000-8000-000000000002";
+const ACTIVATION_REF = "30000000-0000-4000-8000-000000000003";
+const CLAIM_ID = "40000000-0000-4000-8000-000000000004";
+const CHECKOUT_ID = "50000000-0000-4000-8000-000000000005";
+const ACQUISITION_ID = "60000000-0000-4000-8000-000000000006";
+const PAID_PROFILE_ID = "70000000-0000-4000-8000-000000000007";
+const INSTALL_PROFILE_ID = "80000000-0000-4000-8000-000000000008";
+const INSTALL_ID_HASH = "a".repeat(64);
+const INSTALLER_RECEIPT_ID_HASH = "b".repeat(64);
+const BROWSER_RECEIPT = Buffer.alloc(32, 9).toString("base64url");
+
+async function runPaidActivationLinkage(database) {
+  return associatePaidAcquisitionActivationWithOutcome({
     environment: "production",
     activationKey: "activation-test-key",
-    receipt,
+    expectedAccountId: ACCOUNT_ID,
+    receipt: BROWSER_RECEIPT,
+    installIdHash: INSTALL_ID_HASH,
+    installerReceiptIdHash: INSTALLER_RECEIPT_ID_HASH,
     occurredAt: new Date("2026-08-09T12:00:00.000Z"),
   }, {
-    transaction: async (callback) => callback(client),
+    transaction: async (callback) => callback(database.client),
     recordStage: async (input, options) => {
-      integrityCalls.push(["stage", input, options]);
-      return { ownerConflict };
+      database.stageValues.add(JSON.stringify([
+        input.acquisitionId,
+        input.stage,
+        input.stableServerReference,
+      ]));
+      database.integrityCalls.push(["stage", input, options]);
+      return { ownerConflict: database.ownerConflict };
     },
     addEvidence: async (input, options) => {
-      integrityCalls.push(["evidence", input, options]);
+      database.integrityCalls.push(["evidence", input, options]);
     },
+    mergeProfiles: database.mergeProfiles,
   });
-  return { ...outcome, queries, integrityCalls };
+}
+
+function matchingActivation(overrides = {}) {
+  return {
+    activation_ref: ACTIVATION_REF,
+    activation_source_matches: true,
+    activation_expired: false,
+    activation_account_ref: ACCOUNT_ID,
+    activation_entitlement_ref: ENTITLEMENT_ID,
+    ...overrides,
+  };
+}
+
+function matchingClaim(overrides = {}) {
+  return {
+    claim_id: CLAIM_ID,
+    checkout_id: CHECKOUT_ID,
+    claim_activation_ref: null,
+    claim_account_ref: ACCOUNT_ID,
+    claim_entitlement_ref: ENTITLEMENT_ID,
+    claim_state: "claimed",
+    claim_expired: false,
+    payment_state: "active",
+    payment_verified: true,
+    authorization_expired: false,
+    checkout_account_ref: ACCOUNT_ID,
+    entitlement_account_ref: ACCOUNT_ID,
+    entitlement_status: "active",
+    acquisition_id: ACQUISITION_ID,
+    acquisition_integrity_state: "intact",
+    ...overrides,
+  };
+}
+
+function exactIdentity({
+  installIdHash = INSTALL_ID_HASH,
+  installerReceiptIdHash = INSTALLER_RECEIPT_ID_HASH,
+  paidProfileId = PAID_PROFILE_ID,
+  installProfileId = INSTALL_PROFILE_ID,
+  installOwnerAccountId = null,
+} = {}) {
+  return {
+    paid_profile_id: paidProfileId,
+    install_profile_id: installProfileId,
+    install_membership_id: "90000000-0000-4000-8000-000000000009",
+    install_id_hash: installIdHash,
+    install_identity_link_id: "a0000000-0000-4000-8000-000000000010",
+    activation_identity_link_id: "b0000000-0000-4000-8000-000000000011",
+    account_identity_link_id: "c0000000-0000-4000-8000-000000000012",
+    installer_receipt_identity_link_id: "d0000000-0000-4000-8000-000000000013",
+    installer_receipt_id_hash: installerReceiptIdHash,
+    install_owner_account_id: installOwnerAccountId,
+  };
+}
+
+function createPaidBindingDatabase({
+  activationRows = [matchingActivation()],
+  claimRows = [matchingClaim()],
+  identityRows = [exactIdentity()],
+  ownerConflict = false,
+} = {}) {
+  const database = {
+    activationRows: structuredClone(activationRows),
+    claimRows: structuredClone(claimRows),
+    identityRows: structuredClone(identityRows),
+    ownerConflict,
+    bindings: [],
+    mergeAudits: 0,
+    queries: [],
+    identityLookups: [],
+    integrityCalls: [],
+    stageValues: new Set(),
+  };
+  database.mergeProfiles = async (_client, environment, input) => {
+    assert.equal(environment, "production");
+    assert.equal(input.leftProfileId, database.identityRows[0].paid_profile_id);
+    assert.equal(input.rightProfileId, database.identityRows[0].install_profile_id);
+    const survivorId = database.identityRows[0].install_profile_id;
+    if (input.leftProfileId !== input.rightProfileId) database.mergeAudits += 1;
+    for (const row of database.identityRows) {
+      row.paid_profile_id = survivorId;
+      row.install_profile_id = survivorId;
+      row.install_owner_account_id = ACCOUNT_ID;
+    }
+    return {
+      merged: input.leftProfileId !== input.rightProfileId,
+      survivorId,
+      tombstoneId: input.leftProfileId === input.rightProfileId
+        ? null
+        : input.leftProfileId,
+    };
+  };
+  database.client = {
+    async query(sql, params = []) {
+      database.queries.push({ sql, params });
+      if (sql.includes("paid-telemetry-binding:select-activation")) {
+        return { rows: structuredClone(database.activationRows) };
+      }
+      if (sql.includes("paid-telemetry-binding:select-claim")) {
+        return { rows: structuredClone(database.claimRows) };
+      }
+      if (sql.includes("paid-telemetry-binding:select-exact-identities")) {
+        database.identityLookups.push([params[2], params[3], params[4]]);
+        return { rows: structuredClone(database.identityRows) };
+      }
+      if (sql.includes("paid-telemetry-binding:select-binding")) {
+        return { rows: structuredClone(database.bindings.filter((row) =>
+          row.claim_id === params[0] ||
+          (row.license_namespace === params[1] &&
+            (row.activation_ref === params[2] || row.binding_key === params[3]))
+        ).slice(0, 2)) };
+      }
+      if (sql.includes("paid-telemetry-binding:bind-claim")) {
+        const claim = database.claimRows.find((row) => row.claim_id === params[0]);
+        if (!claim || (claim.claim_activation_ref && claim.claim_activation_ref !== params[1])) {
+          return { rows: [] };
+        }
+        claim.claim_activation_ref = params[1];
+        return { rows: [{ id: claim.claim_id }] };
+      }
+      if (sql.includes("paid-telemetry-binding:insert-binding")) {
+        if (database.bindings.length === 0) {
+          database.bindings.push({
+            license_namespace: params[0],
+            claim_id: params[1],
+            checkout_id: params[2],
+            acquisition_id: params[3],
+            account_id: params[4],
+            entitlement_id: params[5],
+            activation_ref: params[6],
+            profile_id_at_binding: params[7],
+            install_membership_id: params[8],
+            install_id_hash: params[9],
+            install_identity_link_id: params[10],
+            activation_identity_link_id: params[11],
+            account_identity_link_id: params[12],
+            installer_receipt_identity_link_id: params[13],
+            installer_receipt_id_hash: params[14],
+            binding_key: params[15],
+          });
+        }
+        return { rows: [] };
+      }
+      throw new Error(`Unexpected paid binding query: ${sql}`);
+    },
+  };
+  return database;
 }

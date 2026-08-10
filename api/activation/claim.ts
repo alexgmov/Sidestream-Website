@@ -271,6 +271,8 @@ export async function handleActivationClaim(
       receipt: options.paidAcquisitionReceipt,
       environment: environment.namespace,
       activationKey,
+      expectedAccountId: session.accountId,
+      identity,
     });
 
     return redirectToSuccess(response, baseUrl, activationKey, "transferred");
@@ -298,6 +300,8 @@ export async function handleActivationClaim(
     receipt: options.paidAcquisitionReceipt,
     environment: environment.namespace,
     activationKey,
+    expectedAccountId: session.accountId,
+    identity,
   });
   return redirectToSuccess(response, baseUrl, activationKey, "restored");
 }
@@ -307,6 +311,8 @@ async function finalizePaidAcquisitionLinkage(options: {
   receipt?: string;
   environment: "test" | "production";
   activationKey: string;
+  expectedAccountId: string;
+  identity: CustomerIdentityFields;
 }) {
   if (!options.expectedPaidAcquisition) return;
   if (!options.receipt) {
@@ -317,7 +323,10 @@ async function finalizePaidAcquisitionLinkage(options: {
     const association = await associatePaidAcquisitionActivationWithOutcome({
       environment: options.environment,
       activationKey: options.activationKey,
+      expectedAccountId: options.expectedAccountId,
       receipt: options.receipt,
+      installIdHash: options.identity.installIdHash,
+      installerReceiptIdHash: options.identity.installerReceiptIdHash,
     });
     recordPaidAcquisitionLinkageOutcome(association.outcome);
   } catch {

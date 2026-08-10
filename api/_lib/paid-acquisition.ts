@@ -74,6 +74,8 @@ const REQUEST_FINGERPRINT_CONTEXT =
   "sidestream-paid-acquisition-checkout-request-v1";
 const LANDING_PROOF_CONTEXT = "sidestream-paid-acquisition-landing-proof-v1";
 const RECEIPT_CONTEXT = "sidestream-paid-acquisition-receipt-v1";
+const PAID_TELEMETRY_BINDING_CONTEXT =
+  "sidestream-paid-telemetry-profile-binding-v1";
 const PAID_SOURCE = "paid-acquisition-mc-v1";
 const RECEIPT_TTL_SECONDS = 7 * 24 * 60 * 60;
 const RECEIPT_COOKIE_MAX_AGE_SECONDS = RECEIPT_TTL_SECONDS;
@@ -90,7 +92,8 @@ export type PaidAcquisitionActivationLinkageOutcome =
   | "receipt_activation_no_match"
   | "activation_source_mismatch"
   | "claim_binding_conflict"
-  | "installation_identity_not_unique_or_missing"
+  | "installation_identity_missing"
+  | "installation_identity_conflict"
   | "acquisition_identity_missing"
   | "acquisition_ownership_conflict"
   | "installation_claimed_recorded"
@@ -477,6 +480,13 @@ function assertUuid(value, field) {
     fail("invalid_request", `${field} must be a UUID.`);
   }
   return value.toLowerCase();
+}
+
+function assertIdentityHash(value, field) {
+  if (typeof value !== "string" || !LOWER_HEX_256.test(value)) {
+    fail("invalid_request", `${field} must be a lowercase SHA-256 value.`);
+  }
+  return value;
 }
 
 function assertProviderReference(value, field) {
@@ -1518,15 +1528,25 @@ type PaidAcquisitionActivationDependencies = {
   transaction?: <T>(callback: (client: PoolClient) => Promise<T>) => Promise<T>;
   recordStage?: (input: any, options: any) => Promise<any>;
   addEvidence?: (input: any, options: any) => Promise<any>;
+  mergeProfiles?: (
+    client: PoolClient,
+    namespace: "test" | "production",
+    input: any,
+  ) => Promise<any>;
+};
+
+type PaidAcquisitionActivationOptions = {
+  environment: "test" | "production";
+  activationKey: string;
+  expectedAccountId: string;
+  receipt: string;
+  installIdHash?: string;
+  installerReceiptIdHash?: string;
+  occurredAt?: Date;
 };
 
 export async function associatePaidAcquisitionActivation(
-  options: {
-    environment: "test" | "production";
-    activationKey: string;
-    receipt: string;
-    occurredAt?: Date;
-  },
+  options: PaidAcquisitionActivationOptions,
   dependencies: PaidAcquisitionActivationDependencies = {},
 ) {
   const result = await associatePaidAcquisitionActivationWithOutcome(
@@ -1541,12 +1561,7 @@ export async function associatePaidAcquisitionActivation(
 }
 
 export async function associatePaidAcquisitionActivationWithOutcome(
-  options: {
-    environment: "test" | "production";
-    activationKey: string;
-    receipt: string;
-    occurredAt?: Date;
-  },
+  options: PaidAcquisitionActivationOptions,
   dependencies: PaidAcquisitionActivationDependencies = {},
 ): Promise<{ outcome: PaidAcquisitionActivationLinkageOutcome }> {
   const environment = asEnvironment(options.environment);
@@ -1554,7 +1569,20 @@ export async function associatePaidAcquisitionActivationWithOutcome(
     options.activationKey,
     "activationKey",
   );
+  const expectedAccountId = assertUuid(
+    options.expectedAccountId,
+    "expectedAccountId",
+  );
   const receiptHash = sha256Hex(assertReceipt(options.receipt));
+  const installIdHash = options.installIdHash === undefined
+    ? null
+    : assertIdentityHash(options.installIdHash, "installIdHash");
+  const installerReceiptIdHash = options.installerReceiptIdHash === undefined
+    ? null
+    : assertIdentityHash(
+        options.installerReceiptIdHash,
+        "installerReceiptIdHash",
+      );
   const occurredAt = options.occurredAt || new Date();
   if (!(occurredAt instanceof Date) || Number.isNaN(occurredAt.getTime())) {
     fail("invalid_request", "Paid installation timestamp is invalid.");
@@ -1563,102 +1591,201 @@ export async function associatePaidAcquisitionActivationWithOutcome(
     withPaidPostgresTransaction(environment, callback));
 
   return transaction(async (client) => {
-    const selected = await client.query<{
-      claim_id: string | null;
-      claim_activation_ref: string | null;
+    const activations = await client.query<{
       activation_ref: string;
       activation_source_matches: boolean;
       activation_expired: boolean;
-      acquisition_id: string | null;
+      activation_account_ref: string | null;
+      activation_entitlement_ref: string | null;
     }>(
       `
-        select receipt_match.claim_id,
-          receipt_match.claim_activation_ref,
-          activation.id as activation_ref,
-          activation.source = $4 as activation_source_matches,
+        /* paid-telemetry-binding:select-activation */
+        select activation.id as activation_ref,
+          activation.source = $2 as activation_source_matches,
           activation.expires_at <= now() as activation_expired,
-          receipt_match.acquisition_id
+          activation.account_id as activation_account_ref,
+          activation.license_id as activation_entitlement_ref
         from public.sidestream_activation_sessions activation
-        left join lateral (
-          select claim.id as claim_id,
-            claim.activation_ref as claim_activation_ref,
-            core.acquisition_id
-          from public.sidestream_paid_acquisition_claims claim
-          join public.sidestream_paid_acquisition_checkouts paid
-            on paid.id = claim.checkout_id
-          join public.sidestream_checkout_intents core
-            on core.id = paid.checkout_intent_ref
-          where claim.environment = $1
-            and paid.environment = $1
-            and paid.installer_receipt_hash = $2
-            and paid.receipt_expires_at > now()
-            and paid.payment_state = 'active'
-          for update of claim
-        ) receipt_match on true
-        where activation.activation_key = $3
+        where activation.activation_key = $1
         limit 2
+        for update of activation
       `,
-      [environment, receiptHash, activationKey, PAID_SOURCE],
+      [activationKey, PAID_SOURCE],
     );
-    if (selected.rows.length !== 1) {
+    if (activations.rows.length !== 1) {
       return { outcome: "receipt_activation_no_match" };
     }
-    const row = selected.rows[0];
-    if (row.activation_source_matches === false) {
+    const activation = activations.rows[0];
+    if (activation.activation_source_matches === false) {
       return { outcome: "activation_source_mismatch" };
     }
-    if (row.activation_expired === true || !row.claim_id) {
+    if (activation.activation_expired === true) {
       return { outcome: "receipt_activation_no_match" };
     }
     if (
-      typeof row.claim_activation_ref === "string" &&
-      row.claim_activation_ref !== row.activation_ref
+      activation.activation_account_ref !== expectedAccountId ||
+      typeof activation.activation_entitlement_ref !== "string"
     ) {
       return { outcome: "claim_binding_conflict" };
     }
-    const associated = await client.query<{ id: string }>(
+
+    const claims = await client.query<{
+      claim_id: string;
+      checkout_id: string;
+      claim_activation_ref: string | null;
+      claim_account_ref: string | null;
+      claim_entitlement_ref: string | null;
+      claim_state: string;
+      claim_expired: boolean;
+      payment_state: string;
+      payment_verified: boolean;
+      authorization_expired: boolean;
+      checkout_account_ref: string | null;
+      entitlement_account_ref: string | null;
+      entitlement_status: string;
+      acquisition_id: string | null;
+      acquisition_integrity_state: string | null;
+    }>(
       `
-        update public.sidestream_paid_acquisition_claims
-        set activation_ref = $2::uuid,
-            updated_at = now()
-        where id = $1::uuid
-          and (activation_ref is null or activation_ref = $2::uuid)
-        returning id
+        /* paid-telemetry-binding:select-claim */
+        select claim.id as claim_id,
+          claim.checkout_id,
+          claim.activation_ref as claim_activation_ref,
+          claim.account_ref as claim_account_ref,
+          claim.entitlement_ref as claim_entitlement_ref,
+          claim.claim_state,
+          claim.expires_at <= now() as claim_expired,
+          paid.payment_state,
+          (
+            paid.completed_at is not null
+            and paid.verified_checkout_session_ref is not null
+            and paid.canonical_payment_ref is not null
+            and paid.canonical_payment_ref = claim.canonical_payment_ref
+            and paid.verified_product_ref is not null
+            and paid.verified_price_ref is not null
+            and paid.verified_quantity = 1
+            and paid.verified_amount_minor is not null
+            and paid.verified_currency is not null
+          ) as payment_verified,
+          (
+            paid.receipt_expires_at is null
+            or paid.receipt_expires_at <= now()
+          ) as authorization_expired,
+          core.account_id as checkout_account_ref,
+          license.account_id as entitlement_account_ref,
+          ${paidLifecycleSql("license")} as entitlement_status,
+          acquisition.id as acquisition_id,
+          acquisition.integrity_state as acquisition_integrity_state
+        from public.sidestream_paid_acquisition_claims claim
+        join public.sidestream_paid_acquisition_checkouts paid
+          on paid.id = claim.checkout_id
+          and paid.environment = claim.environment
+        join public.sidestream_checkout_intents core
+          on core.id = paid.checkout_intent_ref
+        left join public.sidestream_acquisitions acquisition
+          on acquisition.id = core.acquisition_id
+          and acquisition.license_namespace = claim.environment
+        left join public.sidestream_licenses license
+          on license.id = claim.entitlement_ref
+        where claim.environment = $1
+          and paid.installer_receipt_hash = $2
+        limit 2
+        for update of claim, paid
       `,
-      [row.claim_id, row.activation_ref],
+      [environment, receiptHash],
     );
-    if (associated.rows.length !== 1) {
+    if (claims.rows.length !== 1) {
+      return { outcome: "receipt_activation_no_match" };
+    }
+    const claim = claims.rows[0];
+    if (
+      claim.claim_expired ||
+      claim.authorization_expired ||
+      claim.payment_state !== "active" ||
+      claim.payment_verified !== true
+    ) {
+      return { outcome: "receipt_activation_no_match" };
+    }
+    if (
+      claim.claim_state !== "claimed" ||
+      claim.claim_account_ref !== expectedAccountId ||
+      claim.claim_entitlement_ref !== activation.activation_entitlement_ref ||
+      claim.entitlement_account_ref !== expectedAccountId ||
+      claim.entitlement_status !== "active" ||
+      (claim.checkout_account_ref !== null &&
+        claim.checkout_account_ref !== expectedAccountId)
+    ) {
+      return { outcome: "claim_binding_conflict" };
+    }
+    if (
+      typeof claim.claim_activation_ref === "string" &&
+      claim.claim_activation_ref !== activation.activation_ref
+    ) {
       return { outcome: "claim_binding_conflict" };
     }
 
-    const identity = await client.query<{
-      install_id_hash: string;
-      installer_receipt_id_hash: string;
-    }>(
-      `
-        select install_link.link_value as install_id_hash,
-          receipt_link.link_value as installer_receipt_id_hash
-        from public.sidestream_customer_identity_links activation_link
-        join public.sidestream_customer_identity_links install_link
-          on install_link.profile_id = activation_link.profile_id
-          and install_link.license_namespace = activation_link.license_namespace
-          and install_link.link_type = 'install_identity_hash'
-        join public.sidestream_customer_identity_links receipt_link
-          on receipt_link.profile_id = activation_link.profile_id
-          and receipt_link.license_namespace = activation_link.license_namespace
-          and receipt_link.link_type = 'installer_receipt_hash'
-        where activation_link.license_namespace = $1
-          and activation_link.link_type = 'activation_record'
-          and activation_link.link_value = $2::text
-        limit 2
-      `,
-      [environment, row.activation_ref],
-    );
-    if (identity.rows.length !== 1) {
-      return { outcome: "installation_identity_not_unique_or_missing" };
+    if (!installIdHash || !installerReceiptIdHash) {
+      return { outcome: "installation_identity_missing" };
     }
-    if (!row.acquisition_id) {
+    if (
+      !claim.acquisition_id ||
+      claim.acquisition_integrity_state !== "intact"
+    ) {
       return { outcome: "acquisition_identity_missing" };
+    }
+
+    const identities = await selectExactPaidTelemetryIdentity(client, {
+      environment,
+      activationRef: activation.activation_ref,
+      expectedAccountId,
+      installIdHash,
+      installerReceiptIdHash,
+    });
+    if (identities.length === 0) {
+      return { outcome: "installation_identity_missing" };
+    }
+    if (identities.length !== 1) {
+      return { outcome: "installation_identity_conflict" };
+    }
+    const identity = identities[0];
+    if (!exactPaidIdentityOwnersAgree(
+      identity,
+      expectedAccountId,
+      installIdHash,
+      installerReceiptIdHash,
+    )) {
+      return { outcome: "installation_identity_conflict" };
+    }
+
+    const bindingKey = sha256Hex([
+      PAID_TELEMETRY_BINDING_CONTEXT,
+      environment,
+      claim.claim_id,
+      claim.checkout_id,
+      claim.acquisition_id,
+      expectedAccountId,
+      activation.activation_ref,
+      installIdHash,
+      installerReceiptIdHash,
+    ].join(":"));
+    const existingBinding = await selectPaidTelemetryBinding(client, {
+      claimId: claim.claim_id,
+      environment,
+      activationRef: activation.activation_ref,
+      bindingKey,
+    });
+    if (
+      existingBinding === false ||
+      (existingBinding && !paidTelemetryBindingMatches(existingBinding, {
+        claim,
+        environment,
+        activationRef: activation.activation_ref,
+        expectedAccountId,
+        identity,
+        bindingKey,
+      }))
+    ) {
+      return { outcome: "installation_identity_conflict" };
     }
 
     const integrity = dependencies.recordStage && dependencies.addEvidence
@@ -1669,26 +1796,324 @@ export async function associatePaidAcquisitionActivationWithOutcome(
     const nestedTransaction = <T>(callback: (runner: PoolClient) => Promise<T>) =>
       callback(client);
     const stage = await recordStage({
-      acquisitionId: row.acquisition_id,
+      acquisitionId: claim.acquisition_id,
       stage: "installation_claimed",
-      stableServerReference: `installation:${identity.rows[0].install_id_hash}`,
+      stableServerReference: `installation:${installIdHash}`,
       occurredAt,
     }, { transaction: nestedTransaction, namespace: environment });
     if (stage.ownerConflict) {
       return { outcome: "acquisition_ownership_conflict" };
     }
     await addEvidence({
-      acquisitionId: row.acquisition_id,
+      acquisitionId: claim.acquisition_id,
       evidence: "verified_installation_claim",
     }, { transaction: nestedTransaction, namespace: environment });
+
+    const associated = await client.query<{ id: string }>(
+      `
+        /* paid-telemetry-binding:bind-claim */
+        update public.sidestream_paid_acquisition_claims
+        set activation_ref = $2::uuid,
+            updated_at = now()
+        where id = $1::uuid
+          and (activation_ref is null or activation_ref = $2::uuid)
+        returning id
+      `,
+      [claim.claim_id, activation.activation_ref],
+    );
+    if (associated.rows.length !== 1) {
+      throw new Error("Paid activation claim changed while locked");
+    }
+
+    const mergeProfiles = dependencies.mergeProfiles ||
+      (await import("./customer-profiles.js")).mergeCustomerProfilesInTransaction;
+    const merge = await mergeProfiles(client, environment, {
+      leftProfileId: identity.paid_profile_id,
+      rightProfileId: identity.install_profile_id,
+      evidenceType: "installer_receipt_hash",
+      evidenceValueHash: bindingKey,
+      initiatedBy: "system",
+    });
+
+    const converged = await selectExactPaidTelemetryIdentity(client, {
+      environment,
+      activationRef: activation.activation_ref,
+      expectedAccountId,
+      installIdHash,
+      installerReceiptIdHash,
+    });
+    if (
+      converged.length !== 1 ||
+      !exactPaidIdentityOwnersAgree(
+        converged[0],
+        expectedAccountId,
+        installIdHash,
+        installerReceiptIdHash,
+      ) ||
+      converged[0].paid_profile_id !== merge.survivorId ||
+      converged[0].install_profile_id !== merge.survivorId
+    ) {
+      throw new Error("Exact paid telemetry identities did not converge");
+    }
+
+    const binding = existingBinding || await insertAndSelectPaidTelemetryBinding(
+      client,
+      {
+        claim,
+        environment,
+        activationRef: activation.activation_ref,
+        expectedAccountId,
+        profileId: merge.survivorId,
+        identity: converged[0],
+        bindingKey,
+        occurredAt,
+      },
+    );
+    if (
+      !binding ||
+      !paidTelemetryBindingMatches(binding, {
+        claim,
+        environment,
+        activationRef: activation.activation_ref,
+        expectedAccountId,
+        identity: converged[0],
+        bindingKey,
+      })
+    ) {
+      throw new Error("Exact paid telemetry binding did not converge");
+    }
     return { outcome: "installation_claimed_recorded" };
   });
+}
+
+type ExactPaidTelemetryIdentityRow = {
+  paid_profile_id: string;
+  install_profile_id: string;
+  install_membership_id: string;
+  install_id_hash: string;
+  install_identity_link_id: string;
+  activation_identity_link_id: string;
+  account_identity_link_id: string;
+  installer_receipt_identity_link_id: string;
+  installer_receipt_id_hash: string;
+  install_owner_account_id: string | null;
+};
+
+async function selectExactPaidTelemetryIdentity(
+  client: Pick<PoolClient, "query">,
+  input: {
+    environment: "test" | "production";
+    activationRef: string;
+    expectedAccountId: string;
+    installIdHash: string;
+    installerReceiptIdHash: string;
+  },
+): Promise<ExactPaidTelemetryIdentityRow[]> {
+  const result = await client.query<ExactPaidTelemetryIdentityRow>(
+    `
+      /* paid-telemetry-binding:select-exact-identities */
+      select activation_link.profile_id as paid_profile_id,
+        install.profile_id as install_profile_id,
+        install.id as install_membership_id,
+        install.install_id_hash,
+        install_link.id as install_identity_link_id,
+        activation_link.id as activation_identity_link_id,
+        account_link.id as account_identity_link_id,
+        receipt_link.id as installer_receipt_identity_link_id,
+        receipt_link.link_value as installer_receipt_id_hash,
+        install_account.link_value as install_owner_account_id
+      from public.sidestream_customer_installs install
+      join public.sidestream_customer_profiles install_profile
+        on install_profile.id = install.profile_id
+        and install_profile.license_namespace = install.license_namespace
+        and install_profile.merged_into is null
+      join public.sidestream_customer_identity_links install_link
+        on install_link.license_namespace = install.license_namespace
+        and install_link.profile_id = install.profile_id
+        and install_link.link_type = 'install_identity_hash'
+        and install_link.link_value = install.install_id_hash
+      cross join public.sidestream_customer_identity_links activation_link
+      join public.sidestream_customer_profiles paid_profile
+        on paid_profile.id = activation_link.profile_id
+        and paid_profile.license_namespace = activation_link.license_namespace
+        and paid_profile.merged_into is null
+      join public.sidestream_customer_identity_links receipt_link
+        on receipt_link.license_namespace = activation_link.license_namespace
+        and receipt_link.profile_id = activation_link.profile_id
+        and receipt_link.link_type = 'installer_receipt_hash'
+        and receipt_link.link_value = $4
+      join public.sidestream_customer_identity_links account_link
+        on account_link.license_namespace = activation_link.license_namespace
+        and account_link.profile_id = activation_link.profile_id
+        and account_link.link_type = 'account_identity'
+        and account_link.link_value = $5::text
+      left join lateral (
+        select conflicting.link_value
+        from public.sidestream_customer_identity_links conflicting
+        where conflicting.license_namespace = $1
+          and conflicting.profile_id = install.profile_id
+          and conflicting.link_type = 'account_identity'
+        order by conflicting.created_at, conflicting.id
+        limit 2
+      ) install_account on true
+      where install.license_namespace = $1
+        and install.install_id_hash = $3
+        and activation_link.license_namespace = $1
+        and activation_link.link_type = 'activation_record'
+        and activation_link.link_value = $2::text
+      limit 2
+      for update of install, install_link, activation_link, receipt_link, account_link
+    `,
+    [
+      input.environment,
+      input.activationRef,
+      input.installIdHash,
+      input.installerReceiptIdHash,
+      input.expectedAccountId,
+    ],
+  );
+  return result.rows;
+}
+
+function exactPaidIdentityOwnersAgree(
+  identity: ExactPaidTelemetryIdentityRow,
+  expectedAccountId: string,
+  installIdHash: string,
+  installerReceiptIdHash: string,
+) {
+  return identity.install_id_hash === installIdHash &&
+    identity.installer_receipt_id_hash === installerReceiptIdHash &&
+    (
+      identity.paid_profile_id === identity.install_profile_id
+        ? identity.install_owner_account_id === null ||
+          identity.install_owner_account_id === expectedAccountId
+        : identity.install_owner_account_id === null
+    );
+}
+
+async function selectPaidTelemetryBinding(
+  client: Pick<PoolClient, "query">,
+  input: {
+    claimId: string;
+    environment: "test" | "production";
+    activationRef: string;
+    bindingKey: string;
+  },
+) {
+  const result = await client.query<any>(
+    `
+      /* paid-telemetry-binding:select-binding */
+      select *
+      from public.sidestream_paid_telemetry_profile_bindings
+      where claim_id = $1::uuid
+        or (
+          license_namespace = $2
+          and (activation_ref = $3::uuid or binding_key = $4)
+        )
+      limit 2
+      for update
+    `,
+    [input.claimId, input.environment, input.activationRef, input.bindingKey],
+  );
+  if (result.rows.length === 0) return null;
+  if (result.rows.length !== 1) return false;
+  return result.rows[0];
+}
+
+async function insertAndSelectPaidTelemetryBinding(
+  client: Pick<PoolClient, "query">,
+  input: {
+    claim: any;
+    environment: "test" | "production";
+    activationRef: string;
+    expectedAccountId: string;
+    profileId: string;
+    identity: ExactPaidTelemetryIdentityRow;
+    bindingKey: string;
+    occurredAt: Date;
+  },
+) {
+  await client.query(
+    `
+      /* paid-telemetry-binding:insert-binding */
+      insert into public.sidestream_paid_telemetry_profile_bindings (
+        license_namespace, claim_id, checkout_id, acquisition_id,
+        account_id, entitlement_id, activation_ref, profile_id_at_binding,
+        install_membership_id, install_id_hash, install_identity_link_id,
+        activation_identity_link_id, account_identity_link_id,
+        installer_receipt_identity_link_id, installer_receipt_id_hash,
+        binding_key, bound_at
+      ) values (
+        $1, $2::uuid, $3::uuid, $4::uuid, $5::uuid, $6::uuid, $7::uuid,
+        $8::uuid, $9::uuid, $10, $11::uuid, $12::uuid, $13::uuid,
+        $14::uuid, $15, $16, $17
+      )
+      on conflict do nothing
+    `,
+    [
+      input.environment,
+      input.claim.claim_id,
+      input.claim.checkout_id,
+      input.claim.acquisition_id,
+      input.expectedAccountId,
+      input.claim.claim_entitlement_ref,
+      input.activationRef,
+      input.profileId,
+      input.identity.install_membership_id,
+      input.identity.install_id_hash,
+      input.identity.install_identity_link_id,
+      input.identity.activation_identity_link_id,
+      input.identity.account_identity_link_id,
+      input.identity.installer_receipt_identity_link_id,
+      input.identity.installer_receipt_id_hash,
+      input.bindingKey,
+      input.occurredAt,
+    ],
+  );
+  return selectPaidTelemetryBinding(client, {
+    claimId: input.claim.claim_id,
+    environment: input.environment,
+    activationRef: input.activationRef,
+    bindingKey: input.bindingKey,
+  });
+}
+
+function paidTelemetryBindingMatches(
+  row: any,
+  input: {
+    claim: any;
+    environment: "test" | "production";
+    activationRef: string;
+    expectedAccountId: string;
+    identity: ExactPaidTelemetryIdentityRow;
+    bindingKey: string;
+  },
+) {
+  return row.license_namespace === input.environment &&
+    row.claim_id === input.claim.claim_id &&
+    row.checkout_id === input.claim.checkout_id &&
+    row.acquisition_id === input.claim.acquisition_id &&
+    row.account_id === input.expectedAccountId &&
+    row.entitlement_id === input.claim.claim_entitlement_ref &&
+    row.activation_ref === input.activationRef &&
+    row.install_membership_id === input.identity.install_membership_id &&
+    row.install_id_hash === input.identity.install_id_hash &&
+    row.install_identity_link_id === input.identity.install_identity_link_id &&
+    row.activation_identity_link_id ===
+      input.identity.activation_identity_link_id &&
+    row.account_identity_link_id === input.identity.account_identity_link_id &&
+    row.installer_receipt_identity_link_id ===
+      input.identity.installer_receipt_identity_link_id &&
+    row.installer_receipt_id_hash ===
+      input.identity.installer_receipt_id_hash &&
+    row.binding_key === input.bindingKey;
 }
 
 function isPaidActivationAssociated(
   outcome: PaidAcquisitionActivationLinkageOutcome,
 ) {
-  return outcome === "installation_identity_not_unique_or_missing" ||
+  return outcome === "installation_identity_missing" ||
+    outcome === "installation_identity_conflict" ||
     outcome === "acquisition_identity_missing" ||
     outcome === "acquisition_ownership_conflict" ||
     outcome === "installation_claimed_recorded";

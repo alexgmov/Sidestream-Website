@@ -8,6 +8,7 @@ import {
   getSession,
   getTrustedCheckoutCountry,
   methodNotAllowed,
+  recordAuthenticatedAccountAcquisition,
   redirect,
   resolveRequiredCheckoutAcquisition,
   sendJson,
@@ -65,6 +66,19 @@ export default async function handler(
     const signInUrl = new URL("/api/auth/google/start", baseUrl);
     signInUrl.searchParams.set("next", `${nextUrl.pathname}${nextUrl.search}`);
     return redirect(response, signInUrl.toString(), 302);
+  }
+
+  try {
+    await recordAuthenticatedAccountAcquisition({
+      acquisitionId: acquisition.acquisitionId,
+      accountId: session.accountId,
+    });
+  } catch (error) {
+    console.error("[sidestream checkout] authentication acquisition failed", error);
+    return sendJson(response, 503, {
+      error: "Checkout acquisition unavailable",
+      code: "acquisition_unavailable",
+    });
   }
 
   if (session.license.active) {

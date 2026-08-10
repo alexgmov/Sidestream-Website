@@ -281,106 +281,131 @@ const PROFILE_MERGE_LOCK_PREFIX = "sidestream_customer_profile_merge";
 export async function mergeCustomerProfiles(
   input: MergeCustomerProfilesInput,
 ): Promise<MergeCustomerProfilesResult> {
-  assertUuid(input.leftProfileId, "leftProfileId");
-  assertUuid(input.rightProfileId, "rightProfileId");
+  validateMergeInput(input);
+  const environment = await requireCustomerProfileEnvironment();
+  return withCustomerProfileTransaction(environment, (client) =>
+    mergeCustomerProfilesInTransaction(client, environment.namespace, input));
+}
+
+/**
+ * Runs the canonical deterministic merge inside an existing trusted server
+ * transaction. This keeps callers that must persist exact evidence beside the
+ * merge on the same atomic boundary without duplicating merge ordering or
+ * audit behavior.
+ */
+export async function mergeCustomerProfilesInTransaction(
+  client: PoolClient,
+  namespace: CustomerLicenseNamespace,
+  input: MergeCustomerProfilesInput,
+): Promise<MergeCustomerProfilesResult> {
+  validateMergeInput(input);
+  if (!isCustomerLicenseNamespace(namespace)) {
+    throw new TypeError("Unknown Customer 360 license namespace");
+  }
+
   const evidenceType = assertDeterministicIdentityLinkType(input.evidenceType);
   const evidenceValueHash = assertLowercaseHex64(
+    input.evidenceValueHash,
+    "evidenceValueHash",
+  );
+  await client.query("select pg_advisory_xact_lock(hashtext($1))", [
+    `${PROFILE_MERGE_LOCK_PREFIX}:${namespace}`,
+  ]);
+
+  const rows = await lockProfileChains(
+    client,
+    namespace,
+    [input.leftProfileId, input.rightProfileId],
+  );
+  const mergedInto = new Map(
+    [...rows.values()].map((row) => [row.id, row.merged_into] as const),
+  );
+  const leftRootId = resolveProfileRoot(input.leftProfileId, mergedInto);
+  const rightRootId = resolveProfileRoot(input.rightProfileId, mergedInto);
+
+  if (leftRootId === rightRootId) {
+    return {
+      merged: false,
+      licenseNamespace: namespace,
+      survivorId: leftRootId,
+      tombstoneId: null,
+      auditId: null,
+      mergedAt: null,
+    };
+  }
+
+  const leftRoot = rows.get(leftRootId);
+  const rightRoot = rows.get(rightRootId);
+  if (!leftRoot || !rightRoot) {
+    throw new Error("Customer profile roots changed while locked");
+  }
+  const plan = planProfileMerge(
+    mergeCandidate(leftRoot),
+    mergeCandidate(rightRoot),
+    { linkType: evidenceType },
+  );
+  if (!plan.merge) {
+    throw new Error("Distinct locked roots unexpectedly produced a no-op merge");
+  }
+
+  await client.query(
+    `
+      lock table public.sidestream_customer_identity_links,
+        public.sidestream_customer_installs
+      in share row exclusive mode
+    `,
+  );
+  await reassignIdentityLinks(client, namespace, plan.tombstoneId, plan.survivorId);
+  await reassignInstallMembership(client, namespace, plan.tombstoneId, plan.survivorId);
+
+  const timestamp = await client.query<{ merged_at: Date | string }>(
+    "select transaction_timestamp() as merged_at",
+  );
+  const mergedAt = timestamp.rows[0]?.merged_at;
+  if (!mergedAt) throw new Error("Postgres did not return a merge timestamp");
+
+  const tombstone = await client.query(
+    `
+      update public.sidestream_customer_profiles
+      set merged_into = $3, merged_at = $4, updated_at = $4
+      where license_namespace = $1 and id = $2 and merged_into is null
+    `,
+    [namespace, plan.tombstoneId, plan.survivorId, mergedAt],
+  );
+  if (tombstone.rowCount !== 1) {
+    throw new Error("Customer profile root changed before tombstoning");
+  }
+
+  const audit = await insertOrVerifyMergeAudit(client, {
+    namespace,
+    sourceProfileId: plan.tombstoneId,
+    targetProfileId: plan.survivorId,
+    evidenceType,
+    evidenceValueHash,
+    initiatedBy: input.initiatedBy,
+    mergedAt,
+  });
+  return {
+    merged: true,
+    licenseNamespace: namespace,
+    survivorId: plan.survivorId,
+    tombstoneId: plan.tombstoneId,
+    auditId: audit.id,
+    mergedAt: toIsoString(audit.merged_at),
+  };
+}
+
+function validateMergeInput(input: MergeCustomerProfilesInput): void {
+  assertUuid(input.leftProfileId, "leftProfileId");
+  assertUuid(input.rightProfileId, "rightProfileId");
+  assertDeterministicIdentityLinkType(input.evidenceType);
+  assertLowercaseHex64(
     input.evidenceValueHash,
     "evidenceValueHash",
   );
   if (!(MERGE_INITIATORS as readonly string[]).includes(input.initiatedBy)) {
     throw new TypeError("Unknown Customer 360 merge initiator");
   }
-
-  const environment = await requireCustomerProfileEnvironment();
-  return withCustomerProfileTransaction(environment, async (client) => {
-    const namespace = environment.namespace;
-    await client.query("select pg_advisory_xact_lock(hashtext($1))", [
-      `${PROFILE_MERGE_LOCK_PREFIX}:${namespace}`,
-    ]);
-
-    const rows = await lockProfileChains(
-      client,
-      namespace,
-      [input.leftProfileId, input.rightProfileId],
-    );
-    const mergedInto = new Map(
-      [...rows.values()].map((row) => [row.id, row.merged_into] as const),
-    );
-    const leftRootId = resolveProfileRoot(input.leftProfileId, mergedInto);
-    const rightRootId = resolveProfileRoot(input.rightProfileId, mergedInto);
-
-    if (leftRootId === rightRootId) {
-      return {
-        merged: false,
-        licenseNamespace: namespace,
-        survivorId: leftRootId,
-        tombstoneId: null,
-        auditId: null,
-        mergedAt: null,
-      };
-    }
-
-    const leftRoot = rows.get(leftRootId);
-    const rightRoot = rows.get(rightRootId);
-    if (!leftRoot || !rightRoot) {
-      throw new Error("Customer profile roots changed while locked");
-    }
-    const plan = planProfileMerge(
-      mergeCandidate(leftRoot),
-      mergeCandidate(rightRoot),
-      { linkType: evidenceType },
-    );
-    if (!plan.merge) {
-      throw new Error("Distinct locked roots unexpectedly produced a no-op merge");
-    }
-
-    await client.query(
-      `
-        lock table public.sidestream_customer_identity_links,
-          public.sidestream_customer_installs
-        in share row exclusive mode
-      `,
-    );
-    await reassignIdentityLinks(client, namespace, plan.tombstoneId, plan.survivorId);
-    await reassignInstallMembership(client, namespace, plan.tombstoneId, plan.survivorId);
-
-    const timestamp = await client.query<{ merged_at: Date | string }>(
-      "select transaction_timestamp() as merged_at",
-    );
-    const mergedAt = timestamp.rows[0]?.merged_at;
-    if (!mergedAt) throw new Error("Postgres did not return a merge timestamp");
-
-    const tombstone = await client.query(
-      `
-        update public.sidestream_customer_profiles
-        set merged_into = $3, merged_at = $4, updated_at = $4
-        where license_namespace = $1 and id = $2 and merged_into is null
-      `,
-      [namespace, plan.tombstoneId, plan.survivorId, mergedAt],
-    );
-    if (tombstone.rowCount !== 1) {
-      throw new Error("Customer profile root changed before tombstoning");
-    }
-
-    const audit = await insertOrVerifyMergeAudit(client, {
-      namespace,
-      sourceProfileId: plan.tombstoneId,
-      targetProfileId: plan.survivorId,
-      evidenceType,
-      evidenceValueHash,
-      initiatedBy: input.initiatedBy,
-      mergedAt,
-    });
-    return {
-      merged: true,
-      licenseNamespace: namespace,
-      survivorId: plan.survivorId,
-      tombstoneId: plan.tombstoneId,
-      auditId: audit.id,
-      mergedAt: toIsoString(audit.merged_at),
-    };
-  });
 }
 
 async function withCustomerProfileTransaction<T>(
