@@ -153,6 +153,68 @@ the same acquisition/account-scoped `authentication_completed` stage. Missing,
 stale, refunded, disputed, cross-namespace, ambiguous, or contradictory facts
 fail closed; no operator may substitute profile history or a nearby identity.
 
+### Fresh Meta-paid Production reset boundary
+
+The guarded fresh-paid operator is a deliberately narrow Production deletion
+exception for the fixed Alex QA identity. It replaces the retired
+Production/Test reset and has no Keychain or implicit environment fallback. It
+must never be generalized to a browser-supplied email, display name, provider
+identifier, Customer 360 ID, or acquisition UUID.
+
+Target selection requires all three safe live selectors: deployed non-`main`
+Neon branch name, branch ID, and direct endpoint ID. Authenticated project
+branch/endpoint inventory plus connected database, role, and `production`
+namespace attestation produce the connected-target fingerprint. `main`, an
+omitted selector, a pooled URL, endpoint/role/database drift, or a changed
+fingerprint fails closed. Sanitized reports may contain only the project/branch/
+endpoint target metadata needed for independent review, counts, and SHA-256
+fingerprints; never record a connection URL, secret, personal identity, raw
+provider object, install/receipt hash, or recovery branch ID.
+
+Recovery is a prerequisite, not an optional rollback note. Run
+`prepare-fresh-meta-paid-recovery` dry first, then create exactly one verified
+child of the deployed branch with confirmation
+`CREATE-RECOVERABLE-NEON-CHILD`. Reset apply requires the exact operation
+`fresh-meta-paid-production`, the dry-run target fingerprint,
+`--confirm-namespace production`,
+`--confirm-identity alex-garrett-fixed-qa`, the raw verified child ID repeated
+for both `--recovery-branch-id` and `--confirm-recovery-branch`, and
+`--confirm DELETE-FRESH-META-PAID-ALEX-ONLY`.
+
+The closure and preservation contract is owned jointly with the Customer 360
+document: follow all server-owned account/auth, entitlement/device, core and
+paid Checkout, acquisition, claim, exact binding, profile/install/identity,
+commerce, and usage edges; refuse foreign or overlapping ownership. Delete
+only matching provider Customer identity objects while preserving and
+fingerprinting financial objects, provider event history, unrelated
+accounts/profiles, usage sync state, leads, and installer analytics. Apply must
+report `clean=true`, and a subsequent unchanged-target dry-run must prove every
+target and matching Customer count is zero before Checkout can begin.
+
+The server reset does not clear the machine or browser. The separate
+`fresh-meta-paid-production-local` operator is dry-run-first and requires
+`RESET-PRODUCTION-CEP-STATE`. It asks Premiere to quit, refuses while Premiere
+or a Production CEP process remains, then moves only Production CEP extensions
+and caches, device/license/onboarding state, telemetry state/queue, and the
+system installer receipt into a timestamped mode-`0700` backup. It rolls back a
+partial move and invariant-checks Test state, media, Premiere projects, explicit
+preserve paths, and unrelated CEP extensions. Rotate away from every browser
+profile with old Sidestream state before opening `/meta-paid`; after the new
+root exists, keep that one clean profile through Checkout and authentication.
+
+After paid install and authentication, the single read-only
+`fresh-meta-paid-post-auth-preflight` must return `GO` with
+`download-may-begin` before the first in-panel media download. It requires one
+exact claim/activation, authentication stage, installation stage, immutable
+current install/receipt binding, telemetry/install owner, receipt owner, and
+the fixed Meta dimensions. After one download, the separate exact-install raw
+telemetry mode must return `GO` / `follow-up-complete` for the same local
+install/receipt and a completed download. `STOP`, drift, missing local paid
+receipt/package truth, or any other count blocks. Source, fixture, build, and
+disposable-Postgres gates do not prove any live reset or readiness. The exact
+ordered commands are in `docs/paid-acquisition-runbook.md`; do not begin
+Checkout or panel download early.
+
 ## HTTP and release contract
 
 Unless a row says otherwise, an unsupported method returns `405` with `Allow`,
