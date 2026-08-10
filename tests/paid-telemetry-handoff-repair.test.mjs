@@ -85,6 +85,28 @@ const EXACT_REVIEWED_BOUNDARY = Object.freeze({
   exact_binding_count: 0,
 });
 
+const EXACT_REVIEWED_IDENTITY = Object.freeze({
+  review_kind: "account_bridge",
+  review_id: EXACT_REVIEWED_BOUNDARY.review_id,
+  candidate_profile_id: IDS.telemetryProfile,
+  existing_profile_id: IDS.paidProfile,
+  candidate_root_id: IDS.telemetryProfile,
+  existing_root_id: IDS.paidProfile,
+  review_created_at: TIME.identityReview,
+  install_membership_id: "8d000000-0000-4000-8000-000000000001",
+  install_profile_id: IDS.telemetryProfile,
+  install_id_hash: HASHES.currentInstall,
+  install_identity_link_id: "8e000000-0000-4000-8000-000000000001",
+  activation_identity_link_id: "8e000000-0000-4000-8000-000000000002",
+  activation_profile_id: IDS.telemetryProfile,
+  account_identity_link_id: "8e000000-0000-4000-8000-000000000003",
+  receipt_identity_link_id: "8e000000-0000-4000-8000-000000000004",
+  receipt_id_hash: HASHES.nativeReceipt,
+  receipt_created_at: TIME.identityReview,
+  candidate_account_count: 0,
+  existing_account_count: 1,
+});
+
 function legacyEntitlementPath(overrides = {}) {
   return {
     acquisition_id: IDS.acquisition,
@@ -142,7 +164,10 @@ function legacyEntitlementPath(overrides = {}) {
   };
 }
 
-async function inspectReviewedPath(path) {
+async function inspectReviewedPath(path, {
+  identityRows = [],
+  mutableCounts = [],
+} = {}) {
   const statements = [];
   const client = {
     async query(sql, params = []) {
@@ -155,6 +180,8 @@ async function inspectReviewedPath(path) {
         assert.equal(params[3], IDS.activation);
         return { rows: [path] };
       }
+      if (/as review_kind/.test(sql)) return { rows: identityRows };
+      if (/with exact_payment_keys as/.test(sql)) return { rows: mutableCounts };
       return { rows: [] };
     },
   };
@@ -326,6 +353,34 @@ test("the exact reviewed legacy entitlement placeholder reaches identity validat
   assert.equal(report.booleans.activePayment, false);
   assert.equal(statements.length, 4);
   assert.ok(statements.every((sql) => /^\s*select\b/i.test(sql)));
+});
+
+test("an exact unowned zero-total Checkout fact stops before repair mutation", async () => {
+  const counts = {
+    authenticationStages: 1,
+    installationStages: 1,
+    bindings: 0,
+    mergeAudits: 0,
+    acquisitionConflicts: 0,
+    lifecycleStops: 0,
+    commerceFacts: 1,
+    commerceProfiles: 0,
+    commerceConflicts: 1,
+  };
+  const { report, statements } = await inspectReviewedPath(
+    legacyEntitlementPath(),
+    { identityRows: [EXACT_REVIEWED_IDENTITY], mutableCounts: [counts] },
+  );
+  assert.equal(report.reasonCode, "commerce_conflict");
+  assert.equal(report.eligible, false);
+  assert.equal(report.wouldMutate, false);
+  assert.equal(report.journeyFingerprint, null);
+  assert.equal(report.booleans.canonicalAcquisition, true);
+  assert.equal(report.booleans.exactPaidPath, true);
+  assert.deepEqual(report.counts, counts);
+  assert.equal(statements.length, 6);
+  assert.ok(statements.every((sql) =>
+    !/^\s*(?:insert|update|delete)\b/i.test(sql)));
 });
 
 test("partial or mismatched legacy entitlement and claim tuples fail before identity reads", async () => {

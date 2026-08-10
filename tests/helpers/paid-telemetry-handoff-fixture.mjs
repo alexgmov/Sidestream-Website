@@ -185,9 +185,10 @@ export async function runPaidTelemetryHandoffFixture({
     "pending-review-repaired",
     "reviewed-path-repaired",
     "legacy-entitlement-repaired",
+    "unowned-commerce-broken",
   ].includes(expectation)) {
     throw new TypeError(
-      "Paid telemetry handoff expectation must be repaired, broken, pending-review-repaired, reviewed-path-repaired, or legacy-entitlement-repaired",
+      "Paid telemetry handoff expectation must be repaired, broken, pending-review-repaired, reviewed-path-repaired, legacy-entitlement-repaired, or unowned-commerce-broken",
     );
   }
 
@@ -219,7 +220,8 @@ export async function runPaidTelemetryHandoffFixture({
     if (
       expectation === "pending-review-repaired" ||
       expectation === "reviewed-path-repaired" ||
-      expectation === "legacy-entitlement-repaired"
+      expectation === "legacy-entitlement-repaired" ||
+      expectation === "unowned-commerce-broken"
     ) {
       const summary = await runPendingReviewRepairedScenario({
         pool,
@@ -232,11 +234,16 @@ export async function runPaidTelemetryHandoffFixture({
         integrityDependencies,
         repairUniqueReviewedPath:
           expectation === "reviewed-path-repaired" ||
-          expectation === "legacy-entitlement-repaired",
+          expectation === "legacy-entitlement-repaired" ||
+          expectation === "unowned-commerce-broken",
         expectLegacyEntitlementRepaired:
           expectation === "legacy-entitlement-repaired",
+        expectUnownedCommerceBroken:
+          expectation === "unowned-commerce-broken",
       });
-      if (expectation === "legacy-entitlement-repaired") {
+      if (expectation === "unowned-commerce-broken") {
+        assertUnownedCommerceBrokenExpectation(summary);
+      } else if (expectation === "legacy-entitlement-repaired") {
         assertLegacyEntitlementRepairedExpectation(summary);
       } else if (expectation === "reviewed-path-repaired") {
         assertReviewedPathRepairedExpectation(summary);
@@ -492,6 +499,7 @@ async function runPendingReviewRepairedScenario({
   integrityDependencies,
   repairUniqueReviewedPath,
   expectLegacyEntitlementRepaired,
+  expectUnownedCommerceBroken,
 }) {
   await acquisitionIntegrity.createCanonicalAcquisitionRoot({
     acquisitionId: IDS.acquisition,
@@ -621,13 +629,32 @@ async function runPendingReviewRepairedScenario({
   }
 
   await customerCommerce.materializeCustomerCommerceEvent(
-    paymentIntentEvent(),
+    expectUnownedCommerceBroken
+      ? unownedZeroCheckoutSessionEvent()
+      : paymentIntentEvent(),
     schemaQuery(pool, quotedCrm),
     "test",
   );
 
+  if (expectUnownedCommerceBroken) {
+    await pool.query(
+      `update ${quotedCrm}.sidestream_customer_commerce_materializations
+       set profile_id = null
+       where license_namespace = 'test'
+         and source_object_type = 'checkout_session'
+         and source_object_id = $1`,
+      [PROVIDER.checkoutSession],
+    );
+    await acquisitionIntegrity.recordAcquisitionStage({
+      acquisitionId: IDS.acquisition,
+      stage: "authentication_completed",
+      stableServerReference: `google-account:${IDS.acquisition}:${IDS.account}`,
+      occurredAt: FIXTURE_TIME.checkoutStarted,
+    }, integrityDependencies);
+  }
+
   let legacyShapeBefore = null;
-  if (expectLegacyEntitlementRepaired) {
+  if (expectLegacyEntitlementRepaired || expectUnownedCommerceBroken) {
     await pool.query(
       `update ${quotedCrm}.sidestream_licenses
        set stripe_product_id = null, stripe_price_id = null, amount_paid = 0
@@ -650,12 +677,42 @@ async function runPendingReviewRepairedScenario({
 
   if (repairUniqueReviewedPath) {
     const mutableBefore = await paidTelemetryAmbiguityMutationCounts(pool, quotedCrm);
+    const unownedCommerceBefore = expectUnownedCommerceBroken
+      ? await unownedZeroCommercePrivacySafeSummary({ pool, quotedCrm })
+      : null;
     const guardedDryRun = await readTransaction((client) =>
       paidTelemetryRepair.inspectPaidTelemetryHandoffRepair(client, {
         acquisitionId: IDS.acquisition,
         namespace: "test",
       }));
     const mutableAfterDryRun = await paidTelemetryAmbiguityMutationCounts(pool, quotedCrm);
+    if (expectUnownedCommerceBroken) {
+      const unownedCommerceAfterDryRun = await unownedZeroCommercePrivacySafeSummary({
+        pool,
+        quotedCrm,
+      });
+      const guardedReplay = await readTransaction((client) =>
+        paidTelemetryRepair.inspectPaidTelemetryHandoffRepair(client, {
+          acquisitionId: IDS.acquisition,
+          namespace: "test",
+        }));
+      const mutableAfterReplay = await paidTelemetryAmbiguityMutationCounts(pool, quotedCrm);
+      const unownedCommerceAfterReplay = await unownedZeroCommercePrivacySafeSummary({
+        pool,
+        quotedCrm,
+      });
+      return unownedCommerceBrokenPrivacySafeSummary({
+        legacyShape: legacyShapeBefore,
+        unownedCommerceBefore,
+        unownedCommerceAfterDryRun,
+        unownedCommerceAfterReplay,
+        guardedDryRun,
+        guardedReplay,
+        mutableBefore,
+        mutableAfterDryRun,
+        mutableAfterReplay,
+      });
+    }
     const boundary = legacyShapeBefore ||
       await reviewedPathSelectionPrivacySafeSummary({
         pool,
@@ -1253,6 +1310,33 @@ function checkoutSessionEvent() {
   };
 }
 
+function unownedZeroCheckoutSessionEvent() {
+  const created = Math.floor(Date.parse(FIXTURE_TIME.checkoutCompleted) / 1_000);
+  return {
+    id: "evt_fixture_paid_handoff_unowned_zero_checkout",
+    object: "event",
+    api_version: "2026-06-30.basil",
+    created,
+    data: {
+      object: {
+        id: PROVIDER.checkoutSession,
+        created,
+        customer: PROVIDER.customer,
+        payment_status: "paid",
+        mode: "payment",
+        amount_total: 0,
+        currency: "usd",
+        total_details: { amount_discount: 0, amount_tax: 0 },
+        metadata: { sidestream_commerce_model: "one_time" },
+      },
+    },
+    livemode: false,
+    pending_webhooks: 1,
+    request: null,
+    type: "checkout.session.completed",
+  };
+}
+
 async function replayExpectedJourneyStages(integrityDependencies) {
   for (const [stage, stableServerReference, occurredAt] of [
     ["landing_observed", "fixture-meta-paid-landing", FIXTURE_TIME.firstObserved],
@@ -1710,6 +1794,175 @@ function assertReviewedPathRepairedExpectation(summary) {
   if (!observed) {
     throw new Error(
       `Expected reviewed-path-repaired paid telemetry handoff contract; observed ${JSON.stringify(summary)}`,
+    );
+  }
+}
+
+async function unownedZeroCommercePrivacySafeSummary({ pool, quotedCrm }) {
+  const result = await pool.query(
+    `select
+       count(*)::int as fact_count,
+       count(distinct fact.payment_key)::int as fact_payment_keys,
+       count(distinct fact.profile_id) filter (where fact.profile_id is not null)::int
+         as owner_profiles,
+       (select count(distinct alias.payment_key)::int
+        from ${quotedCrm}.sidestream_customer_commerce_aliases alias
+        where alias.license_namespace = 'test') as alias_payment_keys,
+       bool_and(
+         fact.fact_kind = 'payment'
+           and fact.source_confidence = 'verified'
+       ) as verified_payment_fact,
+       bool_and(
+         fact.source_object_type = 'checkout_session'
+           and fact.source_object_id = paid.verified_checkout_session_ref
+       ) as exact_paid_checkout_source,
+       bool_and(fact.currency = paid.verified_currency) as matching_currency,
+       bool_and(
+         (select count(*)
+          from jsonb_array_elements(fact.identity_evidence) evidence
+          where evidence->>'linkType' = 'stripe_checkout_session'
+            and evidence->>'linkValue' = paid.verified_checkout_session_ref) = 1
+       ) as exact_strong_checkout_evidence,
+       bool_and(fact.profile_id is null) as unowned,
+       bool_and(fact.gross_paid_minor = 0 and fact.net_paid_minor = 0)
+         as zero_gross_and_net,
+       bool_and(
+         not fact.identity_conflict
+           and fact.refunded_minor = 0
+           and fact.disputed_minor = 0
+           and fact.inquiry_minor = 0
+       ) as clear_conflict_refund_dispute_inquiry
+     from ${quotedCrm}.sidestream_customer_commerce_materializations fact
+     cross join ${quotedCrm}.sidestream_paid_acquisition_checkouts paid
+     where fact.license_namespace = 'test'
+       and paid.id = $1::uuid`,
+    [IDS.paidCheckout],
+  );
+  const row = result.rows[0];
+  return Object.freeze({
+    exactlyOneCanonicalPaymentKey:
+      row.fact_payment_keys === 1 && row.alias_payment_keys === 1,
+    exactlyOneVerifiedPaymentFact:
+      row.fact_count === 1 && row.verified_payment_fact === true,
+    sourceIsExactPaidCheckoutSession: row.exact_paid_checkout_source === true,
+    currencyMatchesPaidRow: row.matching_currency === true,
+    strongCheckoutIdentityEvidenceMatches:
+      row.exact_strong_checkout_evidence === true,
+    profileIsUnowned: row.unowned === true,
+    grossAndNetAreZero: row.zero_gross_and_net === true,
+    conflictRefundDisputeInquiryClear:
+      row.clear_conflict_refund_dispute_inquiry === true,
+    noCompetingCommerceFactKeyOrProfile:
+      row.fact_count === 1 &&
+      row.fact_payment_keys === 1 &&
+      row.alias_payment_keys === 1 &&
+      row.owner_profiles === 0,
+  });
+}
+
+function unownedCommerceBrokenPrivacySafeSummary({
+  legacyShape,
+  unownedCommerceBefore,
+  unownedCommerceAfterDryRun,
+  unownedCommerceAfterReplay,
+  guardedDryRun,
+  guardedReplay,
+  mutableBefore,
+  mutableAfterDryRun,
+  mutableAfterReplay,
+}) {
+  return Object.freeze({
+    observedContract: "unique-reviewed-legacy-unowned-zero-commerce-rejected",
+    ...legacyShape,
+    unownedCommerce: unownedCommerceBefore,
+    guardedOperator: Object.freeze({
+      beforeReasonCode: guardedDryRun.reasonCode,
+      beforeEligible: guardedDryRun.eligible,
+      beforeWouldMutate: guardedDryRun.wouldMutate,
+      canonicalAcquisition: guardedDryRun.booleans.canonicalAcquisition,
+      exactPaidPath: guardedDryRun.booleans.exactPaidPath,
+      hasJourneyFingerprint: guardedDryRun.journeyFingerprint !== null,
+      replayReasonCode: guardedReplay.reasonCode,
+      replayWouldMutate: guardedReplay.wouldMutate,
+      replayHasJourneyFingerprint: guardedReplay.journeyFingerprint !== null,
+      counts: guardedDryRun.counts,
+    }),
+    mutationBoundary: Object.freeze({
+      dryRunRepairStateUnchanged:
+        JSON.stringify(mutableBefore) === JSON.stringify(mutableAfterDryRun),
+      replayRepairStateUnchanged:
+        JSON.stringify(mutableBefore) === JSON.stringify(mutableAfterReplay),
+      dryRunCommerceStateUnchanged:
+        JSON.stringify(unownedCommerceBefore) ===
+          JSON.stringify(unownedCommerceAfterDryRun),
+      replayCommerceStateUnchanged:
+        JSON.stringify(unownedCommerceBefore) ===
+          JSON.stringify(unownedCommerceAfterReplay),
+      before: mutableBefore,
+      afterDryRun: mutableAfterDryRun,
+      afterReplay: mutableAfterReplay,
+    }),
+  });
+}
+
+function assertUnownedCommerceBrokenExpectation(summary) {
+  const expectedMutationCounts = {
+    authenticationStages: 1,
+    installationStages: 1,
+    bindings: 0,
+    mergeAudits: 0,
+    claimedCheckouts: 1,
+    unclaimedCheckouts: 1,
+    claimedClaims: 1,
+    unclaimedClaims: 1,
+  };
+  const expectedRepairCounts = {
+    authenticationStages: 1,
+    installationStages: 1,
+    bindings: 0,
+    mergeAudits: 0,
+    acquisitionConflicts: 0,
+    lifecycleStops: 0,
+    commerceFacts: 1,
+    commerceProfiles: 0,
+    commerceConflicts: 1,
+  };
+  const observed =
+    summary.observedContract ===
+      "unique-reviewed-legacy-unowned-zero-commerce-rejected" &&
+    summary.acquisitionShape.paidPaths === 2 &&
+    summary.acquisitionShape.activeConsistentPaths === 1 &&
+    summary.acquisitionShape.activationPaths === 2 &&
+    summary.reviewedPath.directAccountOrStripeLinks === 0 &&
+    summary.reviewedPath.verifiedAccountReviews === 1 &&
+    summary.reviewedPath.uniqueExactAccountOwnerLinks === 1 &&
+    summary.bridgeKindsNonOverlapping === true &&
+    Object.values(summary.reviewedLegacyPath).every((value) => value === true) &&
+    Object.values(summary.unownedCommerce).every((value) => value === true) &&
+    summary.guardedOperator.beforeReasonCode === "commerce_conflict" &&
+    summary.guardedOperator.beforeEligible === false &&
+    summary.guardedOperator.beforeWouldMutate === false &&
+    summary.guardedOperator.canonicalAcquisition === true &&
+    summary.guardedOperator.exactPaidPath === true &&
+    summary.guardedOperator.hasJourneyFingerprint === false &&
+    summary.guardedOperator.replayReasonCode === "commerce_conflict" &&
+    summary.guardedOperator.replayWouldMutate === false &&
+    summary.guardedOperator.replayHasJourneyFingerprint === false &&
+    JSON.stringify(summary.guardedOperator.counts) ===
+      JSON.stringify(expectedRepairCounts) &&
+    summary.mutationBoundary.dryRunRepairStateUnchanged === true &&
+    summary.mutationBoundary.replayRepairStateUnchanged === true &&
+    summary.mutationBoundary.dryRunCommerceStateUnchanged === true &&
+    summary.mutationBoundary.replayCommerceStateUnchanged === true &&
+    JSON.stringify(summary.mutationBoundary.before) ===
+      JSON.stringify(expectedMutationCounts) &&
+    JSON.stringify(summary.mutationBoundary.afterDryRun) ===
+      JSON.stringify(expectedMutationCounts) &&
+    JSON.stringify(summary.mutationBoundary.afterReplay) ===
+      JSON.stringify(expectedMutationCounts);
+  if (!observed) {
+    throw new Error(
+      `Expected unowned-commerce-broken paid telemetry handoff contract; observed ${JSON.stringify(summary)}`,
     );
   }
 }
