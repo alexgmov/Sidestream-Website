@@ -108,6 +108,18 @@ const EXACT_REVIEWED_IDENTITY = Object.freeze({
   existing_account_count: 1,
 });
 
+const EXACT_CURRENT_CUSTOMER_MISSING = Object.freeze({
+  selected_profile_count: 2,
+  live_profile_count: 2,
+  survivor_id: IDS.telemetryProfile,
+  exact_link_count: 0,
+  value_link_count: 0,
+  exact_link_owner_id: null,
+  exact_link_live_owner: false,
+  exact_review_count: 0,
+  exact_alias_count: 0,
+});
+
 function legacyEntitlementPath(overrides = {}) {
   return {
     acquisition_id: IDS.acquisition,
@@ -116,6 +128,7 @@ function legacyEntitlementPath(overrides = {}) {
     checkout_created_at: TIME.checkoutStarted,
     checkout_state: "completed",
     checkout_account_id: IDS.account,
+    checkout_customer_id: PROVIDER.customer,
     checkout_session_id: PROVIDER.checkoutSession,
     checkout_price_id: PROVIDER.price,
     checkout_product_id: PROVIDER.product,
@@ -144,6 +157,7 @@ function legacyEntitlementPath(overrides = {}) {
     claim_email: null,
     account_id: IDS.account,
     account_email: "repair-fixture@example.invalid",
+    account_customer_id: PROVIDER.customer,
     entitlement_id: IDS.license,
     entitlement_account_id: IDS.account,
     entitlement_status: "active",
@@ -168,6 +182,7 @@ function legacyEntitlementPath(overrides = {}) {
 
 async function inspectReviewedPath(path, {
   identityRows = [],
+  customerLinkState = EXACT_CURRENT_CUSTOMER_MISSING,
   mutableCounts = [],
   commerceState = [],
 } = {}) {
@@ -184,6 +199,7 @@ async function inspectReviewedPath(path, {
         return { rows: [path] };
       }
       if (/as review_kind/.test(sql)) return { rows: identityRows };
+      if (/as selected_profile_count/.test(sql)) return { rows: [customerLinkState] };
       if (/as "lifecycleStops"/.test(sql)) return { rows: mutableCounts };
       if (/with exact_payment_keys as/.test(sql)) return { rows: commerceState };
       return { rows: [] };
@@ -283,6 +299,7 @@ test("two discovered direct paid paths fail closed before identity reads or writ
       installationRecorded: false,
       immutableBinding: false,
       commerceConsistent: true,
+      currentStripeCustomerLinked: false,
     },
     counts: {
       authenticationStages: 0,
@@ -399,9 +416,40 @@ test("an exact unowned zero-total Checkout fact is the only recoverable commerce
     commerceProfiles: 0,
     commerceConflicts: 0,
   });
-  assert.equal(statements.length, 7);
+  assert.equal(statements.length, 8);
   assert.ok(statements.every((sql) =>
     !/^\s*(?:insert|update|delete)\b/i.test(sql)));
+});
+
+test("only zero current-customer links or one converged survivor link are accepted", async () => {
+  const cases = [
+    ["second value owner", { exact_link_count: 2, value_link_count: 2 }],
+    ["different link type owns value", { value_link_count: 1 }],
+    ["wrong profile owns exact link", {
+      exact_link_count: 1,
+      value_link_count: 1,
+      exact_link_owner_id: IDS.paidProfile,
+      exact_link_live_owner: true,
+    }],
+    ["matching identity review exists", { exact_review_count: 1 }],
+    ["matching commerce alias exists", { exact_alias_count: 1 }],
+  ];
+  for (const [label, overrides] of cases) {
+    const { report, statements } = await inspectReviewedPath(
+      legacyEntitlementPath(),
+      {
+        identityRows: [EXACT_REVIEWED_IDENTITY],
+        customerLinkState: { ...EXACT_CURRENT_CUSTOMER_MISSING, ...overrides },
+      },
+    );
+    assert.equal(report.reasonCode, "current_customer_link_conflict", label);
+    assert.equal(report.eligible, false, label);
+    assert.equal(report.wouldMutate, false, label);
+    assert.equal(report.journeyFingerprint, null, label);
+    assert.equal(statements.length, 5, label);
+    assert.ok(statements.every((sql) =>
+      !/^\s*(?:insert|update|delete|lock)\b/i.test(sql)), label);
+  }
 });
 
 test("nearby unowned commerce shapes remain fail closed", async () => {
@@ -485,6 +533,11 @@ test("partial or mismatched legacy entitlement and claim tuples fail before iden
     ["canonical payment mismatch", { claim_payment_ref: "pi_other" }],
     ["nonzero refund", { entitlement_amount_refunded: "1" }],
     ["Checkout account conflict", { checkout_account_id: otherAccount }],
+    ["Checkout and account Customer mismatch", { account_customer_id: "cus_other" }],
+    ["invalid Checkout Customer", {
+      checkout_customer_id: "customer_invalid",
+      account_customer_id: "customer_invalid",
+    }],
     ["claim account conflict", { claim_account_ref: otherAccount }],
     ["claim entitlement conflict", { claim_entitlement_ref: otherLicense }],
     ["null claim activation", { claim_activation_ref: null }],
@@ -688,7 +741,11 @@ test("disposable Postgres repair is dry-run first, exact, private, and idempoten
           acquisitionId: IDS.acquisition,
           namespace: "test",
         });
-        return { report, exactLinkState: exactLinkState.rows[0] };
+        return {
+          report,
+          exactLinkState: exactLinkState.rows[0],
+          survivorId: removed.rows[0].profile_id,
+        };
       },
     );
     assert.equal(
@@ -697,9 +754,46 @@ test("disposable Postgres repair is dry-run first, exact, private, and idempoten
     );
     assert.equal(missingCurrentCustomer.exactLinkState.exact_current_links, 0);
     assert.equal(missingCurrentCustomer.exactLinkState.older_links, 1);
-    assert.equal(missingCurrentCustomer.report.reasonCode, "already_repaired");
+    assert.equal(missingCurrentCustomer.report.reasonCode, "repair_ready");
     assert.equal(missingCurrentCustomer.report.eligible, true);
-    assert.equal(missingCurrentCustomer.report.wouldMutate, false);
+    assert.equal(missingCurrentCustomer.report.wouldMutate, true);
+    assert.equal(
+      missingCurrentCustomer.report.booleans.currentStripeCustomerLinked,
+      false,
+    );
+
+    const customerOnlyApplied = await inTransaction(pool, quoted, false, (client) =>
+      repair.applyPaidTelemetryHandoffRepair(client, {
+        acquisitionId: IDS.acquisition,
+        namespace: "test",
+        confirmJourney: missingCurrentCustomer.report.journeyFingerprint,
+      }));
+    assert.equal(customerOnlyApplied.reasonCode, "already_repaired");
+    assert.equal(customerOnlyApplied.wouldMutate, false);
+    assert.equal(customerOnlyApplied.booleans.currentStripeCustomerLinked, true);
+    assert.deepEqual(await repairCounts(pool, quoted), firstAppliedRows);
+
+    const repairedCustomerLinks = await pool.query(
+      `select link_value, profile_id
+       from ${quoted}.sidestream_customer_identity_links
+       where license_namespace = 'test'
+         and link_type = 'stripe_customer'
+         and link_value in ($1, $2)
+       order by link_value`,
+      [PROVIDER.customer, PROVIDER.olderCustomer],
+    );
+    assert.equal(repairedCustomerLinks.rowCount, 2);
+    assert.ok(repairedCustomerLinks.rows.every((row) =>
+      row.profile_id === missingCurrentCustomer.survivorId));
+
+    const customerOnlyReplay = await inTransaction(pool, quoted, false, (client) =>
+      repair.applyPaidTelemetryHandoffRepair(client, {
+        acquisitionId: IDS.acquisition,
+        namespace: "test",
+        confirmJourney: missingCurrentCustomer.report.journeyFingerprint,
+      }));
+    assert.equal(customerOnlyReplay.reasonCode, "already_repaired");
+    assert.deepEqual(await repairCounts(pool, quoted), firstAppliedRows);
   } finally {
     if (created) await pool.query(`drop schema if exists ${quoted} cascade`).catch(() => {});
     await pool.end().catch(() => {});
@@ -879,19 +973,18 @@ async function seedFailedJourney(pool, schema) {
     `insert into ${schema}.sidestream_customer_identity_links (
        profile_id, license_namespace, link_type, link_value, created_at
      ) values
-       ($1, 'test', 'install_identity_hash', $3, $9),
-       ($2, 'test', 'install_identity_hash', $4, $10),
-       ($2, 'test', 'activation_record', $5, $11),
-       ($2, 'test', 'account_identity', $6, $11),
-       ($2, 'test', 'installer_receipt_hash', $7, $11),
-       ($2, 'test', 'stripe_customer', $8, $10),
-       ($2, 'test', 'stripe_checkout_session', $12, $10),
-       ($2, 'test', 'stripe_payment_intent', $13, $10)`,
+       ($1, 'test', 'install_identity_hash', $3, $8),
+       ($2, 'test', 'install_identity_hash', $4, $9),
+       ($2, 'test', 'activation_record', $5, $10),
+       ($2, 'test', 'account_identity', $6, $10),
+       ($2, 'test', 'installer_receipt_hash', $7, $10),
+       ($2, 'test', 'stripe_checkout_session', $11, $9),
+       ($2, 'test', 'stripe_payment_intent', $12, $9)`,
     [
       IDS.telemetryProfile, IDS.paidProfile, HASHES.currentInstall,
       HASHES.historicalInstall, IDS.activation, IDS.account, HASHES.nativeReceipt,
-      PROVIDER.customer, TIME.telemetryProfile, TIME.paidProfile,
-      TIME.identityReview, PROVIDER.checkoutSession, PROVIDER.paymentIntent,
+      TIME.telemetryProfile, TIME.paidProfile, TIME.identityReview,
+      PROVIDER.checkoutSession, PROVIDER.paymentIntent,
     ],
   );
   await pool.query(

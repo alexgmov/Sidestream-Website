@@ -947,6 +947,26 @@ back; replay is a no-op. Deployed `6118a87` rejected the pre-state read-only
 without mutation. That historical result does not prove deployment, authorize
 apply, establish current Production eligibility, or qualify a live journey.
 
+The sixth boundary is disposable-proved with
+`npm run replay:paid-telemetry-handoff -- --expect-missing-current-customer-repaired`.
+It requires the exact completed active Checkout intent and claimed account on
+the selected path to share one bounded current `cus_` value. Zero identity
+links, zero exact Customer reviews, and zero commerce aliases for that value are
+the only recoverable pre-state; exactly one `stripe_customer` link on the
+deterministic live survivor is the only repaired state. A competing value link,
+owner, review, alias, invalid/mismatched value, changed locked row, or any prior
+path/lifecycle/identity/commerce/binding conflict refuses.
+
+Split profiles merge before the link is inserted. If stages, claims, merge,
+binding, and positive commerce already converge, apply uses a customer-link-only
+branch and does not write any of them again. It never infers by email, calls
+Stripe, creates a commerce alias/provider event, attaches historical installs,
+or changes older Customer links. Post-discovery and exact Customer lookup must
+resolve the survivor; replay is a no-op. Deployed `19c242d` repaired exact
+Checkout Session/PaymentIntent commerce ownership but omitted this exact legacy
+Customer lookup. That is not authorization for a Production query, mutation,
+provider call, deployment, or push.
+
 ### Production device support and backfill
 
 The device-domain behavior and privacy/support facts live in

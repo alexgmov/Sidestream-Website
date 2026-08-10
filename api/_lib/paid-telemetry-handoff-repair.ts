@@ -8,6 +8,7 @@ export const PAID_TELEMETRY_REPAIR_VERSION = 1;
 const UUID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const HASH = /^[0-9a-f]{64}$/;
+const STRIPE_CUSTOMER = /^cus_[A-Za-z0-9_]{1,196}$/;
 const PAID_SOURCE = "paid-acquisition-mc-v1";
 const STAGE_CONTEXT = "sidestream-acquisition-stage-v1";
 const BINDING_CONTEXT = "sidestream-paid-telemetry-profile-binding-v1";
@@ -25,6 +26,7 @@ type PaidPathRow = Readonly<{
   checkout_created_at: Date | string;
   checkout_state: string;
   checkout_account_id: string | null;
+  checkout_customer_id: string | null;
   checkout_session_id: string | null;
   checkout_price_id: string | null;
   checkout_product_id: string | null;
@@ -53,6 +55,7 @@ type PaidPathRow = Readonly<{
   claim_email: string | null;
   account_id: string;
   account_email: string;
+  account_customer_id: string | null;
   entitlement_id: string;
   entitlement_account_id: string;
   entitlement_status: string;
@@ -159,6 +162,25 @@ type RecoverableCommerceFact = Readonly<{
   paymentKey: string;
 }>;
 
+type CurrentCustomerLinkStateRow = Readonly<{
+  selected_profile_count: number;
+  live_profile_count: number;
+  survivor_id: string | null;
+  exact_link_count: number;
+  value_link_count: number;
+  exact_link_owner_id: string | null;
+  exact_link_live_owner: boolean;
+  exact_review_count: number;
+  exact_alias_count: number;
+}>;
+
+type CurrentCustomerLinkState = Readonly<{
+  customerId: string;
+  survivorId: string;
+  missing: boolean;
+  attached: boolean;
+}>;
+
 type ExactJourney = Readonly<{
   path: PaidPathRow;
   identity: ExactIdentityRow;
@@ -170,6 +192,7 @@ type ExactJourney = Readonly<{
   counts: MutableCounts;
   commerceRecovery: RecoverableCommerceFact | null;
   attachedPositiveCommerce: boolean;
+  currentCustomer: CurrentCustomerLinkState;
 }>;
 
 export type PaidTelemetryRepairReport = Readonly<{
@@ -183,6 +206,7 @@ export type PaidTelemetryRepairReport = Readonly<{
     | "namespace_or_profile_conflict"
     | "lifecycle_stop_present"
     | "commerce_conflict"
+    | "current_customer_link_conflict"
     | "binding_conflict";
   eligible: boolean;
   wouldMutate: boolean;
@@ -197,6 +221,7 @@ export type PaidTelemetryRepairReport = Readonly<{
     installationRecorded: boolean;
     immutableBinding: boolean;
     commerceConsistent: boolean;
+    currentStripeCustomerLinked: boolean;
   }>;
   counts: MutableCounts;
 }>;
@@ -257,6 +282,7 @@ export function derivePaidTelemetryJourneyFingerprint(input: Readonly<{
     paidCheckoutId: path.paid_checkout_id,
     claimId: path.claim_id,
     accountId: path.account_id,
+    currentStripeCustomerId: path.checkout_customer_id,
     entitlementId: path.entitlement_id,
     activationId: path.activation_id,
     reviewId: identity.review_id,
@@ -326,6 +352,17 @@ export async function applyPaidTelemetryHandoffRepair(
   }
 
   const journey = discovery.journey;
+  const profilesConverged =
+    journey.identity.candidate_root_id === journey.identity.existing_root_id;
+  if (profilesConverged) {
+    await attachExactCurrentCustomer(
+      client,
+      selector.namespace,
+      journey,
+      journey.currentCustomer.survivorId,
+    );
+    return requireConvergedRepair(client, selector, before);
+  }
   await insertExactStage(client, {
     namespace: selector.namespace,
     acquisitionId: selector.acquisitionId,
@@ -414,7 +451,19 @@ export async function applyPaidTelemetryHandoffRepair(
     );
   }
   await insertExactBinding(client, selector.namespace, journey, survivorId);
+  await attachExactCurrentCustomer(client, selector.namespace, journey, survivorId);
 
+  return requireConvergedRepair(client, selector, before);
+}
+
+async function requireConvergedRepair(
+  client: QueryClient,
+  selector: Readonly<{
+    acquisitionId: string;
+    namespace: PaidTelemetryRepairNamespace;
+  }>,
+  before: PaidTelemetryRepairReport,
+): Promise<PaidTelemetryRepairReport> {
   const afterDiscovery = await discoverExactJourney(client, selector, true);
   const after = reportForDiscovery(afterDiscovery);
   if (
@@ -516,6 +565,23 @@ async function discoverExactJourney(
     );
   }
   const identity = exactRows[0];
+  const customerLinkResult = await client.query<CurrentCustomerLinkStateRow>(
+    currentCustomerLinkStateSql(),
+    [
+      selector.namespace,
+      identity.candidate_profile_id,
+      identity.existing_profile_id,
+      path.checkout_customer_id,
+    ],
+  );
+  const currentCustomer = normalizeCurrentCustomerLinkState(
+    customerLinkResult.rows[0],
+    path,
+    identity,
+  );
+  if (!currentCustomer) {
+    return discoveryFailure("current_customer_link_conflict", 1, 1, 1);
+  }
   const authenticationKey = deriveStageKey(
     selector.namespace,
     "authentication_completed",
@@ -637,6 +703,7 @@ async function discoverExactJourney(
       counts,
       commerceRecovery: commerce.recoverableFact,
       attachedPositiveCommerce: commerce.attachedPositive,
+      currentCustomer,
     },
     rootCount: 1,
     pathCount: 1,
@@ -660,14 +727,20 @@ function reportForDiscovery(discovery: Discovery): PaidTelemetryRepairReport {
     ? counts.commerceConflicts === 0 &&
       Boolean(journey.attachedPositiveCommerce || journey.commerceRecovery)
     : counts.commerceConflicts === 0 && counts.commerceProfiles <= 1;
-  const alreadyRepaired = Boolean(
+  const baseRepairComplete = Boolean(
     journey && profilesConverged && authenticationRecorded &&
     installationRecorded && immutableBinding && journey.attachedPositiveCommerce,
+  );
+  const alreadyRepaired = Boolean(baseRepairComplete && journey?.currentCustomer.attached);
+  const customerLinkOnlyReady = Boolean(
+    baseRepairComplete && journey?.currentCustomer.missing &&
+    journey.path.paid_claim_state === "claimed" && journey.path.claim_state === "claimed",
   );
   const eligible = Boolean(
     journey && counts.acquisitionConflicts === 0 && counts.lifecycleStops === 0 &&
     commerceConsistent && (
       alreadyRepaired ||
+      customerLinkOnlyReady ||
       (!profilesConverged && !immutableBinding && counts.bindings === 0)
     ),
   );
@@ -691,6 +764,7 @@ function reportForDiscovery(discovery: Discovery): PaidTelemetryRepairReport {
       installationRecorded,
       immutableBinding,
       commerceConsistent,
+      currentStripeCustomerLinked: Boolean(journey?.currentCustomer.attached),
     }),
     counts,
   });
@@ -824,6 +898,7 @@ function paidPathSql(lock: boolean, selectReviewedPath: boolean): string {
       core.created_at as checkout_created_at,
       core.state as checkout_state,
       core.account_id as checkout_account_id,
+      core.stripe_customer_id as checkout_customer_id,
       core.stripe_checkout_session_id as checkout_session_id,
       core.stripe_price_id as checkout_price_id,
       core.stripe_product_id as checkout_product_id,
@@ -852,6 +927,7 @@ function paidPathSql(lock: boolean, selectReviewedPath: boolean): string {
       claim.google_email_normalized as claim_email,
       account.id as account_id,
       account.email as account_email,
+      account.stripe_customer_id as account_customer_id,
       entitlement.id as entitlement_id,
       entitlement.account_id as entitlement_account_id,
       coalesce(to_jsonb(entitlement)->>'entitlement_status', entitlement.status) as entitlement_status,
@@ -1168,6 +1244,65 @@ function mutableCountsSql(): string {
   `;
 }
 
+function currentCustomerLinkStateSql(): string {
+  return `
+    with selected_profiles as (
+      select id, merged_into, created_at
+      from public.sidestream_customer_profiles
+      where license_namespace = $1 and id in ($2::uuid, $3::uuid)
+    ), deterministic_survivor as (
+      select id
+      from selected_profiles
+      where merged_into is null
+      order by created_at, id
+      limit 1
+    )
+    select
+      (select count(*)::int from selected_profiles) as selected_profile_count,
+      (select count(*)::int from selected_profiles where merged_into is null)
+        as live_profile_count,
+      (select id::text from deterministic_survivor) as survivor_id,
+      (select count(*)::int
+       from public.sidestream_customer_identity_links link
+       where link.license_namespace = $1
+         and link.link_type = 'stripe_customer'
+         and link.link_value = $4) as exact_link_count,
+      (select count(*)::int
+       from public.sidestream_customer_identity_links link
+       where link.license_namespace = $1
+         and link.link_value = $4) as value_link_count,
+      (select min(link.profile_id::text)
+       from public.sidestream_customer_identity_links link
+       where link.license_namespace = $1
+         and link.link_type = 'stripe_customer'
+         and link.link_value = $4) as exact_link_owner_id,
+      exists (
+        select 1
+        from public.sidestream_customer_identity_links link
+        join public.sidestream_customer_profiles owner
+          on owner.id = link.profile_id
+          and owner.license_namespace = link.license_namespace
+          and owner.merged_into is null
+        where link.license_namespace = $1
+          and link.link_type = 'stripe_customer'
+          and link.link_value = $4
+          and link.profile_id = (select id from deterministic_survivor)
+      ) as exact_link_live_owner,
+      (select count(*)::int
+       from public.sidestream_customer_identity_reviews review
+       where review.license_namespace = $1
+         and review.evidence_type = 'stripe_customer'
+         and review.evidence_value_hash = encode(
+           digest('stripe_customer:' || $4::text, 'sha256'),
+           'hex'
+         )) as exact_review_count,
+      (select count(*)::int
+       from public.sidestream_customer_commerce_aliases alias
+       where alias.license_namespace = $1
+         and alias.alias_id = $4) as exact_alias_count
+  `;
+}
+
 function commerceStateSql(): string {
   return `
     with exact_payment_keys as (
@@ -1316,6 +1451,8 @@ function paidPathAgrees(path: PaidPathRow, namespace: PaidTelemetryRepairNamespa
     path.paid_environment === namespace &&
     path.checkout_state === "completed" &&
     (path.checkout_account_id === null || path.checkout_account_id === path.account_id) &&
+    STRIPE_CUSTOMER.test(path.checkout_customer_id || "") &&
+    path.checkout_customer_id === path.account_customer_id &&
     path.paid_payment_state === "active" &&
     path.paid_claim_state === path.claim_state &&
     ["unclaimed", "claimed"].includes(path.paid_claim_state) &&
@@ -1691,6 +1828,108 @@ async function repairExactRecoverableCommerce(
   }
 }
 
+async function attachExactCurrentCustomer(
+  client: QueryClient,
+  namespace: PaidTelemetryRepairNamespace,
+  journey: ExactJourney,
+  survivorId: string,
+): Promise<void> {
+  if (!journey.currentCustomer.missing || survivorId !== journey.currentCustomer.survivorId) {
+    throw new PaidTelemetryRepairError(
+      "current_customer_link_changed",
+      "The exact current Stripe Customer pre-state changed while locked.",
+    );
+  }
+  await client.query(
+    `lock table public.sidestream_customer_identity_links,
+       public.sidestream_customer_identity_reviews,
+       public.sidestream_customer_commerce_aliases in share row exclusive mode`,
+  );
+  const inserted = await client.query(
+    `insert into public.sidestream_customer_identity_links (
+       profile_id, license_namespace, link_type, link_value, created_at
+     )
+     select $1::uuid, $2, 'stripe_customer', core.stripe_customer_id,
+       transaction_timestamp()
+     from public.sidestream_checkout_intents core
+     join public.sidestream_paid_acquisition_checkouts paid
+       on paid.id = $4::uuid
+       and paid.checkout_intent_ref = core.id
+       and paid.environment = $2
+       and paid.payment_state = 'active'
+       and paid.claim_state = 'claimed'
+       and paid.completed_at is not null
+       and paid.receipt_expires_at > now()
+     join public.sidestream_paid_acquisition_claims claim
+       on claim.id = $5::uuid
+       and claim.checkout_id = paid.id
+       and claim.environment = paid.environment
+       and claim.claim_state = 'claimed'
+       and claim.account_ref = $6::uuid
+       and claim.entitlement_ref = $7::uuid
+       and claim.activation_ref = $8::uuid
+       and claim.expires_at > now()
+     join public.sidestream_accounts account
+       on account.id = claim.account_ref
+       and account.stripe_customer_id = core.stripe_customer_id
+     join public.sidestream_customer_profiles survivor
+       on survivor.id = $1::uuid
+       and survivor.license_namespace = $2
+       and survivor.merged_into is null
+     where core.id = $3::uuid
+       and core.acquisition_id = $9::uuid
+       and core.state = 'completed'
+       and core.stripe_customer_id = $10
+       and core.stripe_customer_id ~ '^cus_[A-Za-z0-9_]{1,196}$'
+       and not exists (
+         select 1
+         from public.sidestream_customer_identity_links link
+         where link.license_namespace = $2
+           and link.link_value = core.stripe_customer_id
+       )
+       and not exists (
+         select 1
+         from public.sidestream_customer_identity_reviews review
+         where review.license_namespace = $2
+           and review.evidence_type = 'stripe_customer'
+           and review.evidence_value_hash = encode(
+             digest('stripe_customer:' || core.stripe_customer_id, 'sha256'),
+             'hex'
+           )
+       )
+       and not exists (
+         select 1
+         from public.sidestream_customer_commerce_aliases alias
+         where alias.license_namespace = $2
+           and alias.alias_id = core.stripe_customer_id
+       )
+     on conflict do nothing
+     returning id, profile_id, link_value`,
+    [
+      survivorId,
+      namespace,
+      journey.path.checkout_intent_id,
+      journey.path.paid_checkout_id,
+      journey.path.claim_id,
+      journey.path.account_id,
+      journey.path.entitlement_id,
+      journey.path.activation_id,
+      journey.path.acquisition_id,
+      journey.currentCustomer.customerId,
+    ],
+  );
+  if (
+    inserted.rows.length !== 1 ||
+    inserted.rows[0]?.profile_id !== survivorId ||
+    inserted.rows[0]?.link_value !== journey.currentCustomer.customerId
+  ) {
+    throw new PaidTelemetryRepairError(
+      "current_customer_link_changed",
+      "The exact current Stripe Customer could not be attached once while locked.",
+    );
+  }
+}
+
 async function insertExactBinding(
   client: QueryClient,
   namespace: PaidTelemetryRepairNamespace,
@@ -1751,6 +1990,44 @@ function normalizeIdentity(row: ExactIdentityRow): ExactIdentityRow {
     ...row,
     candidate_account_count: Number(row.candidate_account_count),
     existing_account_count: Number(row.existing_account_count),
+  });
+}
+
+function normalizeCurrentCustomerLinkState(
+  row: CurrentCustomerLinkStateRow | undefined,
+  path: PaidPathRow,
+  identity: ExactIdentityRow,
+): CurrentCustomerLinkState | null {
+  const customerId = path.checkout_customer_id;
+  const selectedProfileCount = Number(row?.selected_profile_count);
+  const liveProfileCount = Number(row?.live_profile_count);
+  const exactLinkCount = Number(row?.exact_link_count);
+  const valueLinkCount = Number(row?.value_link_count);
+  const exactReviewCount = Number(row?.exact_review_count);
+  const exactAliasCount = Number(row?.exact_alias_count);
+  const profilesConverged =
+    identity.candidate_root_id === identity.existing_root_id;
+  if (
+    !customerId || !STRIPE_CUSTOMER.test(customerId) ||
+    customerId !== path.account_customer_id ||
+    selectedProfileCount !== 2 ||
+    liveProfileCount !== (profilesConverged ? 1 : 2) ||
+    !UUID.test(row?.survivor_id || "") ||
+    exactReviewCount !== 0 || exactAliasCount !== 0
+  ) {
+    return null;
+  }
+  const missing = exactLinkCount === 0 && valueLinkCount === 0 &&
+    row?.exact_link_owner_id === null && row?.exact_link_live_owner === false;
+  const attached = profilesConverged && exactLinkCount === 1 && valueLinkCount === 1 &&
+    row?.exact_link_owner_id === row?.survivor_id &&
+    row?.exact_link_live_owner === true;
+  if (!missing && !attached) return null;
+  return Object.freeze({
+    customerId,
+    survivorId: row?.survivor_id || "",
+    missing,
+    attached,
   });
 }
 

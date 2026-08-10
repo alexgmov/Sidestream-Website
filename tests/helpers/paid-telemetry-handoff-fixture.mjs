@@ -187,10 +187,10 @@ export async function runPaidTelemetryHandoffFixture({
     "reviewed-path-repaired",
     "legacy-entitlement-repaired",
     "unowned-commerce-repaired",
-    "missing-current-customer-broken",
+    "missing-current-customer-repaired",
   ].includes(expectation)) {
     throw new TypeError(
-      "Paid telemetry handoff expectation must be repaired, broken, pending-review-repaired, reviewed-path-repaired, legacy-entitlement-repaired, unowned-commerce-repaired, or missing-current-customer-broken",
+      "Paid telemetry handoff expectation must be repaired, broken, pending-review-repaired, reviewed-path-repaired, legacy-entitlement-repaired, unowned-commerce-repaired, or missing-current-customer-repaired",
     );
   }
 
@@ -225,7 +225,7 @@ export async function runPaidTelemetryHandoffFixture({
       expectation === "reviewed-path-repaired" ||
       expectation === "legacy-entitlement-repaired" ||
       expectation === "unowned-commerce-repaired" ||
-      expectation === "missing-current-customer-broken"
+      expectation === "missing-current-customer-repaired"
     ) {
       const summary = await runPendingReviewRepairedScenario({
         pool,
@@ -241,17 +241,17 @@ export async function runPaidTelemetryHandoffFixture({
           expectation === "reviewed-path-repaired" ||
           expectation === "legacy-entitlement-repaired" ||
           expectation === "unowned-commerce-repaired" ||
-          expectation === "missing-current-customer-broken",
+          expectation === "missing-current-customer-repaired",
         expectLegacyEntitlementRepaired:
           expectation === "legacy-entitlement-repaired",
         expectUnownedCommerceRepaired:
           expectation === "unowned-commerce-repaired" ||
-          expectation === "missing-current-customer-broken",
-        expectMissingCurrentCustomerBroken:
-          expectation === "missing-current-customer-broken",
+          expectation === "missing-current-customer-repaired",
+        expectMissingCurrentCustomerRepaired:
+          expectation === "missing-current-customer-repaired",
       });
-      if (expectation === "missing-current-customer-broken") {
-        assertMissingCurrentCustomerBrokenExpectation(summary);
+      if (expectation === "missing-current-customer-repaired") {
+        assertMissingCurrentCustomerRepairedExpectation(summary);
       } else if (expectation === "unowned-commerce-repaired") {
         assertUnownedCommerceRepairedExpectation(summary);
       } else if (expectation === "legacy-entitlement-repaired") {
@@ -512,7 +512,7 @@ async function runPendingReviewRepairedScenario({
   repairUniqueReviewedPath,
   expectLegacyEntitlementRepaired,
   expectUnownedCommerceRepaired,
-  expectMissingCurrentCustomerBroken,
+  expectMissingCurrentCustomerRepaired,
 }) {
   await acquisitionIntegrity.createCanonicalAcquisitionRoot({
     acquisitionId: IDS.acquisition,
@@ -612,6 +612,17 @@ async function runPendingReviewRepairedScenario({
   if (!accountAttachment.profileId) {
     throw new Error("Pending-review account profile was not materialized");
   }
+  const removedAccountCustomer = await pool.query(
+    `delete from ${quotedCrm}.sidestream_customer_identity_links
+     where license_namespace = 'test'
+       and link_type = 'stripe_customer'
+       and link_value = $1
+     returning profile_id`,
+    [PROVIDER.customer],
+  );
+  if (removedAccountCustomer.rowCount !== 1) {
+    throw new Error("Pending-review fixture did not have one account Customer link");
+  }
 
   await writeTransaction((client) => customerIdentity.attachCustomerIdentity(client, {
     environment: { namespace: "test" },
@@ -639,6 +650,29 @@ async function runPendingReviewRepairedScenario({
     }));
   if (pendingAttachment.profileId !== telemetryOwner || !pendingAttachment.reviewRequired) {
     throw new Error("Pending-review verified account conflict was not reproduced");
+  }
+  const currentCustomerPreState = await pool.query(
+    `select
+       (select count(*)::int
+        from ${quotedCrm}.sidestream_customer_identity_links link
+        where link.license_namespace = 'test'
+          and link.link_type = 'stripe_customer'
+          and link.link_value = $1) as exact_links,
+       (select count(*)::int
+        from ${quotedCrm}.sidestream_customer_identity_reviews review
+        where review.license_namespace = 'test'
+          and review.evidence_type = 'stripe_customer'
+          and review.evidence_value_hash = encode(
+            digest('stripe_customer:' || $1::text, 'sha256'),
+            'hex'
+          )) as exact_reviews`,
+    [PROVIDER.customer],
+  );
+  if (
+    currentCustomerPreState.rows[0]?.exact_links !== 0 ||
+    currentCustomerPreState.rows[0]?.exact_reviews !== 0
+  ) {
+    throw new Error("Pending-review fixture did not preserve the zero-link Customer pre-state");
   }
 
   await customerCommerce.materializeCustomerCommerceEvent(
@@ -768,25 +802,62 @@ async function runPendingReviewRepairedScenario({
           legacyShapeBefore.reviewedLegacyPath[key] === true &&
             legacyShapeAfter.reviewedLegacyPath[key] === true),
       });
-      if (!expectMissingCurrentCustomerBroken) return repairedSummary;
+      if (!expectMissingCurrentCustomerRepaired) return repairedSummary;
 
       await reproduceMissingCurrentCustomerLink({
         pool,
         quotedCrm,
         telemetryOwner,
       });
+      const mutationCountsBeforeCustomerRepair =
+        await paidTelemetryAmbiguityMutationCounts(pool, quotedCrm);
       const guardedMissingCurrentCustomer = await readTransaction((client) =>
         paidTelemetryRepair.inspectPaidTelemetryHandoffRepair(client, {
           acquisitionId: IDS.acquisition,
           namespace: "test",
         }));
-      return missingCurrentCustomerBrokenPrivacySafeSummary({
+      const brokenSummary = await missingCurrentCustomerBrokenPrivacySafeSummary({
         pool,
         quotedCrm,
         readTransaction,
         telemetryOwner,
         repairedSummary,
         guardedMissingCurrentCustomer,
+      });
+      const customerOnlyApply = await repairTransaction((client) =>
+        paidTelemetryRepair.applyPaidTelemetryHandoffRepair(client, {
+          acquisitionId: IDS.acquisition,
+          namespace: "test",
+          confirmJourney: guardedMissingCurrentCustomer.journeyFingerprint,
+        }));
+      const mutationCountsAfterCustomerRepair =
+        await paidTelemetryAmbiguityMutationCounts(pool, quotedCrm);
+      const customerOnlyReplay = await repairTransaction((client) =>
+        paidTelemetryRepair.applyPaidTelemetryHandoffRepair(client, {
+          acquisitionId: IDS.acquisition,
+          namespace: "test",
+          confirmJourney: guardedMissingCurrentCustomer.journeyFingerprint,
+        }));
+      const mutationCountsAfterCustomerReplay =
+        await paidTelemetryAmbiguityMutationCounts(pool, quotedCrm);
+      const guardedAfterCustomerReplay = await readTransaction((client) =>
+        paidTelemetryRepair.inspectPaidTelemetryHandoffRepair(client, {
+          acquisitionId: IDS.acquisition,
+          namespace: "test",
+        }));
+      return missingCurrentCustomerRepairedPrivacySafeSummary({
+        pool,
+        quotedCrm,
+        readTransaction,
+        telemetryOwner,
+        repairedSummary,
+        brokenSummary,
+        customerOnlyApply,
+        customerOnlyReplay,
+        guardedAfterCustomerReplay,
+        mutationCountsBeforeCustomerRepair,
+        mutationCountsAfterCustomerRepair,
+        mutationCountsAfterCustomerReplay,
       });
     }
     const boundary = legacyShapeBefore ||
@@ -897,11 +968,19 @@ async function runPendingReviewRepairedScenario({
     linkageInput,
     linkageDependencies,
   );
-  const guardedAfterRuntime = await readTransaction((client) =>
+  const guardedAfterRuntimeBeforeCustomer = await readTransaction((client) =>
     paidTelemetryRepair.inspectPaidTelemetryHandoffRepair(client, {
       acquisitionId: IDS.acquisition,
       namespace: "test",
     }));
+  const guardedAfterRuntime = guardedAfterRuntimeBeforeCustomer.reasonCode === "repair_ready"
+    ? await repairTransaction((client) =>
+        paidTelemetryRepair.applyPaidTelemetryHandoffRepair(client, {
+          acquisitionId: IDS.acquisition,
+          namespace: "test",
+          confirmJourney: guardedAfterRuntimeBeforeCustomer.journeyFingerprint,
+        }))
+    : guardedAfterRuntimeBeforeCustomer;
 
   return pendingReviewPrivacySafeSummary({
     pool,
@@ -2384,6 +2463,105 @@ function unownedCommerceRepairedPrivacySafeSummary({
   });
 }
 
+async function missingCurrentCustomerRepairedPrivacySafeSummary({
+  pool,
+  quotedCrm,
+  readTransaction,
+  telemetryOwner,
+  repairedSummary,
+  brokenSummary,
+  customerOnlyApply,
+  customerOnlyReplay,
+  guardedAfterCustomerReplay,
+  mutationCountsBeforeCustomerRepair,
+  mutationCountsAfterCustomerRepair,
+  mutationCountsAfterCustomerReplay,
+}) {
+  const state = await pool.query(
+    `select
+       (select count(*)::int
+        from ${quotedCrm}.sidestream_customer_identity_links link
+        join ${quotedCrm}.sidestream_customer_profiles profile
+          on profile.id = link.profile_id
+          and profile.license_namespace = link.license_namespace
+          and profile.merged_into is null
+        where link.license_namespace = 'test'
+          and link.profile_id = $1::uuid
+          and link.link_type = 'stripe_customer'
+          and link.link_value = $2) as current_customer_links,
+       (select count(*)::int
+        from ${quotedCrm}.sidestream_customer_identity_links link
+        where link.license_namespace = 'test'
+          and link.profile_id = $1::uuid
+          and link.link_type = 'stripe_customer'
+          and link.link_value = $3) as older_customer_links,
+       (select count(*)::int
+        from ${quotedCrm}.sidestream_customer_identity_reviews review
+        where review.license_namespace = 'test'
+          and review.evidence_type = 'stripe_customer'
+          and review.evidence_value_hash = encode(
+            digest('stripe_customer:' || $2::text, 'sha256'),
+            'hex'
+          )) as current_customer_reviews,
+       (select count(*)::int
+        from ${quotedCrm}.sidestream_customer_commerce_aliases alias
+        where alias.license_namespace = 'test'
+          and alias.alias_id = $2) as current_customer_aliases`,
+    [telemetryOwner, PROVIDER.customer, PROVIDER.olderCustomer],
+  );
+  const [currentCustomerLookup, olderCustomerLookup] = await Promise.all([
+    PROVIDER.customer,
+    PROVIDER.olderCustomer,
+  ].map((stripeReference) => customerQuery.queryCustomerLookup({
+    licenseNamespace: "test",
+    stripeReference,
+  }, { transaction: readTransaction })));
+  const row = state.rows[0];
+  const mutationCountsUnchanged =
+    JSON.stringify(mutationCountsBeforeCustomerRepair) ===
+      JSON.stringify(mutationCountsAfterCustomerRepair) &&
+    JSON.stringify(mutationCountsAfterCustomerRepair) ===
+      JSON.stringify(mutationCountsAfterCustomerReplay);
+  return Object.freeze({
+    observedContract: "exact-current-stripe-customer-link-repaired",
+    repairedScenario: repairedSummary,
+    recoverablePreState: Object.freeze({
+      priorRepairAlreadyConverged:
+        Object.values(brokenSummary.convergedState).every((value) => value === true),
+      exactCurrentCustomerOnlyGap:
+        Object.values(brokenSummary.exactCurrentCustomerGap).every((value) => value === true),
+      guardedDryRunReady:
+        brokenSummary.guardedOperator.reasonCode === "repair_ready" &&
+        brokenSummary.guardedOperator.eligible === true &&
+        brokenSummary.guardedOperator.wouldMutate === true &&
+        brokenSummary.guardedOperator.hasJourneyFingerprint === true,
+    }),
+    customerLinkOnlyRepair: Object.freeze({
+      firstApplyAlreadyRepaired: customerOnlyApply.reasonCode === "already_repaired",
+      replayAlreadyRepaired: customerOnlyReplay.reasonCode === "already_repaired",
+      postDiscoveryAlreadyRepaired:
+        guardedAfterCustomerReplay.reasonCode === "already_repaired",
+      replayWouldMutateNothing:
+        customerOnlyReplay.wouldMutate === false &&
+        guardedAfterCustomerReplay.wouldMutate === false,
+      currentCustomerBooleanConverged:
+        customerOnlyApply.booleans.currentStripeCustomerLinked === true &&
+        customerOnlyReplay.booleans.currentStripeCustomerLinked === true &&
+        guardedAfterCustomerReplay.booleans.currentStripeCustomerLinked === true,
+      priorRepairRowsUnchanged: mutationCountsUnchanged,
+      exactCurrentCustomerLinkExactlyOnce: row.current_customer_links === 1,
+      exactCurrentCustomerLookupResolvesLiveProfile:
+        currentCustomerLookup?.customerId === telemetryOwner,
+      olderCustomerLinkPreserved: row.older_customer_links === 1,
+      olderCustomerLookupStillResolvesLiveProfile:
+        olderCustomerLookup?.customerId === telemetryOwner,
+      noCustomerReviewOrCommerceAliasCreated:
+        row.current_customer_reviews === 0 && row.current_customer_aliases === 0,
+    }),
+    counts: guardedAfterCustomerReplay.counts,
+  });
+}
+
 function assertUnownedCommerceRepairedExpectation(summary) {
   const expectedMutationCounts = {
     authenticationStages: 1,
@@ -2472,7 +2650,7 @@ function assertUnownedCommerceRepairedExpectation(summary) {
   }
 }
 
-function assertMissingCurrentCustomerBrokenExpectation(summary) {
+function assertMissingCurrentCustomerRepairedExpectation(summary) {
   assertUnownedCommerceRepairedExpectation(summary.repairedScenario);
   const expectedCounts = {
     authenticationStages: 1,
@@ -2486,18 +2664,13 @@ function assertMissingCurrentCustomerBrokenExpectation(summary) {
     commerceConflicts: 0,
   };
   const observed =
-    summary.observedContract ===
-      "repaired-handoff-missing-exact-current-customer-link" &&
-    Object.values(summary.convergedState).every((value) => value === true) &&
-    Object.values(summary.exactCurrentCustomerGap).every((value) => value === true) &&
-    summary.guardedOperator.reasonCode === "already_repaired" &&
-    summary.guardedOperator.eligible === true &&
-    summary.guardedOperator.wouldMutate === false &&
-    summary.guardedOperator.hasJourneyFingerprint === true &&
-    JSON.stringify(summary.guardedOperator.counts) === JSON.stringify(expectedCounts);
+    summary.observedContract === "exact-current-stripe-customer-link-repaired" &&
+    Object.values(summary.recoverablePreState).every((value) => value === true) &&
+    Object.values(summary.customerLinkOnlyRepair).every((value) => value === true) &&
+    JSON.stringify(summary.counts) === JSON.stringify(expectedCounts);
   if (!observed) {
     throw new Error(
-      `Expected missing-current-customer-broken paid telemetry handoff contract; observed ${JSON.stringify(summary)}`,
+      `Expected missing-current-customer-repaired paid telemetry handoff contract; observed ${JSON.stringify(summary)}`,
     );
   }
 }
@@ -2954,7 +3127,7 @@ function assertPendingReviewRepairedExpectation(summary) {
     summary.pendingReviewShape.currentAccountOrStripeLinks >= 4 &&
     summary.pendingReviewShape.uniqueExactAccountOwnerLinks === 1 &&
     summary.pendingReviewShape.verifiedAccountReviews === 1 &&
-    summary.pendingReviewShape.verifiedStripeReviews >= 3 &&
+    summary.pendingReviewShape.verifiedStripeReviews >= 2 &&
     summary.stageAndBindingState.installationClaimed === 1 &&
     summary.stageAndBindingState.authenticationCompleted === 1 &&
     summary.stageAndBindingState.immutableBindings === 1 &&

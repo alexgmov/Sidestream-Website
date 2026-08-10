@@ -9,7 +9,7 @@ const diagnosticOptions = new Set([
   "--expect-reviewed-path-repaired",
   "--expect-legacy-entitlement-repaired",
   "--expect-unowned-commerce-repaired",
-  "--expect-missing-current-customer-broken",
+  "--expect-missing-current-customer-repaired",
 ]);
 const unknown = options.filter((option) => !diagnosticOptions.has(option));
 if (
@@ -17,12 +17,12 @@ if (
   options.length > 1
 ) {
   console.error(
-    "Usage: npm run replay:paid-telemetry-handoff -- [--expect-broken|--expect-pending-review-repaired|--expect-reviewed-path-repaired|--expect-legacy-entitlement-repaired|--expect-unowned-commerce-repaired|--expect-missing-current-customer-broken]",
+    "Usage: npm run replay:paid-telemetry-handoff -- [--expect-broken|--expect-pending-review-repaired|--expect-reviewed-path-repaired|--expect-legacy-entitlement-repaired|--expect-unowned-commerce-repaired|--expect-missing-current-customer-repaired]",
   );
   process.exitCode = 1;
 } else {
-  const expectation = options.includes("--expect-missing-current-customer-broken")
-    ? "missing-current-customer-broken"
+  const expectation = options.includes("--expect-missing-current-customer-repaired")
+    ? "missing-current-customer-repaired"
     : options.includes("--expect-unowned-commerce-repaired")
       ? "unowned-commerce-repaired"
       : options.includes("--expect-legacy-entitlement-repaired")

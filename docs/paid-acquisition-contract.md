@@ -522,6 +522,29 @@ it includes failed-refresh rollback and no-op replay. Deployed `6118a87`
 rejected this pre-state read-only without mutation, which neither proves this
 revision is deployed nor authorizes or qualifies a Production apply.
 
+A sixth boundary adds only the exact current Stripe Customer identity edge.
+The already selected canonical paid path must prove one completed active
+Checkout and one claimed authenticated account whose stored Customer values are
+the same bounded `cus_` identifier. That exact value may have zero identity
+links before repair, or one `stripe_customer` link on the deterministic live
+survivor after repair. A mismatched/invalid value, different or second owner,
+differently typed value link, exact Customer review, commerce alias, changed
+locked row, ambiguous path, lifecycle stop, or any missing earlier invariant
+fails closed.
+
+For an unrepaired split, apply inserts the Customer link only after the existing
+deterministic merge. For an already-converged deployed shape, apply takes a
+narrow customer-link-only branch and does not repeat stage/trusted-evidence
+writes, claim mutation, merge/audit, commerce recovery/totals refresh, or
+immutable binding insertion. It does not infer from email, call Stripe, create
+a commerce alias/provider event, add a migration, attach historical installs,
+or change older Customer links. Rediscovery and exact `cus_` lookup must resolve
+the same survivor before `already_repaired`, and replay is a no-op. Disposable
+proof is `npm run replay:paid-telemetry-handoff -- --expect-missing-current-customer-repaired`.
+Deployed `19c242d` had repaired exact Checkout Session/PaymentIntent commerce
+ownership while leaving this exact legacy Customer lookup absent; that is
+historical scope evidence, not Production apply authorization.
+
 ### Bounded activation-linkage diagnostics
 
 The authenticated paid-claim POST emits exactly one bounded operational outcome
