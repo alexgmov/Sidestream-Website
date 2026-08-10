@@ -93,30 +93,37 @@ test("a unique reviewed path excludes the direct historical path and replays as 
   assert.doesNotMatch(serialized, /postgres(?:ql)?:\/\//i);
 });
 
-test("the exact legacy entitlement placeholder is selected and rejected without mutation", {
+test("the exact legacy entitlement placeholder repairs without rewriting legacy fields", {
   timeout: 120_000,
 }, async () => {
   const summary = await runPaidTelemetryHandoffFixture({
-    expectation: "legacy-entitlement-broken",
+    expectation: "legacy-entitlement-repaired",
   });
   assert.equal(
     summary.observedContract,
-    "unique-reviewed-legacy-entitlement-rejected",
+    "unique-reviewed-legacy-entitlement-repaired",
   );
   assert.deepEqual(summary.guardedOperator, {
-    reasonCode: "payment_or_account_conflict",
-    eligible: false,
-    wouldMutate: false,
-    hasJourneyFingerprint: false,
-    canonicalAcquisitionSelected: true,
-    exactPaidPathSelected: true,
+    beforeReasonCode: "repair_ready",
+    beforeEligible: true,
+    beforeWouldMutate: true,
+    hasJourneyFingerprint: true,
+    firstApplyReasonCode: "already_repaired",
+    replayReasonCode: "already_repaired",
+    afterReplayReasonCode: "already_repaired",
+    afterReplayWouldMutate: false,
   });
   assert.ok(Object.values(summary.reviewedLegacyPath).every(Boolean));
   assert.equal(summary.reviewedPath.verifiedAccountReviews, 1);
   assert.equal(summary.reviewedPath.directAccountOrStripeLinks, 0);
-  assert.equal(summary.mutationBoundary.stateUnchanged, true);
+  assert.equal(summary.mutationBoundary.dryRunStateUnchanged, true);
+  assert.equal(summary.mutationBoundary.applyChangedState, true);
+  assert.equal(summary.mutationBoundary.replayWasNoOp, true);
   assert.equal(summary.mutationBoundary.legacyStateUnchanged, true);
-  assert.deepEqual(summary.mutationBoundary.after, summary.mutationBoundary.before);
+  assert.deepEqual(
+    summary.mutationBoundary.afterReplay,
+    summary.mutationBoundary.afterFirstApply,
+  );
   const serialized = JSON.stringify(summary);
   assert.doesNotMatch(serialized, /\b(?:cus|cs|pi|ch)_[A-Za-z0-9_]+\b/);
   assert.doesNotMatch(serialized, /\b[0-9a-f]{8}-[0-9a-f-]{27,}\b/i);

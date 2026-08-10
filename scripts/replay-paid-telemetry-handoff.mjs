@@ -7,7 +7,7 @@ const diagnosticOptions = new Set([
   "--expect-broken",
   "--expect-pending-review-repaired",
   "--expect-reviewed-path-repaired",
-  "--expect-legacy-entitlement-broken",
+  "--expect-legacy-entitlement-repaired",
 ]);
 const unknown = options.filter((option) => !diagnosticOptions.has(option));
 if (
@@ -15,12 +15,12 @@ if (
   options.length > 1
 ) {
   console.error(
-    "Usage: npm run replay:paid-telemetry-handoff -- [--expect-broken|--expect-pending-review-repaired|--expect-reviewed-path-repaired|--expect-legacy-entitlement-broken]",
+    "Usage: npm run replay:paid-telemetry-handoff -- [--expect-broken|--expect-pending-review-repaired|--expect-reviewed-path-repaired|--expect-legacy-entitlement-repaired]",
   );
   process.exitCode = 1;
 } else {
-  const expectation = options.includes("--expect-legacy-entitlement-broken")
-    ? "legacy-entitlement-broken"
+  const expectation = options.includes("--expect-legacy-entitlement-repaired")
+    ? "legacy-entitlement-repaired"
     : options.includes("--expect-reviewed-path-repaired")
       ? "reviewed-path-repaired"
       : options.includes("--expect-pending-review-repaired")
