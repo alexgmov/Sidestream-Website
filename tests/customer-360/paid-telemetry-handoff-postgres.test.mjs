@@ -131,3 +131,48 @@ test("the exact legacy entitlement placeholder repairs without rewriting legacy 
   assert.doesNotMatch(serialized, /@example\.invalid\b/);
   assert.doesNotMatch(serialized, /postgres(?:ql)?:\/\//i);
 });
+
+test("the exact reviewed legacy path rejects one unowned zero-total Checkout fact", {
+  timeout: 120_000,
+}, async () => {
+  const summary = await runPaidTelemetryHandoffFixture({
+    expectation: "unowned-commerce-broken",
+  });
+  assert.equal(
+    summary.observedContract,
+    "unique-reviewed-legacy-unowned-zero-commerce-rejected",
+  );
+  assert.ok(Object.values(summary.reviewedLegacyPath).every(Boolean));
+  assert.ok(Object.values(summary.unownedCommerce).every(Boolean));
+  assert.deepEqual(summary.guardedOperator, {
+    beforeReasonCode: "commerce_conflict",
+    beforeEligible: false,
+    beforeWouldMutate: false,
+    canonicalAcquisition: true,
+    exactPaidPath: true,
+    hasJourneyFingerprint: false,
+    replayReasonCode: "commerce_conflict",
+    replayWouldMutate: false,
+    replayHasJourneyFingerprint: false,
+    counts: {
+      authenticationStages: 1,
+      installationStages: 1,
+      bindings: 0,
+      mergeAudits: 0,
+      acquisitionConflicts: 0,
+      lifecycleStops: 0,
+      commerceFacts: 1,
+      commerceProfiles: 0,
+      commerceConflicts: 1,
+    },
+  });
+  assert.ok(Object.entries(summary.mutationBoundary)
+    .filter(([key]) => key.endsWith("StateUnchanged"))
+    .every(([, value]) => value === true));
+  const serialized = JSON.stringify(summary);
+  assert.doesNotMatch(serialized, /\b(?:cus|cs|pi|ch)_[A-Za-z0-9_]+\b/);
+  assert.doesNotMatch(serialized, /\b[0-9a-f]{8}-[0-9a-f-]{27,}\b/i);
+  assert.doesNotMatch(serialized, /\b[0-9a-f]{64}\b/i);
+  assert.doesNotMatch(serialized, /@example\.invalid\b/);
+  assert.doesNotMatch(serialized, /postgres(?:ql)?:\/\//i);
+});
