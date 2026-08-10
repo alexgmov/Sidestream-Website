@@ -571,7 +571,10 @@ legal recursive reference while still following both `merged_into` directions,
 filtering to Production, and converging through `UNION`. The classified
 disposable-Postgres regression applies the complete schema in an isolated
 schema, proves an Alex seed reaches every merged ancestor and descendant but no
-unrelated or Test profile, and proves replay is stable. This repository proof
+unrelated or Test profile, and proves replay is stable. Its aggregate command
+self-provisions and removes a loopback PostgreSQL cluster when no explicit
+disposable test URL is selected, then applies the existing external-network
+guard to every child suite. This repository proof
 does not authorize or establish a provider backup, live reset, local-state
 change, Checkout, installation, authentication, deployment, or push.
 
