@@ -903,6 +903,8 @@ export function __setActivationSecurityStripeClient(value: Stripe | null) {
           "paid-onboarding-claim-page.ts",
         ),
       ).href,
+      "../_lib/paid-acquisition.js":
+        helperImports["./paid-acquisition.js"],
     },
   );
     const startModuleUrl = await writeRouteModule(

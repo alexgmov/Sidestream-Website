@@ -6,6 +6,7 @@ import {
   PAID_ACQUISITION_CONTROL_COHORT,
   PAID_ACQUISITION_EXPERIMENT_ID,
   PAID_ACQUISITION_PAID_COHORT,
+  PAID_ACQUISITION_SOURCE,
   PaidAcquisitionError,
   associatePaidAcquisitionActivation,
   bindPaidAcquisitionCheckoutIntent,
@@ -484,31 +485,96 @@ test("receipt-gated paid artifact delivery records one canonical installer reque
 
 test("authenticated paid activation binds the browser receipt and records the verified install", async () => {
   const receipt = Buffer.alloc(32, 11).toString("base64url");
+  const accountId = "40000000-0000-4000-8000-000000000001";
+  const entitlementRef = "40000000-0000-4000-8000-000000000002";
   const activationRef = "40000000-0000-4000-8000-000000000004";
+  const claimId = "40000000-0000-4000-8000-000000000005";
+  const checkoutId = "40000000-0000-4000-8000-000000000006";
+  const paidProfileId = "40000000-0000-4000-8000-000000000007";
+  const installProfileId = "40000000-0000-4000-8000-000000000008";
   const installIdHash = "a".repeat(64);
   const installerReceiptIdHash = "b".repeat(64);
   const queries = [];
   const integrityCalls = [];
+  const mergeCalls = [];
+  let binding = null;
+  const identity = {
+    paid_profile_id: paidProfileId,
+    install_profile_id: installProfileId,
+    install_membership_id: "40000000-0000-4000-8000-000000000009",
+    install_id_hash: installIdHash,
+    install_identity_link_id: "40000000-0000-4000-8000-000000000010",
+    activation_identity_link_id: "40000000-0000-4000-8000-000000000011",
+    account_identity_link_id: "40000000-0000-4000-8000-000000000012",
+    installer_receipt_identity_link_id:
+      "40000000-0000-4000-8000-000000000013",
+    installer_receipt_id_hash: installerReceiptIdHash,
+    install_owner_account_id: null,
+  };
   const client = {
     async query(sql, params) {
       queries.push({ sql, params });
-      if (queries.length === 1) {
+      if (sql.includes("paid-telemetry-binding:select-activation")) {
         return {
           rows: [{
-            claim_id: INTENT_REF,
             activation_ref: activationRef,
-            acquisition_id: ACQUISITION_ID,
+            activation_source_matches: true,
+            activation_expired: false,
+            activation_account_ref: accountId,
+            activation_entitlement_ref: entitlementRef,
           }],
         };
       }
-      if (queries.length === 2) return { rows: [{ id: INTENT_REF }] };
-      if (queries.length === 3) {
+      if (sql.includes("paid-telemetry-binding:select-claim")) {
         return {
           rows: [{
-            install_id_hash: installIdHash,
-            installer_receipt_id_hash: installerReceiptIdHash,
+            claim_id: claimId,
+            checkout_id: checkoutId,
+            claim_activation_ref: null,
+            claim_account_ref: accountId,
+            claim_entitlement_ref: entitlementRef,
+            claim_state: "claimed",
+            claim_expired: false,
+            payment_state: "active",
+            payment_verified: true,
+            authorization_expired: false,
+            checkout_account_ref: accountId,
+            entitlement_account_ref: accountId,
+            entitlement_status: "active",
+            acquisition_id: ACQUISITION_ID,
+            acquisition_integrity_state: "intact",
           }],
         };
+      }
+      if (sql.includes("paid-telemetry-binding:select-exact-identities")) {
+        return { rows: [structuredClone(identity)] };
+      }
+      if (sql.includes("paid-telemetry-binding:select-binding")) {
+        return { rows: binding ? [structuredClone(binding)] : [] };
+      }
+      if (sql.includes("paid-telemetry-binding:bind-claim")) {
+        return { rows: [{ id: claimId }] };
+      }
+      if (sql.includes("paid-telemetry-binding:insert-binding")) {
+        binding = {
+          license_namespace: params[0],
+          claim_id: params[1],
+          checkout_id: params[2],
+          acquisition_id: params[3],
+          account_id: params[4],
+          entitlement_id: params[5],
+          activation_ref: params[6],
+          profile_id_at_binding: params[7],
+          install_membership_id: params[8],
+          install_id_hash: params[9],
+          install_identity_link_id: params[10],
+          activation_identity_link_id: params[11],
+          account_identity_link_id: params[12],
+          installer_receipt_identity_link_id: params[13],
+          installer_receipt_id_hash: params[14],
+          binding_key: params[15],
+        };
+        return { rows: [] };
       }
       throw new Error("Unexpected paid activation query");
     },
@@ -517,7 +583,10 @@ test("authenticated paid activation binds the browser receipt and records the ve
   const result = await associatePaidAcquisitionActivation({
     environment: "production",
     activationKey: "activation-test-key",
+    expectedAccountId: accountId,
     receipt,
+    installIdHash,
+    installerReceiptIdHash,
     occurredAt,
   }, {
     transaction: async (callback) => callback(client),
@@ -528,18 +597,55 @@ test("authenticated paid activation binds the browser receipt and records the ve
     addEvidence: async (input, options) => {
       integrityCalls.push(["evidence", input, options]);
     },
+    mergeProfiles: async (runner, environment, input) => {
+      mergeCalls.push({ runner, environment, input });
+      identity.paid_profile_id = installProfileId;
+      identity.install_profile_id = installProfileId;
+      identity.install_owner_account_id = accountId;
+      return {
+        merged: true,
+        survivorId: installProfileId,
+        tombstoneId: paidProfileId,
+      };
+    },
   });
 
   assert.deepEqual(result, { associated: true, installationClaimed: true });
-  assert.equal(queries.length, 3);
-  assert.match(queries[0].sql, /activation\.source = \$4/);
-  assert.match(queries[0].sql, /paid\.installer_receipt_hash = \$2/);
-  assert.equal(queries[0].params[0], "production");
-  assert.equal(queries[0].params[1], createHash("sha256").update(receipt).digest("hex"));
-  assert.equal(queries[0].params[2], "activation-test-key");
-  assert.equal(queries[0].params[3], "paid-acquisition-mc-v1");
-  assert.match(queries[2].sql, /link_type = 'install_identity_hash'/);
-  assert.match(queries[2].sql, /link_type = 'installer_receipt_hash'/);
+  assert.equal(queries.length, 8);
+  assert.deepEqual(queries[0].params, [
+    "activation-test-key",
+    PAID_ACQUISITION_SOURCE,
+  ]);
+  assert.deepEqual(queries[1].params, [
+    "production",
+    createHash("sha256").update(receipt).digest("hex"),
+  ]);
+  const identityQueries = queries.filter(({ sql }) =>
+    sql.includes("paid-telemetry-binding:select-exact-identities")
+  );
+  assert.equal(identityQueries.length, 2);
+  for (const query of identityQueries) {
+    assert.deepEqual(query.params, [
+      "production",
+      activationRef,
+      installIdHash,
+      installerReceiptIdHash,
+      accountId,
+    ]);
+  }
+  assert.equal(mergeCalls.length, 1);
+  assert.equal(mergeCalls[0].runner, client);
+  assert.equal(mergeCalls[0].environment, "production");
+  assert.deepEqual(mergeCalls[0].input, {
+    leftProfileId: paidProfileId,
+    rightProfileId: installProfileId,
+    evidenceType: "installer_receipt_hash",
+    evidenceValueHash: binding.binding_key,
+    initiatedBy: "system",
+  });
+  assert.equal(binding.account_id, accountId);
+  assert.equal(binding.install_id_hash, installIdHash);
+  assert.equal(binding.installer_receipt_id_hash, installerReceiptIdHash);
   assert.equal(integrityCalls[0][0], "stage");
   assert.deepEqual(integrityCalls[0][1], {
     acquisitionId: ACQUISITION_ID,

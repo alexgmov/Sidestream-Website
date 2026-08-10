@@ -218,6 +218,60 @@ existing retry/dead-letter path. Operators must treat acquisition mismatch,
 missing linkage, owner conflict, or stage conflict as an integrity alert, not as
 a successful purchase and not as permission for a manual row edit.
 
+### Exact paid activation-to-telemetry binding
+
+The authenticated paid-claim POST carries the current normalized
+`installIdHash` and locally verified `installerReceiptIdHash` into paid
+activation finalization. Finalization must resolve that exact pair, not any
+install and receipt found in the activation profile's history. When verified
+paid/account/activation evidence owns one live profile and the current telemetry
+install owns a second anonymous live profile, the server may converge only that
+two-root shape through the existing namespace lock and immutable
+`(created_at, id)` survivor order. An account identity on the separate install
+root, a missing exact identity row, or any contradictory owner fails closed.
+
+The stage write, deterministic merge and merge audit, and append-only
+`public.sidestream_paid_telemetry_profile_bindings` row commit in one
+transaction. The binding records the exact claim, Checkout, acquisition,
+account, entitlement, activation, profile-at-binding, install membership,
+install identity link, activation/account links, and native-receipt identity
+link. Database triggers revalidate that tuple at insert time and reject binding
+updates or deletes. Retries and concurrent POSTs reuse the same stage and
+binding rather than selecting a newer item from profile history.
+
+`authentication_completed` is independently durable. Google callback and an
+already-signed-in Checkout entry both write the same acquisition/account-scoped
+stage key, `google-account:<acquisition>:<account>`, plus trusted
+`authenticated_account` evidence. A background write, redirect observation, or
+successful Checkout is not a substitute for that stage.
+
+After convergence, one live profile must own all of these views:
+
+- the immutable Meta-paid acquisition root and its eight expected positive
+  stages, each exactly once;
+- the exact current install/receipt binding and the later search/download usage
+  materialized from that install;
+- the complete non-conflicted commerce payment-key group and exact
+  `cus_`/`cs_`/`pi_`/`ch_` lookup owner; and
+- the acquisition-funnel journey, whose exact paid attribution is selected
+  before profile-level fallback and whose attributed/unknown counts retain the
+  complete cohort denominator.
+
+The disposable replay proves that convergence, including concurrent binding,
+stage, commerce, and usage replays. It also proves fail-closed rejection for a
+different account, forwarded native receipt, ambiguous commerce owner, missing
+receipt, expired authorization, refund, dispute, and namespace conflict. The
+proof preserves two historical install memberships on the one live survivor;
+that history is valid because only the POST's exact current pair is immutable
+binding truth.
+
+`installation_claimed_recorded` alone is not success. It is acceptable only
+when the immutable exact binding exists and its current install belongs to the
+same live profile that owns telemetry, commerce, exact lookup, and funnel
+attribution. A stage written for a historical install while telemetry remains
+on another live profile is a failed handoff even if the outcome string is
+positive.
+
 ### Reporting cohorts, lookup, pagination, and alerts
 
 `POST /api/internal/customers/funnel` has an independent `cohortBasis` selector:
@@ -270,6 +324,25 @@ not proof. When deterministic evidence is absent, preserve the null and report
 `historical_unlinked`. The repository has no acquisition-history mutation tool;
 any future backfill requires a separate reviewed append-only, idempotent,
 checkpointed operator with conflict preservation and a no-op rerun.
+
+One narrowly guarded correction exists only for the reproduced paid-telemetry
+split. It selects one journey by canonical acquisition UUID plus trusted
+namespace, then derives every account, Checkout, payment, activation,
+install/receipt, profile, stage, and commerce fact from exact server rows. It
+does not accept email, provider identifiers, receipt or install hashes,
+activation keys, device values, or a time window as selectors. Dry-run is the
+default, connects read-only, and rolls back. Apply uses one serializable
+transaction plus namespace/journey advisory locks and may add only missing
+authentication/current-install stages and trusted evidence, the exact claim
+activation edge, deterministic merge/audit, immutable binding, and the existing
+merge-triggered commerce refresh. It never guesses or rewrites first touch.
+
+The operator emits only mode, namespace, sanitized target and immutable-journey
+fingerprints, one bounded reason, booleans, and counts capped at three. It omits
+the selected acquisition UUID and every underlying identity/provider value.
+Apply revalidates all live eligibility facts and requires the operation,
+namespace, connected-target fingerprint, and journey fingerprint copied from a
+fresh dry-run. An identical confirmed replay is a no-op.
 
 Acquisition roots, stages, conflicts, lookup responses, funnel groups, and
 journeys must not retain or expose raw email, IP, user agent, cookie, browser

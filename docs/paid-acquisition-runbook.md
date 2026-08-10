@@ -152,14 +152,19 @@ errors into the log. Ordinary activation claims must not emit this diagnostic.
 | `receipt_activation_no_match` | The receipt did not match an active, unexpired paid activation in the selected environment. |
 | `activation_source_mismatch` | The activation source was not exact `paid-acquisition-mc-v1`; investigate source propagation without forcing linkage. |
 | `claim_binding_conflict` | Existing claim binding disagrees; preserve both histories and investigate. |
-| `installation_identity_not_unique_or_missing` | The activation has zero/multiple install identities or lacks one locally verified installer-receipt identity. |
+| `installation_identity_not_unique_or_missing` | The POST omitted the exact current install/receipt pair, or those exact values did not resolve one install membership and one locally verified native-receipt identity. |
 | `acquisition_identity_missing` | Claim binding succeeded but its canonical acquisition identity is unavailable. |
 | `acquisition_ownership_conflict` | The acquisition belongs to a different Customer 360 profile; fail closed and do not merge manually. |
-| `installation_claimed_recorded` | Both `installation_claimed` and `verified_installation_claim` committed. |
+| `installation_claimed_recorded` | `installation_claimed` and `verified_installation_claim` committed for the paid-claim POST's exact current install/receipt pair after deterministic profile convergence. |
 | `linkage_unavailable` | The additive linkage attempt failed unexpectedly; entitlement reconnect/transfer still stands. |
 
-Only `installation_claimed_recorded` is a successful installation-linkage
-outcome. No other outcome may be presented as Customer 360 install proof.
+`installation_claimed_recorded` is required, but it is not sufficient handoff
+proof on its own. Confirm one immutable paid-telemetry binding for the POST's
+exact current install/receipt row IDs and confirm that install's telemetry owns
+the same live Customer 360 profile as the acquisition, commerce, exact lookup,
+and funnel journey. A positive outcome on a historical install while the
+current telemetry install remains on another live profile is failure. No other
+outcome may be presented as Customer 360 install proof.
 
 For Customer 360 lookup by `cs_`, `pi_`, or `ch_`, first require exactly one
 non-conflicted owner. The acquisition in the response then prefers the exact
@@ -169,13 +174,99 @@ acquisitions are fallback candidates ordered by `first_observed_at` and UUID.
 The lookup does not rewrite attribution. If ownership is missing, ambiguous, or
 conflicted, stop; do not pick the oldest or newest profile manually.
 
+## Guarded one-journey paid-telemetry repair
+
+This operator exists only for the reproduced split-profile handoff. It never
+selects by email, Stripe reference, browser/native receipt, install hash,
+activation key, device value, or time range. Its only journey selector is the
+canonical acquisition UUID; trusted namespace and an exact named direct
+database selector remain separate server/operator facts.
+
+Run a fresh dry-run first. It connects read-only and rolls back:
+
+```bash
+npm run reconcile:paid-telemetry-handoff -- --dry-run \
+  --acquisition <canonical-uuid> --namespace test \
+  --target-url-env SIDESTREAM_TEST_POSTGRES_URL
+
+npm run reconcile:paid-telemetry-handoff -- --dry-run \
+  --acquisition <canonical-uuid> --namespace production \
+  --target-url-env SIDESTREAM_POSTGRES_URL_NON_POOLING
+```
+
+The exact Test and Production selectors are fixed as shown. The selected URL
+must be direct/non-pooled; remote connections require authenticated TLS, and
+runtime/source/target collisions fail closed. Output omits the acquisition UUID
+and all provider/identity material. Retain only its bounded eligibility reason,
+counts, and the `pg-...` target plus `journey-...` immutable fingerprints.
+
+Apply requires a separate human review of that current dry-run and every exact
+confirmation:
+
+```bash
+npm run reconcile:paid-telemetry-handoff -- --apply \
+  --acquisition <same-canonical-uuid> --namespace production \
+  --target-url-env SIDESTREAM_POSTGRES_URL_NON_POOLING \
+  --confirm-operation RECONCILE_ONE_PAID_TELEMETRY_HANDOFF \
+  --confirm-namespace production \
+  --confirm-target pg-<reviewed-fingerprint> \
+  --confirm-journey journey-<reviewed-fingerprint>
+```
+
+Apply uses one serializable transaction and namespace/journey advisory locks.
+It revalidates the canonical root, Checkout, payment/refund/dispute truth,
+claim, account, entitlement, activation, exact identity rows, current stage
+owners, binding, acquisition conflicts, and complete commerce payment-key
+group. Any stale, missing, ambiguous, refunded, disputed, or contradictory fact
+aborts. The permitted repair is limited to missing authentication/current-
+install stages and evidence, exact claim/activation linkage, deterministic
+profile merge/audit, immutable exact binding, and merge-triggered commerce
+refresh. Replaying the same confirmed journey is a no-op.
+
+Disposable proof is:
+
+```bash
+npm run replay:paid-telemetry-handoff
+```
+
+The replay requires the approved disposable `SIDESTREAM_TEST_POSTGRES_URL`,
+uses real migration, identity, usage, commerce, exact lookup, and funnel code,
+and prints a privacy-safe summary. It proves one live/one merged profile, eight
+expected stages exactly once, one binding, one merge audit, one commerce owner,
+preserved search/download usage, exact paid funnel attribution, and fail-closed
+negative fixtures. It does not inspect or repair a deployed database.
+
+### Post-audit rollout ladder (do not execute from this documentation step)
+
+1. A human reviews the complete integration snapshot, including migration,
+   implementation, fixture, privacy, operator, and documentation evidence.
+2. Merge the accepted snapshot onto current `main`; do not publish the
+   Orchestra/worktree branch.
+3. Run the required main release gates, push only `main:main`, and let the
+   Git-linked canonical Production deployment publish that exact clean commit.
+4. Verify `https://sidestream.tv/version.json` reports the pushed full SHA. A
+   Ready build, Preview URL, or branch deployment is not evidence.
+5. Run one read-only Production dry-run for the reviewed acquisition UUID and
+   review its current eligibility, target fingerprint, and journey fingerprint.
+6. Obtain separate approval, then apply only that same acquisition with every
+   exact confirmation copied from the fresh dry-run.
+7. Without a new Checkout or payment, query exact Customer 360 Stripe lookup
+   and funnel output and verify one live root owns commerce, all expected
+   stages, the immutable current install/receipt binding, and post-claim
+   search/download telemetry with no missing linkage or ownership conflict.
+
+Stop between stages on any mismatch. This ladder has not been run here and is
+not standing authorization for deployment, migration, Production repair, or
+live qualification.
+
 ## Manual Production smoke after a separately authorized deployment
 
 This is a post-deployment verification checklist, not deployment or testing
 authorization. Run it only after the intended commit is integrated onto current
-`origin/main`, a human separately authorizes `npm run deploy:production`, and
-the canonical `https://sidestream.tv` alias is proven to serve that exact
-commit. Do not use a Ready build or feature URL as Production evidence.
+`main`, pushed as `main:main`, published by the Git-linked Production
+deployment, and proven on canonical `https://sidestream.tv` with its exact
+`/version.json` SHA. Agent sessions must not use the owner-only emergency Vercel
+CLI deployment. Do not use a Ready build or feature URL as Production evidence.
 
 Keep `/mc` unlinked and default-off throughout this server-support smoke. Do not
 request `/mc`; do not add or change
@@ -293,8 +384,10 @@ installations from different journeys.
 5. Query Customer 360 by the exact Checkout/payment reference and confirm its
    exact-priority acquisition is the fresh Meta-paid root. On that same lineage,
    require `installation_claimed=1` and `verified_installation_claim`. The
-   operational outcome must be `installation_claimed_recorded`; any other
-   bounded outcome fails this gate.
+   operational outcome must be `installation_claimed_recorded`; then verify the
+   immutable exact current install/receipt binding and telemetry-owning live
+   profile agree. Any other outcome or a positive stage on a historical/split
+   profile fails this gate.
 6. After the claim, generate a new panel telemetry event and verify it appears
    on the same install identity as step 5. Pre-claim telemetry, another install,
    or account-level activity does not prove continuity.

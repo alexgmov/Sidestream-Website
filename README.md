@@ -1171,6 +1171,8 @@ Use the narrowest relevant check after edits:
 
 ## Recent Change Log
 
+- 2026-08-09: Repaired and fixture-proved the Meta-paid telemetry handoff: the authenticated paid-claim POST now binds its exact current install/verified-receipt pair through one immutable edge after deterministic Customer 360 profile convergence, records authentication durably, and provides a guarded dry-run-first single-journey reconciler. `installation_claimed_recorded` alone is not success unless that exact binding and the telemetry-owning live profile agree. This integration snapshot did not deploy, migrate, repair Production, or qualify a live journey.
+
 - 2026-08-09: Added macOS Keychain fallback for the guarded Alex reset operator so repeat Production/Test authentication-flow cleanup does not depend on plaintext secret files, while preserving environment precedence, fixed provider targets, dry-run default, and explicit apply confirmation.
 
 - 2026-08-09: Advanced the receipt-gated paid Mac pointer to the signed, notarized, and stapled `1.0.17` artifact built from exact public source baseline `40c0adeb2ede134d97b11aa0712aaa5d942481aa` with only `sidestreamBuild.onboardingChannel = "paid-onboarding"` changed. Its immutable Blob pathname includes digest prefix `e941f79f7332e9b7`; the original stable `1.0.17` Mac artifact remains the documented rollback target. The public Mac and both Windows pointers remain unchanged.

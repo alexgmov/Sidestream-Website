@@ -609,6 +609,10 @@ async function loadAccountHandler(relativePath, harness) {
     "../_lib/account.js": harness.dependencies,
     "../../_lib/account.js": harness.dependencies,
     "../_lib/paid-acquisition.js": {
+      PAID_ACQUISITION_SOURCE: "paid-acquisition-mc-v1",
+      associatePaidAcquisitionActivationWithOutcome: async () => ({
+        outcome: "installation_claimed_recorded",
+      }),
       getPaidAcquisitionActivationOutcome: async () => null,
     },
   });
