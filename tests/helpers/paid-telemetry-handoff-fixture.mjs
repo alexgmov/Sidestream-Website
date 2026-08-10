@@ -38,6 +38,7 @@ const IDS = Object.freeze({
 
 const HISTORICAL_PAID_REPLAYS = Object.freeze([
   Object.freeze({
+    license: "73000000-0000-4000-8000-000000000002",
     activation: "74000000-0000-4000-8000-000000000002",
     checkoutIntent: "75000000-0000-4000-8000-000000000002",
     entry: "76000000-0000-4000-8000-000000000002",
@@ -71,6 +72,7 @@ const HASHES = Object.freeze({
   currentInstall: "a".repeat(64),
   historicalInstall: "b".repeat(64),
   nativeReceipt: "c".repeat(64),
+  directNativeReceipt: "7".repeat(64),
   browserToken: "d".repeat(64),
   assignment: "e".repeat(64),
   assignmentSignature: "f".repeat(64),
@@ -177,9 +179,14 @@ export async function runPaidTelemetryHandoffFixture({
   expectation = "repaired",
   environment = process.env,
 } = {}) {
-  if (!["repaired", "broken", "pending-review-repaired"].includes(expectation)) {
+  if (![
+    "repaired",
+    "broken",
+    "pending-review-repaired",
+    "reviewed-path-ambiguous",
+  ].includes(expectation)) {
     throw new TypeError(
-      "Paid telemetry handoff expectation must be repaired, broken, or pending-review-repaired",
+      "Paid telemetry handoff expectation must be repaired, broken, pending-review-repaired, or reviewed-path-ambiguous",
     );
   }
 
@@ -208,7 +215,10 @@ export async function runPaidTelemetryHandoffFixture({
       namespace: "test",
     };
 
-    if (expectation === "pending-review-repaired") {
+    if (
+      expectation === "pending-review-repaired" ||
+      expectation === "reviewed-path-ambiguous"
+    ) {
       const summary = await runPendingReviewRepairedScenario({
         pool,
         quotedCrm,
@@ -218,8 +228,13 @@ export async function runPaidTelemetryHandoffFixture({
         writeTransaction,
         readTransaction,
         integrityDependencies,
+        reproduceReviewedPathAmbiguity: expectation === "reviewed-path-ambiguous",
       });
-      assertPendingReviewRepairedExpectation(summary);
+      if (expectation === "reviewed-path-ambiguous") {
+        assertReviewedPathAmbiguityExpectation(summary);
+      } else {
+        assertPendingReviewRepairedExpectation(summary);
+      }
       return summary;
     }
 
@@ -467,6 +482,7 @@ async function runPendingReviewRepairedScenario({
   writeTransaction,
   readTransaction,
   integrityDependencies,
+  reproduceReviewedPathAmbiguity,
 }) {
   await acquisitionIntegrity.createCanonicalAcquisitionRoot({
     acquisitionId: IDS.acquisition,
@@ -505,7 +521,10 @@ async function runPendingReviewRepairedScenario({
      where id = $1`,
     [IDS.claim, IDS.activation],
   );
-  await seedHistoricalPaidReplays(pool, quotedCrm);
+  await seedHistoricalPaidReplays(pool, quotedCrm, {
+    replayCount: reproduceReviewedPathAmbiguity ? 1 : HISTORICAL_PAID_REPLAYS.length,
+    independentEntitlement: reproduceReviewedPathAmbiguity,
+  });
 
   for (const [stage, stableServerReference, occurredAt] of [
     ["email_handoff_created", "pending-review-paid-handoff", FIXTURE_TIME.checkoutCompleted],
@@ -548,7 +567,12 @@ async function runPendingReviewRepairedScenario({
   const accountAttachment = await writeTransaction((client) =>
     customerIdentity.attachCustomerIdentity(client, {
       environment: { namespace: "test" },
-      identity: { installIdHash: HASHES.historicalInstall },
+      identity: {
+        installIdHash: HASHES.historicalInstall,
+        ...(reproduceReviewedPathAmbiguity
+          ? { installerReceiptIdHash: HASHES.directNativeReceipt }
+          : {}),
+      },
       activationId: HISTORICAL_PAID_REPLAYS[0].activation,
       accountId: IDS.account,
       platform: "macos",
@@ -585,6 +609,25 @@ async function runPendingReviewRepairedScenario({
     }));
   if (pendingAttachment.profileId !== telemetryOwner || !pendingAttachment.reviewRequired) {
     throw new Error("Pending-review verified account conflict was not reproduced");
+  }
+
+  if (reproduceReviewedPathAmbiguity) {
+    const mutableBefore = await paidTelemetryAmbiguityMutationCounts(pool, quotedCrm);
+    const guardedDryRun = await readTransaction((client) =>
+      paidTelemetryRepair.inspectPaidTelemetryHandoffRepair(client, {
+        acquisitionId: IDS.acquisition,
+        namespace: "test",
+      }));
+    const mutableAfter = await paidTelemetryAmbiguityMutationCounts(pool, quotedCrm);
+    return reviewedPathAmbiguityPrivacySafeSummary({
+      pool,
+      quotedCrm,
+      telemetryOwner,
+      accountOwner: accountAttachment.profileId,
+      guardedDryRun,
+      mutableBefore,
+      mutableAfter,
+    });
   }
 
   await customerCommerce.materializeCustomerCommerceEvent(
@@ -654,11 +697,42 @@ async function runPendingReviewRepairedScenario({
   });
 }
 
-async function seedHistoricalPaidReplays(pool, schema) {
-  for (const [index, replay] of HISTORICAL_PAID_REPLAYS.entries()) {
+async function seedHistoricalPaidReplays(pool, schema, {
+  replayCount = HISTORICAL_PAID_REPLAYS.length,
+  independentEntitlement = false,
+} = {}) {
+  for (const [index, replay] of HISTORICAL_PAID_REPLAYS.slice(0, replayCount).entries()) {
     const createdAt = new Date(
       Date.parse(FIXTURE_TIME.checkoutStarted) - (index + 1) * 60 * 60 * 1_000,
     ).toISOString();
+    const entitlementId = independentEntitlement && index === 0
+      ? replay.license
+      : IDS.license;
+    if (independentEntitlement && index === 0) {
+      await pool.query(
+        `insert into ${schema}.sidestream_licenses (
+           id, account_id, stripe_customer_id, stripe_subscription_id,
+           stripe_checkout_session_id, stripe_payment_intent_id, stripe_charge_id,
+           stripe_price_id, stripe_product_id, amount_paid, amount_refunded, currency,
+           plan_key, status, entitlement_status, status_reason, reconciled_at,
+           features, created_at, updated_at
+         ) values (
+           $1, $2, $3, null, $4, $5, null, $6, $7, 1999, 0, 'usd',
+           'sidestream_unlimited', 'active', 'active', 'checkout_fulfilled', $8,
+           '{}'::jsonb, $8, $8
+         )`,
+        [
+          entitlementId,
+          IDS.account,
+          PROVIDER.customer,
+          replay.checkoutSession,
+          replay.paymentIntent,
+          PROVIDER.price,
+          PROVIDER.product,
+          createdAt,
+        ],
+      );
+    }
     await pool.query(
       `insert into ${schema}.sidestream_activation_sessions (
          id, activation_key, account_id, license_id, device_id_hash, app_version,
@@ -671,7 +745,7 @@ async function seedHistoricalPaidReplays(pool, schema) {
         replay.activation,
         `activation_fixture_paid_handoff_history_${index + 1}`,
         IDS.account,
-        IDS.license,
+        entitlementId,
         createHash("sha256").update(`historical-device-${index}`).digest("hex"),
         FIXTURE_TIME.expiry,
         createdAt,
@@ -771,7 +845,7 @@ async function seedHistoricalPaidReplays(pool, schema) {
         replay.paymentIntent,
         replay.activation,
         IDS.account,
-        IDS.license,
+        entitlementId,
         createdAt,
         FIXTURE_TIME.expiry,
       ],
@@ -1218,6 +1292,296 @@ async function rollbackScenario(pool, quotedSchema, callback, mutation = null) {
   } finally {
     await client.query("rollback").catch(() => {});
     client.release();
+  }
+}
+
+async function paidTelemetryAmbiguityMutationCounts(pool, quotedCrm) {
+  const result = await pool.query(
+    `select
+       (select count(*)::int
+        from ${quotedCrm}.sidestream_acquisition_stages
+        where acquisition_id = $1::uuid
+          and stage = 'authentication_completed') as authentication_stages,
+       (select count(*)::int
+        from ${quotedCrm}.sidestream_acquisition_stages
+        where acquisition_id = $1::uuid
+          and stage = 'installation_claimed') as installation_stages,
+       (select count(*)::int
+        from ${quotedCrm}.sidestream_paid_telemetry_profile_bindings
+        where acquisition_id = $1::uuid) as bindings,
+       (select count(*)::int
+        from ${quotedCrm}.sidestream_customer_profile_merges) as merge_audits,
+       (select count(*)::int
+        from ${quotedCrm}.sidestream_paid_acquisition_checkouts paid
+        join ${quotedCrm}.sidestream_checkout_intents core
+          on core.id = paid.checkout_intent_ref
+        where core.acquisition_id = $1::uuid and paid.claim_state = 'claimed')
+         as claimed_checkouts,
+       (select count(*)::int
+        from ${quotedCrm}.sidestream_paid_acquisition_checkouts paid
+        join ${quotedCrm}.sidestream_checkout_intents core
+          on core.id = paid.checkout_intent_ref
+        where core.acquisition_id = $1::uuid and paid.claim_state = 'unclaimed')
+         as unclaimed_checkouts,
+       (select count(*)::int
+        from ${quotedCrm}.sidestream_paid_acquisition_claims claim
+        join ${quotedCrm}.sidestream_paid_acquisition_checkouts paid
+          on paid.id = claim.checkout_id
+        join ${quotedCrm}.sidestream_checkout_intents core
+          on core.id = paid.checkout_intent_ref
+        where core.acquisition_id = $1::uuid and claim.claim_state = 'claimed')
+         as claimed_claims,
+       (select count(*)::int
+        from ${quotedCrm}.sidestream_paid_acquisition_claims claim
+        join ${quotedCrm}.sidestream_paid_acquisition_checkouts paid
+          on paid.id = claim.checkout_id
+        join ${quotedCrm}.sidestream_checkout_intents core
+          on core.id = paid.checkout_intent_ref
+        where core.acquisition_id = $1::uuid and claim.claim_state = 'unclaimed')
+         as unclaimed_claims`,
+    [IDS.acquisition],
+  );
+  const row = result.rows[0];
+  return Object.freeze({
+    authenticationStages: row.authentication_stages,
+    installationStages: row.installation_stages,
+    bindings: row.bindings,
+    mergeAudits: row.merge_audits,
+    claimedCheckouts: row.claimed_checkouts,
+    unclaimedCheckouts: row.unclaimed_checkouts,
+    claimedClaims: row.claimed_claims,
+    unclaimedClaims: row.unclaimed_claims,
+  });
+}
+
+async function reviewedPathAmbiguityPrivacySafeSummary({
+  pool,
+  quotedCrm,
+  telemetryOwner,
+  accountOwner,
+  guardedDryRun,
+  mutableBefore,
+  mutableAfter,
+}) {
+  const paths = await pool.query(
+    `select
+       count(*)::int as paid_paths,
+       count(*) filter (
+         where acquisition.integrity_state = 'intact'
+           and paid.environment = 'test'
+           and core.state = 'completed'
+           and core.account_id = account.id
+           and paid.payment_state = 'active'
+           and paid.claim_state = claim.claim_state
+           and paid.claim_state in ('unclaimed', 'claimed')
+           and paid.completed_at is not null
+           and paid.receipt_expires_at > now()
+           and claim.expires_at > now()
+           and claim.account_ref = account.id
+           and claim.entitlement_ref = entitlement.id
+           and claim.activation_ref = activation.id
+           and entitlement.account_id = account.id
+           and entitlement.entitlement_status = 'active'
+           and entitlement.plan_key in ('sidestream_pro', 'sidestream_unlimited')
+           and activation.account_id = account.id
+           and activation.license_id = entitlement.id
+           and activation.source = 'paid-acquisition-mc-v1'
+           and activation.status in ('paid', 'linked', 'restored', 'completed')
+           and activation.completed_at is not null
+           and activation.expires_at > now()
+           and paid.verified_checkout_session_ref = core.stripe_checkout_session_id
+           and paid.verified_checkout_session_ref = entitlement.stripe_checkout_session_id
+           and paid.canonical_payment_ref = claim.canonical_payment_ref
+           and paid.canonical_payment_ref = entitlement.stripe_payment_intent_id
+           and paid.verified_product_ref = core.stripe_product_id
+           and paid.verified_product_ref = entitlement.stripe_product_id
+           and paid.verified_price_ref = core.stripe_price_id
+           and paid.verified_price_ref = entitlement.stripe_price_id
+           and paid.verified_quantity = 1
+           and paid.verified_amount_minor = entitlement.amount_paid
+           and entitlement.amount_refunded = 0
+           and paid.verified_currency = entitlement.currency
+           and lower(trim(paid.checkout_email_normalized)) = lower(trim(account.email))
+           and lower(trim(claim.google_email_normalized)) = lower(trim(account.email))
+       )::int as active_consistent_paths,
+       count(distinct activation.id)::int as activation_paths
+     from ${quotedCrm}.sidestream_acquisitions acquisition
+     join ${quotedCrm}.sidestream_checkout_intents core
+       on core.acquisition_id = acquisition.id
+     join ${quotedCrm}.sidestream_paid_acquisition_checkouts paid
+       on paid.checkout_intent_ref = core.id
+     join ${quotedCrm}.sidestream_paid_acquisition_claims claim
+       on claim.checkout_id = paid.id and claim.environment = paid.environment
+     join ${quotedCrm}.sidestream_accounts account
+       on account.id = claim.account_ref
+     join ${quotedCrm}.sidestream_licenses entitlement
+       on entitlement.id = claim.entitlement_ref
+     join ${quotedCrm}.sidestream_activation_sessions activation
+       on activation.id = claim.activation_ref
+     where acquisition.id = $1::uuid and acquisition.license_namespace = 'test'`,
+    [IDS.acquisition],
+  );
+  const bridges = await pool.query(
+    `select
+       (select count(*)::int
+        from ${quotedCrm}.sidestream_customer_installs install
+        where install.profile_id = $1::uuid and install.install_id_hash = $3)
+         as direct_install_memberships,
+       (select count(*)::int
+        from ${quotedCrm}.sidestream_customer_identity_links link
+        where link.profile_id = $1::uuid
+          and link.link_type = 'activation_record' and link.link_value = $4::text)
+         as direct_activation_links,
+       (select count(*)::int
+        from ${quotedCrm}.sidestream_customer_identity_links link
+        where link.profile_id = $1::uuid
+          and link.link_type = 'installer_receipt_hash' and link.link_value = $5)
+         as direct_receipt_links,
+       (select count(*)::int
+        from ${quotedCrm}.sidestream_customer_identity_links link
+        where link.profile_id = $1::uuid
+          and link.link_type = 'account_identity' and link.link_value = $6::text)
+         as direct_account_links,
+       (select count(*)::int
+        from ${quotedCrm}.sidestream_customer_identity_reviews review
+        where review.license_namespace = 'test'
+          and review.candidate_profile_id = $1::uuid
+          and review.evidence_type = 'account_identity'
+          and review.review_state = 'pending_review') as direct_candidate_reviews,
+       (select count(*)::int
+        from ${quotedCrm}.sidestream_customer_installs install
+        where install.profile_id = $2::uuid and install.install_id_hash = $7)
+         as reviewed_install_memberships,
+       (select count(*)::int
+        from ${quotedCrm}.sidestream_customer_identity_links link
+        where link.profile_id = $2::uuid
+          and link.link_type = 'activation_record' and link.link_value = $8::text)
+         as reviewed_activation_links,
+       (select count(*)::int
+        from ${quotedCrm}.sidestream_customer_identity_links link
+        where link.profile_id = $2::uuid
+          and link.link_type = 'installer_receipt_hash' and link.link_value = $9)
+         as reviewed_receipt_links,
+       (select count(*)::int
+        from ${quotedCrm}.sidestream_customer_identity_links link
+        where link.profile_id = $2::uuid
+          and (link.link_type = 'account_identity' or link.link_type like 'stripe_%'))
+         as reviewed_direct_account_or_stripe_links,
+       (select count(*)::int
+        from ${quotedCrm}.sidestream_customer_identity_reviews review
+        where review.license_namespace = 'test'
+          and review.candidate_profile_id = $2::uuid
+          and review.existing_profile_id = $1::uuid
+          and review.evidence_type = 'account_identity'
+          and review.evidence_trust = 'verified_server'
+          and review.attachment_source = 'activation_claim'
+          and review.review_state = 'pending_review') as reviewed_account_reviews,
+       (select count(*)::int
+        from ${quotedCrm}.sidestream_customer_identity_links link
+        join ${quotedCrm}.sidestream_customer_profiles profile
+          on profile.id = link.profile_id
+          and profile.license_namespace = link.license_namespace
+          and profile.merged_into is null
+        where link.license_namespace = 'test'
+          and link.link_type = 'account_identity' and link.link_value = $6::text)
+         as unique_account_owner_links`,
+    [
+      accountOwner,
+      telemetryOwner,
+      HASHES.historicalInstall,
+      HISTORICAL_PAID_REPLAYS[0].activation,
+      HASHES.directNativeReceipt,
+      IDS.account,
+      HASHES.currentInstall,
+      IDS.activation,
+      HASHES.nativeReceipt,
+    ],
+  );
+  const pathRow = paths.rows[0];
+  const bridgeRow = bridges.rows[0];
+  const bridgeKindsNonOverlapping =
+    bridgeRow.direct_account_links === 1 &&
+    bridgeRow.direct_candidate_reviews === 0 &&
+    bridgeRow.reviewed_direct_account_or_stripe_links === 0 &&
+    bridgeRow.reviewed_account_reviews === 1;
+  return Object.freeze({
+    observedContract: "direct-and-reviewed-paid-path-ambiguity",
+    acquisitionShape: Object.freeze({
+      paidPaths: pathRow.paid_paths,
+      activeConsistentPaths: pathRow.active_consistent_paths,
+      activationPaths: pathRow.activation_paths,
+    }),
+    directPath: Object.freeze({
+      currentInstallMemberships: bridgeRow.direct_install_memberships,
+      activationLinks: bridgeRow.direct_activation_links,
+      exactVerifiedReceiptLinks: bridgeRow.direct_receipt_links,
+      directAccountLinks: bridgeRow.direct_account_links,
+      pendingAccountReviewsAsCandidate: bridgeRow.direct_candidate_reviews,
+    }),
+    reviewedPath: Object.freeze({
+      currentInstallMemberships: bridgeRow.reviewed_install_memberships,
+      activationLinks: bridgeRow.reviewed_activation_links,
+      exactVerifiedReceiptLinks: bridgeRow.reviewed_receipt_links,
+      directAccountOrStripeLinks: bridgeRow.reviewed_direct_account_or_stripe_links,
+      verifiedAccountReviews: bridgeRow.reviewed_account_reviews,
+      uniqueExactAccountOwnerLinks: bridgeRow.unique_account_owner_links,
+    }),
+    bridgeKindsNonOverlapping,
+    guardedOperator: Object.freeze({
+      reasonCode: guardedDryRun.reasonCode,
+      eligible: guardedDryRun.eligible,
+      wouldMutate: guardedDryRun.wouldMutate,
+      hasJourneyFingerprint: guardedDryRun.journeyFingerprint !== null,
+    }),
+    mutationBoundary: Object.freeze({
+      stateUnchanged: JSON.stringify(mutableBefore) === JSON.stringify(mutableAfter),
+      before: mutableBefore,
+      after: mutableAfter,
+    }),
+  });
+}
+
+function assertReviewedPathAmbiguityExpectation(summary) {
+  const expectedMutationCounts = {
+    authenticationStages: 0,
+    installationStages: 1,
+    bindings: 0,
+    mergeAudits: 0,
+    claimedCheckouts: 1,
+    unclaimedCheckouts: 1,
+    claimedClaims: 1,
+    unclaimedClaims: 1,
+  };
+  const observed =
+    summary.observedContract === "direct-and-reviewed-paid-path-ambiguity" &&
+    summary.acquisitionShape.paidPaths === 2 &&
+    summary.acquisitionShape.activeConsistentPaths === 2 &&
+    summary.acquisitionShape.activationPaths === 2 &&
+    summary.directPath.currentInstallMemberships === 1 &&
+    summary.directPath.activationLinks === 1 &&
+    summary.directPath.exactVerifiedReceiptLinks === 1 &&
+    summary.directPath.directAccountLinks === 1 &&
+    summary.directPath.pendingAccountReviewsAsCandidate === 0 &&
+    summary.reviewedPath.currentInstallMemberships === 1 &&
+    summary.reviewedPath.activationLinks === 1 &&
+    summary.reviewedPath.exactVerifiedReceiptLinks === 1 &&
+    summary.reviewedPath.directAccountOrStripeLinks === 0 &&
+    summary.reviewedPath.verifiedAccountReviews === 1 &&
+    summary.reviewedPath.uniqueExactAccountOwnerLinks === 1 &&
+    summary.bridgeKindsNonOverlapping === true &&
+    summary.guardedOperator.reasonCode === "paid_path_missing_or_ambiguous" &&
+    summary.guardedOperator.eligible === false &&
+    summary.guardedOperator.wouldMutate === false &&
+    summary.guardedOperator.hasJourneyFingerprint === false &&
+    summary.mutationBoundary.stateUnchanged === true &&
+    JSON.stringify(summary.mutationBoundary.before) ===
+      JSON.stringify(expectedMutationCounts) &&
+    JSON.stringify(summary.mutationBoundary.after) ===
+      JSON.stringify(expectedMutationCounts);
+  if (!observed) {
+    throw new Error(
+      `Expected reviewed-path-ambiguous paid telemetry handoff contract; observed ${JSON.stringify(summary)}`,
+    );
   }
 }
 

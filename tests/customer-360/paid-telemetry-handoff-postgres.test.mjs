@@ -54,3 +54,32 @@ test("pending verified-account review converges through the exact current paid p
   assert.doesNotMatch(serialized, /\b[0-9a-f]{64}\b/i);
   assert.doesNotMatch(serialized, /@example\.invalid\b/);
 });
+
+test("direct and reviewed active paths remain ambiguous without mutation", {
+  timeout: 120_000,
+}, async () => {
+  const summary = await runPaidTelemetryHandoffFixture({
+    expectation: "reviewed-path-ambiguous",
+  });
+  assert.equal(summary.observedContract, "direct-and-reviewed-paid-path-ambiguity");
+  assert.deepEqual(summary.acquisitionShape, {
+    paidPaths: 2,
+    activeConsistentPaths: 2,
+    activationPaths: 2,
+  });
+  assert.equal(summary.bridgeKindsNonOverlapping, true);
+  assert.deepEqual(summary.guardedOperator, {
+    reasonCode: "paid_path_missing_or_ambiguous",
+    eligible: false,
+    wouldMutate: false,
+    hasJourneyFingerprint: false,
+  });
+  assert.equal(summary.mutationBoundary.stateUnchanged, true);
+  assert.deepEqual(summary.mutationBoundary.after, summary.mutationBoundary.before);
+  const serialized = JSON.stringify(summary);
+  assert.doesNotMatch(serialized, /\b(?:cus|cs|pi|ch)_[A-Za-z0-9_]+\b/);
+  assert.doesNotMatch(serialized, /\b[0-9a-f]{8}-[0-9a-f-]{27,}\b/i);
+  assert.doesNotMatch(serialized, /\b[0-9a-f]{64}\b/i);
+  assert.doesNotMatch(serialized, /@example\.invalid\b/);
+  assert.doesNotMatch(serialized, /postgres(?:ql)?:\/\//i);
+});
