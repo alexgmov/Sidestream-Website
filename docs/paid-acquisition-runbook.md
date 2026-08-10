@@ -522,11 +522,16 @@ download inside the panel, which must not begin before `GO` with instruction
 `npm run fresh-paid:reset` is dry-run by default and operates only as
 `fresh-meta-paid-production`. The operator accepts an explicit deployed Neon
 branch name, branch ID, and direct endpoint ID. The branch must be non-`main`.
-Authenticated project branch/endpoint inventory, the direct connection host,
-connected database, connected role, and `production` namespace must all agree
-with the fixed code-owned Production target. Omitted selectors, pooled URLs,
-an unexpected endpoint, database or role drift, and connected-target
-fingerprint drift fail closed.
+Authenticated branch inventory and the project-scoped Neon API endpoint lookup,
+the direct connection host, connected database, connected role, and
+`production` namespace must all agree with the fixed code-owned Production
+target. Endpoint discovery is exactly `neonctl api
+/projects/<project-id>/endpoints`; Neon CLI 2.37.1 does not provide an
+`endpoints list` command. The operator reduces the API response to only
+`{id, branchId}` before matching it to the selected branch; credential or host
+fields are neither used as endpoint inventory nor emitted in its report.
+Omitted selectors, pooled URLs, an unexpected endpoint, database or role drift,
+and connected-target fingerprint drift fail closed.
 
 Record only the reviewed branch name/ID, direct endpoint ID, connected-target
 fingerprint, recovery fingerprint, row counts, financial-object counts, and
@@ -566,7 +571,23 @@ reviewed safe branch selectors below; do not paste secrets or connection URLs
 into command history or evidence.
 
 1. Independently obtain and review `<deployed-name>`, `<br-id>`, and the direct
-   `<ep-id>`. Run the sanitized reset dry-run:
+   `<ep-id>`. Use the authenticated project inventory surfaces below; retain
+   only branch name/ID and the endpoint `{id, branchId}` projection, and do not
+   save or paste the unfiltered API response into evidence:
+
+   ```bash
+   npx --yes neonctl@2.37.1 branches list \
+     --project-id '<project-id>' --output json --no-color \
+     | jq '[.[] | {id, name, parentId: .parent_id}]'
+   npx --yes neonctl@2.37.1 api \
+     '/projects/<project-id>/endpoints' \
+     | jq '{endpoints: [.endpoints[] | {id, branchId: .branch_id}]}'
+   ```
+
+   The endpoint lookup must return exactly one reviewed endpoint whose
+   `branch_id` is `<br-id>` and whose `id` is `<ep-id>`. Do not substitute the
+   unsupported `neonctl endpoints list` form. Then run the sanitized reset
+   dry-run:
 
    ```bash
    npm run fresh-paid:reset -- \
@@ -642,26 +663,54 @@ npm run fresh-paid:reset-local -- \
   --preserve-path '<additional-project-or-media-path>'
 ```
 
+The Production cache inventory is discovered only under the original operator
+home at `~/Library/Caches/CSXS/cep_cache`. A reset target must match the anchored
+name `PPRO_<version>_com.sidestream.downloader.panel` exactly. Test, paidtest,
+paiduitest, localrc, and third-party cache names do not match and are preserved.
+The preservation inventory also names both `Sidestream Test` and
+`com.sidestream.downloader.test` in each of the system and user CEP extension
+roots: `/Library/Application Support/Adobe/CEP/extensions` and the original
+user's `~/Library/Application Support/Adobe/CEP/extensions`. Neither form is a
+Production target.
+
 Review the inventory, then run the same preserve arguments with exact apply
-confirmation:
+confirmation. Because system CEP and receipt paths require administrator
+access, invoke apply with `sudo` from the original non-root login, not from a
+direct root shell:
 
 ```bash
-npm run fresh-paid:reset-local -- \
+sudo npm run fresh-paid:reset-local -- \
   --apply \
   --operation fresh-meta-paid-production-local \
   --confirm RESET-PRODUCTION-CEP-STATE \
   --preserve-path '<additional-project-or-media-path>'
 ```
 
-Apply asks Premiere to quit normally and waits for Premiere plus Production CEP
-processes to stop. If either remains, nothing moves. It moves only Production
-system/user/legacy CEP extensions, Production CEP caches, Production
-device/license/paid-onboarding state, telemetry state/queue, and the system
+When effective uid is root, the operator resolves local paths only from an
+attested non-root `SUDO_USER`: Directory Service must return an absolute home
+owned by that user's positive uid, and the resolved path must be a directory
+other than `/` or `/var/root`. Missing, root, invalid, wrong-owner, or direct-root
+invocation fails before any local path is resolved; root's home is never a
+fallback.
+
+Apply recognizes only the exact Adobe Premiere Pro executable and a
+`CEPHtmlEngine` command carrying the exact Production extension ID
+`com.sidestream.downloader.panel`. It asks Premiere to quit normally, waits a
+bounded grace period, then sends `SIGTERM` only to any remaining exact
+Production CEP PIDs and waits once more. It never signals Premiere or Test,
+paidtest, paiduitest, localrc, or unrelated CEP engines. If exact Premiere or
+Production CEP blockers survive, it stops before creating a backup or moving
+state.
+
+After that stop gate, apply moves only Production system/user/legacy CEP
+extensions, exact Production CEP caches, Production device/license/
+paid-onboarding state, telemetry state/queue, and the system
 `/Library/Application Support/Sidestream/installer-receipt.json` into a
 timestamped mode-`0700` recovery backup. It never deletes them. On a partial
-failure it rolls moved paths back. Test extensions/device state, Downloads,
-Premiere projects, explicit preserve paths, and unrelated CEP extensions must
-have identical before/after fingerprints.
+failure it rolls moved paths back. Both explicit Test extension forms, Test
+device state, non-Production caches, Downloads, Premiere projects, explicit
+preserve paths, and unrelated CEP extensions must have identical before/after
+fingerprints.
 
 After both resets pass, close every browser window or profile that has prior
 Sidestream session/acquisition state and rotate to a new clean browser profile.

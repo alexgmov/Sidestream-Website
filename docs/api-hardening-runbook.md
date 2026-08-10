@@ -163,8 +163,11 @@ identifier, Customer 360 ID, or acquisition UUID.
 
 Target selection requires all three safe live selectors: deployed non-`main`
 Neon branch name, branch ID, and direct endpoint ID. Authenticated project
-branch/endpoint inventory plus connected database, role, and `production`
-namespace attestation produce the connected-target fingerprint. `main`, an
+branch inventory plus the exact `neonctl api /projects/<project-id>/endpoints`
+lookup and connected database, role, and `production` namespace attestation
+produce the connected-target fingerprint. Neon CLI 2.37.1 has no supported
+`endpoints list` command. The API response is reduced to `{id, branchId}` for
+matching; credential and host fields are omitted from reports. `main`, an
 omitted selector, a pooled URL, endpoint/role/database drift, or a changed
 fingerprint fails closed. Sanitized reports may contain only the project/branch/
 endpoint target metadata needed for independent review, counts, and SHA-256
@@ -193,14 +196,27 @@ target and matching Customer count is zero before Checkout can begin.
 
 The server reset does not clear the machine or browser. The separate
 `fresh-meta-paid-production-local` operator is dry-run-first and requires
-`RESET-PRODUCTION-CEP-STATE`. It asks Premiere to quit, refuses while Premiere
-or a Production CEP process remains, then moves only Production CEP extensions
-and caches, device/license/onboarding state, telemetry state/queue, and the
-system installer receipt into a timestamped mode-`0700` backup. It rolls back a
-partial move and invariant-checks Test state, media, Premiere projects, explicit
-preserve paths, and unrelated CEP extensions. Rotate away from every browser
-profile with old Sidestream state before opening `/meta-paid`; after the new
-root exists, keep that one clean profile through Checkout and authentication.
+`RESET-PRODUCTION-CEP-STATE`. Cache targets are only exact
+`PPRO_<version>_com.sidestream.downloader.panel` entries under the original
+operator's `~/Library/Caches/CSXS/cep_cache`; all other cache names are
+preserved. Both `Sidestream Test` and `com.sidestream.downloader.test` are
+preserved in the system and user CEP roots. Administrator apply must be launched
+with `sudo` from the original non-root user. Root execution requires an attested
+non-root `SUDO_USER` home with matching uid ownership and never falls back to
+`/var/root` or root's home.
+
+Apply asks the exact Premiere executable to quit normally, waits a bounded
+grace period, and may send `SIGTERM` only to remaining `CEPHtmlEngine` PIDs
+carrying exact extension ID `com.sidestream.downloader.panel`. It never signals
+Premiere, Test-like, or unrelated CEP processes. A surviving exact blocker stops
+the operation before backup creation. It then moves only Production CEP
+extensions/caches, device/license/onboarding state, telemetry state/queue, and
+the system installer receipt into a timestamped mode-`0700` backup. It rolls
+back a partial move and invariant-checks both Test bundle forms, non-Production
+caches, Test state, media, Premiere projects, explicit preserve paths, and
+unrelated CEP extensions. Rotate away from every browser profile with old
+Sidestream state before opening `/meta-paid`; after the new root exists, keep
+that one clean profile through Checkout and authentication.
 
 After paid install and authentication, the single read-only
 `fresh-meta-paid-post-auth-preflight` must return `GO` with
