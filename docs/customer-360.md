@@ -345,17 +345,17 @@ Apply revalidates all live eligibility facts and requires the operation,
 namespace, connected-target fingerprint, and journey fingerprint copied from a
 fresh dry-run. An identical confirmed replay is a no-op.
 
-#### Simple profile split versus pending verified-account review
+#### Three exact paid-telemetry repair boundaries
 
-The guarded correction recognizes two exact topologies; the second is not a
-looser form of the first.
+The guarded correction recognizes three exact topologies; neither reviewed
+form is a looser version of the simple split.
 
-| Boundary | Simple install-profile split | Live pending-review topology |
-| --- | --- | --- |
-| Paid attempts | One eligible paid activation path is already direct. | The acquisition may retain historical Checkout/paid/activation attempts; those rows remain history and do not vote for an owner. |
-| Current telemetry root | The activation/account evidence and current install/receipt evidence begin on two compatible live profiles. | The current install, activation, and verified native receipt are on a telemetry profile with no direct account or Stripe identity; the exact authenticated account is on one other live profile. |
-| Account bridge | The exact direct `account_identity` link selects the owner. | Exactly one `pending_review` row must join the activation profile to the live exact-account owner with `evidence_type=account_identity`, `evidence_trust=verified_server`, and `attachment_source=activation_claim`. Stripe review rows are corroboration only and never selectors. |
-| Claim state | The exact Checkout and claim already agree as `claimed/claimed`. | The exact current Checkout and claim may agree as `unclaimed/unclaimed`; both become claimed only inside the successful convergence transaction. Mixed or unsupported states fail closed. |
+| Boundary | Simple install-profile split | Single pending-review path | Direct historical plus reviewed active path |
+| --- | --- | --- | --- |
+| Paid attempts | One eligible paid activation path is already direct. | Historical Checkout/paid/activation attempts may remain, but only one path is otherwise eligible. | Two independently active, account/payment/entitlement-consistent paths coexist; the direct-account path is historical and exactly one disjoint reviewed path is selected. |
+| Current telemetry root | The activation/account evidence and current install/receipt evidence begin on two compatible live profiles. | The current install, activation, and verified native receipt are on a telemetry profile with no direct account or Stripe identity; the exact authenticated account is on one other live profile. | The reviewed path has that same telemetry/account split, while the historical path separately owns its own activation, install, receipt, account link, Checkout, claim, and entitlement. |
+| Account bridge | The exact direct `account_identity` link selects the owner. | Exactly one `pending_review` row joins the activation profile to the live exact-account owner with `evidence_type=account_identity`, `evidence_trust=verified_server`, and `attachment_source=activation_claim`. | That same exact review is the unique selection boundary. The reviewed activation profile must have no direct account/Stripe link before binding, and the historical direct path is excluded rather than compared by age or order. |
+| Claim state | The exact Checkout and claim already agree as `claimed/claimed`. | The exact current Checkout and claim may agree as `unclaimed/unclaimed`; both become claimed only inside the successful convergence transaction. | Only the selected reviewed Checkout/claim pair may move together from `unclaimed/unclaimed`; the historical direct pair is untouched. |
 
 Current-path selection never chooses the newest, oldest, first, or most common
 attempt. Before a binding exists, the active activation must own the exact
@@ -364,6 +364,18 @@ verified-account review. A second eligible activation path or reviewed account
 owner is ambiguous. After convergence, the immutable binding identifies the
 current activation/install/receipt pair even though historical activation links
 may now resolve through the same merged survivor.
+
+The third boundary is discovered only from the canonical acquisition and
+trusted namespace. Exactly one exact reviewed bridge may select its owning
+activation; the operator does not accept or derive selection from timestamps,
+row order, newest/oldest rules, Stripe reviews, email, hashes, provider
+references, receipt input, activation input, or another operator selector. If
+no reviewed bridge exists, the original direct/simple split behavior is
+unchanged. Two reviewed paths, two reviewed owners, pre-binding direct+review
+overlap, mismatched candidate/existing roots, or any other ambiguity returns
+`paid_path_missing_or_ambiguous` before paid-path mutation. After a successful
+repair, only the exact immutable binding may disambiguate the same reviewed
+activation for idempotent replay.
 
 ```text
 trusted activation + exact current install/receipt
@@ -393,6 +405,16 @@ commerce/lookup/funnel ownership while preserving the historical attempts. Its
 summary exposes only bounded counts, booleans, classifications, reason codes,
 and sanitized fingerprints; fixture UUIDs, hashes, email, and Stripe references
 must not appear.
+
+The disposable replay for the third boundary is
+`npm run replay:paid-telemetry-handoff -- --expect-reviewed-path-repaired`.
+It preserves both independently valid paths, proves the reviewed selector is
+`repair_ready`, applies only the reviewed pair, converges to
+`already_repaired`, and proves a second apply is a count-for-count no-op while
+the historical direct path remains history. The deployed `a4be35d` read-only
+Production dry-run rejected this dual-path shape without mutation. That is
+fail-closed historical evidence, not proof this revision is deployed, current
+Production is eligible, apply is authorized, or a live journey is qualified.
 
 Historical evidence is deliberately separate: against deployed commit
 `aa5a604`, the earlier read-only Production dry-run rejected the real journey as

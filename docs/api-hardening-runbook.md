@@ -868,8 +868,9 @@ evidence, exact claim/activation linkage, a matching Checkout/claim transition
 from `unclaimed` to `claimed`, deterministic merge/audit, immutable binding,
 and merge-triggered commerce refresh. An identical confirmed replay is a no-op.
 
-The inspector recognizes both the original direct-account install-profile split
-and the narrower pending verified-account-review topology. With multiple paid
+The inspector's first two boundaries recognize the original direct-account
+install-profile split and the narrower pending verified-account-review
+topology. With multiple paid
 attempts, it derives the current path from the active activation and exact
 verified receipt rather than newest/oldest row order. The pending bridge is
 eligible only when one verified-server `account_identity` review from
@@ -889,6 +890,25 @@ pending-review shape without mutation; that fail-closed result neither
 authorizes apply nor proves the revised code is deployed or the live journey is
 now eligible. This command shape is capability, not authorization or evidence
 of a Production repair.
+
+The third boundary is disposable-proved with
+`npm run replay:paid-telemetry-handoff -- --expect-reviewed-path-repaired`.
+It retains a fully valid direct historical path beside the reviewed path, then
+uses exactly one verified-server pending `account_identity` review from
+`activation_claim` to select the reviewed activation from the canonical
+acquisition and trusted namespace. It uses no timestamp/order rule, Stripe
+review, email, hash, provider reference, receipt/activation input, or additional
+operator selector. With no reviewed path the earlier direct/simple behavior
+remains. Duplicate reviewed paths/owners, pre-binding direct+review overlap,
+candidate/existing-root mismatch, or any other ambiguity fails before mutation;
+the selected row must still pass every existing locked eligibility check.
+First apply converges to `already_repaired`, exact-binding replay is a no-op,
+and entitlement remains additive/read-only.
+
+The earlier read-only Production dry-run on deployed `a4be35d` rejected this
+dual-path shape without mutation. It is not evidence this revision is deployed,
+current Production is eligible, apply is approved, or the live journey is
+qualified.
 
 ### Production device support and backfill
 

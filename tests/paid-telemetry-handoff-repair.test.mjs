@@ -122,7 +122,7 @@ test("connection guards reject pooling, weak TLS, and runtime/source collisions"
   );
 });
 
-test("two discovered paid paths fail closed before identity reads or writes", async () => {
+test("two discovered direct paid paths fail closed before identity reads or writes", async () => {
   const statements = [];
   const client = {
     async query(sql) {
@@ -130,6 +130,7 @@ test("two discovered paid paths fail closed before identity reads or writes", as
       if (/select id, integrity_state\s+from public\.sidestream_acquisitions/.test(sql)) {
         return { rows: [{ id: IDS.acquisition, integrity_state: "intact" }] };
       }
+      if (/as exact_binding_count/.test(sql)) return { rows: [] };
       if (/from public\.sidestream_acquisitions acquisition/.test(sql)) {
         return { rows: [{}, {}] };
       }
@@ -169,8 +170,57 @@ test("two discovered paid paths fail closed before identity reads or writes", as
       commerceConflicts: 0,
     },
   });
-  assert.equal(statements.length, 2);
+  assert.equal(statements.length, 3);
   assert.ok(statements.every((sql) => /^\s*select\b/i.test(sql)));
+});
+
+test("ambiguous reviewed boundaries fail closed before paid-path reads or writes", async () => {
+  const exactBoundary = {
+    review_id: "8c000000-0000-4000-8000-000000000001",
+    activation_id: IDS.activation,
+    account_id: IDS.account,
+    candidate_profile_id: IDS.telemetryProfile,
+    existing_profile_id: IDS.paidProfile,
+    candidate_root_id: IDS.telemetryProfile,
+    existing_root_id: IDS.paidProfile,
+    activation_profile_id: IDS.telemetryProfile,
+    direct_account_or_stripe_count: 0,
+    existing_account_owner_count: 1,
+    exact_account_owner_count: 1,
+    exact_binding_count: 0,
+  };
+  const cases = [
+    [exactBoundary, { ...exactBoundary, review_id: "8c000000-0000-4000-8000-000000000002" }],
+    [{ ...exactBoundary, direct_account_or_stripe_count: 1 }],
+    [{ ...exactBoundary, exact_account_owner_count: 2 }],
+    [{ ...exactBoundary, candidate_root_id: IDS.paidProfile }],
+    [{ ...exactBoundary, existing_account_owner_count: 0 }],
+  ];
+
+  for (const reviewedRows of cases) {
+    const statements = [];
+    const client = {
+      async query(sql) {
+        statements.push(sql);
+        if (/select id, integrity_state\s+from public\.sidestream_acquisitions/.test(sql)) {
+          return { rows: [{ id: IDS.acquisition, integrity_state: "intact" }] };
+        }
+        if (/as exact_binding_count/.test(sql)) return { rows: reviewedRows };
+        throw new Error("Ambiguous reviewed-boundary discovery should stop before path reads");
+      },
+    };
+
+    const report = await repair.inspectPaidTelemetryHandoffRepair(client, {
+      acquisitionId: IDS.acquisition,
+      namespace: "test",
+    });
+    assert.equal(report.reasonCode, "paid_path_missing_or_ambiguous");
+    assert.equal(report.eligible, false);
+    assert.equal(report.wouldMutate, false);
+    assert.equal(report.journeyFingerprint, null);
+    assert.equal(statements.length, 2);
+    assert.ok(statements.every((sql) => /^\s*select\b/i.test(sql)));
+  }
 });
 
 test("disposable Postgres repair is dry-run first, exact, private, and idempotent", async () => {

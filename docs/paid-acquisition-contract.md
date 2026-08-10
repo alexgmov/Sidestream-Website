@@ -454,6 +454,32 @@ The earlier read-only Production dry-run against deployed commit `aa5a604`
 correctly rejected this live topology without mutation. It is not deployment,
 repair, current eligibility, or live-qualification evidence for this revision.
 
+A third, stricter boundary covers an acquisition with both a fully valid direct
+historical path and a fully valid reviewed path. Starting only from the
+canonical acquisition and trusted namespace, exactly one pending
+`account_identity` review with `verified_server` trust and
+`activation_claim` source may select its activation profile and the unique
+exact-account owner. That reviewed profile must not also own a direct
+account/Stripe bridge before binding. No timestamp, row order, newest/oldest
+rule, Stripe review, email, hash, provider reference, receipt input, activation
+input, or additional operator selector participates. With no reviewed path,
+the direct/simple behavior remains unchanged; with two reviewed paths, two
+owners, overlap, candidate/existing-root mismatch, or any ambiguity, discovery
+refuses before mutation.
+
+Selection never relaxes the existing path contract: the chosen reviewed path
+must still pass exact Checkout/payment/refund/dispute, claim-state, account,
+entitlement, activation, install, locally verified receipt, commerce,
+stage-owner, namespace, and binding checks under lock. Apply remains atomic and
+additive, and entitlement stays read-only. After convergence, the exact
+immutable binding is the only allowed disambiguator for `already_repaired`
+replay. Disposable proof is
+`npm run replay:paid-telemetry-handoff -- --expect-reviewed-path-repaired`;
+it proves `repair_ready`, first-apply convergence, and a count-for-count no-op
+replay with both original paths preserved as history. The read-only Production
+dry-run on deployed `a4be35d` rejected this dual-path shape without mutation;
+that does not prove deployment, authorize apply, or qualify Production.
+
 ### Bounded activation-linkage diagnostics
 
 The authenticated paid-claim POST emits exactly one bounded operational outcome

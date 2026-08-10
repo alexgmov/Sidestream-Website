@@ -6,7 +6,7 @@ const options = process.argv.slice(2);
 const diagnosticOptions = new Set([
   "--expect-broken",
   "--expect-pending-review-repaired",
-  "--expect-reviewed-path-ambiguous",
+  "--expect-reviewed-path-repaired",
 ]);
 const unknown = options.filter((option) => !diagnosticOptions.has(option));
 if (
@@ -14,12 +14,12 @@ if (
   options.length > 1
 ) {
   console.error(
-    "Usage: npm run replay:paid-telemetry-handoff -- [--expect-broken|--expect-pending-review-repaired|--expect-reviewed-path-ambiguous]",
+    "Usage: npm run replay:paid-telemetry-handoff -- [--expect-broken|--expect-pending-review-repaired|--expect-reviewed-path-repaired]",
   );
   process.exitCode = 1;
 } else {
-  const expectation = options.includes("--expect-reviewed-path-ambiguous")
-    ? "reviewed-path-ambiguous"
+  const expectation = options.includes("--expect-reviewed-path-repaired")
+    ? "reviewed-path-repaired"
     : options.includes("--expect-pending-review-repaired")
       ? "pending-review-repaired"
       : options.includes("--expect-broken") ? "broken" : "repaired";

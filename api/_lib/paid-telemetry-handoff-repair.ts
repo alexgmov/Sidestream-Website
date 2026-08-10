@@ -72,6 +72,21 @@ type PaidPathRow = Readonly<{
   activation_active: boolean;
 }>;
 
+type ReviewedPathBoundaryRow = Readonly<{
+  review_id: string;
+  activation_id: string;
+  account_id: string;
+  candidate_profile_id: string;
+  existing_profile_id: string;
+  candidate_root_id: string;
+  existing_root_id: string;
+  activation_profile_id: string;
+  direct_account_or_stripe_count: number;
+  existing_account_owner_count: number;
+  exact_account_owner_count: number;
+  exact_binding_count: number;
+}>;
+
 type ExactIdentityRow = Readonly<{
   review_kind: "install_bridge" | "account_bridge";
   review_id: string;
@@ -419,10 +434,30 @@ async function discoverExactJourney(
     );
   }
 
-  const pathResult = await client.query<PaidPathRow>(paidPathSql(lock), [
+  const reviewedBoundaryResult = await client.query<ReviewedPathBoundaryRow>(
+    reviewedPathBoundarySql(lock),
+    [selector.acquisitionId, selector.namespace, PAID_SOURCE],
+  );
+  const reviewedBoundary = reviewedBoundaryResult.rows.length === 1
+    ? normalizeReviewedPathBoundary(reviewedBoundaryResult.rows[0])
+    : null;
+  if (
+    reviewedBoundaryResult.rows.length > 1 ||
+    (reviewedBoundary && !reviewedPathBoundaryAgrees(reviewedBoundary))
+  ) {
+    return discoveryFailure(
+      "paid_path_missing_or_ambiguous",
+      1,
+      reviewedBoundaryResult.rows.length,
+      0,
+    );
+  }
+
+  const pathResult = await client.query<PaidPathRow>(paidPathSql(lock, Boolean(reviewedBoundary)), [
     selector.acquisitionId,
     selector.namespace,
     PAID_SOURCE,
+    ...(reviewedBoundary ? [reviewedBoundary.activation_id] : []),
   ]);
   if (pathResult.rows.length !== 1) {
     return discoveryFailure(
@@ -639,7 +674,111 @@ function discoveryFailure(
   };
 }
 
-function paidPathSql(lock: boolean): string {
+function reviewedPathBoundarySql(lock: boolean): string {
+  return `
+    select review.id as review_id,
+      activation.id as activation_id,
+      account.id as account_id,
+      review.candidate_profile_id,
+      review.existing_profile_id,
+      coalesce(candidate.merged_into, candidate.id) as candidate_root_id,
+      coalesce(existing.merged_into, existing.id) as existing_root_id,
+      activation_link.profile_id as activation_profile_id,
+      (select count(*)::int
+       from public.sidestream_customer_identity_links direct_link
+       where direct_link.license_namespace = acquisition.license_namespace
+         and direct_link.profile_id = activation_link.profile_id
+         and (
+           direct_link.link_type = 'account_identity'
+           or direct_link.link_type like 'stripe_%'
+         )) as direct_account_or_stripe_count,
+      (select count(*)::int
+       from public.sidestream_customer_identity_links existing_account
+       where existing_account.license_namespace = acquisition.license_namespace
+         and existing_account.profile_id = coalesce(existing.merged_into, existing.id)
+         and existing_account.link_type = 'account_identity'
+         and existing_account.link_value = account.id::text)
+        as existing_account_owner_count,
+      (select count(*)::int
+       from public.sidestream_customer_identity_links exact_account
+       join public.sidestream_customer_profiles exact_owner
+         on exact_owner.id = exact_account.profile_id
+         and exact_owner.license_namespace = exact_account.license_namespace
+         and exact_owner.merged_into is null
+       where exact_account.license_namespace = acquisition.license_namespace
+         and exact_account.link_type = 'account_identity'
+         and exact_account.link_value = account.id::text)
+        as exact_account_owner_count,
+      (select count(*)::int
+       from public.sidestream_paid_telemetry_profile_bindings exact_binding
+       where exact_binding.license_namespace = acquisition.license_namespace
+         and exact_binding.acquisition_id = acquisition.id
+         and exact_binding.activation_ref = activation.id
+         and exact_binding.account_id = account.id)
+        as exact_binding_count
+    from public.sidestream_acquisitions acquisition
+    join public.sidestream_checkout_intents core
+      on core.acquisition_id = acquisition.id
+    join public.sidestream_paid_acquisition_checkouts paid
+      on paid.checkout_intent_ref = core.id
+      and paid.environment = acquisition.license_namespace
+    join public.sidestream_paid_acquisition_claims claim
+      on claim.checkout_id = paid.id
+      and claim.environment = paid.environment
+    join public.sidestream_accounts account
+      on account.id = claim.account_ref
+    join public.sidestream_activation_sessions activation
+      on activation.id = claim.activation_ref
+    join public.sidestream_customer_identity_links activation_link
+      on activation_link.license_namespace = acquisition.license_namespace
+      and activation_link.link_type = 'activation_record'
+      and activation_link.link_value = activation.id::text
+    join public.sidestream_customer_profiles candidate
+      on candidate.license_namespace = acquisition.license_namespace
+      and (
+        candidate.id = activation_link.profile_id
+        or coalesce(candidate.merged_into, candidate.id) = activation_link.profile_id
+      )
+    join public.sidestream_customer_identity_reviews review
+      on review.license_namespace = acquisition.license_namespace
+      and review.candidate_profile_id = candidate.id
+    join public.sidestream_customer_profiles existing
+      on existing.id = review.existing_profile_id
+      and existing.license_namespace = review.license_namespace
+    where acquisition.id = $1::uuid
+      and acquisition.license_namespace = $2
+      and activation.source = $3
+      and review.evidence_type = 'account_identity'
+      and review.evidence_value_hash = encode(
+        digest('account_identity:' || account.id::text, 'sha256'),
+        'hex'
+      )
+      and review.evidence_trust = 'verified_server'
+      and review.attachment_source = 'activation_claim'
+      and review.review_state = 'pending_review'
+      and (
+        not exists (
+          select 1
+          from public.sidestream_paid_telemetry_profile_bindings any_binding
+          where any_binding.license_namespace = acquisition.license_namespace
+            and any_binding.acquisition_id = acquisition.id
+        )
+        or exists (
+          select 1
+          from public.sidestream_paid_telemetry_profile_bindings exact_binding
+          where exact_binding.license_namespace = acquisition.license_namespace
+            and exact_binding.acquisition_id = acquisition.id
+            and exact_binding.activation_ref = activation.id
+            and exact_binding.account_id = account.id
+        )
+      )
+    limit 3${lock
+      ? " for update of acquisition, core, paid, claim, account, activation, activation_link, candidate, review, existing"
+      : ""}
+  `;
+}
+
+function paidPathSql(lock: boolean, selectReviewedPath: boolean): string {
   return `
     select acquisition.id as acquisition_id,
       acquisition.integrity_state,
@@ -725,6 +864,7 @@ function paidPathSql(lock: boolean): string {
     where acquisition.id = $1::uuid
       and acquisition.license_namespace = $2
       and activation.source = $3
+      ${selectReviewedPath ? "and activation.id = $4::uuid" : ""}
       and exists (
         select 1
         from public.sidestream_customer_identity_links current_activation
@@ -798,6 +938,37 @@ function paidPathSql(lock: boolean): string {
     order by core.created_at, core.id, paid.created_at, paid.id, claim.created_at, claim.id
     limit 3${lock ? " for update of acquisition, core, paid, claim, account, entitlement, activation" : ""}
   `;
+}
+
+function normalizeReviewedPathBoundary(
+  row: ReviewedPathBoundaryRow,
+): ReviewedPathBoundaryRow {
+  return Object.freeze({
+    ...row,
+    direct_account_or_stripe_count: Number(row.direct_account_or_stripe_count),
+    existing_account_owner_count: Number(row.existing_account_owner_count),
+    exact_account_owner_count: Number(row.exact_account_owner_count),
+    exact_binding_count: Number(row.exact_binding_count),
+  });
+}
+
+function reviewedPathBoundaryAgrees(row: ReviewedPathBoundaryRow): boolean {
+  const exactUnboundReview =
+    row.candidate_root_id !== row.existing_root_id &&
+    row.direct_account_or_stripe_count === 0 &&
+    row.exact_binding_count === 0;
+  const exactRepairedReview =
+    row.candidate_root_id === row.existing_root_id &&
+    row.exact_binding_count === 1;
+  return UUID.test(row.review_id) &&
+    UUID.test(row.activation_id) &&
+    UUID.test(row.account_id) &&
+    UUID.test(row.candidate_profile_id) &&
+    UUID.test(row.existing_profile_id) &&
+    row.candidate_root_id === row.activation_profile_id &&
+    row.existing_account_owner_count === 1 &&
+    row.exact_account_owner_count === 1 &&
+    (exactUnboundReview || exactRepairedReview);
 }
 
 function exactIdentitySql(lock: boolean): string {
