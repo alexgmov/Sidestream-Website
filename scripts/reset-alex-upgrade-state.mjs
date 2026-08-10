@@ -980,7 +980,7 @@ export async function loadNeonBranches(projectId, environment) {
     "branches", "list", "--project-id", projectId, "--output", "json", "--no-color",
   ], environment, "Could not read authenticated Neon branch metadata.");
   const endpointResult = await runNeon([
-    "endpoints", "list", "--project-id", projectId, "--output", "json", "--no-color",
+    "api", `/projects/${projectId}/endpoints`,
   ], environment, "Could not read authenticated Neon endpoint metadata.");
   const endpoints = parseNeonEndpointInventory(endpointResult.stdout);
   return parseNeonBranchInventory(branchResult.stdout).map((branch) => ({
