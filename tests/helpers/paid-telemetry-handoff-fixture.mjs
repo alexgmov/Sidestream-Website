@@ -65,6 +65,8 @@ const FIXTURE_TIME = Object.freeze({
   telemetryReceived: "2026-08-09T09:10:00.000Z",
   activationCompleted: "2026-08-09T10:00:00.000Z",
   installationClaimed: "2026-08-09T10:05:00.000Z",
+  postClaimTelemetryStarted: "2026-08-09T10:30:00.000Z",
+  postClaimTelemetryReceived: "2026-08-09T10:40:00.000Z",
   syncNow: "2026-08-09T12:00:00.000Z",
   cohortStart: "2026-08-08T00:00:00.000Z",
   cohortEnd: "2026-08-10T00:00:00.000Z",
@@ -74,6 +76,16 @@ const FIXTURE_TIME = Object.freeze({
 
 const ADMIN_SECRET = "fixture-paid-telemetry-handoff-cursor-secret";
 const RECEIPT_SECRET = "fixture-paid-telemetry-handoff-receipt-secret";
+const EXPECTED_JOURNEY_STAGES = Object.freeze([
+  "landing_observed",
+  "email_handoff_created",
+  "installer_requested",
+  "installation_claimed",
+  "authentication_completed",
+  "checkout_started",
+  "checkout_completed",
+  "payment_settled",
+]);
 
 const acquisitionIntegrity = await loadInjectedModule(
   new URL("../../api/_lib/acquisition-integrity.ts", import.meta.url),
@@ -194,6 +206,24 @@ export async function runPaidTelemetryHandoffFixture({
       occurredAt: FIXTURE_TIME.checkoutStarted,
     }, integrityDependencies);
 
+    for (const [stage, stableServerReference, occurredAt, evidence] of [
+      ["email_handoff_created", "paid-handoff:fixture", FIXTURE_TIME.checkoutCompleted,
+        "signed_email_handoff"],
+      ["installer_requested", "installer-request:fixture", FIXTURE_TIME.checkoutCompleted,
+        "installer_redirect"],
+    ]) {
+      await acquisitionIntegrity.recordAcquisitionStage({
+        acquisitionId: IDS.acquisition,
+        stage,
+        stableServerReference,
+        occurredAt,
+      }, integrityDependencies);
+      await acquisitionIntegrity.addTrustedDeliveryEvidence({
+        acquisitionId: IDS.acquisition,
+        evidence,
+      }, integrityDependencies);
+    }
+
     for (const [stage, stableServerReference, occurredAt] of [
       ["checkout_started", `checkout-intent:${IDS.checkoutIntent}`, FIXTURE_TIME.checkoutStarted],
       ["checkout_completed", `checkout-session:${PROVIDER.checkoutSession}`, FIXTURE_TIME.checkoutCompleted],
@@ -261,7 +291,7 @@ export async function runPaidTelemetryHandoffFixture({
         source: "activation_claim",
       }));
 
-    const commerceResult = await customerCommerce.materializeCustomerCommerceEvent(
+    const firstCommerceResult = await customerCommerce.materializeCustomerCommerceEvent(
       paymentIntentEvent(),
       schemaQuery(pool, quotedCrm),
       "test",
@@ -294,6 +324,64 @@ export async function runPaidTelemetryHandoffFixture({
         linkageDependencies,
       ),
     ]);
+    linkageAttempts.push(
+      await paidAcquisition.associatePaidAcquisitionActivationWithOutcome(
+        linkageInput,
+        linkageDependencies,
+      ),
+      await paidAcquisition.associatePaidAcquisitionActivationWithOutcome(
+        linkageInput,
+        linkageDependencies,
+      ),
+    );
+
+    await Promise.all([
+      replayExpectedJourneyStages(integrityDependencies),
+      replayExpectedJourneyStages(integrityDependencies),
+    ]);
+
+    const commerceReplayResults = await Promise.all([
+      customerCommerce.materializeCustomerCommerceEvent(
+        paymentIntentEvent(), schemaQuery(pool, quotedCrm), "test",
+      ),
+      customerCommerce.materializeCustomerCommerceEvent(
+        paymentIntentEvent(), schemaQuery(pool, quotedCrm), "test",
+      ),
+      customerCommerce.materializeCustomerCommerceEvent(
+        checkoutSessionEvent(), schemaQuery(pool, quotedCrm), "test",
+      ),
+      customerCommerce.materializeCustomerCommerceEvent(
+        checkoutSessionEvent(), schemaQuery(pool, quotedCrm), "test",
+      ),
+    ]);
+
+    await seedTelemetry(pool, quotedTelemetry, {
+      phase: "post-claim",
+      startedAt: FIXTURE_TIME.postClaimTelemetryStarted,
+      receivedBaseAt: FIXTURE_TIME.postClaimTelemetryReceived,
+    });
+    const replayUsageSummaries = [];
+    for (let replay = 0; replay < 2; replay += 1) {
+      replayUsageSummaries.push(await customerUsage.runCustomerUsageSync({
+        targetPool: pool,
+        telemetryPool: pool,
+        targetSchema: crmSchema,
+        telemetrySchema,
+        licenseNamespace: "test",
+        overlapMs: 48 * 60 * 60 * 1_000,
+        batchSize: 50,
+        now: new Date(
+          Date.parse(FIXTURE_TIME.syncNow) + (replay + 1) * 24 * 60 * 60 * 1_000,
+        ),
+      }));
+    }
+
+    const negativeFixtures = await runNegativeFixtures({
+      pool,
+      quotedCrm,
+      linkageInput,
+      linkageDependencies,
+    });
 
     const summary = await privacySafeSummary({
       pool,
@@ -302,9 +390,10 @@ export async function runPaidTelemetryHandoffFixture({
       readTransaction,
       telemetryOwner,
       exactIdentityAttachment,
-      usageSummary,
-      commerceResult,
+      usageSummaries: [usageSummary, ...replayUsageSummaries],
+      commerceResults: [firstCommerceResult, ...commerceReplayResults],
       linkageAttempts,
+      negativeFixtures,
     });
     assertExpectation(summary, expectation);
     return summary;
@@ -511,18 +600,22 @@ async function seedAuthenticatedPaidJourney(pool, schema, browserReceipt) {
   );
 }
 
-async function seedTelemetry(pool, schema) {
+async function seedTelemetry(pool, schema, {
+  phase = "initial",
+  startedAt = FIXTURE_TIME.telemetryStarted,
+  receivedBaseAt = FIXTURE_TIME.telemetryReceived,
+} = {}) {
   const events = [
-    ["telemetry-session", "session_started", "app", "app", {}, {
+    [`telemetry-session-${phase}`, "session_started", "app", "app", {}, {
       runtime: { osPlatform: "macos" },
     }],
-    ["telemetry-search", "search_submitted", "search", "app", {}, {}],
-    ["telemetry-download-request", "download_requested", "download", "download", {
-      download_id: "download-fixture-paid-handoff",
+    [`telemetry-search-${phase}`, "search_submitted", "search", "app", {}, {}],
+    [`telemetry-download-request-${phase}`, "download_requested", "download", "download", {
+      download_id: `download-fixture-paid-handoff-${phase}`,
       download_trigger: "result_row",
     }, {}],
-    ["telemetry-download-success", "download_attempt_finalized", "download", "download", {
-      download_id: "download-fixture-paid-handoff",
+    [`telemetry-download-success-${phase}`, "download_attempt_finalized", "download", "download", {
+      download_id: `download-fixture-paid-handoff-${phase}`,
       file_delivered: true,
       user_outcome: "got_file",
       import_result: "success",
@@ -530,27 +623,28 @@ async function seedTelemetry(pool, schema) {
   ];
   for (const [index, [id, eventName, category, scope, payload, dataPoints]] of events.entries()) {
     const occurredAt = new Date(
-      Date.parse(FIXTURE_TIME.telemetryStarted) + index * 30_000,
+      Date.parse(startedAt) + index * 30_000,
     ).toISOString();
-    const receivedAt = new Date(
-      Date.parse(FIXTURE_TIME.telemetryReceived) + index * 30_000,
+    const eventReceivedAt = new Date(
+      Date.parse(receivedBaseAt) + index * 30_000,
     ).toISOString();
     await pool.query(
       `insert into ${schema}.sidestream_telemetry_events (
          telemetry_event_id, install_id_hash, session_id, sequence, event_name,
          event_category, event_scope, occurred_at, received_at, app_version,
          build_channel, schema_version, payload, data_points
-       ) values ($1, $2, 'session-fixture-paid-handoff', $3, $4, $5, $6,
-         $7, $8, '1.0.18', 'test', '0.2.0', $9::jsonb, $10::jsonb)`,
+       ) values ($1, $2, $3, $4, $5, $6, $7,
+         $8, $9, '1.0.18', 'test', '0.2.0', $10::jsonb, $11::jsonb)`,
       [
         id,
         HASHES.currentInstall,
-        index + 1,
+        `session-fixture-paid-handoff-${phase}`,
+        phase === "initial" ? index + 1 : index + 101,
         eventName,
         category,
         scope,
         occurredAt,
-        receivedAt,
+        eventReceivedAt,
         JSON.stringify(payload),
         JSON.stringify(dataPoints),
       ],
@@ -585,6 +679,164 @@ function paymentIntentEvent() {
   };
 }
 
+function checkoutSessionEvent() {
+  const created = Math.floor(Date.parse(FIXTURE_TIME.checkoutCompleted) / 1_000);
+  return {
+    id: "evt_fixture_paid_handoff_checkout",
+    object: "event",
+    api_version: "2026-06-30.basil",
+    created,
+    data: {
+      object: {
+        id: PROVIDER.checkoutSession,
+        created,
+        customer: PROVIDER.customer,
+        payment_intent: PROVIDER.paymentIntent,
+        payment_status: "paid",
+        mode: "payment",
+        amount_total: 1999,
+        currency: "usd",
+        total_details: { amount_discount: 0, amount_tax: 0 },
+        metadata: { sidestream_commerce_model: "one_time" },
+      },
+    },
+    livemode: false,
+    pending_webhooks: 1,
+    request: null,
+    type: "checkout.session.completed",
+  };
+}
+
+async function replayExpectedJourneyStages(integrityDependencies) {
+  for (const [stage, stableServerReference, occurredAt] of [
+    ["landing_observed", "fixture-meta-paid-landing", FIXTURE_TIME.firstObserved],
+    ["email_handoff_created", "paid-handoff:fixture", FIXTURE_TIME.checkoutCompleted],
+    ["installer_requested", "installer-request:fixture", FIXTURE_TIME.checkoutCompleted],
+    ["installation_claimed", `installation:${HASHES.currentInstall}`,
+      FIXTURE_TIME.installationClaimed],
+    ["authentication_completed", `google-account:${IDS.acquisition}:${IDS.account}`,
+      FIXTURE_TIME.checkoutStarted],
+    ["checkout_started", `checkout-intent:${IDS.checkoutIntent}`,
+      FIXTURE_TIME.checkoutStarted],
+    ["checkout_completed", `checkout-session:${PROVIDER.checkoutSession}`,
+      FIXTURE_TIME.checkoutCompleted],
+    ["payment_settled", `payment:${PROVIDER.paymentIntent}`,
+      FIXTURE_TIME.paymentSettled],
+  ]) {
+    const result = await acquisitionIntegrity.recordAcquisitionStage({
+      acquisitionId: IDS.acquisition,
+      stage,
+      stableServerReference,
+      occurredAt,
+    }, integrityDependencies);
+    if (result.ownerConflict) {
+      throw new Error("Acquisition stage replay produced an ownership conflict");
+    }
+  }
+}
+
+async function runNegativeFixtures({
+  pool,
+  quotedCrm,
+  linkageInput,
+  linkageDependencies,
+}) {
+  const attempt = (input, mutation = null) => rollbackScenario(
+    pool,
+    quotedCrm,
+    async (client) => paidAcquisition.associatePaidAcquisitionActivationWithOutcome(
+      input,
+      {
+        ...linkageDependencies,
+        transaction: (callback) => callback(client),
+      },
+    ),
+    mutation,
+  );
+  const differentAccount = await attempt({
+    ...linkageInput,
+    expectedAccountId: "72000000-0000-4000-8000-000000000099",
+  });
+  const forwardedInstaller = await attempt({
+    ...linkageInput,
+    receipt: paidAcquisition.createPaidAcquisitionReceipt({
+      environment: "test",
+      verifiedCheckoutSessionRef: "cs_fixture_forwarded_installer",
+      secret: RECEIPT_SECRET,
+    }),
+  });
+  const { installerReceiptIdHash: _missingReceipt, ...missingReceiptInput } = linkageInput;
+  const missingReceipt = await attempt(missingReceiptInput);
+  const expiredAuthorization = await attempt(linkageInput, (client) => client.query(`
+    update public.sidestream_paid_acquisition_checkouts
+    set receipt_expires_at = now() - interval '1 minute'
+    where id = $1::uuid
+  `, [IDS.paidCheckout]));
+  const refund = await attempt(linkageInput, (client) => client.query(`
+    update public.sidestream_paid_acquisition_checkouts
+    set payment_state = 'refunded'
+    where id = $1::uuid
+  `, [IDS.paidCheckout]));
+  const dispute = await attempt(linkageInput, (client) => client.query(`
+    update public.sidestream_paid_acquisition_checkouts
+    set payment_state = 'disputed'
+    where id = $1::uuid
+  `, [IDS.paidCheckout]));
+  const namespaceConflict = await attempt({
+    ...linkageInput,
+    environment: "production",
+  });
+  const ambiguousExactOwner = await rollbackScenario(
+    pool,
+    quotedCrm,
+    async (client) => {
+      await client.query(`
+        update public.sidestream_customer_commerce_materializations
+        set identity_conflict = true
+        where license_namespace = 'test'
+      `);
+      try {
+        await customerQuery.queryCustomerLookup({
+          licenseNamespace: "test",
+          stripeReference: PROVIDER.checkoutSession,
+        }, { transaction: (callback) => callback(client) });
+        return false;
+      } catch (error) {
+        return error?.code === "conflicting_lookup_ownership";
+      }
+    },
+  );
+
+  return Object.freeze({
+    differentAccount: differentAccount.outcome === "claim_binding_conflict",
+    forwardedInstaller: forwardedInstaller.outcome === "receipt_activation_no_match",
+    ambiguousExactOwner,
+    missingReceipt: missingReceipt.outcome === "installation_identity_missing",
+    expiredAuthorization: expiredAuthorization.outcome === "receipt_activation_no_match",
+    refund: refund.outcome === "receipt_activation_no_match",
+    dispute: dispute.outcome === "receipt_activation_no_match",
+    namespaceConflict: namespaceConflict.outcome === "receipt_activation_no_match",
+  });
+}
+
+async function rollbackScenario(pool, quotedSchema, callback, mutation = null) {
+  const client = await pool.connect();
+  const scopedClient = {
+    query: (sql, params = []) => client.query(
+      sql.replace(/\bpublic\./g, `${quotedSchema}.`),
+      [...params],
+    ),
+  };
+  try {
+    await client.query("begin");
+    if (mutation) await mutation(scopedClient);
+    return await callback(scopedClient);
+  } finally {
+    await client.query("rollback").catch(() => {});
+    client.release();
+  }
+}
+
 async function privacySafeSummary({
   pool,
   quotedCrm,
@@ -592,21 +844,28 @@ async function privacySafeSummary({
   readTransaction,
   telemetryOwner,
   exactIdentityAttachment,
-  usageSummary,
-  commerceResult,
+  usageSummaries,
+  commerceResults,
   linkageAttempts,
+  negativeFixtures,
 }) {
-  const checkoutLookup = await customerQuery.queryCustomerLookup({
+  const exactLookups = await Promise.all([
+    PROVIDER.customer,
+    PROVIDER.checkoutSession,
+    PROVIDER.paymentIntent,
+    PROVIDER.charge,
+  ].map((stripeReference) => customerQuery.queryCustomerLookup({
     licenseNamespace: "test",
-    stripeReference: PROVIDER.checkoutSession,
-  }, { transaction: readTransaction });
+    stripeReference,
+  }, { transaction: readTransaction })));
+  const checkoutLookup = exactLookups[1];
   const currentDetail = await customerQuery.queryCustomerDetail(
     telemetryOwner,
     { licenseNamespace: "test" },
     { transaction: readTransaction },
   );
-  if (!checkoutLookup || !currentDetail) {
-    throw new Error("Customer 360 did not return both fixture profiles");
+  if (!checkoutLookup || !currentDetail || exactLookups.some((lookup) => !lookup)) {
+    throw new Error("Customer 360 omitted an exact fixture lookup");
   }
 
   const funnel = await acquisitionFunnel.queryAcquisitionFunnel({
@@ -623,9 +882,11 @@ async function privacySafeSummary({
   if (!currentJourney) throw new Error("Funnel omitted the current-install profile");
 
   const liveProfiles = await pool.query(
-    `select count(*)::int as count
+    `select
+       count(*) filter (where merged_into is null)::int as live,
+       count(*) filter (where merged_into is not null)::int as merged
      from ${quotedCrm}.sidestream_customer_profiles
-     where license_namespace = 'test' and merged_into is null`,
+     where license_namespace = 'test'`,
   );
   const exactPairOwners = await pool.query(
     `select count(distinct profile_id)::int as count
@@ -643,6 +904,14 @@ async function privacySafeSummary({
      where license_namespace = 'test' and profile_id = $1
        and link_type = 'account_identity'`,
     [telemetryOwner],
+  );
+  const installMemberships = await pool.query(
+    `select
+       count(*)::int as total,
+       count(*) filter (where install_id_hash = $2)::int as current_install
+     from ${quotedCrm}.sidestream_customer_installs
+     where license_namespace = 'test' and profile_id = $1`,
+    [telemetryOwner, HASHES.currentInstall],
   );
   const rawTelemetry = await pool.query(
     `select
@@ -691,7 +960,34 @@ async function privacySafeSummary({
         from ${quotedCrm}.sidestream_paid_telemetry_profile_bindings) as bindings,
        (select count(*)::int
         from ${quotedCrm}.sidestream_customer_profile_merges
-        where merge_evidence_type = 'installer_receipt_hash') as merge_audits`,
+        where merge_evidence_type = 'installer_receipt_hash') as merge_audits,
+       (select count(*)::int
+        from ${quotedCrm}.sidestream_acquisition_conflicts) as ownership_conflicts`,
+  );
+  const acquisitionRows = await pool.query(
+    `select
+       count(*)::int as roots,
+       count(*) filter (
+         where 'verified_installation_claim' = any(trusted_delivery_evidence)
+       )::int as verified_installation_claims
+     from ${quotedCrm}.sidestream_acquisitions
+     where license_namespace = 'test'`,
+  );
+  const commerceRows = await pool.query(
+    `select
+       count(*)::int as facts,
+       count(*) filter (where identity_conflict)::int as conflicts,
+       count(distinct profile_id) filter (
+         where profile_id is not null and not identity_conflict
+       )::int as owner_profiles
+     from ${quotedCrm}.sidestream_customer_commerce_materializations
+     where license_namespace = 'test'`,
+  );
+  const commerceAliases = await pool.query(
+    `select count(*)::int as aliases,
+       count(distinct payment_key)::int as payment_keys
+     from ${quotedCrm}.sidestream_customer_commerce_aliases
+     where license_namespace = 'test'`,
   );
 
   const currentMoneyRows = currentDetail.money.filter(
@@ -701,25 +997,52 @@ async function privacySafeSummary({
   const currentAttributed = currentJourney.attributionConfidence === "exact_paid_checkout";
   const currentMissing = currentJourney.attributionConfidence === "unattributed" &&
     currentJourney.integrityState === "missing_internal_linkage";
+  const funnelStageCounts = Object.fromEntries(
+    funnel.stageCounts.map((row) => [row.stage, Number(row.count)]),
+  );
+  const lookupOwnerCount = new Set(exactLookups.map((lookup) => lookup.customerId)).size;
+  const acquisition = checkoutLookup.acquisition;
 
   return Object.freeze({
     observedContract: checkoutLookup.customerId === telemetryOwner
       ? "repaired-single-profile-handoff"
       : "split-profile-defect",
     profileCounts: Object.freeze({
-      live: liveProfiles.rows[0].count,
-      currentInstallOwners: 1,
-      exactCheckoutOwners: 1,
+      live: liveProfiles.rows[0].live,
+      merged: liveProfiles.rows[0].merged,
+      currentInstallOwners: installMemberships.rows[0].current_install,
+      exactCheckoutOwners: lookupOwnerCount,
       exactIdentityPairProfiles: exactPairOwners.rows[0].count,
       splitCheckoutFromCurrentInstall: checkoutLookup.customerId === telemetryOwner ? 0 : 1,
+      installMemberships: installMemberships.rows[0].total,
     }),
     stageCounts: Object.freeze({
       landingObserved: stageCounts.landing_observed || 0,
+      emailHandoffCreated: stageCounts.email_handoff_created || 0,
+      installerRequested: stageCounts.installer_requested || 0,
       checkoutStarted: stageCounts.checkout_started || 0,
       checkoutCompleted: stageCounts.checkout_completed || 0,
       paymentSettled: stageCounts.payment_settled || 0,
       authenticationCompleted: stageCounts.authentication_completed || 0,
       installationClaimed: stageCounts.installation_claimed || 0,
+      refunded: stageCounts.refunded || 0,
+      disputed: stageCounts.disputed || 0,
+    }),
+    acquisitionLineage: Object.freeze({
+      roots: acquisitionRows.rows[0].roots,
+      source: acquisition.source,
+      medium: acquisition.medium,
+      campaign: acquisition.campaign,
+      content: acquisition.creative,
+      experiment: acquisition.experiment,
+      cohort: acquisition.cohort,
+      integrityState: acquisition.integrityState,
+      verifiedInstallationClaimEvidence:
+        acquisitionRows.rows[0].verified_installation_claims,
+      expectedStagesExactlyOnce: EXPECTED_JOURNEY_STAGES.every(
+        (stage) => stageCounts[stage] === 1 && funnelStageCounts[stage] === 1,
+      ),
+      ownershipConflicts: lineageRows.rows[0].ownership_conflicts,
     }),
     installationBindingCounts: Object.freeze({
       currentInstall: installationBindings.rows[0].current_install,
@@ -728,9 +1051,37 @@ async function privacySafeSummary({
     telemetryCounts: Object.freeze({
       searches: rawTelemetry.rows[0].searches,
       successfulDownloads: rawTelemetry.rows[0].successful_downloads,
-      usageProfilesRefreshed: usageSummary.profilesRefreshed,
+      usageSyncRuns: usageSummaries.length,
+      sourceRowsScanned: usageSummaries.map((summary) => summary.sourceRowsScanned),
+      dailyBucketsWritten: usageSummaries.map((summary) => summary.dailyBucketsWritten),
+      usageProfilesRefreshed: Math.max(
+        ...usageSummaries.map((summary) => summary.profilesRefreshed),
+      ),
       currentProfileSuccessfulDownloads:
         Number(currentDetail.usage.downloadOutcomeNumerator || 0),
+      funnelDayZeroDownloadAttempts: Number(currentJourney.dayZeroDownloadAttempts),
+    }),
+    commerceLineage: Object.freeze({
+      exactLookups: exactLookups.length,
+      exactLookupOwnerProfiles: lookupOwnerCount,
+      facts: commerceRows.rows[0].facts,
+      aliases: commerceAliases.rows[0].aliases,
+      paymentKeys: commerceAliases.rows[0].payment_keys,
+      ownerProfiles: commerceRows.rows[0].owner_profiles,
+      conflicts: commerceRows.rows[0].conflicts,
+      observationsApplied: commerceResults.reduce(
+        (total, result) => total + result.applied, 0,
+      ),
+      staleReplays: commerceResults.reduce(
+        (total, result) => total + result.stale, 0,
+      ),
+    }),
+    funnelCoverage: Object.freeze({
+      exactPaidCheckout: `${funnel.coverage.exactPaidCheckout.numerator}/${funnel.coverage.exactPaidCheckout.denominator}`,
+      attributed: `${funnel.coverage.attributed.numerator}/${funnel.coverage.attributed.denominator}`,
+      unknown: `${funnel.coverage.unknown.numerator}/${funnel.coverage.unknown.denominator}`,
+      paidCustomer: currentJourney.paidCustomer,
+      integrityState: currentJourney.integrityState,
     }),
     paidActivation: Object.freeze({
       outcome: linkageAttempts[0].outcome,
@@ -740,7 +1091,9 @@ async function privacySafeSummary({
       immutableBindings: lineageRows.rows[0].bindings,
       mergeAudits: lineageRows.rows[0].merge_audits,
       exactIdentityReviewRequired: exactIdentityAttachment.reviewRequired === true,
-      commerceObservationsApplied: commerceResult.applied,
+      commerceObservationsApplied: commerceResults.reduce(
+        (total, result) => total + result.applied, 0,
+      ),
     }),
     customer360CurrentInstallCounts: Object.freeze({
       knownAccount: accountLinks.rows[0].count > 0 ? 1 : 0,
@@ -748,20 +1101,27 @@ async function privacySafeSummary({
       exactPaidAttribution: currentAttributed ? 1 : 0,
       unattributedMissingInternalLinkage: currentMissing ? 1 : 0,
     }),
+    negativeFixtures,
   });
 }
 
 function assertExpectation(summary, expectation) {
   const common = summary.paidActivation.outcome === "installation_claimed_recorded" &&
-    summary.paidActivation.successfulReplayAttempts === 2 &&
+    summary.paidActivation.successfulReplayAttempts === 4 &&
+    summary.stageCounts.landingObserved === 1 &&
+    summary.stageCounts.emailHandoffCreated === 1 &&
+    summary.stageCounts.installerRequested === 1 &&
     summary.stageCounts.checkoutStarted === 1 &&
     summary.stageCounts.checkoutCompleted === 1 &&
     summary.stageCounts.paymentSettled === 1 &&
     summary.stageCounts.installationClaimed === 1 &&
-    summary.telemetryCounts.searches === 1 &&
-    summary.telemetryCounts.successfulDownloads === 1 &&
-    summary.telemetryCounts.currentProfileSuccessfulDownloads === 1 &&
-    summary.paidActivation.commerceObservationsApplied === 1;
+    summary.stageCounts.refunded === 0 &&
+    summary.stageCounts.disputed === 0 &&
+    summary.telemetryCounts.searches === 2 &&
+    summary.telemetryCounts.successfulDownloads === 2 &&
+    summary.telemetryCounts.currentProfileSuccessfulDownloads === 2 &&
+    summary.telemetryCounts.funnelDayZeroDownloadAttempts === 2 &&
+    summary.paidActivation.commerceObservationsApplied === 2;
   const broken = common &&
     summary.observedContract === "split-profile-defect" &&
     summary.profileCounts.splitCheckoutFromCurrentInstall === 1 &&
@@ -775,8 +1135,13 @@ function assertExpectation(summary, expectation) {
     summary.customer360CurrentInstallCounts.unattributedMissingInternalLinkage === 1;
   const repaired = common &&
     summary.observedContract === "repaired-single-profile-handoff" &&
+    summary.profileCounts.live === 1 &&
+    summary.profileCounts.merged === 1 &&
     summary.profileCounts.splitCheckoutFromCurrentInstall === 0 &&
     summary.profileCounts.exactIdentityPairProfiles === 1 &&
+    summary.profileCounts.installMemberships === 2 &&
+    summary.profileCounts.currentInstallOwners === 1 &&
+    summary.profileCounts.exactCheckoutOwners === 1 &&
     summary.paidActivation.immutableBindings === 1 &&
     summary.paidActivation.mergeAudits === 1 &&
     summary.stageCounts.authenticationCompleted === 1 &&
@@ -785,7 +1150,33 @@ function assertExpectation(summary, expectation) {
     summary.customer360CurrentInstallCounts.knownAccount === 1 &&
     summary.customer360CurrentInstallCounts.paid === 1 &&
     summary.customer360CurrentInstallCounts.exactPaidAttribution === 1 &&
-    summary.customer360CurrentInstallCounts.unattributedMissingInternalLinkage === 0;
+    summary.customer360CurrentInstallCounts.unattributedMissingInternalLinkage === 0 &&
+    summary.acquisitionLineage.roots === 1 &&
+    summary.acquisitionLineage.source === "meta" &&
+    summary.acquisitionLineage.medium === "social" &&
+    summary.acquisitionLineage.campaign === "sidestream_direct_offer_test" &&
+    summary.acquisitionLineage.content === "paid" &&
+    summary.acquisitionLineage.experiment === "meta-direct-links-v1" &&
+    summary.acquisitionLineage.cohort === "paid" &&
+    summary.acquisitionLineage.integrityState === "intact" &&
+    summary.acquisitionLineage.verifiedInstallationClaimEvidence === 1 &&
+    summary.acquisitionLineage.expectedStagesExactlyOnce === true &&
+    summary.acquisitionLineage.ownershipConflicts === 0 &&
+    summary.commerceLineage.exactLookups === 4 &&
+    summary.commerceLineage.exactLookupOwnerProfiles === 1 &&
+    summary.commerceLineage.facts === 2 &&
+    summary.commerceLineage.aliases === 3 &&
+    summary.commerceLineage.paymentKeys === 1 &&
+    summary.commerceLineage.ownerProfiles === 1 &&
+    summary.commerceLineage.conflicts === 0 &&
+    summary.commerceLineage.observationsApplied === 2 &&
+    summary.commerceLineage.staleReplays === 3 &&
+    summary.funnelCoverage.exactPaidCheckout === "1/1" &&
+    summary.funnelCoverage.attributed === "1/1" &&
+    summary.funnelCoverage.unknown === "0/1" &&
+    summary.funnelCoverage.paidCustomer === true &&
+    summary.funnelCoverage.integrityState === "intact" &&
+    Object.values(summary.negativeFixtures).every((passed) => passed === true);
   const observed = expectation === "broken" ? broken : repaired;
   if (!observed) {
     throw new Error(
