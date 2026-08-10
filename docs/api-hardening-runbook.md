@@ -967,6 +967,24 @@ Checkout Session/PaymentIntent commerce ownership but omitted this exact legacy
 Customer lookup. That is not authorization for a Production query, mutation,
 provider call, deployment, or push.
 
+The seventh Meta-paid boundary is read-only funnel selection. A single
+immutable binding whose full server tuple already passed the binding trigger
+must make its exact Checkout/acquisition dimensions outrank historical receipt,
+Checkout Session, activation, and broad account edges for the same live
+profile. Zero bindings keep the existing deterministic
+first-touch/entry/Checkout fallback. More than one exact binding fails the
+profile to unknown; newest timestamps, email, Stripe Customer, account-wide
+install history, and arbitrary row order are forbidden selectors.
+
+Both focused funnel suites and every paid-telemetry replay must pass. The
+first-purchase regression and paid-handoff fixture must each report
+Meta/social/`sidestream_direct_offer_test`, `exact_paid_checkout`, `intact`,
+`paidCustomer=true`, attributed `1/1`, exact paid `1/1`, and unknown `0/1`,
+with older candidates unchanged. Deployed `5a4cf55` returned the same correct
+coverage numbers but the wrong ManyChat/`historical_unlinked` dimensions. It is
+historical read-only evidence, not proof of this source, a Production query,
+deployment, or authorization.
+
 ### Production device support and backfill
 
 The device-domain behavior and privacy/support facts live in

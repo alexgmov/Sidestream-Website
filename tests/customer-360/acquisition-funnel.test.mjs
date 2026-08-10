@@ -137,6 +137,9 @@ test("aggregate and journey output exposes all ratios without raw linkage", asyn
   const transaction = async (callback) => callback({
     query: async (sql, params) => {
       sqlCalls.push({ sql, params });
+      if (sql.includes("to_regclass")) {
+        return { rows: [{ available: true }] };
+      }
       if (sql.includes("group by\n        source")) {
         return {
           rows: [
@@ -285,34 +288,47 @@ test("aggregate and journey output exposes all ratios without raw linkage", asyn
     /must-not-cross|"email"\s*:|link_value|install_id_hash|assignmentIdHash/i,
   );
 
-  assert.equal(sqlCalls.length, 4);
-  assert.match(sqlCalls[0].sql, /payment_state = 'active'/);
-  assert.match(sqlCalls[0].sql, /join public\.sidestream_checkout_intents core/);
-  assert.match(sqlCalls[0].sql, /left join public\.sidestream_acquisitions acquisition/);
+  assert.equal(sqlCalls.length, 5);
+  assert.match(sqlCalls[0].sql, /to_regclass/);
+  const reportSqlCalls = sqlCalls.slice(1);
+  assert.match(reportSqlCalls[0].sql, /payment_state = 'active'/);
+  assert.match(reportSqlCalls[0].sql, /join public\.sidestream_checkout_intents core/);
+  assert.match(reportSqlCalls[0].sql, /left join public\.sidestream_acquisitions acquisition/);
   assert.match(
-    sqlCalls[0].sql,
+    reportSqlCalls[0].sql,
     /coalesce\(acquisition\.first_observed_source, 'manychat'\) as source/,
   );
-  assert.match(sqlCalls[0].sql, /claim\.claim_state = 'claimed'/);
-  assert.match(sqlCalls[0].sql, /lead\.cta_source = 'mobile-download-handoff'/);
-  assert.match(sqlCalls[0].sql, /sidestream_anonymous_acquisition_sessions/);
-  assert.match(sqlCalls[0].sql, /'exact_paid_checkout'/);
-  assert.match(sqlCalls[0].sql, /'exact_anonymous_claim'/);
-  assert.match(sqlCalls[0].sql, /'exact_verified_email'/);
-  assert.match(sqlCalls[0].sql, /first_touch_medium is distinct from 'installation_claim'/);
-  assert.match(sqlCalls[0].sql, /paid\.first_attributed_at <= cohort\.cohort_at/);
-  assert.match(sqlCalls[0].sql, /lead\.first_captured_at <= cohort\.cohort_at/);
-  assert.match(sqlCalls[0].sql, /lead\.last_captured_at <= cohort\.cohort_at/);
-  assert.match(sqlCalls[0].sql, /account\.email = profile\.contact_email/);
+  assert.match(reportSqlCalls[0].sql, /claim\.claim_state = 'claimed'/);
+  assert.match(reportSqlCalls[0].sql, /lead\.cta_source = 'mobile-download-handoff'/);
+  assert.match(reportSqlCalls[0].sql, /sidestream_anonymous_acquisition_sessions/);
+  assert.match(reportSqlCalls[0].sql, /'exact_paid_checkout'/);
+  assert.match(reportSqlCalls[0].sql, /'exact_anonymous_claim'/);
+  assert.match(reportSqlCalls[0].sql, /'exact_verified_email'/);
+  assert.match(reportSqlCalls[0].sql, /first_touch_medium is distinct from 'installation_claim'/);
+  assert.match(reportSqlCalls[0].sql, /paid\.first_attributed_at <= cohort\.cohort_at/);
+  assert.match(reportSqlCalls[0].sql, /lead\.first_captured_at <= cohort\.cohort_at/);
+  assert.match(reportSqlCalls[0].sql, /lead\.last_captured_at <= cohort\.cohort_at/);
+  assert.match(reportSqlCalls[0].sql, /account\.email = profile\.contact_email/);
   assert.match(
-    sqlCalls[0].sql,
+    reportSqlCalls[0].sql,
     /where first_open_at is not null and activation_at is not null/,
   );
-  assert.match(sqlCalls[0].sql, /money\.net_paid_minor > 0/);
-  assert.match(sqlCalls[0].sql, /money\.first_paid_at < \$4::timestamptz/);
-  assert.match(sqlCalls[0].sql, /order by[\s\S]*paid\.first_attributed_at[\s\S]*paid\.entry_id/);
-  assert.match(sqlCalls[1].sql, /order by cohort_at, profile_id[\s\S]*limit \$6/);
-  assert.deepEqual(sqlCalls[1].params, [
+  assert.match(reportSqlCalls[0].sql, /money\.net_paid_minor > 0/);
+  assert.match(reportSqlCalls[0].sql, /money\.first_paid_at < \$4::timestamptz/);
+  assert.match(reportSqlCalls[0].sql, /sidestream_paid_telemetry_profile_bindings/);
+  assert.match(reportSqlCalls[0].sql, /paid\.checkout_id = binding\.checkout_id/);
+  assert.match(reportSqlCalls[0].sql, /paid\.acquisition_id = binding\.acquisition_id/);
+  assert.match(reportSqlCalls[0].sql, /install\.id = binding\.install_membership_id/);
+  assert.match(reportSqlCalls[0].sql, /install\.install_id_hash = binding\.install_id_hash/);
+  assert.match(reportSqlCalls[0].sql, /binding_count\.exact_binding_count = 1/);
+  assert.match(reportSqlCalls[0].sql, /coalesce\(binding_count\.exact_binding_count, 0\) < 2/);
+  assert.match(reportSqlCalls[0].sql, /ambiguous_binding\.exact_binding_count > 1/);
+  assert.match(
+    reportSqlCalls[0].sql,
+    /case[\s\S]*exact_binding\.checkout_id is not null[\s\S]*paid\.first_attributed_at[\s\S]*paid\.entry_id[\s\S]*paid\.checkout_id/,
+  );
+  assert.match(reportSqlCalls[1].sql, /order by cohort_at, profile_id[\s\S]*limit \$6/);
+  assert.deepEqual(reportSqlCalls[1].params, [
     "test",
     "2026-07-01T00:00:00.000Z",
     "2026-08-01T00:00:00.000Z",

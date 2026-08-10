@@ -76,7 +76,7 @@ const funnelModule = await loadInjectedModule(
   },
 );
 
-test("acquisition funnel keeps retention UTC-day based and reproduces paid binding precedence", {
+test("acquisition funnel keeps retention UTC-day based and prefers exact paid binding precedence", {
   timeout: 120_000,
 }, async () => {
   const databaseUrl = requireSafeTestDatabaseUrl(process.env);
@@ -454,11 +454,26 @@ test("acquisition funnel keeps retention UTC-day based and reproduces paid bindi
       precedenceRegression.journeys[0].attributionConfidence,
       "exact_paid_checkout",
     );
-    assert.equal(precedenceRegression.journeys[0].source, "manychat");
+    assert.equal(precedenceRegression.journeys[0].source, "meta");
+    assert.equal(precedenceRegression.journeys[0].medium, "social");
+    assert.equal(
+      precedenceRegression.journeys[0].campaign,
+      "sidestream_direct_offer_test",
+    );
     assert.equal(
       precedenceRegression.journeys[0].integrityState,
-      "historical_unlinked",
+      "intact",
     );
+    assert.deepEqual(precedenceRegression.coverage.attributed, {
+      numerator: "1",
+      denominator: "1",
+      percentage: "100.00",
+    });
+    assert.deepEqual(precedenceRegression.coverage.unknown, {
+      numerator: "0",
+      denominator: "1",
+      percentage: "0.00",
+    });
 
     const purchaseReport = await funnelModule.queryAcquisitionFunnel({
       licenseNamespace: "test",
@@ -471,11 +486,40 @@ test("acquisition funnel keeps retention UTC-day based and reproduces paid bindi
     const purchaseOnly = purchaseReport.journeys.find(
       (journey) => journey.customerId === PROFILE_PURCHASE_ONLY,
     );
+    const paidPurchase = purchaseReport.journeys.find(
+      (journey) => journey.customerId === PROFILE_PAID,
+    );
+    assert.equal(paidPurchase.source, "meta");
+    assert.equal(paidPurchase.medium, "social");
+    assert.equal(paidPurchase.campaign, "sidestream_direct_offer_test");
+    assert.equal(paidPurchase.attributionConfidence, "exact_paid_checkout");
+    assert.equal(paidPurchase.integrityState, "intact");
+    assert.equal(paidPurchase.paidCustomer, true);
     assert.equal(purchaseOnly.firstInstallAt, null);
     assert.equal(purchaseOnly.firstPurchaseAt, "2026-07-04T12:00:00.000Z");
     assert.equal(purchaseOnly.source, "website_direct_or_unknown");
     assert.equal(purchaseOnly.integrityState, "intact");
     assert.equal(purchaseOnly.paidCustomer, true);
+
+    const historicalCandidateAfterReports = await pool.query(
+      `select
+         acquisition.first_observed_source as source,
+         acquisition.integrity_state,
+         paid.completed_at
+       from ${quotedSchema}.sidestream_paid_acquisition_checkouts paid
+       join ${quotedSchema}.sidestream_checkout_intents core
+         on core.id = paid.checkout_intent_ref
+       join ${quotedSchema}.sidestream_acquisitions acquisition
+         on acquisition.id = core.acquisition_id
+         and acquisition.license_namespace = paid.environment
+       where paid.id = $1::uuid`,
+      [CHECKOUT_HISTORICAL],
+    );
+    assert.deepEqual(historicalCandidateAfterReports.rows, [{
+      source: "manychat",
+      integrity_state: "historical_unlinked",
+      completed_at: new Date("2026-07-01T07:10:00Z"),
+    }]);
 
     const serialized = JSON.stringify(report);
     assert.doesNotMatch(serialized, /freemium@example\.com|unverified@example\.com/);

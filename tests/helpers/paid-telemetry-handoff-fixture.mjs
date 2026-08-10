@@ -3196,6 +3196,16 @@ async function privacySafeSummary({
     (journey) => journey.customerId === telemetryOwner,
   );
   if (!currentJourney) throw new Error("Funnel omitted the current-install profile");
+  if (
+    currentJourney.source !== "meta" ||
+    currentJourney.medium !== "social" ||
+    currentJourney.campaign !== "sidestream_direct_offer_test" ||
+    currentJourney.attributionConfidence !== "exact_paid_checkout" ||
+    currentJourney.integrityState !== "intact" ||
+    currentJourney.paidCustomer !== true
+  ) {
+    throw new Error("Funnel did not select the exact bound Meta-paid journey");
+  }
 
   const liveProfiles = await pool.query(
     `select

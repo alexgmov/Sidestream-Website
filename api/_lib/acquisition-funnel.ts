@@ -117,7 +117,18 @@ const defaultDependencies: FunnelDependencies = {
   }),
 };
 
-const FUNNEL_CTES = `
+const EMPTY_PAID_TELEMETRY_BINDINGS = `(
+  select
+    null::uuid as checkout_id,
+    null::uuid as acquisition_id,
+    null::uuid as profile_id_at_binding,
+    null::uuid as install_membership_id,
+    null::text as install_id_hash,
+    null::text as license_namespace
+  where false
+)`;
+
+const FUNNEL_CTES = (paidTelemetryBindingsRelation: string) => `
   with profile_landmarks as (
     select
       profile.id as profile_id,
@@ -241,6 +252,7 @@ const FUNNEL_CTES = `
       checkout.id as checkout_id,
       checkout.installer_receipt_hash,
       checkout.verified_checkout_session_ref,
+      core.acquisition_id,
       entry.id as entry_id,
       entry.created_at as first_attributed_at,
       coalesce(acquisition.first_observed_source, 'manychat') as source,
@@ -309,6 +321,30 @@ const FUNNEL_CTES = `
         )
       )
   ),
+  exact_paid_binding_candidates as (
+    select
+      install.profile_id,
+      binding.checkout_id
+    from ${paidTelemetryBindingsRelation} binding
+    join public.sidestream_customer_installs install
+      on install.id = binding.install_membership_id
+      and install.license_namespace = binding.license_namespace
+      and install.profile_id = binding.profile_id_at_binding
+      and install.install_id_hash = binding.install_id_hash
+    join cohort_profiles cohort on cohort.profile_id = install.profile_id
+    join verified_paid_checkouts paid
+      on paid.checkout_id = binding.checkout_id
+      and paid.acquisition_id = binding.acquisition_id
+      and paid.first_attributed_at <= cohort.cohort_at
+    where binding.license_namespace = $1
+  ),
+  exact_paid_binding_counts as (
+    select
+      profile_id,
+      count(*)::bigint as exact_binding_count
+    from exact_paid_binding_candidates
+    group by profile_id
+  ),
   paid_candidates as (
     select
       edge.profile_id,
@@ -326,6 +362,12 @@ const FUNNEL_CTES = `
       row_number() over (
         partition by edge.profile_id
         order by
+          case
+            when binding_count.exact_binding_count = 1
+              and exact_binding.checkout_id is not null
+            then 0
+            else 1
+          end,
           paid.first_attributed_at,
           paid.entry_id,
           paid.checkout_id
@@ -335,6 +377,12 @@ const FUNNEL_CTES = `
     join verified_paid_checkouts paid
       on paid.checkout_id = edge.checkout_id
       and paid.first_attributed_at <= cohort.cohort_at
+    left join exact_paid_binding_counts binding_count
+      on binding_count.profile_id = edge.profile_id
+    left join exact_paid_binding_candidates exact_binding
+      on exact_binding.profile_id = edge.profile_id
+      and exact_binding.checkout_id = edge.checkout_id
+    where coalesce(binding_count.exact_binding_count, 0) < 2
   ),
   anonymous_claim_candidates as (
     select
@@ -578,6 +626,12 @@ const FUNNEL_CTES = `
     left join selected_attribution attribution
       on attribution.profile_id = usage.profile_id
       and attribution.selected_order = 1
+      and not exists (
+        select 1
+        from exact_paid_binding_counts ambiguous_binding
+        where ambiguous_binding.profile_id = usage.profile_id
+          and ambiguous_binding.exact_binding_count > 1
+      )
     left join anonymous_claim_candidates anonymous_lifecycle
       on anonymous_lifecycle.profile_id = usage.profile_id
       and anonymous_lifecycle.candidate_order = 1
@@ -606,8 +660,18 @@ export async function queryAcquisitionFunnel(
   ] as const;
 
   return dependencies.transaction(async (client) => {
+    const bindingAvailability = await client.query<{ available: boolean }>(`
+      select to_regclass(
+        'public.sidestream_paid_telemetry_profile_bindings'
+      ) is not null as available
+    `);
+    const funnelCtes = FUNNEL_CTES(
+      bindingAvailability.rows[0]?.available
+        ? "public.sidestream_paid_telemetry_profile_bindings"
+        : EMPTY_PAID_TELEMETRY_BINDINGS,
+    );
     const groupsResult = await client.query<FunnelGroupRow>(`
-      ${FUNNEL_CTES}
+      ${funnelCtes}
       select
         source,
         medium,
@@ -645,7 +709,7 @@ export async function queryAcquisitionFunnel(
     `, parameters);
 
     const journeysResult = await client.query<FunnelJourneyRow>(`
-      ${FUNNEL_CTES}
+      ${funnelCtes}
       select
         profile_id as customer_id,
         source,
