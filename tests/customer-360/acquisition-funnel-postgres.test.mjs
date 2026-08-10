@@ -16,7 +16,10 @@ const ADMIN_SECRET = "postgres-acquisition-funnel-secret-2026";
 const migrations = [
   "20260626120000_add_sidestream_download_leads.sql",
   "20260703120000_add_sidestream_accounts_billing.sql",
+  "20260704150000_allow_one_time_checkout_licenses.sql",
+  "20260713180000_add_activation_checkout_and_refresh_rotation.sql",
   "20260713203000_add_checkout_intents.sql",
+  "20260713204000_add_entitlement_lifecycle.sql",
   "20260713205000_harden_download_leads.sql",
   "20260715120000_add_customer_360_core.sql",
   "20260715121000_add_customer_identity_links.sql",
@@ -25,6 +28,7 @@ const migrations = [
   "20260727010000_add_paid_acquisition_experiment.sql",
   "20260731120000_add_anonymous_acquisition_sessions.sql",
   "20260803120000_add_acquisition_integrity.sql",
+  "20260810120000_bind_paid_telemetry_profile.sql",
 ];
 
 const PROFILE_PAID = "00000000-0000-4000-8000-000000000001";
@@ -32,15 +36,18 @@ const PROFILE_FREEMIUM = "00000000-0000-4000-8000-000000000002";
 const PROFILE_UNVERIFIED_EMAIL = "00000000-0000-4000-8000-000000000003";
 const PROFILE_UNKNOWN = "00000000-0000-4000-8000-000000000004";
 const PROFILE_PURCHASE_ONLY = "00000000-0000-4000-8000-000000000005";
+const ACCOUNT_PAID = "10000000-0000-4000-8000-000000000000";
 const ACCOUNT_FREEMIUM = "10000000-0000-4000-8000-000000000001";
 const ACCOUNT_LATE_EMAIL = "10000000-0000-4000-8000-000000000002";
 const ACCOUNT_PURCHASE_ONLY = "10000000-0000-4000-8000-000000000003";
 const ACTIVATION_PAID = "20000000-0000-4000-8000-000000000001";
 const ACTIVATION_UNOPENED = "20000000-0000-4000-8000-000000000002";
 const ACTIVATION_AFTER_OBSERVATION = "20000000-0000-4000-8000-000000000003";
+const LICENSE_PAID = "25000000-0000-4000-8000-000000000001";
 const CHECKOUT_INTENT = "30000000-0000-4000-8000-000000000001";
 const CHECKOUT_INTENT_LATE = "30000000-0000-4000-8000-000000000002";
 const CHECKOUT_INTENT_PURCHASE_ONLY = "30000000-0000-4000-8000-000000000003";
+const CHECKOUT_INTENT_HISTORICAL = "30000000-0000-4000-8000-000000000004";
 const ACQUISITION_PAID = "70000000-0000-4000-8000-000000000001";
 const ACQUISITION_LATE = "70000000-0000-4000-8000-000000000002";
 const ACQUISITION_PURCHASE_ONLY = "70000000-0000-4000-8000-000000000003";
@@ -48,10 +55,14 @@ const ACQUISITION_MISSING = "70000000-0000-4000-8000-000000000004";
 const ACQUISITION_HISTORICAL = "70000000-0000-4000-8000-000000000005";
 const ENTRY_PAID = "40000000-0000-4000-8000-000000000001";
 const ENTRY_LATE = "40000000-0000-4000-8000-000000000002";
+const ENTRY_HISTORICAL = "40000000-0000-4000-8000-000000000003";
 const CHECKOUT_PAID = "50000000-0000-4000-8000-000000000001";
 const CHECKOUT_LATE = "50000000-0000-4000-8000-000000000002";
+const CHECKOUT_HISTORICAL = "50000000-0000-4000-8000-000000000003";
+const CLAIM_PAID = "55000000-0000-4000-8000-000000000001";
 const RECEIPT_HASH = "a".repeat(64);
 const LATE_RECEIPT_HASH = "9".repeat(64);
+const HISTORICAL_RECEIPT_HASH = "5".repeat(64);
 const ASSIGNMENT_HASH = "b".repeat(64);
 
 const funnelModule = await loadInjectedModule(
@@ -65,7 +76,7 @@ const funnelModule = await loadInjectedModule(
   },
 );
 
-test("acquisition funnel keeps attribution exact and retention UTC-day based", {
+test("acquisition funnel keeps retention UTC-day based and reproduces paid binding precedence", {
   timeout: 120_000,
 }, async () => {
   const databaseUrl = requireSafeTestDatabaseUrl(process.env);
@@ -330,6 +341,125 @@ test("acquisition funnel keeps attribution exact and retention UTC-day based", {
       ...secondPage.journeys.map((journey) => journey.customerId),
     ]).size, 4);
 
+    await seedHistoricalPaidCandidate(pool, quotedSchema);
+    const paidCandidateShape = await pool.query(
+      `with profile_paid_candidates as (
+         select
+           paid.id as checkout_id,
+           acquisition.first_observed_source as source,
+           acquisition.first_observed_medium as medium,
+           acquisition.first_observed_campaign as campaign,
+           acquisition.experiment_id,
+           acquisition.experiment_cohort,
+           acquisition.integrity_state,
+           entry.created_at as first_attributed_at,
+           exists (
+             select 1
+             from ${quotedSchema}.sidestream_customer_money_totals money
+             where money.license_namespace = paid.environment
+               and money.profile_id = $1::uuid
+               and money.net_paid_minor > 0
+           ) as positive_commerce,
+           exists (
+             select 1
+             from ${quotedSchema}.sidestream_paid_telemetry_profile_bindings binding
+             where binding.license_namespace = paid.environment
+               and binding.profile_id_at_binding = $1::uuid
+               and binding.checkout_id = paid.id
+               and binding.install_id_hash = $2
+               and binding.installer_receipt_id_hash = $3
+           ) as exact_bound
+         from ${quotedSchema}.sidestream_paid_acquisition_checkouts paid
+         join ${quotedSchema}.sidestream_paid_acquisition_entries entry
+           on entry.id = paid.entry_id
+           and entry.environment = paid.environment
+           and entry.experiment_id = paid.experiment_id
+           and entry.cohort = paid.cohort
+           and entry.assignment_id_hash = paid.assignment_id_hash
+           and entry.entry_token_hash = paid.entry_token_hash
+           and entry.attribution_hash = paid.attribution_hash
+         join ${quotedSchema}.sidestream_checkout_intents core
+           on core.id = paid.checkout_intent_ref
+         join ${quotedSchema}.sidestream_acquisitions acquisition
+           on acquisition.id = core.acquisition_id
+           and acquisition.license_namespace = paid.environment
+         where paid.environment = 'test'
+           and paid.payment_state = 'active'
+           and paid.completed_at is not null
+           and paid.verified_checkout_session_ref is not null
+           and entry.created_at <= (
+             select min(first_paid_at)
+             from ${quotedSchema}.sidestream_customer_money_totals
+             where license_namespace = 'test' and profile_id = $1::uuid
+           )
+           and exists (
+             select 1
+             from ${quotedSchema}.sidestream_customer_identity_links link
+             where link.license_namespace = 'test'
+               and link.profile_id = $1::uuid
+               and link.link_type = 'installer_receipt_hash'
+               and link.link_value = paid.installer_receipt_hash
+           )
+       )
+       select
+         count(*)::int as candidates,
+         count(*) filter (where exact_bound)::int as bound_candidates,
+         count(*) filter (
+           where source = 'manychat'
+             and integrity_state = 'historical_unlinked'
+             and first_attributed_at < (
+               select min(first_attributed_at)
+               from profile_paid_candidates
+               where exact_bound
+             )
+         )::int as older_historical_manychat_candidates,
+         count(*) filter (
+           where exact_bound
+             and source = 'meta'
+             and medium = 'social'
+             and campaign = 'sidestream_direct_offer_test'
+             and experiment_id = 'meta-direct-links-v1'
+             and experiment_cohort = 'paid'
+             and integrity_state = 'intact'
+             and positive_commerce
+         )::int as bound_intact_meta_candidates
+       from profile_paid_candidates`,
+      [PROFILE_PAID, installHash(PROFILE_PAID), RECEIPT_HASH],
+    );
+    assert.deepEqual(paidCandidateShape.rows[0], {
+      candidates: 2,
+      bound_candidates: 1,
+      older_historical_manychat_candidates: 1,
+      bound_intact_meta_candidates: 1,
+    });
+
+    const precedenceRegression = await funnelModule.queryAcquisitionFunnel({
+      licenseNamespace: "test",
+      cohortBasis: "first_purchase",
+      cohortStart: "2026-07-03T00:00:00Z",
+      cohortEnd: "2026-07-04T00:00:00Z",
+      observationEnd: "2026-08-01T00:00:00Z",
+      journeyLimit: 10,
+    }, ADMIN_SECRET, { transaction });
+    assert.deepEqual(precedenceRegression.coverage.exactPaidCheckout, {
+      numerator: "1",
+      denominator: "1",
+      percentage: "100.00",
+    });
+    assert.equal(precedenceRegression.totals.paidCustomers, "1");
+    assert.equal(precedenceRegression.journeys.length, 1);
+    assert.equal(precedenceRegression.journeys[0].customerId, PROFILE_PAID);
+    assert.equal(precedenceRegression.journeys[0].paidCustomer, true);
+    assert.equal(
+      precedenceRegression.journeys[0].attributionConfidence,
+      "exact_paid_checkout",
+    );
+    assert.equal(precedenceRegression.journeys[0].source, "manychat");
+    assert.equal(
+      precedenceRegression.journeys[0].integrityState,
+      "historical_unlinked",
+    );
+
     const purchaseReport = await funnelModule.queryAcquisitionFunnel({
       licenseNamespace: "test",
       cohortBasis: "first_purchase",
@@ -375,34 +505,63 @@ async function seedFunnel(pool, schema) {
     `insert into ${schema}.sidestream_accounts (
        id, google_sub, email, created_at, updated_at
      ) values
-       ($1, 'google-freemium', 'freemium@example.com',
+       ($1, 'google-paid', 'paid@example.invalid',
+        '2026-06-29T00:00:00Z', '2026-06-29T00:00:00Z'),
+       ($2, 'google-freemium', 'freemium@example.com',
         '2026-06-30T00:00:00Z', '2026-06-30T00:00:00Z'),
-       ($2, 'google-late-email', 'unverified@example.com',
+       ($3, 'google-late-email', 'unverified@example.com',
         '2026-07-06T00:00:00Z', '2026-07-06T00:00:00Z'),
-       ($3, 'google-purchase-only', 'purchase@example.com',
+       ($4, 'google-purchase-only', 'purchase@example.com',
         '2026-07-01T00:00:00Z', '2026-07-01T00:00:00Z')`,
-    [ACCOUNT_FREEMIUM, ACCOUNT_LATE_EMAIL, ACCOUNT_PURCHASE_ONLY],
+    [ACCOUNT_PAID, ACCOUNT_FREEMIUM, ACCOUNT_LATE_EMAIL, ACCOUNT_PURCHASE_ONLY],
+  );
+  await pool.query(
+    `insert into ${schema}.sidestream_licenses (
+       id, account_id, stripe_customer_id, stripe_subscription_id,
+       stripe_checkout_session_id, stripe_payment_intent_id,
+       plan_key, status, stripe_price_id, stripe_product_id,
+       amount_paid, amount_refunded, currency, entitlement_status,
+       status_reason, created_at, updated_at
+     ) values (
+       $1, $2, 'cus_test_exact_paid', null,
+       'cs_test_verified_paid', 'pi_test_verified_paid',
+       'sidestream_pro', 'active', 'price_test_exact_paid',
+       'prod_test_exact_paid', 1499, 0, 'usd', 'active',
+       'paid_checkout_fulfilled', '2026-07-01T08:10:00Z',
+       '2026-07-03T12:00:00Z'
+     )`,
+    [LICENSE_PAID, ACCOUNT_PAID],
   );
   await pool.query(
     `insert into ${schema}.sidestream_activation_sessions (
-       id, activation_key, status, completed_at, expires_at, created_at, updated_at
+       id, activation_key, account_id, license_id, source, status,
+       completed_at, expires_at, created_at, updated_at
      ) values
        (
-         $1, 'paid-activation-key', 'completed', '2026-07-03T12:00:00Z',
+         $1, 'paid-activation-key', $4, $5, 'paid-acquisition-mc-v1',
+         'completed', '2026-07-03T12:00:00Z',
          '2026-08-01T00:00:00Z', '2026-07-03T11:00:00Z',
          '2026-07-03T12:00:00Z'
        ),
        (
-         $2, 'unopened-activation-key', 'completed', '2026-07-08T12:00:00Z',
+         $2, 'unopened-activation-key', null, null, null,
+         'completed', '2026-07-08T12:00:00Z',
          '2026-08-01T00:00:00Z', '2026-07-08T11:00:00Z',
          '2026-07-08T12:00:00Z'
        ),
        (
-         $3, 'late-activation-key', 'completed', '2026-08-02T12:00:00Z',
+         $3, 'late-activation-key', null, null, null,
+         'completed', '2026-08-02T12:00:00Z',
          '2026-09-01T00:00:00Z', '2026-08-02T11:00:00Z',
          '2026-08-02T12:00:00Z'
        )`,
-    [ACTIVATION_PAID, ACTIVATION_UNOPENED, ACTIVATION_AFTER_OBSERVATION],
+    [
+      ACTIVATION_PAID,
+      ACTIVATION_UNOPENED,
+      ACTIVATION_AFTER_OBSERVATION,
+      ACCOUNT_PAID,
+      LICENSE_PAID,
+    ],
   );
 
   const profiles = [
@@ -490,6 +649,20 @@ async function seedFunnel(pool, schema) {
       ACCOUNT_PURCHASE_ONLY,
     ],
   );
+  await pool.query(
+    `insert into ${schema}.sidestream_customer_identity_links (
+       profile_id, license_namespace, link_type, link_value
+     ) values
+       ($1, 'test', 'install_identity_hash', $2),
+       ($1, 'test', 'account_identity', $3),
+       ($1, 'test', 'installer_receipt_hash', $4)`,
+    [
+      PROFILE_PAID,
+      installHash(PROFILE_PAID),
+      ACCOUNT_PAID,
+      HISTORICAL_RECEIPT_HASH,
+    ],
+  );
 
   await insertUsageDay(pool, schema, {
     profileId: PROFILE_PAID,
@@ -573,8 +746,8 @@ async function seedFunnel(pool, schema) {
        ($4, 'test', 'unknown_source', null, null, 'account',
         '2026-07-02T00:00:00Z', null, null, 'missing_internal_linkage',
         'missing_internal_linkage', array['authenticated_account']::text[]),
-       ($5, 'test', 'legacy_unknown', null, null, 'account',
-        '2026-07-03T00:00:00Z', null, null, 'historical_unlinked',
+       ($5, 'test', 'manychat', 'dm', 'historical-paid', 'account',
+        '2026-07-01T06:00:00Z', null, null, 'historical_unlinked',
         'historical_unlinked', array['authenticated_account']::text[])`,
     [
       ACQUISITION_PAID,
@@ -669,12 +842,18 @@ async function seedFunnel(pool, schema) {
        id, entry_id, contract_version, environment, experiment_id, cohort,
        assignment_id_hash, entry_token_hash, attribution_hash,
        checkout_intent_ref, idempotency_key, request_fingerprint,
-       verified_checkout_session_ref, installer_receipt_hash,
-       payment_state, completed_at, expires_at, created_at, updated_at
+       verified_checkout_session_ref, canonical_payment_ref,
+       checkout_email_normalized, verified_product_ref, verified_price_ref,
+       verified_quantity, verified_amount_minor, verified_currency,
+       installer_receipt_hash, payment_state, claim_state, receipt_expires_at,
+       completed_at, expires_at, created_at, updated_at
      ) values (
        $1, $2, 1, 'test', 'mc-mobile-paid-v1', 'mc-paid-v1',
        $3, $4, $5, $6, $7, $8, 'cs_test_verified_paid',
-       $9, 'active', '2026-07-01T08:10:00Z',
+       'pi_test_verified_paid', 'paid@example.invalid',
+       'prod_test_exact_paid', 'price_test_exact_paid', 1, 1499, 'usd',
+       $9, 'active', 'claimed', '2026-08-01T00:00:00Z',
+       '2026-07-01T08:10:00Z',
        '2026-08-01T00:00:00Z', '2026-07-01T08:05:00Z',
        '2026-07-01T08:10:00Z'
      )`,
@@ -756,6 +935,120 @@ async function seedFunnel(pool, schema) {
        ($4, 'test', 'usd', 'one_time', 1999, 0, 0, 0, 0, 0, 0, 1999,
         1, 0, '2026-07-04T12:00:00Z', '2026-07-04T12:00:00Z')`,
     [PROFILE_PAID, PROFILE_FREEMIUM, PROFILE_UNVERIFIED_EMAIL, PROFILE_PURCHASE_ONLY],
+  );
+
+  await pool.query(
+    `insert into ${schema}.sidestream_paid_acquisition_claims (
+       id, checkout_id, environment, canonical_payment_ref, activation_ref,
+       account_ref, entitlement_ref, google_email_normalized, claim_state,
+       created_at, updated_at, expires_at
+     ) values (
+       $1, $2, 'test', 'pi_test_verified_paid', $3, $4, $5,
+       'paid@example.invalid', 'claimed', '2026-07-03T11:55:00Z',
+       '2026-07-03T12:00:00Z', '2026-08-01T00:00:00Z'
+     )`,
+    [CLAIM_PAID, CHECKOUT_PAID, ACTIVATION_PAID, ACCOUNT_PAID, LICENSE_PAID],
+  );
+  await pool.query(
+    `insert into ${schema}.sidestream_paid_telemetry_profile_bindings (
+       license_namespace, claim_id, checkout_id, acquisition_id,
+       account_id, entitlement_id, activation_ref, profile_id_at_binding,
+       install_membership_id, install_id_hash, install_identity_link_id,
+       activation_identity_link_id, account_identity_link_id,
+       installer_receipt_identity_link_id, installer_receipt_id_hash,
+       binding_key, bound_at
+     ) values (
+       'test', $1::uuid, $2::uuid, $3::uuid, $4::uuid, $5::uuid,
+       $6::uuid, $7::uuid,
+       (select id from ${schema}.sidestream_customer_installs
+        where license_namespace = 'test' and profile_id = $7::uuid
+          and install_id_hash = $8),
+       $8,
+       (select id from ${schema}.sidestream_customer_identity_links
+        where license_namespace = 'test' and profile_id = $7::uuid
+          and link_type = 'install_identity_hash' and link_value = $8),
+       (select id from ${schema}.sidestream_customer_identity_links
+        where license_namespace = 'test' and profile_id = $7::uuid
+          and link_type = 'activation_record' and link_value = $6::uuid::text),
+       (select id from ${schema}.sidestream_customer_identity_links
+        where license_namespace = 'test' and profile_id = $7::uuid
+          and link_type = 'account_identity' and link_value = $4::uuid::text),
+       (select id from ${schema}.sidestream_customer_identity_links
+        where license_namespace = 'test' and profile_id = $7::uuid
+          and link_type = 'installer_receipt_hash' and link_value = $9),
+       $9, $10, '2026-07-03T12:01:00Z'
+     )`,
+    [
+      CLAIM_PAID,
+      CHECKOUT_PAID,
+      ACQUISITION_PAID,
+      ACCOUNT_PAID,
+      LICENSE_PAID,
+      ACTIVATION_PAID,
+      PROFILE_PAID,
+      installHash(PROFILE_PAID),
+      RECEIPT_HASH,
+      "4".repeat(64),
+    ],
+  );
+}
+
+async function seedHistoricalPaidCandidate(pool, schema) {
+  await pool.query(
+    `insert into ${schema}.sidestream_checkout_intents (
+       id, acquisition_id, intent_kind, browser_token_hash, account_id,
+       state, expires_at, created_at, updated_at
+     ) values (
+       $1, $2, 'anonymous', $3, null, 'completed', '2026-08-01T00:00:00Z',
+       '2026-07-01T07:05:00Z', '2026-07-01T07:10:00Z'
+     )`,
+    [CHECKOUT_INTENT_HISTORICAL, ACQUISITION_HISTORICAL, "3".repeat(64)],
+  );
+  await pool.query(
+    `insert into ${schema}.sidestream_paid_acquisition_entries (
+       id, contract_version, environment, experiment_id, cohort,
+       assignment_id_hash, assignment_cookie_signature_hash, entry_path,
+       entry_token_hash, attribution_hash, utm_medium, utm_campaign,
+       expires_at, created_at, updated_at
+     ) values (
+       $1, 1, 'test', 'mc-mobile-paid-v1', 'mc-paid-v1',
+       $2, $3, '/mc', $4, $5, 'dm', 'historical-paid',
+       '2026-07-02T07:00:00Z', '2026-07-01T07:00:00Z',
+       '2026-07-01T07:00:00Z'
+     )`,
+    [
+      ENTRY_HISTORICAL,
+      "2".repeat(64),
+      "1".repeat(64),
+      "0".repeat(64),
+      "9".repeat(64),
+    ],
+  );
+  await pool.query(
+    `insert into ${schema}.sidestream_paid_acquisition_checkouts (
+       id, entry_id, contract_version, environment, experiment_id, cohort,
+       assignment_id_hash, entry_token_hash, attribution_hash,
+       checkout_intent_ref, idempotency_key, request_fingerprint,
+       verified_checkout_session_ref, installer_receipt_hash,
+       payment_state, completed_at, expires_at, created_at, updated_at
+     ) values (
+       $1, $2, 1, 'test', 'mc-mobile-paid-v1', 'mc-paid-v1',
+       $3, $4, $5, $6, $7, $8, 'cs_test_historical_paid',
+       $9, 'active', '2026-07-01T07:10:00Z',
+       '2026-08-01T00:00:00Z', '2026-07-01T07:05:00Z',
+       '2026-07-01T07:10:00Z'
+     )`,
+    [
+      CHECKOUT_HISTORICAL,
+      ENTRY_HISTORICAL,
+      "2".repeat(64),
+      "0".repeat(64),
+      "9".repeat(64),
+      CHECKOUT_INTENT_HISTORICAL,
+      "60000000-0000-4000-8000-000000000003",
+      "8".repeat(64),
+      HISTORICAL_RECEIPT_HASH,
+    ],
   );
 }
 
