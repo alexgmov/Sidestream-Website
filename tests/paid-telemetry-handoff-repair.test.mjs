@@ -1,0 +1,568 @@
+import assert from "node:assert/strict";
+import { createHash, randomBytes } from "node:crypto";
+import test from "node:test";
+import { Pool } from "pg";
+
+import * as repair from "../api/_lib/paid-telemetry-handoff-repair.ts";
+import * as customerCommerce from "../api/_lib/customer-commerce.ts";
+import {
+  loadMigrationFiles,
+  migrationSqlForTransaction,
+  validateMigrationFiles,
+} from "../scripts/apply-postgres-migrations.mjs";
+import {
+  assertNonPooledDirectRepairUrl,
+  assertRepairTargetSeparation,
+  parsePaidTelemetryRepairArgs,
+  REPAIR_CONFIRMATION,
+} from "../scripts/reconcile-paid-telemetry-handoff.mjs";
+import {
+  createTestPoolOptions,
+  requireSafeTestDatabaseUrl,
+} from "../scripts/run-postgres-integration.mjs";
+import "./helpers/customer-360-network-guard.mjs";
+
+const IDS = Object.freeze({
+  acquisition: "81000000-0000-4000-8000-000000000001",
+  account: "82000000-0000-4000-8000-000000000001",
+  license: "83000000-0000-4000-8000-000000000001",
+  activation: "84000000-0000-4000-8000-000000000001",
+  checkoutIntent: "85000000-0000-4000-8000-000000000001",
+  entry: "86000000-0000-4000-8000-000000000001",
+  paidCheckout: "87000000-0000-4000-8000-000000000001",
+  claim: "88000000-0000-4000-8000-000000000001",
+  idempotency: "89000000-0000-4000-8000-000000000001",
+  paidProfile: "8a000000-0000-4000-8000-000000000001",
+  telemetryProfile: "8b000000-0000-4000-8000-000000000001",
+});
+
+const HASHES = Object.freeze({
+  currentInstall: "a".repeat(64),
+  historicalInstall: "b".repeat(64),
+  nativeReceipt: "c".repeat(64),
+  browserReceipt: "d".repeat(64),
+  browserToken: "e".repeat(64),
+  assignment: "f".repeat(64),
+  assignmentSignature: "1".repeat(64),
+  entryToken: "2".repeat(64),
+  attribution: "3".repeat(64),
+  requestFingerprint: "4".repeat(64),
+  device: "5".repeat(64),
+});
+
+const PROVIDER = Object.freeze({
+  customer: "cus_repair_fixture",
+  checkoutSession: "cs_repair_fixture",
+  paymentIntent: "pi_repair_fixture",
+  charge: "ch_repair_fixture",
+  product: "prod_repair_fixture",
+  price: "price_repair_fixture",
+});
+
+const TIME = Object.freeze({
+  firstObserved: "2026-08-08T10:00:00.000Z",
+  checkoutStarted: "2026-08-08T10:01:00.000Z",
+  checkoutCompleted: "2026-08-08T10:02:00.000Z",
+  paymentSettled: "2026-08-08T10:03:00.000Z",
+  telemetryProfile: "2026-08-09T09:00:00.000Z",
+  paidProfile: "2026-08-09T10:00:00.000Z",
+  identityReview: "2026-08-09T10:05:00.000Z",
+  expiry: "2030-01-01T00:00:00.000Z",
+});
+
+test("CLI accepts only the canonical UUID and exact guarded selectors", () => {
+  const parsed = parsePaidTelemetryRepairArgs([
+    "--dry-run",
+    "--acquisition", IDS.acquisition,
+    "--namespace", "test",
+    "--target-url-env", "SIDESTREAM_TEST_POSTGRES_URL",
+  ]);
+  assert.equal(parsed.apply, false);
+  assert.equal(parsed.targetUrlEnv, "SIDESTREAM_TEST_POSTGRES_URL");
+  assert.throws(
+    () => parsePaidTelemetryRepairArgs([
+      "--dry-run", "--email", "someone@example.invalid",
+    ]),
+    /Unknown option/,
+  );
+  assert.throws(
+    () => parsePaidTelemetryRepairArgs([
+      "--apply", "--acquisition", IDS.acquisition, "--namespace", "test",
+      "--target-url-env", "SIDESTREAM_TEST_POSTGRES_URL",
+      "--confirm-operation", REPAIR_CONFIRMATION,
+      "--confirm-namespace", "production",
+      "--confirm-target", `pg-${"a".repeat(20)}`,
+      "--confirm-journey", `journey-${"b".repeat(32)}`,
+    ]),
+    /confirm-namespace/,
+  );
+});
+
+test("connection guards reject pooling, weak TLS, and runtime/source collisions", () => {
+  assert.throws(
+    () => assertNonPooledDirectRepairUrl(
+      "postgresql://user:secret@ep-one-pooler.example.test/db?sslmode=require",
+    ),
+    /pooled/,
+  );
+  assert.throws(
+    () => assertNonPooledDirectRepairUrl(
+      "postgresql://user:secret@ep-one.example.test/db?sslmode=prefer",
+    ),
+    /authenticated TLS/,
+  );
+  assert.throws(
+    () => assertRepairTargetSeparation(
+      { SIDESTREAM_TELEMETRY_POSTGRES_URL:
+        "postgresql://telemetry:secret@ep-one.example.test/db?sslmode=require" },
+      { connectionString:
+        "postgresql://operator:secret@ep-one.example.test/db?sslmode=verify-full" },
+    ),
+    /separate/,
+  );
+});
+
+test("disposable Postgres repair is dry-run first, exact, private, and idempotent", async () => {
+  const databaseUrl = requireSafeTestDatabaseUrl();
+  const schema = `sidestream_paid_repair_${randomBytes(8).toString("hex")}`;
+  const quoted = quoteIdentifier(schema);
+  const pool = new Pool(createTestPoolOptions(databaseUrl));
+  let created = false;
+  try {
+    await pool.query(`create schema ${quoted}`);
+    created = true;
+    await applyMigrations(pool, schema);
+    await seedFailedJourney(pool, quoted);
+
+    const beforeRows = await repairCounts(pool, quoted);
+    const dryRun = await inTransaction(pool, quoted, true, (client) =>
+      repair.inspectPaidTelemetryHandoffRepair(client, {
+        acquisitionId: IDS.acquisition,
+        namespace: "test",
+      }));
+    assert.equal(dryRun.reasonCode, "repair_ready");
+    assert.equal(dryRun.eligible, true);
+    assert.equal(dryRun.wouldMutate, true);
+    assert.match(dryRun.journeyFingerprint, /^journey-[0-9a-f]{32}$/);
+    assert.deepEqual(await repairCounts(pool, quoted), beforeRows);
+
+    await assert.rejects(
+      () => inTransaction(pool, quoted, false, (client) =>
+        repair.applyPaidTelemetryHandoffRepair(client, {
+          acquisitionId: IDS.acquisition,
+          namespace: "test",
+          confirmJourney: `journey-${"0".repeat(32)}`,
+        })),
+      /exact single-journey fingerprint/,
+    );
+    assert.deepEqual(await repairCounts(pool, quoted), beforeRows);
+
+    const serialized = JSON.stringify(dryRun);
+    for (const excluded of [
+      ...Object.values(IDS),
+      ...Object.values(HASHES),
+      ...Object.values(PROVIDER),
+      "repair-fixture@example.invalid",
+    ]) {
+      assert.equal(serialized.includes(excluded), false);
+    }
+
+    await inTransaction(pool, quoted, false, async (client) => {
+      await client.query(
+        `update ${quoted}.sidestream_customer_commerce_materializations
+         set refunded_minor = gross_paid_minor, net_paid_minor = 0
+         where source_object_id = $1`,
+        [PROVIDER.paymentIntent],
+      );
+      const stopped = await repair.inspectPaidTelemetryHandoffRepair(client, {
+        acquisitionId: IDS.acquisition,
+        namespace: "test",
+      });
+      assert.equal(stopped.eligible, false);
+      assert.equal(stopped.reasonCode, "commerce_conflict");
+      throw new RollbackScenario();
+    }).catch((error) => {
+      if (!(error instanceof RollbackScenario)) throw error;
+    });
+
+    await inTransaction(pool, quoted, false, async (client) => {
+      await client.query(
+        `update ${quoted}.sidestream_paid_acquisition_checkouts
+         set payment_state = 'refunded' where id = $1`,
+        [IDS.paidCheckout],
+      );
+      const stopped = await repair.inspectPaidTelemetryHandoffRepair(client, {
+        acquisitionId: IDS.acquisition,
+        namespace: "test",
+      });
+      assert.equal(stopped.eligible, false);
+      assert.equal(stopped.reasonCode, "payment_or_account_conflict");
+      await assert.rejects(
+        () => repair.applyPaidTelemetryHandoffRepair(client, {
+          acquisitionId: IDS.acquisition,
+          namespace: "test",
+          confirmJourney: dryRun.journeyFingerprint,
+        }),
+        /fingerprint|not eligible/,
+      );
+      throw new RollbackScenario();
+    }).catch((error) => {
+      if (!(error instanceof RollbackScenario)) throw error;
+    });
+
+    const applied = await inTransaction(pool, quoted, false, (client) =>
+      repair.applyPaidTelemetryHandoffRepair(client, {
+        acquisitionId: IDS.acquisition,
+        namespace: "test",
+        confirmJourney: dryRun.journeyFingerprint,
+      }));
+    assert.equal(applied.reasonCode, "already_repaired");
+    assert.equal(applied.wouldMutate, false);
+    assert.equal(applied.journeyFingerprint, dryRun.journeyFingerprint);
+    assert.deepEqual(applied.counts, {
+      authenticationStages: 1,
+      installationStages: 1,
+      bindings: 1,
+      mergeAudits: 1,
+      acquisitionConflicts: 0,
+      lifecycleStops: 0,
+      commerceFacts: 1,
+      commerceProfiles: 1,
+      commerceConflicts: 0,
+    });
+
+    const firstAppliedRows = await repairCounts(pool, quoted);
+    assert.equal(firstAppliedRows.liveProfiles, 1);
+    assert.equal(firstAppliedRows.mergedProfiles, 1);
+    assert.equal(firstAppliedRows.bindings, 1);
+    assert.equal(firstAppliedRows.mergeAudits, 1);
+    assert.equal(firstAppliedRows.authenticationStages, 1);
+    assert.equal(firstAppliedRows.installationStages, 1);
+    assert.equal(firstAppliedRows.commerceProfiles, 1);
+
+    const replay = await inTransaction(pool, quoted, false, (client) =>
+      repair.applyPaidTelemetryHandoffRepair(client, {
+        acquisitionId: IDS.acquisition,
+        namespace: "test",
+        confirmJourney: dryRun.journeyFingerprint,
+      }));
+    assert.equal(replay.reasonCode, "already_repaired");
+    assert.equal(replay.journeyFingerprint, dryRun.journeyFingerprint);
+    assert.deepEqual(await repairCounts(pool, quoted), firstAppliedRows);
+  } finally {
+    if (created) await pool.query(`drop schema if exists ${quoted} cascade`).catch(() => {});
+    await pool.end().catch(() => {});
+  }
+});
+
+class RollbackScenario extends Error {}
+
+async function applyMigrations(pool, schema) {
+  const migrations = validateMigrationFiles(await loadMigrationFiles());
+  const client = await pool.connect();
+  try {
+    for (const migration of migrations) {
+      await client.query("begin");
+      try {
+        await client.query(rewritePublicSchema(
+          migrationSqlForTransaction(migration.sql),
+          schema,
+        ));
+        await client.query("commit");
+      } catch (error) {
+        await client.query("rollback").catch(() => {});
+        throw error;
+      }
+    }
+  } finally {
+    client.release();
+  }
+}
+
+async function seedFailedJourney(pool, schema) {
+  await pool.query(
+    `insert into ${schema}.sidestream_acquisitions (
+       id, license_namespace, first_observed_source, first_observed_medium,
+       first_observed_campaign, first_observed_content_creative, entry_channel,
+       first_observed_at, external_referrer_category, experiment_id,
+       experiment_cohort, attribution_confidence, integrity_state,
+       trusted_delivery_evidence
+     ) values (
+       $1, 'test', 'meta', 'social', 'sidestream_direct_offer_test', 'paid',
+       'website', $2, 'social', 'meta-direct-links-v1', 'paid',
+       'exact_trusted_delivery', 'intact',
+       array['website_entry','authenticated_account','checkout_intent','stripe_checkout_session']
+     )`,
+    [IDS.acquisition, TIME.firstObserved],
+  );
+  await pool.query(
+    `insert into ${schema}.sidestream_accounts (
+       id, google_sub, email, display_name, stripe_customer_id, last_login_at,
+       created_at, updated_at
+     ) values ($1, 'google_repair_fixture', 'repair-fixture@example.invalid',
+       'Repair Fixture', $2, $3, $3, $3)`,
+    [IDS.account, PROVIDER.customer, TIME.checkoutCompleted],
+  );
+  await pool.query(
+    `insert into ${schema}.sidestream_licenses (
+       id, account_id, stripe_customer_id, stripe_subscription_id,
+       stripe_checkout_session_id, stripe_payment_intent_id, stripe_charge_id,
+       stripe_price_id, stripe_product_id, amount_paid, amount_refunded, currency,
+       plan_key, status, entitlement_status, status_reason, reconciled_at,
+       features, created_at, updated_at
+     ) values (
+       $1, $2, $3, null, $4, $5, $6, $7, $8, 1999, 0, 'usd',
+       'sidestream_unlimited', 'active', 'active', 'checkout_fulfilled', $9,
+       '{}'::jsonb, $9, $9
+     )`,
+    [
+      IDS.license, IDS.account, PROVIDER.customer, PROVIDER.checkoutSession,
+      PROVIDER.paymentIntent, PROVIDER.charge, PROVIDER.price, PROVIDER.product,
+      TIME.paymentSettled,
+    ],
+  );
+  await pool.query(
+    `insert into ${schema}.sidestream_activation_sessions (
+       id, activation_key, account_id, license_id, device_id_hash, app_version,
+       build_channel, source, status, expires_at, completed_at, created_at, updated_at
+     ) values (
+       $1, 'activation_repair_fixture', $2, $3, $4, '1.0.18', 'production',
+       'paid-acquisition-mc-v1', 'completed', $5, $6, $6, $6
+     )`,
+    [
+      IDS.activation, IDS.account, IDS.license, HASHES.device,
+      TIME.expiry, TIME.paidProfile,
+    ],
+  );
+  await pool.query(
+    `insert into ${schema}.sidestream_checkout_intents (
+       id, acquisition_id, intent_kind, browser_token_hash, state,
+       stripe_customer_id, stripe_checkout_session_id, stripe_checkout_url,
+       stripe_price_id, stripe_product_id, stripe_session_expires_at,
+       confirmed_at, expires_at, created_at, updated_at
+     ) values (
+       $1, $2, 'anonymous', $3, 'completed', $4, $5,
+       'https://checkout.stripe.test/repair-fixture', $6, $7, $8,
+       $9, $8, $10, $9
+     )`,
+    [
+      IDS.checkoutIntent, IDS.acquisition, HASHES.browserToken, PROVIDER.customer,
+      PROVIDER.checkoutSession, PROVIDER.price, PROVIDER.product, TIME.expiry,
+      TIME.checkoutCompleted, TIME.checkoutStarted,
+    ],
+  );
+  await pool.query(
+    `insert into ${schema}.sidestream_paid_acquisition_entries (
+       id, contract_version, environment, experiment_id, cohort,
+       assignment_id_hash, assignment_cookie_signature_hash, entry_path,
+       entry_token_hash, attribution_hash, utm_medium, utm_campaign,
+       expires_at, created_at, updated_at
+     ) values (
+       $1, 1, 'test', 'mc-mobile-paid-v1', 'mc-paid-v1', $2, $3, '/mc',
+       $4, $5, 'social', 'sidestream_direct_offer_test', $6, $7, $7
+     )`,
+    [
+      IDS.entry, HASHES.assignment, HASHES.assignmentSignature,
+      HASHES.entryToken, HASHES.attribution, TIME.expiry, TIME.firstObserved,
+    ],
+  );
+  await pool.query(
+    `insert into ${schema}.sidestream_paid_acquisition_checkouts (
+       id, entry_id, contract_version, environment, experiment_id, cohort,
+       assignment_id_hash, entry_token_hash, attribution_hash,
+       checkout_intent_ref, idempotency_key, request_fingerprint,
+       verified_checkout_session_ref, canonical_payment_ref,
+       checkout_email_normalized, verified_product_ref, verified_price_ref,
+       verified_quantity, verified_amount_minor, verified_currency,
+       installer_receipt_hash, payment_state, claim_state, receipt_expires_at,
+       completed_at, expires_at, created_at, updated_at
+     ) values (
+       $1, $2, 1, 'test', 'mc-mobile-paid-v1', 'mc-paid-v1', $3, $4, $5,
+       $6, $7, $8, $9, $10, 'repair-fixture@example.invalid', $11, $12,
+       1, 1999, 'usd', $13, 'active', 'claimed', $14, $15, $14, $16, $15
+     )`,
+    [
+      IDS.paidCheckout, IDS.entry, HASHES.assignment, HASHES.entryToken,
+      HASHES.attribution, IDS.checkoutIntent, IDS.idempotency,
+      HASHES.requestFingerprint, PROVIDER.checkoutSession, PROVIDER.paymentIntent,
+      PROVIDER.product, PROVIDER.price, HASHES.browserReceipt, TIME.expiry,
+      TIME.checkoutCompleted, TIME.checkoutStarted,
+    ],
+  );
+  await pool.query(
+    `insert into ${schema}.sidestream_paid_acquisition_claims (
+       id, checkout_id, environment, canonical_payment_ref, activation_ref,
+       account_ref, entitlement_ref, google_email_normalized, claim_state,
+       created_at, updated_at, expires_at
+     ) values (
+       $1, $2, 'test', $3, $4, $5, $6, 'repair-fixture@example.invalid',
+       'claimed', $7, $7, $8
+     )`,
+    [
+      IDS.claim, IDS.paidCheckout, PROVIDER.paymentIntent, IDS.activation,
+      IDS.account, IDS.license, TIME.paidProfile, TIME.expiry,
+    ],
+  );
+
+  await pool.query(
+    `insert into ${schema}.sidestream_customer_profiles (
+       id, license_namespace, created_at, updated_at, contact_email, display_name
+     ) values
+       ($1, 'test', $3, $3, null, null),
+       ($2, 'test', $4, $4, 'repair-fixture@example.invalid', 'Repair Fixture')`,
+    [IDS.telemetryProfile, IDS.paidProfile, TIME.telemetryProfile, TIME.paidProfile],
+  );
+  await pool.query(
+    `insert into ${schema}.sidestream_customer_installs (
+       profile_id, license_namespace, install_id_hash, platform, app_version,
+       first_seen_at, last_seen_at
+     ) values
+       ($1, 'test', $3, 'macos', '1.0.18', $5, $5),
+       ($2, 'test', $4, 'macos', '1.0.18', $6, $6)`,
+    [
+      IDS.telemetryProfile, IDS.paidProfile, HASHES.currentInstall,
+      HASHES.historicalInstall, TIME.telemetryProfile, TIME.paidProfile,
+    ],
+  );
+  await pool.query(
+    `insert into ${schema}.sidestream_customer_identity_links (
+       profile_id, license_namespace, link_type, link_value, created_at
+     ) values
+       ($1, 'test', 'install_identity_hash', $3, $9),
+       ($2, 'test', 'install_identity_hash', $4, $10),
+       ($2, 'test', 'activation_record', $5, $11),
+       ($2, 'test', 'account_identity', $6, $11),
+       ($2, 'test', 'installer_receipt_hash', $7, $11),
+       ($2, 'test', 'stripe_customer', $8, $10),
+       ($2, 'test', 'stripe_checkout_session', $12, $10),
+       ($2, 'test', 'stripe_payment_intent', $13, $10)`,
+    [
+      IDS.telemetryProfile, IDS.paidProfile, HASHES.currentInstall,
+      HASHES.historicalInstall, IDS.activation, IDS.account, HASHES.nativeReceipt,
+      PROVIDER.customer, TIME.telemetryProfile, TIME.paidProfile,
+      TIME.identityReview, PROVIDER.checkoutSession, PROVIDER.paymentIntent,
+    ],
+  );
+  await pool.query(
+    `insert into ${schema}.sidestream_customer_identity_reviews (
+       license_namespace, candidate_profile_id, existing_profile_id,
+       evidence_type, evidence_value_hash, evidence_trust, attachment_source,
+       review_state, created_at
+     ) values (
+       'test', $1, $2, 'install_identity_hash', $3, 'client_association',
+       'activation_claim', 'pending_review', $4
+     )`,
+    [
+      IDS.paidProfile,
+      IDS.telemetryProfile,
+      sha256(`install_identity_hash:${HASHES.currentInstall}`),
+      TIME.identityReview,
+    ],
+  );
+
+  await customerCommerce.materializeCustomerCommerceEvent(
+    paymentIntentEvent(),
+    (sql, params = []) => pool.query(
+      sql.replace(/\bpublic\./g, `${schema}.`),
+      params,
+    ),
+    "test",
+  );
+}
+
+function paymentIntentEvent() {
+  const created = Math.floor(Date.parse(TIME.paymentSettled) / 1_000);
+  return {
+    id: "evt_repair_fixture",
+    object: "event",
+    api_version: "2026-06-30.basil",
+    created,
+    data: {
+      object: {
+        id: PROVIDER.paymentIntent,
+        created,
+        customer: PROVIDER.customer,
+        latest_charge: PROVIDER.charge,
+        status: "succeeded",
+        amount: 1999,
+        amount_received: 1999,
+        currency: "usd",
+        metadata: { sidestream_commerce_model: "one_time" },
+      },
+    },
+    livemode: false,
+    pending_webhooks: 1,
+    request: null,
+    type: "payment_intent.succeeded",
+  };
+}
+
+async function inTransaction(pool, schema, readOnly, callback) {
+  const client = await pool.connect();
+  const scoped = {
+    query: (sql, params = []) => client.query(
+      sql.replace(/\bpublic\./g, `${schema}.`),
+      params,
+    ),
+  };
+  try {
+    await client.query(readOnly
+      ? "begin isolation level repeatable read read only"
+      : "begin isolation level serializable");
+    const result = await callback(scoped);
+    if (readOnly) await client.query("rollback");
+    else await client.query("commit");
+    return result;
+  } catch (error) {
+    await client.query("rollback").catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+async function repairCounts(pool, schema) {
+  const result = await pool.query(
+    `select
+       (select count(*)::int from ${schema}.sidestream_customer_profiles
+        where license_namespace = 'test' and merged_into is null) as live_profiles,
+       (select count(*)::int from ${schema}.sidestream_customer_profiles
+        where license_namespace = 'test' and merged_into is not null) as merged_profiles,
+       (select count(*)::int from ${schema}.sidestream_paid_telemetry_profile_bindings)
+         as bindings,
+       (select count(*)::int from ${schema}.sidestream_customer_profile_merges)
+         as merge_audits,
+       (select count(*)::int from ${schema}.sidestream_acquisition_stages
+        where stage = 'authentication_completed') as authentication_stages,
+       (select count(*)::int from ${schema}.sidestream_acquisition_stages
+        where stage = 'installation_claimed') as installation_stages,
+       (select count(distinct profile_id)::int
+        from ${schema}.sidestream_customer_commerce_materializations
+        where profile_id is not null) as commerce_profiles`,
+  );
+  const row = result.rows[0];
+  return {
+    liveProfiles: row.live_profiles,
+    mergedProfiles: row.merged_profiles,
+    bindings: row.bindings,
+    mergeAudits: row.merge_audits,
+    authenticationStages: row.authentication_stages,
+    installationStages: row.installation_stages,
+    commerceProfiles: row.commerce_profiles,
+  };
+}
+
+function rewritePublicSchema(source, schema) {
+  return source.replace(/\bpublic\./g, `${quoteIdentifier(schema)}.`);
+}
+
+function quoteIdentifier(identifier) {
+  if (!/^[a-z][a-z0-9_]*$/.test(identifier)) {
+    throw new TypeError("Unsafe disposable schema identifier");
+  }
+  return `"${identifier}"`;
+}
+
+function sha256(value) {
+  return createHash("sha256").update(value).digest("hex");
+}
