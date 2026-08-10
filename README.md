@@ -965,9 +965,21 @@ npm run fresh-paid:preflight -- --branch-name '<deployed-name>' --branch-id '<br
 All three fail closed and the first two are dry-run-first. The remote reset is
 Production-only, requires a separately created verified child recovery branch
 and exact apply confirmations, and reports counts/fingerprints rather than live
-identifiers. The local reset moves only Production CEP, receipt, license,
-onboarding, and telemetry state into a mode-`0700` recovery backup. The
-post-auth preflight is read-only and must return `GO` / `download-may-begin`
+identifiers. Its endpoint inventory uses the authenticated Neon
+`api /projects/<project-id>/endpoints` surface because CLI 2.37.1 has no
+supported `endpoints list` command; only `{id, branchId}` is retained for
+matching. The local reset discovers exact
+`PPRO_<version>_com.sidestream.downloader.panel` caches under the original
+user's `~/Library/Caches/CSXS/cep_cache`, preserves all other cache names and
+both `Sidestream Test` / `com.sidestream.downloader.test` bundle forms, and
+moves only Production CEP, receipt, license, onboarding, and telemetry state
+into a mode-`0700` recovery backup. Administrator apply must run through
+`sudo` from the original non-root login: an attested non-root `SUDO_USER` home
+owns user paths, and direct root or root-home fallback fails closed. Apply asks
+Premiere to quit normally, then may terminate only a remaining exact Production
+`CEPHtmlEngine` for `com.sidestream.downloader.panel`; a surviving exact blocker
+stops before backup creation. The post-auth preflight is read-only and must
+return `GO` / `download-may-begin`
 before the first in-panel media download; its separate raw-telemetry mode runs
 after exactly one download. Do not infer the apply forms or order from these
 short examples. Follow `docs/paid-acquisition-runbook.md`, which owns the exact
@@ -1200,6 +1212,8 @@ Use the narrowest relevant check after edits:
 - `llms.txt` is useful as an AI-readable summary, but it is not a substitute for crawlable HTML, normal metadata, structured data, sitemap hygiene, or external citations/backlinks.
 
 ## Recent Change Log
+
+- 2026-08-10: Corrected the fresh Meta-paid live target documentation and regression gates. Endpoint discovery now names the authenticated Neon project endpoints API and privacy-safe `{id, branchId}` projection. Local reset documentation now names the real CSXS cache root and exact Production cache pattern, preserves both Test bundle forms, requires sudo to resolve the attested original non-root home, and limits termination fallback to the exact Production CEP process after a normal Premiere quit. Repository gates do not prove that a live reset, provider backup, Checkout, installation, authentication, download, deployment, or push occurred.
 
 - 2026-08-10: Replaced the obsolete two-environment/Keychain Alex reset with a Production-only fresh Meta-paid workflow. The remote operator now binds a sanitized dry-run to an explicit deployed non-`main` Neon branch/direct endpoint, connected target fingerprint, exact verified child recovery branch, fixed QA identity, Production namespace, and destructive confirmation; it follows the complete server-owned Alex lineage while preserving financial objects, provider event history, and unrelated customer/analytics state, then proves an idempotent zero state. Added a reversible Production-only local CEP/state/installer-receipt backup, a clean-browser stop, one post-auth exact binding `STOP`/`GO` gate before the first panel download, and a separate same-install raw telemetry follow-up after one download. Fixture gates passed but did not query or mutate live state, contact providers, start Checkout, install, authenticate, download media, deploy, or push.
 

@@ -579,6 +579,27 @@ created through the separate dry-run-first operation
 its apply confirmation. `main`, a pooled URL, implicit selection, changed
 fingerprint, or a recovery branch with the wrong parent fails closed.
 
+The endpoint inventory is the authenticated `neonctl api
+/projects/<project-id>/endpoints` response, reduced to `{id, branchId}` before
+matching. Do not use the unsupported Neon CLI 2.37.1 `endpoints list` form, and
+do not retain connection, credential, or host fields as evidence. The local
+operator separately discovers Production caches only at the original user's
+`~/Library/Caches/CSXS/cep_cache`, with an exact anchored
+`PPRO_<version>_com.sidestream.downloader.panel` name. It preserves every other
+cache plus both `Sidestream Test` and `com.sidestream.downloader.test` in system
+and user CEP extension roots.
+
+Administrator apply must run through `sudo` from the original non-root login.
+Effective-root execution accepts only an attested non-root `SUDO_USER` home
+owned by that user's uid and refuses direct root, `/`, `/var/root`, missing, or
+wrong-owner homes before resolving targets. Apply requests a normal quit from
+the exact Premiere executable, waits a bounded grace period, then may `SIGTERM`
+only remaining exact Production `CEPHtmlEngine` processes for
+`com.sidestream.downloader.panel`. Test-like and unrelated CEP processes are
+never signaled; any surviving exact blocker stops before backup creation. The
+selected Production paths move into a recoverable mode-`0700` backup and partial
+moves roll back.
+
 Apply deletes the locked closure in one serializable transaction, restores the
 append-only trigger state before commit, verifies preservation invariants, and
 performs a second target inventory. `clean=true` requires every closure count
