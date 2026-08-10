@@ -185,10 +185,10 @@ export async function runPaidTelemetryHandoffFixture({
     "pending-review-repaired",
     "reviewed-path-repaired",
     "legacy-entitlement-repaired",
-    "unowned-commerce-broken",
+    "unowned-commerce-repaired",
   ].includes(expectation)) {
     throw new TypeError(
-      "Paid telemetry handoff expectation must be repaired, broken, pending-review-repaired, reviewed-path-repaired, legacy-entitlement-repaired, or unowned-commerce-broken",
+      "Paid telemetry handoff expectation must be repaired, broken, pending-review-repaired, reviewed-path-repaired, legacy-entitlement-repaired, or unowned-commerce-repaired",
     );
   }
 
@@ -211,6 +211,7 @@ export async function runPaidTelemetryHandoffFixture({
     await createTelemetrySchema(pool, telemetrySchema);
 
     const writeTransaction = schemaTransaction(pool, quotedCrm);
+    const repairTransaction = schemaTransaction(pool, quotedCrm, { serializable: true });
     const readTransaction = schemaTransaction(pool, quotedCrm, { readOnly: true });
     const integrityDependencies = {
       transaction: writeTransaction,
@@ -221,7 +222,7 @@ export async function runPaidTelemetryHandoffFixture({
       expectation === "pending-review-repaired" ||
       expectation === "reviewed-path-repaired" ||
       expectation === "legacy-entitlement-repaired" ||
-      expectation === "unowned-commerce-broken"
+      expectation === "unowned-commerce-repaired"
     ) {
       const summary = await runPendingReviewRepairedScenario({
         pool,
@@ -230,19 +231,20 @@ export async function runPaidTelemetryHandoffFixture({
         crmSchema,
         telemetrySchema,
         writeTransaction,
+        repairTransaction,
         readTransaction,
         integrityDependencies,
         repairUniqueReviewedPath:
           expectation === "reviewed-path-repaired" ||
           expectation === "legacy-entitlement-repaired" ||
-          expectation === "unowned-commerce-broken",
+          expectation === "unowned-commerce-repaired",
         expectLegacyEntitlementRepaired:
           expectation === "legacy-entitlement-repaired",
-        expectUnownedCommerceBroken:
-          expectation === "unowned-commerce-broken",
+        expectUnownedCommerceRepaired:
+          expectation === "unowned-commerce-repaired",
       });
-      if (expectation === "unowned-commerce-broken") {
-        assertUnownedCommerceBrokenExpectation(summary);
+      if (expectation === "unowned-commerce-repaired") {
+        assertUnownedCommerceRepairedExpectation(summary);
       } else if (expectation === "legacy-entitlement-repaired") {
         assertLegacyEntitlementRepairedExpectation(summary);
       } else if (expectation === "reviewed-path-repaired") {
@@ -495,11 +497,12 @@ async function runPendingReviewRepairedScenario({
   crmSchema,
   telemetrySchema,
   writeTransaction,
+  repairTransaction,
   readTransaction,
   integrityDependencies,
   repairUniqueReviewedPath,
   expectLegacyEntitlementRepaired,
-  expectUnownedCommerceBroken,
+  expectUnownedCommerceRepaired,
 }) {
   await acquisitionIntegrity.createCanonicalAcquisitionRoot({
     acquisitionId: IDS.acquisition,
@@ -629,14 +632,14 @@ async function runPendingReviewRepairedScenario({
   }
 
   await customerCommerce.materializeCustomerCommerceEvent(
-    expectUnownedCommerceBroken
+    expectUnownedCommerceRepaired
       ? unownedZeroCheckoutSessionEvent()
       : paymentIntentEvent(),
     schemaQuery(pool, quotedCrm),
     "test",
   );
 
-  if (expectUnownedCommerceBroken) {
+  if (expectUnownedCommerceRepaired) {
     await pool.query(
       `update ${quotedCrm}.sidestream_customer_commerce_materializations
        set profile_id = null
@@ -654,7 +657,7 @@ async function runPendingReviewRepairedScenario({
   }
 
   let legacyShapeBefore = null;
-  if (expectLegacyEntitlementRepaired || expectUnownedCommerceBroken) {
+  if (expectLegacyEntitlementRepaired || expectUnownedCommerceRepaired) {
     await pool.query(
       `update ${quotedCrm}.sidestream_licenses
        set stripe_product_id = null, stripe_price_id = null, amount_paid = 0
@@ -677,7 +680,7 @@ async function runPendingReviewRepairedScenario({
 
   if (repairUniqueReviewedPath) {
     const mutableBefore = await paidTelemetryAmbiguityMutationCounts(pool, quotedCrm);
-    const unownedCommerceBefore = expectUnownedCommerceBroken
+    const unownedCommerceBefore = expectUnownedCommerceRepaired
       ? await unownedZeroCommercePrivacySafeSummary({ pool, quotedCrm })
       : null;
     const guardedDryRun = await readTransaction((client) =>
@@ -686,31 +689,74 @@ async function runPendingReviewRepairedScenario({
         namespace: "test",
       }));
     const mutableAfterDryRun = await paidTelemetryAmbiguityMutationCounts(pool, quotedCrm);
-    if (expectUnownedCommerceBroken) {
+    if (expectUnownedCommerceRepaired) {
       const unownedCommerceAfterDryRun = await unownedZeroCommercePrivacySafeSummary({
         pool,
         quotedCrm,
       });
-      const guardedReplay = await readTransaction((client) =>
+      const refusalMatrix = await unownedCommerceRefusalMatrix({
+        pool,
+        quotedCrm,
+        journeyFingerprint: guardedDryRun.journeyFingerprint,
+      });
+      const guardedFirstApply = await repairTransaction((client) =>
+        paidTelemetryRepair.applyPaidTelemetryHandoffRepair(client, {
+          acquisitionId: IDS.acquisition,
+          namespace: "test",
+          confirmJourney: guardedDryRun.journeyFingerprint,
+        }));
+      const mutableAfterFirstApply = await paidTelemetryAmbiguityMutationCounts(
+        pool,
+        quotedCrm,
+      );
+      const repairedCommerce = await repairedCommercePrivacySafeSummary({
+        pool,
+        quotedCrm,
+      });
+      const guardedReplay = await repairTransaction((client) =>
+        paidTelemetryRepair.applyPaidTelemetryHandoffRepair(client, {
+          acquisitionId: IDS.acquisition,
+          namespace: "test",
+          confirmJourney: guardedDryRun.journeyFingerprint,
+        }));
+      const mutableAfterReplay = await paidTelemetryAmbiguityMutationCounts(pool, quotedCrm);
+      const repairedCommerceAfterReplay = await repairedCommercePrivacySafeSummary({
+        pool,
+        quotedCrm,
+      });
+      const guardedAfterReplay = await readTransaction((client) =>
         paidTelemetryRepair.inspectPaidTelemetryHandoffRepair(client, {
           acquisitionId: IDS.acquisition,
           namespace: "test",
         }));
-      const mutableAfterReplay = await paidTelemetryAmbiguityMutationCounts(pool, quotedCrm);
-      const unownedCommerceAfterReplay = await unownedZeroCommercePrivacySafeSummary({
+      const legacyShapeAfter = await legacyEntitlementPlaceholderPrivacySafeSummary({
         pool,
         quotedCrm,
+        telemetryOwner,
+        accountOwner: accountAttachment.profileId,
       });
-      return unownedCommerceBrokenPrivacySafeSummary({
+      return unownedCommerceRepairedPrivacySafeSummary({
         legacyShape: legacyShapeBefore,
         unownedCommerceBefore,
         unownedCommerceAfterDryRun,
-        unownedCommerceAfterReplay,
+        repairedCommerce,
+        repairedCommerceAfterReplay,
+        refusalMatrix,
         guardedDryRun,
+        guardedFirstApply,
         guardedReplay,
+        guardedAfterReplay,
         mutableBefore,
         mutableAfterDryRun,
+        mutableAfterFirstApply,
         mutableAfterReplay,
+        legacyStateUnchanged: [
+          "nullEntitlementProductAndPrice",
+          "zeroEntitlementAmountPaid",
+          "nullClaimGoogleEmail",
+        ].every((key) =>
+          legacyShapeBefore.reviewedLegacyPath[key] === true &&
+            legacyShapeAfter.reviewedLegacyPath[key] === true),
       });
     }
     const boundary = legacyShapeBefore ||
@@ -720,7 +766,7 @@ async function runPendingReviewRepairedScenario({
         telemetryOwner,
         accountOwner: accountAttachment.profileId,
       });
-    const guardedFirstApply = await writeTransaction((client) =>
+    const guardedFirstApply = await repairTransaction((client) =>
       paidTelemetryRepair.applyPaidTelemetryHandoffRepair(client, {
         acquisitionId: IDS.acquisition,
         namespace: "test",
@@ -730,7 +776,7 @@ async function runPendingReviewRepairedScenario({
       pool,
       quotedCrm,
     );
-    const guardedReplay = await writeTransaction((client) =>
+    const guardedReplay = await repairTransaction((client) =>
       paidTelemetryRepair.applyPaidTelemetryHandoffRepair(client, {
         acquisitionId: IDS.acquisition,
         namespace: "test",
@@ -1322,6 +1368,7 @@ function unownedZeroCheckoutSessionEvent() {
         id: PROVIDER.checkoutSession,
         created,
         customer: PROVIDER.customer,
+        payment_intent: PROVIDER.paymentIntent,
         payment_status: "paid",
         mode: "payment",
         amount_total: 0,
@@ -1823,6 +1870,13 @@ async function unownedZeroCommercePrivacySafeSummary({ pool, quotedCrm }) {
           where evidence->>'linkType' = 'stripe_checkout_session'
             and evidence->>'linkValue' = paid.verified_checkout_session_ref) = 1
        ) as exact_strong_checkout_evidence,
+       bool_and(
+         paid.canonical_payment_ref = paid.verified_checkout_session_ref
+           or (select count(*)
+               from jsonb_array_elements(fact.identity_evidence) evidence
+               where evidence->>'linkType' = 'stripe_payment_intent'
+                 and evidence->>'linkValue' = paid.canonical_payment_ref) = 1
+       ) as exact_payment_intent_evidence,
        bool_and(fact.profile_id is null) as unowned,
        bool_and(fact.gross_paid_minor = 0 and fact.net_paid_minor = 0)
          as zero_gross_and_net,
@@ -1848,6 +1902,8 @@ async function unownedZeroCommercePrivacySafeSummary({ pool, quotedCrm }) {
     currencyMatchesPaidRow: row.matching_currency === true,
     strongCheckoutIdentityEvidenceMatches:
       row.exact_strong_checkout_evidence === true,
+    canonicalPaymentIdentityEvidenceMatches:
+      row.exact_payment_intent_evidence === true,
     profileIsUnowned: row.unowned === true,
     grossAndNetAreZero: row.zero_gross_and_net === true,
     conflictRefundDisputeInquiryClear:
@@ -1860,21 +1916,251 @@ async function unownedZeroCommercePrivacySafeSummary({ pool, quotedCrm }) {
   });
 }
 
-function unownedCommerceBrokenPrivacySafeSummary({
+async function repairedCommercePrivacySafeSummary({ pool, quotedCrm }) {
+  const result = await pool.query(
+    `select
+       count(*)::int as fact_count,
+       count(distinct fact.payment_key)::int as payment_key_count,
+       count(distinct fact.profile_id) filter (where fact.profile_id is not null)::int
+         as owner_profile_count,
+       bool_and(
+         fact.profile_id is not null
+           and profile.merged_into is null
+       ) as one_live_owner,
+       bool_and(
+         fact.gross_paid_minor = paid.verified_amount_minor
+           and fact.net_paid_minor = paid.verified_amount_minor
+           and paid.verified_amount_minor > 0
+       ) as exact_positive_paid_amount,
+       bool_and(
+         fact.first_paid_at = paid.completed_at
+           and fact.last_paid_at = paid.completed_at
+           and fact.first_upgraded_at = paid.completed_at
+           and fact.last_upgraded_at = paid.completed_at
+       ) as paid_and_upgrade_timing,
+       bool_and(
+         fact.event_id = 'evt_fixture_paid_handoff_unowned_zero_checkout'
+           and fact.event_type = 'checkout.session.completed'
+           and fact.source_object_type = 'checkout_session'
+           and fact.source_object_id = paid.verified_checkout_session_ref
+           and fact.source_confidence = 'verified'
+           and fact.source = 'manual_metadata'
+           and fact.timestamp_source = 'stripe_event'
+       ) as verified_provenance_preserved,
+       bool_and(
+         (select count(*)
+          from jsonb_array_elements(fact.identity_evidence) evidence
+          where evidence->>'linkType' = 'stripe_checkout_session'
+            and evidence->>'linkValue' = $2) = 1
+           and ($3 = $2
+             or (select count(*)
+                 from jsonb_array_elements(fact.identity_evidence) evidence
+                 where evidence->>'linkType' = 'stripe_payment_intent'
+                   and evidence->>'linkValue' = $3) = 1)
+       ) as provider_identity_preserved,
+       bool_and(
+         fact.refunded_minor = 0
+           and fact.disputed_minor = 0
+           and fact.inquiry_minor = 0
+           and not fact.identity_conflict
+       ) as lifecycle_clear,
+       bool_and(
+         total.gross_paid_minor >= paid.verified_amount_minor
+           and total.net_paid_minor >= paid.verified_amount_minor
+           and total.paid_transaction_count > 0
+           and total.first_paid_at is not null
+           and total.last_paid_at is not null
+           and total.first_upgraded_at is not null
+           and total.last_upgraded_at is not null
+       ) as totals_refreshed,
+       (select count(distinct alias.payment_key)::int
+        from ${quotedCrm}.sidestream_customer_commerce_aliases alias
+        where alias.license_namespace = 'test'
+          and alias.alias_type in ('checkout_session', 'payment_intent')
+          and alias.alias_id in (
+            $2,
+            $3
+          )) as provider_alias_payment_keys
+     from ${quotedCrm}.sidestream_customer_commerce_materializations fact
+     join ${quotedCrm}.sidestream_paid_acquisition_checkouts paid
+       on paid.id = $1::uuid
+     left join ${quotedCrm}.sidestream_customer_profiles profile
+       on profile.id = fact.profile_id
+       and profile.license_namespace = fact.license_namespace
+     left join ${quotedCrm}.sidestream_customer_money_totals total
+       on total.profile_id = fact.profile_id
+       and total.license_namespace = fact.license_namespace
+       and total.currency = fact.currency
+     where fact.license_namespace = 'test'`,
+    [IDS.paidCheckout, PROVIDER.checkoutSession, PROVIDER.paymentIntent],
+  );
+  const row = result.rows[0];
+  return Object.freeze({
+    exactlyOneFactAndPaymentKey:
+      row.fact_count === 1 && row.payment_key_count === 1 &&
+      row.provider_alias_payment_keys === 1,
+    exactlyOneLiveOwner:
+      row.owner_profile_count === 1 && row.one_live_owner === true,
+    exactPositivePaidAmount: row.exact_positive_paid_amount === true,
+    paidAndUpgradeTimingFromCompletion: row.paid_and_upgrade_timing === true,
+    verifiedProvenancePreserved: row.verified_provenance_preserved === true,
+    providerIdentityPreserved: row.provider_identity_preserved === true,
+    lifecycleClear: row.lifecycle_clear === true,
+    totalsRefreshed: row.totals_refreshed === true,
+  });
+}
+
+async function unownedCommerceRefusalMatrix({
+  pool,
+  quotedCrm,
+  journeyFingerprint,
+}) {
+  const refusal = (mutation, expectedReason = "commerce_conflict") =>
+    rollbackScenario(
+      pool,
+      quotedCrm,
+      async (client) => {
+        const report = await paidTelemetryRepair.inspectPaidTelemetryHandoffRepair(client, {
+          acquisitionId: IDS.acquisition,
+          namespace: "test",
+        });
+        let applyRefused = false;
+        try {
+          await paidTelemetryRepair.applyPaidTelemetryHandoffRepair(client, {
+            acquisitionId: IDS.acquisition,
+            namespace: "test",
+            confirmJourney: journeyFingerprint,
+          });
+        } catch {
+          applyRefused = true;
+        }
+        return report.reasonCode === expectedReason && !report.eligible &&
+          !report.wouldMutate && report.journeyFingerprint === null && applyRefused;
+      },
+      mutation,
+    );
+  const updateFact = (setClause, params = []) => (client) => client.query(
+    `update public.sidestream_customer_commerce_materializations
+     set ${setClause}
+     where license_namespace = 'test'
+       and source_object_type = 'checkout_session'
+       and source_object_id = $1`,
+    [PROVIDER.checkoutSession, ...params],
+  );
+  const beforeRepair = await paidTelemetryAmbiguityMutationCounts(pool, quotedCrm);
+  const beforeCommerce = await unownedZeroCommercePrivacySafeSummary({ pool, quotedCrm });
+  const results = {
+    secondPaymentKey: await refusal((client) => client.query(
+      `update public.sidestream_customer_commerce_aliases
+       set payment_key = 'payment_intent:competing_fixture'
+       where license_namespace = 'test'
+         and alias_type = 'payment_intent'
+         and alias_id = $1`,
+      [PROVIDER.paymentIntent],
+    )),
+    secondFact: await refusal((client) => client.query(
+      `insert into public.sidestream_customer_commerce_materializations
+       select (jsonb_populate_record(
+         null::public.sidestream_customer_commerce_materializations,
+         to_jsonb(fact) || jsonb_build_object(
+           'id', gen_random_uuid(),
+           'event_id', 'evt_competing_fixture',
+           'source_object_id', 'cs_competing_fixture'
+         )
+       )).*
+       from public.sidestream_customer_commerce_materializations fact
+       where fact.license_namespace = 'test'
+         and fact.source_object_type = 'checkout_session'
+         and fact.source_object_id = $1`,
+      [PROVIDER.checkoutSession],
+    )),
+    wrongSource: await refusal(updateFact("source_object_type = 'invoice'")),
+    wrongCurrency: await refusal(updateFact("currency = 'eur'")),
+    wrongEvidence: await refusal(updateFact("identity_evidence = '[]'::jsonb")),
+    nonzeroMismatch: await refusal(updateFact(
+      "gross_paid_minor = 1, net_paid_minor = 1",
+    )),
+    ownerMismatch: await refusal(async (client) => {
+      await client.query(
+        `insert into public.sidestream_customer_profiles (
+           id, license_namespace, created_at, updated_at
+         ) values ('79000000-0000-4000-8000-000000000099', 'test', now(), now())`,
+      );
+      await updateFact(
+        "profile_id = '79000000-0000-4000-8000-000000000099'::uuid",
+      )(client);
+    }),
+    identityConflict: await refusal(updateFact("identity_conflict = true")),
+    refund: await refusal(updateFact("refunded_minor = 1")),
+    dispute: await refusal(updateFact("disputed_minor = 1")),
+    inquiry: await refusal(updateFact("inquiry_minor = 1")),
+    missingPositivePaidTruth: await refusal(
+      (client) => client.query(
+        `update public.sidestream_paid_acquisition_checkouts
+         set verified_amount_minor = 0
+         where id = $1::uuid`,
+        [IDS.paidCheckout],
+      ),
+      "payment_or_account_conflict",
+    ),
+  };
+  let failedRefreshRefused = false;
+  try {
+    await rollbackScenario(
+      pool,
+      quotedCrm,
+      (client) => paidTelemetryRepair.applyPaidTelemetryHandoffRepair(client, {
+        acquisitionId: IDS.acquisition,
+        namespace: "test",
+        confirmJourney: journeyFingerprint,
+      }),
+      (client) => client.query(
+        `create or replace function public.sidestream_customer_commerce_refresh_namespace(
+           target_namespace text
+         ) returns void language plpgsql as $$
+         begin
+           raise exception 'fixture refresh failure';
+         end
+         $$`,
+      ),
+    );
+  } catch {
+    failedRefreshRefused = true;
+  }
+  const afterRepair = await paidTelemetryAmbiguityMutationCounts(pool, quotedCrm);
+  const afterCommerce = await unownedZeroCommercePrivacySafeSummary({ pool, quotedCrm });
+  return Object.freeze({
+    ...results,
+    failedTotalsRefresh: failedRefreshRefused,
+    allRefusalsAtomic:
+      JSON.stringify(beforeRepair) === JSON.stringify(afterRepair) &&
+      JSON.stringify(beforeCommerce) === JSON.stringify(afterCommerce),
+  });
+}
+
+function unownedCommerceRepairedPrivacySafeSummary({
   legacyShape,
   unownedCommerceBefore,
   unownedCommerceAfterDryRun,
-  unownedCommerceAfterReplay,
+  repairedCommerce,
+  repairedCommerceAfterReplay,
+  refusalMatrix,
   guardedDryRun,
+  guardedFirstApply,
   guardedReplay,
+  guardedAfterReplay,
   mutableBefore,
   mutableAfterDryRun,
+  mutableAfterFirstApply,
   mutableAfterReplay,
+  legacyStateUnchanged,
 }) {
   return Object.freeze({
-    observedContract: "unique-reviewed-legacy-unowned-zero-commerce-rejected",
+    observedContract: "unique-reviewed-legacy-unowned-zero-commerce-repaired",
     ...legacyShape,
-    unownedCommerce: unownedCommerceBefore,
+    recoverableCommercePreState: unownedCommerceBefore,
+    repairedCommerce,
+    refusalMatrix,
     guardedOperator: Object.freeze({
       beforeReasonCode: guardedDryRun.reasonCode,
       beforeEligible: guardedDryRun.eligible,
@@ -1882,30 +2168,37 @@ function unownedCommerceBrokenPrivacySafeSummary({
       canonicalAcquisition: guardedDryRun.booleans.canonicalAcquisition,
       exactPaidPath: guardedDryRun.booleans.exactPaidPath,
       hasJourneyFingerprint: guardedDryRun.journeyFingerprint !== null,
+      firstApplyReasonCode: guardedFirstApply.reasonCode,
       replayReasonCode: guardedReplay.reasonCode,
       replayWouldMutate: guardedReplay.wouldMutate,
-      replayHasJourneyFingerprint: guardedReplay.journeyFingerprint !== null,
-      counts: guardedDryRun.counts,
+      afterReplayReasonCode: guardedAfterReplay.reasonCode,
+      afterReplayWouldMutate: guardedAfterReplay.wouldMutate,
+      beforeCounts: guardedDryRun.counts,
+      afterCounts: guardedAfterReplay.counts,
     }),
     mutationBoundary: Object.freeze({
       dryRunRepairStateUnchanged:
         JSON.stringify(mutableBefore) === JSON.stringify(mutableAfterDryRun),
-      replayRepairStateUnchanged:
-        JSON.stringify(mutableBefore) === JSON.stringify(mutableAfterReplay),
       dryRunCommerceStateUnchanged:
         JSON.stringify(unownedCommerceBefore) ===
           JSON.stringify(unownedCommerceAfterDryRun),
+      applyChangedRepairState:
+        JSON.stringify(mutableBefore) !== JSON.stringify(mutableAfterFirstApply),
+      replayRepairStateUnchanged:
+        JSON.stringify(mutableAfterFirstApply) === JSON.stringify(mutableAfterReplay),
       replayCommerceStateUnchanged:
-        JSON.stringify(unownedCommerceBefore) ===
-          JSON.stringify(unownedCommerceAfterReplay),
+        JSON.stringify(repairedCommerce) ===
+          JSON.stringify(repairedCommerceAfterReplay),
+      legacyStateUnchanged,
       before: mutableBefore,
       afterDryRun: mutableAfterDryRun,
+      afterFirstApply: mutableAfterFirstApply,
       afterReplay: mutableAfterReplay,
     }),
   });
 }
 
-function assertUnownedCommerceBrokenExpectation(summary) {
+function assertUnownedCommerceRepairedExpectation(summary) {
   const expectedMutationCounts = {
     authenticationStages: 1,
     installationStages: 1,
@@ -1916,7 +2209,17 @@ function assertUnownedCommerceBrokenExpectation(summary) {
     claimedClaims: 1,
     unclaimedClaims: 1,
   };
-  const expectedRepairCounts = {
+  const expectedRepairedMutationCounts = {
+    authenticationStages: 1,
+    installationStages: 1,
+    bindings: 1,
+    mergeAudits: 1,
+    claimedCheckouts: 2,
+    unclaimedCheckouts: 0,
+    claimedClaims: 2,
+    unclaimedClaims: 0,
+  };
+  const expectedBeforeRepairCounts = {
     authenticationStages: 1,
     installationStages: 1,
     bindings: 0,
@@ -1925,11 +2228,17 @@ function assertUnownedCommerceBrokenExpectation(summary) {
     lifecycleStops: 0,
     commerceFacts: 1,
     commerceProfiles: 0,
-    commerceConflicts: 1,
+    commerceConflicts: 0,
+  };
+  const expectedAfterRepairCounts = {
+    ...expectedBeforeRepairCounts,
+    bindings: 1,
+    mergeAudits: 1,
+    commerceProfiles: 1,
   };
   const observed =
     summary.observedContract ===
-      "unique-reviewed-legacy-unowned-zero-commerce-rejected" &&
+      "unique-reviewed-legacy-unowned-zero-commerce-repaired" &&
     summary.acquisitionShape.paidPaths === 2 &&
     summary.acquisitionShape.activeConsistentPaths === 1 &&
     summary.acquisitionShape.activationPaths === 2 &&
@@ -1938,31 +2247,41 @@ function assertUnownedCommerceBrokenExpectation(summary) {
     summary.reviewedPath.uniqueExactAccountOwnerLinks === 1 &&
     summary.bridgeKindsNonOverlapping === true &&
     Object.values(summary.reviewedLegacyPath).every((value) => value === true) &&
-    Object.values(summary.unownedCommerce).every((value) => value === true) &&
-    summary.guardedOperator.beforeReasonCode === "commerce_conflict" &&
-    summary.guardedOperator.beforeEligible === false &&
-    summary.guardedOperator.beforeWouldMutate === false &&
+    Object.values(summary.recoverableCommercePreState).every((value) => value === true) &&
+    Object.values(summary.repairedCommerce).every((value) => value === true) &&
+    Object.values(summary.refusalMatrix).every((value) => value === true) &&
+    summary.guardedOperator.beforeReasonCode === "repair_ready" &&
+    summary.guardedOperator.beforeEligible === true &&
+    summary.guardedOperator.beforeWouldMutate === true &&
     summary.guardedOperator.canonicalAcquisition === true &&
     summary.guardedOperator.exactPaidPath === true &&
-    summary.guardedOperator.hasJourneyFingerprint === false &&
-    summary.guardedOperator.replayReasonCode === "commerce_conflict" &&
+    summary.guardedOperator.hasJourneyFingerprint === true &&
+    summary.guardedOperator.firstApplyReasonCode === "already_repaired" &&
+    summary.guardedOperator.replayReasonCode === "already_repaired" &&
     summary.guardedOperator.replayWouldMutate === false &&
-    summary.guardedOperator.replayHasJourneyFingerprint === false &&
-    JSON.stringify(summary.guardedOperator.counts) ===
-      JSON.stringify(expectedRepairCounts) &&
+    summary.guardedOperator.afterReplayReasonCode === "already_repaired" &&
+    summary.guardedOperator.afterReplayWouldMutate === false &&
+    JSON.stringify(summary.guardedOperator.beforeCounts) ===
+      JSON.stringify(expectedBeforeRepairCounts) &&
+    JSON.stringify(summary.guardedOperator.afterCounts) ===
+      JSON.stringify(expectedAfterRepairCounts) &&
     summary.mutationBoundary.dryRunRepairStateUnchanged === true &&
-    summary.mutationBoundary.replayRepairStateUnchanged === true &&
     summary.mutationBoundary.dryRunCommerceStateUnchanged === true &&
+    summary.mutationBoundary.applyChangedRepairState === true &&
+    summary.mutationBoundary.replayRepairStateUnchanged === true &&
     summary.mutationBoundary.replayCommerceStateUnchanged === true &&
+    summary.mutationBoundary.legacyStateUnchanged === true &&
     JSON.stringify(summary.mutationBoundary.before) ===
       JSON.stringify(expectedMutationCounts) &&
     JSON.stringify(summary.mutationBoundary.afterDryRun) ===
       JSON.stringify(expectedMutationCounts) &&
+    JSON.stringify(summary.mutationBoundary.afterFirstApply) ===
+      JSON.stringify(expectedRepairedMutationCounts) &&
     JSON.stringify(summary.mutationBoundary.afterReplay) ===
-      JSON.stringify(expectedMutationCounts);
+      JSON.stringify(expectedRepairedMutationCounts);
   if (!observed) {
     throw new Error(
-      `Expected unowned-commerce-broken paid telemetry handoff contract; observed ${JSON.stringify(summary)}`,
+      `Expected unowned-commerce-repaired paid telemetry handoff contract; observed ${JSON.stringify(summary)}`,
     );
   }
 }
@@ -2810,13 +3129,19 @@ function schemaQuery(pool, quotedSchema) {
   );
 }
 
-function schemaTransaction(pool, quotedSchema, { readOnly = false } = {}) {
+function schemaTransaction(
+  pool,
+  quotedSchema,
+  { readOnly = false, serializable = false } = {},
+) {
   return async (callback) => {
     const client = await pool.connect();
     try {
       await client.query(readOnly
         ? "begin isolation level repeatable read read only"
-        : "begin isolation level read committed");
+        : serializable
+          ? "begin isolation level serializable"
+          : "begin isolation level read committed");
       const result = await callback({
         query: (sql, params = []) => client.query(
           sql.replace(/\bpublic\./g, `${quotedSchema}.`),

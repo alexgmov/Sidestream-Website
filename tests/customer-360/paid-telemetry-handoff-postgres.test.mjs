@@ -132,43 +132,27 @@ test("the exact legacy entitlement placeholder repairs without rewriting legacy 
   assert.doesNotMatch(serialized, /postgres(?:ql)?:\/\//i);
 });
 
-test("the exact reviewed legacy path rejects one unowned zero-total Checkout fact", {
+test("the exact reviewed legacy path repairs one verified unowned zero-total Checkout fact", {
   timeout: 120_000,
 }, async () => {
   const summary = await runPaidTelemetryHandoffFixture({
-    expectation: "unowned-commerce-broken",
+    expectation: "unowned-commerce-repaired",
   });
   assert.equal(
     summary.observedContract,
-    "unique-reviewed-legacy-unowned-zero-commerce-rejected",
+    "unique-reviewed-legacy-unowned-zero-commerce-repaired",
   );
   assert.ok(Object.values(summary.reviewedLegacyPath).every(Boolean));
-  assert.ok(Object.values(summary.unownedCommerce).every(Boolean));
-  assert.deepEqual(summary.guardedOperator, {
-    beforeReasonCode: "commerce_conflict",
-    beforeEligible: false,
-    beforeWouldMutate: false,
-    canonicalAcquisition: true,
-    exactPaidPath: true,
-    hasJourneyFingerprint: false,
-    replayReasonCode: "commerce_conflict",
-    replayWouldMutate: false,
-    replayHasJourneyFingerprint: false,
-    counts: {
-      authenticationStages: 1,
-      installationStages: 1,
-      bindings: 0,
-      mergeAudits: 0,
-      acquisitionConflicts: 0,
-      lifecycleStops: 0,
-      commerceFacts: 1,
-      commerceProfiles: 0,
-      commerceConflicts: 1,
-    },
-  });
-  assert.ok(Object.entries(summary.mutationBoundary)
-    .filter(([key]) => key.endsWith("StateUnchanged"))
-    .every(([, value]) => value === true));
+  assert.ok(Object.values(summary.recoverableCommercePreState).every(Boolean));
+  assert.ok(Object.values(summary.repairedCommerce).every(Boolean));
+  assert.ok(Object.values(summary.refusalMatrix).every(Boolean));
+  assert.equal(summary.guardedOperator.beforeReasonCode, "repair_ready");
+  assert.equal(summary.guardedOperator.beforeEligible, true);
+  assert.equal(summary.guardedOperator.firstApplyReasonCode, "already_repaired");
+  assert.equal(summary.guardedOperator.replayReasonCode, "already_repaired");
+  assert.equal(summary.guardedOperator.afterReplayReasonCode, "already_repaired");
+  assert.ok(Object.values(summary.mutationBoundary).filter((value) =>
+    typeof value === "boolean").every(Boolean));
   const serialized = JSON.stringify(summary);
   assert.doesNotMatch(serialized, /\b(?:cus|cs|pi|ch)_[A-Za-z0-9_]+\b/);
   assert.doesNotMatch(serialized, /\b[0-9a-f]{8}-[0-9a-f-]{27,}\b/i);

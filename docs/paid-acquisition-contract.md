@@ -504,6 +504,24 @@ Deployed `812cf96` rejected the exact shape read-only without mutation; that is
 historical fail-closed evidence only, not deployment, apply authorization,
 current Production eligibility, or live qualification.
 
+A fifth boundary layers one transaction-scoped commerce recovery on that exact
+legacy path. It requires one canonical payment key and exactly one verified
+payment fact sourced from the exact Checkout Session, with exact paid currency,
+Checkout identity evidence, and exact payment-intent evidence when the canonical
+payment differs. The only recoverable values are null profile and zero
+gross/net; any second key/fact/profile, wrong source/currency/evidence, nonzero
+mismatch, owner mismatch, conflict, refund, dispute, inquiry, lifecycle stop, or
+missing positive paid truth refuses before mutation. Apply merges the reviewed
+profiles, conditionally updates only the locked fact to the verified positive
+minor amount and paid-completion timing, confirms the survivor owner, preserves
+provider identifiers and provenance, refreshes existing commerce totals, and
+requires positive attached rediscovery before `already_repaired`. The
+disposable proof is
+`npm run replay:paid-telemetry-handoff -- --expect-unowned-commerce-repaired`;
+it includes failed-refresh rollback and no-op replay. Deployed `6118a87`
+rejected this pre-state read-only without mutation, which neither proves this
+revision is deployed nor authorizes or qualifies a Production apply.
+
 ### Bounded activation-linkage diagnostics
 
 The authenticated paid-claim POST emits exactly one bounded operational outcome

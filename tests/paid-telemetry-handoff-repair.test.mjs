@@ -123,6 +123,7 @@ function legacyEntitlementPath(overrides = {}) {
     paid_payment_state: "active",
     paid_claim_state: "unclaimed",
     paid_completed: true,
+    paid_completed_at: TIME.checkoutCompleted,
     paid_authorization_active: true,
     paid_checkout_session_ref: PROVIDER.checkoutSession,
     paid_payment_ref: PROVIDER.paymentIntent,
@@ -167,6 +168,7 @@ function legacyEntitlementPath(overrides = {}) {
 async function inspectReviewedPath(path, {
   identityRows = [],
   mutableCounts = [],
+  commerceState = [],
 } = {}) {
   const statements = [];
   const client = {
@@ -181,7 +183,8 @@ async function inspectReviewedPath(path, {
         return { rows: [path] };
       }
       if (/as review_kind/.test(sql)) return { rows: identityRows };
-      if (/with exact_payment_keys as/.test(sql)) return { rows: mutableCounts };
+      if (/as "lifecycleStops"/.test(sql)) return { rows: mutableCounts };
+      if (/with exact_payment_keys as/.test(sql)) return { rows: commerceState };
       return { rows: [] };
     },
   };
@@ -355,7 +358,7 @@ test("the exact reviewed legacy entitlement placeholder reaches identity validat
   assert.ok(statements.every((sql) => /^\s*select\b/i.test(sql)));
 });
 
-test("an exact unowned zero-total Checkout fact stops before repair mutation", async () => {
+test("an exact unowned zero-total Checkout fact is the only recoverable commerce pre-state", async () => {
   const counts = {
     authenticationStages: 1,
     installationStages: 1,
@@ -363,24 +366,89 @@ test("an exact unowned zero-total Checkout fact stops before repair mutation", a
     mergeAudits: 0,
     acquisitionConflicts: 0,
     lifecycleStops: 0,
-    commerceFacts: 1,
-    commerceProfiles: 0,
-    commerceConflicts: 1,
+  };
+  const commerceState = {
+    payment_key_count: 1,
+    fact_count: 1,
+    profile_count: 0,
+    unowned_fact_count: 1,
+    base_conflict_count: 0,
+    recoverable_fact_count: 1,
+    recoverable_fact_id: "8f000000-0000-4000-8000-000000000001",
+    recoverable_payment_key: `payment_intent:${PROVIDER.paymentIntent}`,
+    attached_positive: false,
   };
   const { report, statements } = await inspectReviewedPath(
     legacyEntitlementPath(),
-    { identityRows: [EXACT_REVIEWED_IDENTITY], mutableCounts: [counts] },
+    {
+      identityRows: [EXACT_REVIEWED_IDENTITY],
+      mutableCounts: [counts],
+      commerceState: [commerceState],
+    },
   );
-  assert.equal(report.reasonCode, "commerce_conflict");
-  assert.equal(report.eligible, false);
-  assert.equal(report.wouldMutate, false);
-  assert.equal(report.journeyFingerprint, null);
+  assert.equal(report.reasonCode, "repair_ready");
+  assert.equal(report.eligible, true);
+  assert.equal(report.wouldMutate, true);
+  assert.match(report.journeyFingerprint, /^journey-[0-9a-f]{32}$/);
   assert.equal(report.booleans.canonicalAcquisition, true);
   assert.equal(report.booleans.exactPaidPath, true);
-  assert.deepEqual(report.counts, counts);
-  assert.equal(statements.length, 6);
+  assert.deepEqual(report.counts, {
+    ...counts,
+    commerceFacts: 1,
+    commerceProfiles: 0,
+    commerceConflicts: 0,
+  });
+  assert.equal(statements.length, 7);
   assert.ok(statements.every((sql) =>
     !/^\s*(?:insert|update|delete)\b/i.test(sql)));
+});
+
+test("nearby unowned commerce shapes remain fail closed", async () => {
+  const base = {
+    payment_key_count: 1,
+    fact_count: 1,
+    profile_count: 0,
+    unowned_fact_count: 1,
+    base_conflict_count: 0,
+    recoverable_fact_count: 1,
+    recoverable_fact_id: "8f000000-0000-4000-8000-000000000001",
+    recoverable_payment_key: `payment_intent:${PROVIDER.paymentIntent}`,
+    attached_positive: false,
+  };
+  const cases = [
+    ["second payment key", { payment_key_count: 2 }],
+    ["second fact", { fact_count: 2, unowned_fact_count: 2 }],
+    ["wrong source, currency, or evidence", { recoverable_fact_count: 0 }],
+    ["nonzero mismatch", { recoverable_fact_count: 0 }],
+    ["different owner", {
+      profile_count: 1,
+      unowned_fact_count: 0,
+      base_conflict_count: 1,
+      recoverable_fact_count: 0,
+    }],
+    ["conflict or lifecycle money stop", {
+      base_conflict_count: 1,
+      recoverable_fact_count: 0,
+    }],
+  ];
+  for (const [label, override] of cases) {
+    const { report } = await inspectReviewedPath(legacyEntitlementPath(), {
+      identityRows: [EXACT_REVIEWED_IDENTITY],
+      mutableCounts: [{
+        authenticationStages: 1,
+        installationStages: 1,
+        bindings: 0,
+        mergeAudits: 0,
+        acquisitionConflicts: 0,
+        lifecycleStops: 0,
+      }],
+      commerceState: [{ ...base, ...override }],
+    });
+    assert.equal(report.reasonCode, "commerce_conflict", label);
+    assert.equal(report.eligible, false, label);
+    assert.equal(report.wouldMutate, false, label);
+    assert.equal(report.journeyFingerprint, null, label);
+  }
 });
 
 test("partial or mismatched legacy entitlement and claim tuples fail before identity reads", async () => {

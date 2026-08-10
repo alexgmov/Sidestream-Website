@@ -33,6 +33,7 @@ type PaidPathRow = Readonly<{
   paid_payment_state: string;
   paid_claim_state: string;
   paid_completed: boolean;
+  paid_completed_at: Date | string | null;
   paid_authorization_active: boolean;
   paid_checkout_session_ref: string | null;
   paid_payment_ref: string | null;
@@ -141,6 +142,23 @@ type MutableCounts = Readonly<{
   commerceConflicts: number;
 }>;
 
+type CommerceStateRow = Readonly<{
+  payment_key_count: number;
+  fact_count: number;
+  profile_count: number;
+  unowned_fact_count: number;
+  base_conflict_count: number;
+  recoverable_fact_count: number;
+  recoverable_fact_id: string | null;
+  recoverable_payment_key: string | null;
+  attached_positive: boolean;
+}>;
+
+type RecoverableCommerceFact = Readonly<{
+  id: string;
+  paymentKey: string;
+}>;
+
 type ExactJourney = Readonly<{
   path: PaidPathRow;
   identity: ExactIdentityRow;
@@ -150,6 +168,8 @@ type ExactJourney = Readonly<{
   bindingKey: string;
   fingerprint: string;
   counts: MutableCounts;
+  commerceRecovery: RecoverableCommerceFact | null;
+  attachedPositiveCommerce: boolean;
 }>;
 
 export type PaidTelemetryRepairReport = Readonly<{
@@ -385,6 +405,14 @@ export async function applyPaidTelemetryHandoffRepair(
   }
 
   const survivorId = await mergeExactProfiles(client, selector.namespace, journey);
+  if (journey.commerceRecovery) {
+    await repairExactRecoverableCommerce(
+      client,
+      selector.namespace,
+      journey,
+      survivorId,
+    );
+  }
   await insertExactBinding(client, selector.namespace, journey, survivorId);
 
   const afterDiscovery = await discoverExactJourney(client, selector, true);
@@ -510,8 +538,7 @@ async function discoverExactJourney(
     identity.receipt_id_hash,
   ].join(":"));
 
-  const [bindingResult, stateResult] = await Promise.all([
-    client.query<BindingRow>(
+  const bindingResult = await client.query<BindingRow>(
       `select *
        from public.sidestream_paid_telemetry_profile_bindings
        where claim_id = $1::uuid
@@ -520,20 +547,31 @@ async function discoverExactJourney(
        order by created_at, id
        limit 3${lock ? " for update" : ""}`,
       [path.claim_id, path.acquisition_id, selector.namespace, path.activation_id],
-    ),
-    client.query<MutableCounts>(mutableCountsSql(), [
-      selector.namespace,
-      path.acquisition_id,
-      authenticationKey,
-      installationKey,
-      identity.candidate_profile_id,
-      identity.existing_profile_id,
-      path.entitlement_checkout_session_id,
-      path.entitlement_payment_intent_id,
-      path.paid_payment_ref,
-    ]),
+    );
+  const stateResult = await client.query<MutableCounts>(mutableCountsSql(), [
+    selector.namespace,
+    path.acquisition_id,
+    authenticationKey,
+    installationKey,
+    identity.candidate_profile_id,
+    identity.existing_profile_id,
   ]);
-  const counts = normalizeCounts(stateResult.rows[0]);
+  const commerceResult = await client.query<CommerceStateRow>(commerceStateSql(), [
+    selector.namespace,
+    identity.candidate_profile_id,
+    identity.existing_profile_id,
+    path.paid_checkout_session_ref,
+    path.entitlement_payment_intent_id,
+    path.paid_payment_ref,
+    path.paid_currency,
+  ]);
+  const commerce = normalizeCommerceState(commerceResult.rows[0]);
+  const counts = normalizeCounts({
+    ...stateResult.rows[0],
+    commerceFacts: commerce.factCount,
+    commerceProfiles: commerce.profileCount,
+    commerceConflicts: commerce.conflictCount,
+  });
   if (counts.lifecycleStops > 0) {
     return {
       reasonCode: "lifecycle_stop_present",
@@ -544,11 +582,7 @@ async function discoverExactJourney(
       counts,
     };
   }
-  if (
-    counts.commerceConflicts > 0 ||
-    counts.commerceProfiles > 1 ||
-    (counts.commerceFacts > 0 && counts.commerceProfiles !== 1)
-  ) {
+  if (!commerce.attachedPositive && !commerce.recoverableFact) {
     return {
       reasonCode: "commerce_conflict",
       journey: null,
@@ -601,6 +635,8 @@ async function discoverExactJourney(
       bindingKey,
       fingerprint,
       counts,
+      commerceRecovery: commerce.recoverableFact,
+      attachedPositiveCommerce: commerce.attachedPositive,
     },
     rootCount: 1,
     pathCount: 1,
@@ -620,11 +656,13 @@ function reportForDiscovery(discovery: Discovery): PaidTelemetryRepairReport {
   const authenticationRecorded = counts.authenticationStages === 1;
   const installationRecorded = counts.installationStages === 1;
   const immutableBinding = counts.bindings === 1 && Boolean(journey?.binding);
-  const commerceConsistent = counts.commerceConflicts === 0 &&
-    counts.commerceProfiles <= 1;
+  const commerceConsistent = journey
+    ? counts.commerceConflicts === 0 &&
+      Boolean(journey.attachedPositiveCommerce || journey.commerceRecovery)
+    : counts.commerceConflicts === 0 && counts.commerceProfiles <= 1;
   const alreadyRepaired = Boolean(
     journey && profilesConverged && authenticationRecorded &&
-    installationRecorded && immutableBinding,
+    installationRecorded && immutableBinding && journey.attachedPositiveCommerce,
   );
   const eligible = Boolean(
     journey && counts.acquisitionConflicts === 0 && counts.lifecycleStops === 0 &&
@@ -794,6 +832,7 @@ function paidPathSql(lock: boolean, selectReviewedPath: boolean): string {
       paid.payment_state as paid_payment_state,
       paid.claim_state as paid_claim_state,
       paid.completed_at is not null as paid_completed,
+      paid.completed_at as paid_completed_at,
       paid.receipt_expires_at > now() as paid_authorization_active,
       paid.verified_checkout_session_ref as paid_checkout_session_ref,
       paid.canonical_payment_ref as paid_payment_ref,
@@ -1085,19 +1124,6 @@ function exactIdentitySql(lock: boolean): string {
 
 function mutableCountsSql(): string {
   return `
-    with exact_payment_keys as (
-      select distinct seed.payment_key
-      from public.sidestream_customer_commerce_materializations seed
-      where seed.license_namespace = $1
-        and seed.source_object_id = any(
-          array_remove(array[$7, $8, $9]::text[], null)
-        )
-    ), exact_commerce as (
-      select fact.*
-      from public.sidestream_customer_commerce_materializations fact
-      where fact.license_namespace = $1
-        and fact.payment_key in (select payment_key from exact_payment_keys)
-    )
     select
       (select least(count(*), 3)::int
        from public.sidestream_acquisition_stages stage
@@ -1138,26 +1164,122 @@ function mutableCountsSql(): string {
        from public.sidestream_acquisition_stages stage
        where stage.license_namespace = $1
          and stage.acquisition_id = $2::uuid
-         and stage.stage in ('refunded', 'disputed')) as "lifecycleStops",
-      (select least(count(*), 3)::int
-       from exact_commerce fact)
-        as "commerceFacts",
-      (select least(count(distinct fact.profile_id), 3)::int
-       from exact_commerce fact
-       where fact.profile_id is not null)
-        as "commerceProfiles",
-      least(
-        (select count(*)
-         from exact_commerce fact
-         where fact.identity_conflict
-           or fact.refunded_minor > 0
-           or fact.disputed_minor > 0
-           or (fact.gross_paid_minor > 0 and fact.net_paid_minor <= 0)
-           or fact.profile_id is null
-           or fact.profile_id not in ($5::uuid, $6::uuid))
-        + greatest((select count(*) from exact_payment_keys) - 1, 0),
-        3
-      )::int as "commerceConflicts"
+         and stage.stage in ('refunded', 'disputed')) as "lifecycleStops"
+  `;
+}
+
+function commerceStateSql(): string {
+  return `
+    with exact_payment_keys as (
+      select seed.payment_key
+      from public.sidestream_customer_commerce_materializations seed
+      where seed.license_namespace = $1
+        and seed.source_object_id = any(
+          array_remove(array[$4, $5, $6]::text[], null)
+        )
+      union
+      select alias.payment_key
+      from public.sidestream_customer_commerce_aliases alias
+      where alias.license_namespace = $1
+        and alias.alias_id = any(
+          array_remove(array[$4, $5, $6]::text[], null)
+        )
+    ), exact_commerce as (
+      select fact.*
+      from public.sidestream_customer_commerce_materializations fact
+      where fact.license_namespace = $1
+        and fact.payment_key in (select payment_key from exact_payment_keys)
+    ), facts as (
+      select
+        fact.*,
+        (
+          fact.fact_kind = 'payment'
+          and fact.source_confidence = 'verified'
+          and fact.source_object_type = 'checkout_session'
+          and fact.source_object_id = $4
+          and fact.event_type in (
+            'checkout.session.completed',
+            'checkout.session.async_payment_succeeded'
+          )
+          and fact.state in ('paid', 'no_payment_required')
+          and fact.currency = $7
+          and fact.profile_id is null
+          and fact.gross_paid_minor = 0
+          and fact.net_paid_minor = 0
+          and fact.refunded_minor = 0
+          and fact.disputed_minor = 0
+          and fact.inquiry_minor = 0
+          and not fact.identity_conflict
+          and (
+            select count(*)
+            from jsonb_array_elements(fact.identity_evidence) evidence
+            where evidence->>'linkType' = 'stripe_checkout_session'
+              and evidence->>'linkValue' = $4
+          ) = 1
+          and not exists (
+            select 1
+            from jsonb_array_elements(fact.identity_evidence) evidence
+            where evidence->>'linkType' = 'stripe_checkout_session'
+              and evidence->>'linkValue' <> $4
+          )
+          and (
+            $6 = $4
+            or (
+              (select count(*)
+               from jsonb_array_elements(fact.identity_evidence) evidence
+               where evidence->>'linkType' = 'stripe_payment_intent'
+                 and evidence->>'linkValue' = $6) = 1
+              and not exists (
+                select 1
+                from jsonb_array_elements(fact.identity_evidence) evidence
+                where evidence->>'linkType' = 'stripe_payment_intent'
+                  and evidence->>'linkValue' <> $6
+              )
+            )
+          )
+        ) as recoverable
+      from exact_commerce fact
+    ), aggregate_state as (
+      select
+        (select count(*) from exact_payment_keys)::int as payment_key_count,
+        count(*)::int as fact_count,
+        count(distinct profile_id) filter (where profile_id is not null)::int
+          as profile_count,
+        count(*) filter (where profile_id is null)::int as unowned_fact_count,
+        count(*) filter (
+          where identity_conflict
+            or refunded_minor > 0
+            or disputed_minor > 0
+            or inquiry_minor > 0
+            or (gross_paid_minor > 0 and net_paid_minor <= 0)
+            or (profile_id is not null and profile_id not in ($2::uuid, $3::uuid))
+        )::int as base_conflict_count,
+        count(*) filter (where recoverable)::int as recoverable_fact_count,
+        min(id::text) filter (where recoverable) as recoverable_fact_id,
+        min(payment_key) filter (where recoverable) as recoverable_payment_key,
+        coalesce(bool_or(
+          fact_kind = 'payment' and gross_paid_minor > 0 and net_paid_minor > 0
+        ), false) as has_positive_payment
+      from facts
+    )
+    select
+      payment_key_count,
+      fact_count,
+      profile_count,
+      unowned_fact_count,
+      base_conflict_count,
+      recoverable_fact_count,
+      recoverable_fact_id,
+      recoverable_payment_key,
+      (
+        payment_key_count = 1
+        and fact_count > 0
+        and profile_count = 1
+        and unowned_fact_count = 0
+        and base_conflict_count = 0
+        and has_positive_payment
+      ) as attached_positive
+    from aggregate_state
   `;
 }
 
@@ -1198,6 +1320,7 @@ function paidPathAgrees(path: PaidPathRow, namespace: PaidTelemetryRepairNamespa
     path.paid_claim_state === path.claim_state &&
     ["unclaimed", "claimed"].includes(path.paid_claim_state) &&
     path.paid_completed &&
+    isValidTimestamp(path.paid_completed_at) &&
     path.paid_authorization_active &&
     path.claim_active &&
     path.claim_account_ref === path.account_id &&
@@ -1226,6 +1349,10 @@ function paidPathAgrees(path: PaidPathRow, namespace: PaidTelemetryRepairNamespa
 
 function isStrictlyPositiveMinorAmount(value: string | null): boolean {
   return typeof value === "string" && /^[1-9][0-9]*$/.test(value);
+}
+
+function isValidTimestamp(value: Date | string | null): boolean {
+  return value !== null && Number.isFinite(new Date(value).getTime());
 }
 
 function exactIdentityAgrees(identity: ExactIdentityRow): boolean {
@@ -1430,6 +1557,140 @@ async function mergeExactProfiles(
   return survivor.id;
 }
 
+async function repairExactRecoverableCommerce(
+  client: QueryClient,
+  namespace: PaidTelemetryRepairNamespace,
+  journey: ExactJourney,
+  survivorId: string,
+): Promise<void> {
+  const recovery = journey.commerceRecovery;
+  const completedAt = journey.path.paid_completed_at;
+  if (
+    !recovery || !isStrictlyPositiveMinorAmount(journey.path.paid_amount_minor) ||
+    !isValidTimestamp(completedAt)
+  ) {
+    throw new PaidTelemetryRepairError(
+      "commerce_recovery_changed",
+      "The exact recoverable commerce fact is no longer eligible.",
+    );
+  }
+  const updated = await client.query<{
+    id: string;
+    profile_id: string;
+    gross_paid_minor: string;
+    net_paid_minor: string;
+  }>(
+    `update public.sidestream_customer_commerce_materializations fact
+     set profile_id = $3::uuid,
+         gross_paid_minor = $5::bigint,
+         net_paid_minor = $5::bigint,
+         first_paid_at = $6::timestamptz,
+         last_paid_at = $6::timestamptz,
+         first_upgraded_at = $6::timestamptz,
+         last_upgraded_at = $6::timestamptz,
+         updated_at = now()
+     where fact.id = $1::uuid
+       and fact.license_namespace = $2
+       and fact.payment_key = $4
+       and fact.fact_kind = 'payment'
+       and fact.source_confidence = 'verified'
+       and fact.source_object_type = 'checkout_session'
+       and fact.source_object_id = $7
+       and fact.event_type in (
+         'checkout.session.completed',
+         'checkout.session.async_payment_succeeded'
+       )
+       and fact.state in ('paid', 'no_payment_required')
+       and fact.currency = $8
+       and (fact.profile_id is null or fact.profile_id = $3::uuid)
+       and fact.gross_paid_minor = 0
+       and fact.net_paid_minor = 0
+       and fact.refunded_minor = 0
+       and fact.disputed_minor = 0
+       and fact.inquiry_minor = 0
+       and not fact.identity_conflict
+       and (
+         select count(*)
+         from jsonb_array_elements(fact.identity_evidence) evidence
+         where evidence->>'linkType' = 'stripe_checkout_session'
+           and evidence->>'linkValue' = $7
+       ) = 1
+       and not exists (
+         select 1
+         from jsonb_array_elements(fact.identity_evidence) evidence
+         where evidence->>'linkType' = 'stripe_checkout_session'
+           and evidence->>'linkValue' <> $7
+       )
+       and (
+         $9 = $7
+         or (
+           (select count(*)
+            from jsonb_array_elements(fact.identity_evidence) evidence
+            where evidence->>'linkType' = 'stripe_payment_intent'
+              and evidence->>'linkValue' = $9) = 1
+           and not exists (
+             select 1
+             from jsonb_array_elements(fact.identity_evidence) evidence
+             where evidence->>'linkType' = 'stripe_payment_intent'
+               and evidence->>'linkValue' <> $9
+           )
+         )
+       )
+     returning id, profile_id, gross_paid_minor::text, net_paid_minor::text`,
+    [
+      recovery.id,
+      namespace,
+      survivorId,
+      recovery.paymentKey,
+      journey.path.paid_amount_minor,
+      completedAt,
+      journey.path.paid_checkout_session_ref,
+      journey.path.paid_currency,
+      journey.path.paid_payment_ref,
+    ],
+  );
+  const row = updated.rows[0];
+  if (
+    updated.rows.length !== 1 || row?.id !== recovery.id ||
+    row.profile_id !== survivorId ||
+    row.gross_paid_minor !== journey.path.paid_amount_minor ||
+    row.net_paid_minor !== journey.path.paid_amount_minor
+  ) {
+    throw new PaidTelemetryRepairError(
+      "commerce_recovery_changed",
+      "The exact recoverable commerce fact changed while locked.",
+    );
+  }
+
+  await client.query(
+    "select public.sidestream_customer_commerce_refresh_namespace($1)",
+    [namespace],
+  );
+  const totals = await client.query<{ totals_current: boolean }>(
+    `select exists (
+       select 1
+       from public.sidestream_customer_money_totals total
+       where total.license_namespace = $1
+         and total.profile_id = $2::uuid
+         and total.currency = $3
+         and total.gross_paid_minor >= $4::bigint
+         and total.net_paid_minor >= $4::bigint
+         and total.paid_transaction_count > 0
+         and total.first_paid_at is not null
+         and total.last_paid_at is not null
+         and total.first_upgraded_at is not null
+         and total.last_upgraded_at is not null
+     ) as totals_current`,
+    [namespace, survivorId, journey.path.paid_currency, journey.path.paid_amount_minor],
+  );
+  if (totals.rows.length !== 1 || totals.rows[0]?.totals_current !== true) {
+    throw new PaidTelemetryRepairError(
+      "commerce_refresh_failed",
+      "The exact commerce totals did not refresh inside the repair transaction.",
+    );
+  }
+}
+
 async function insertExactBinding(
   client: QueryClient,
   namespace: PaidTelemetryRepairNamespace,
@@ -1490,6 +1751,47 @@ function normalizeIdentity(row: ExactIdentityRow): ExactIdentityRow {
     ...row,
     candidate_account_count: Number(row.candidate_account_count),
     existing_account_count: Number(row.existing_account_count),
+  });
+}
+
+function normalizeCommerceState(row: CommerceStateRow | undefined): Readonly<{
+  factCount: number;
+  profileCount: number;
+  conflictCount: number;
+  recoverableFact: RecoverableCommerceFact | null;
+  attachedPositive: boolean;
+}> {
+  const paymentKeyCount = boundedCount(row?.payment_key_count);
+  const factCount = boundedCount(row?.fact_count);
+  const profileCount = boundedCount(row?.profile_count);
+  const unownedFactCount = boundedCount(row?.unowned_fact_count);
+  const baseConflictCount = boundedCount(row?.base_conflict_count);
+  const recoverableFactCount = boundedCount(row?.recoverable_fact_count);
+  const exactRecoverable = paymentKeyCount === 1 && factCount === 1 &&
+    profileCount === 0 && unownedFactCount === 1 && baseConflictCount === 0 &&
+    recoverableFactCount === 1 && UUID.test(row?.recoverable_fact_id || "") &&
+    Boolean(row?.recoverable_payment_key);
+  const attachedPositive = row?.attached_positive === true &&
+    paymentKeyCount === 1 && factCount > 0 && profileCount === 1 &&
+    unownedFactCount === 0 && baseConflictCount === 0;
+  const ready = exactRecoverable || attachedPositive;
+  const conflictCount = ready
+    ? 0
+    : boundedCount(
+      baseConflictCount + Math.max(paymentKeyCount - 1, 0) +
+      unownedFactCount + 1,
+    );
+  return Object.freeze({
+    factCount,
+    profileCount,
+    conflictCount,
+    recoverableFact: exactRecoverable
+      ? Object.freeze({
+          id: row?.recoverable_fact_id || "",
+          paymentKey: row?.recoverable_payment_key || "",
+        })
+      : null,
+    attachedPositive,
   });
 }
 
