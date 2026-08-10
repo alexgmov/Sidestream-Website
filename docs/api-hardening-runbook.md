@@ -910,6 +910,27 @@ dual-path shape without mutation. It is not evidence this revision is deployed,
 current Production is eligible, apply is approved, or the live journey is
 qualified.
 
+The fourth boundary is disposable-proved with
+`npm run replay:paid-telemetry-handoff -- --expect-legacy-entitlement-repaired`.
+It preserves the selected reviewed path's exact legacy entitlement tuple:
+Product and Price are both null and `amount_paid` is exactly zero, while the
+verified paid amount is strictly positive. The normal exact Product/Price/amount
+snapshot remains accepted. The legacy alternative still requires every
+canonical Checkout Session/payment, core Product/Price/currency,
+account/entitlement/activation, exact-plan, zero-refund, reviewed
+install/receipt, lifecycle, commerce, stage-owner, namespace, and binding
+invariant. Partial/mismatched tuples, nonpositive payment, provider mismatch,
+refund, and account conflict refuse.
+
+A null claim normalized email is accepted only when claim account, entitlement,
+and activation plus account-to-verified-Checkout email ownership are exact; any
+non-null claim email must match. Dry-run reports `repair_ready`, apply converges
+atomically to `already_repaired`, replay is a no-op, and neither the entitlement
+snapshot nor omitted claim email is backfilled. Deployed `812cf96` rejected the
+exact shape read-only without mutation. That is historical fail-closed evidence,
+not proof of deployment, apply authorization, current Production eligibility,
+or live qualification.
+
 ### Production device support and backfill
 
 The device-domain behavior and privacy/support facts live in

@@ -70,6 +70,101 @@ const TIME = Object.freeze({
   expiry: "2030-01-01T00:00:00.000Z",
 });
 
+const EXACT_REVIEWED_BOUNDARY = Object.freeze({
+  review_id: "8c000000-0000-4000-8000-000000000001",
+  activation_id: IDS.activation,
+  account_id: IDS.account,
+  candidate_profile_id: IDS.telemetryProfile,
+  existing_profile_id: IDS.paidProfile,
+  candidate_root_id: IDS.telemetryProfile,
+  existing_root_id: IDS.paidProfile,
+  activation_profile_id: IDS.telemetryProfile,
+  direct_account_or_stripe_count: 0,
+  existing_account_owner_count: 1,
+  exact_account_owner_count: 1,
+  exact_binding_count: 0,
+});
+
+function legacyEntitlementPath(overrides = {}) {
+  return {
+    acquisition_id: IDS.acquisition,
+    integrity_state: "intact",
+    checkout_intent_id: IDS.checkoutIntent,
+    checkout_created_at: TIME.checkoutStarted,
+    checkout_state: "completed",
+    checkout_account_id: IDS.account,
+    checkout_session_id: PROVIDER.checkoutSession,
+    checkout_price_id: PROVIDER.price,
+    checkout_product_id: PROVIDER.product,
+    paid_checkout_id: IDS.paidCheckout,
+    paid_environment: "test",
+    paid_payment_state: "active",
+    paid_claim_state: "unclaimed",
+    paid_completed: true,
+    paid_authorization_active: true,
+    paid_checkout_session_ref: PROVIDER.checkoutSession,
+    paid_payment_ref: PROVIDER.paymentIntent,
+    paid_product_ref: PROVIDER.product,
+    paid_price_ref: PROVIDER.price,
+    paid_quantity: 1,
+    paid_amount_minor: "1999",
+    paid_currency: "usd",
+    paid_email: "repair-fixture@example.invalid",
+    claim_id: IDS.claim,
+    claim_state: "unclaimed",
+    claim_active: true,
+    claim_payment_ref: PROVIDER.paymentIntent,
+    claim_activation_ref: IDS.activation,
+    claim_account_ref: IDS.account,
+    claim_entitlement_ref: IDS.license,
+    claim_email: null,
+    account_id: IDS.account,
+    account_email: "repair-fixture@example.invalid",
+    entitlement_id: IDS.license,
+    entitlement_account_id: IDS.account,
+    entitlement_status: "active",
+    entitlement_plan_key: "sidestream_unlimited",
+    entitlement_checkout_session_id: PROVIDER.checkoutSession,
+    entitlement_payment_intent_id: PROVIDER.paymentIntent,
+    entitlement_product_id: null,
+    entitlement_price_id: null,
+    entitlement_amount_paid: "0",
+    entitlement_amount_refunded: "0",
+    entitlement_currency: "usd",
+    activation_id: IDS.activation,
+    activation_account_id: IDS.account,
+    activation_entitlement_id: IDS.license,
+    activation_source: "paid-acquisition-mc-v1",
+    activation_status: "completed",
+    activation_completed: true,
+    activation_active: true,
+    ...overrides,
+  };
+}
+
+async function inspectReviewedPath(path) {
+  const statements = [];
+  const client = {
+    async query(sql, params = []) {
+      statements.push(sql);
+      if (/select id, integrity_state\s+from public\.sidestream_acquisitions/.test(sql)) {
+        return { rows: [{ id: IDS.acquisition, integrity_state: "intact" }] };
+      }
+      if (/as exact_binding_count/.test(sql)) return { rows: [EXACT_REVIEWED_BOUNDARY] };
+      if (/paid\.verified_amount_minor::text as paid_amount_minor/.test(sql)) {
+        assert.equal(params[3], IDS.activation);
+        return { rows: [path] };
+      }
+      return { rows: [] };
+    },
+  };
+  const report = await repair.inspectPaidTelemetryHandoffRepair(client, {
+    acquisitionId: IDS.acquisition,
+    namespace: "test",
+  });
+  return { report, statements };
+}
+
 test("CLI accepts only the canonical UUID and exact guarded selectors", () => {
   const parsed = parsePaidTelemetryRepairArgs([
     "--dry-run",
@@ -223,103 +318,68 @@ test("ambiguous reviewed boundaries fail closed before paid-path reads or writes
   }
 });
 
-test("the unique reviewed legacy entitlement placeholder fails before fingerprint or writes", async () => {
-  const statements = [];
-  const exactBoundary = {
-    review_id: "8c000000-0000-4000-8000-000000000001",
-    activation_id: IDS.activation,
-    account_id: IDS.account,
-    candidate_profile_id: IDS.telemetryProfile,
-    existing_profile_id: IDS.paidProfile,
-    candidate_root_id: IDS.telemetryProfile,
-    existing_root_id: IDS.paidProfile,
-    activation_profile_id: IDS.telemetryProfile,
-    direct_account_or_stripe_count: 0,
-    existing_account_owner_count: 1,
-    exact_account_owner_count: 1,
-    exact_binding_count: 0,
-  };
-  const legacyPath = {
-    acquisition_id: IDS.acquisition,
-    integrity_state: "intact",
-    checkout_intent_id: IDS.checkoutIntent,
-    checkout_created_at: TIME.checkoutStarted,
-    checkout_state: "completed",
-    checkout_account_id: IDS.account,
-    checkout_session_id: PROVIDER.checkoutSession,
-    checkout_price_id: PROVIDER.price,
-    checkout_product_id: PROVIDER.product,
-    paid_checkout_id: IDS.paidCheckout,
-    paid_environment: "test",
-    paid_payment_state: "active",
-    paid_claim_state: "unclaimed",
-    paid_completed: true,
-    paid_authorization_active: true,
-    paid_checkout_session_ref: PROVIDER.checkoutSession,
-    paid_payment_ref: PROVIDER.paymentIntent,
-    paid_product_ref: PROVIDER.product,
-    paid_price_ref: PROVIDER.price,
-    paid_quantity: 1,
-    paid_amount_minor: "1999",
-    paid_currency: "usd",
-    paid_email: "repair-fixture@example.invalid",
-    claim_id: IDS.claim,
-    claim_state: "unclaimed",
-    claim_active: true,
-    claim_payment_ref: PROVIDER.paymentIntent,
-    claim_activation_ref: IDS.activation,
-    claim_account_ref: IDS.account,
-    claim_entitlement_ref: IDS.license,
-    claim_email: null,
-    account_id: IDS.account,
-    account_email: "repair-fixture@example.invalid",
-    entitlement_id: IDS.license,
-    entitlement_account_id: IDS.account,
-    entitlement_status: "active",
-    entitlement_plan_key: "sidestream_unlimited",
-    entitlement_checkout_session_id: PROVIDER.checkoutSession,
-    entitlement_payment_intent_id: PROVIDER.paymentIntent,
-    entitlement_product_id: null,
-    entitlement_price_id: null,
-    entitlement_amount_paid: "0",
-    entitlement_amount_refunded: "0",
-    entitlement_currency: "usd",
-    activation_id: IDS.activation,
-    activation_account_id: IDS.account,
-    activation_entitlement_id: IDS.license,
-    activation_source: "paid-acquisition-mc-v1",
-    activation_status: "completed",
-    activation_completed: true,
-    activation_active: true,
-  };
-  const client = {
-    async query(sql, params = []) {
-      statements.push(sql);
-      if (/select id, integrity_state\s+from public\.sidestream_acquisitions/.test(sql)) {
-        return { rows: [{ id: IDS.acquisition, integrity_state: "intact" }] };
-      }
-      if (/as exact_binding_count/.test(sql)) return { rows: [exactBoundary] };
-      if (/paid\.verified_amount_minor::text as paid_amount_minor/.test(sql)) {
-        assert.equal(params[3], IDS.activation);
-        return { rows: [legacyPath] };
-      }
-      throw new Error("Legacy placeholder rejection should stop before identity reads");
-    },
-  };
-
-  const report = await repair.inspectPaidTelemetryHandoffRepair(client, {
-    acquisitionId: IDS.acquisition,
-    namespace: "test",
-  });
-  assert.equal(report.reasonCode, "payment_or_account_conflict");
-  assert.equal(report.eligible, false);
-  assert.equal(report.wouldMutate, false);
-  assert.equal(report.journeyFingerprint, null);
+test("the exact reviewed legacy entitlement placeholder reaches identity validation", async () => {
+  const { report, statements } = await inspectReviewedPath(legacyEntitlementPath());
+  assert.equal(report.reasonCode, "exact_identity_missing_or_ambiguous");
   assert.equal(report.booleans.canonicalAcquisition, true);
   assert.equal(report.booleans.exactPaidPath, true);
   assert.equal(report.booleans.activePayment, false);
-  assert.equal(statements.length, 3);
+  assert.equal(statements.length, 4);
   assert.ok(statements.every((sql) => /^\s*select\b/i.test(sql)));
+});
+
+test("partial or mismatched legacy entitlement and claim tuples fail before identity reads", async () => {
+  const otherAccount = "82000000-0000-4000-8000-000000000002";
+  const otherLicense = "83000000-0000-4000-8000-000000000002";
+  const cases = [
+    ["only product restored", { entitlement_product_id: PROVIDER.product }],
+    ["only price restored", { entitlement_price_id: PROVIDER.price }],
+    ["nonzero mismatched entitlement amount", { entitlement_amount_paid: "1" }],
+    ["zero verified payment", { paid_amount_minor: "0" }],
+    ["negative verified payment", { paid_amount_minor: "-1" }],
+    ["missing verified payment", { paid_amount_minor: null }],
+    ["missing verified Product", {
+      paid_product_ref: null,
+      checkout_product_id: null,
+    }],
+    ["missing verified Price", {
+      paid_price_ref: null,
+      checkout_price_id: null,
+    }],
+    ["missing verified currency", {
+      paid_currency: null,
+      entitlement_currency: null,
+    }],
+    ["missing verified Checkout Session", {
+      paid_checkout_session_ref: null,
+      checkout_session_id: null,
+      entitlement_checkout_session_id: null,
+    }],
+    ["core Product mismatch", { checkout_product_id: "prod_other" }],
+    ["core Price mismatch", { checkout_price_id: "price_other" }],
+    ["Checkout Session mismatch", { checkout_session_id: "cs_other" }],
+    ["canonical payment mismatch", { claim_payment_ref: "pi_other" }],
+    ["nonzero refund", { entitlement_amount_refunded: "1" }],
+    ["Checkout account conflict", { checkout_account_id: otherAccount }],
+    ["claim account conflict", { claim_account_ref: otherAccount }],
+    ["claim entitlement conflict", { claim_entitlement_ref: otherLicense }],
+    ["null claim activation", { claim_activation_ref: null }],
+    ["mismatched claim email", { claim_email: "other@example.invalid" }],
+    ["non-null blank claim email", { claim_email: " " }],
+  ];
+
+  for (const [label, overrides] of cases) {
+    const { report, statements } = await inspectReviewedPath(
+      legacyEntitlementPath(overrides),
+    );
+    assert.equal(report.reasonCode, "payment_or_account_conflict", label);
+    assert.equal(report.eligible, false, label);
+    assert.equal(report.wouldMutate, false, label);
+    assert.equal(report.journeyFingerprint, null, label);
+    assert.equal(report.booleans.activePayment, false, label);
+    assert.equal(statements.length, 3, label);
+    assert.ok(statements.every((sql) => /^\s*select\b/i.test(sql)), label);
+  }
 });
 
 test("disposable Postgres repair is dry-run first, exact, private, and idempotent", async () => {

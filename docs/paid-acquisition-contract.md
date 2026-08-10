@@ -480,6 +480,30 @@ replay with both original paths preserved as history. The read-only Production
 dry-run on deployed `a4be35d` rejected this dual-path shape without mutation;
 that does not prove deployment, authorize apply, or qualify Production.
 
+A fourth boundary accepts one historical entitlement snapshot only after that
+same exact path has been selected. The normal contract remains strict Product,
+Price, and amount equality with the verified paid row. The only alternative is
+the complete entitlement tuple `Product=null`, `Price=null`, and
+`amount_paid=0`, paired with a strictly positive verified paid amount. Every
+existing Checkout Session/payment, core Product/Price/currency,
+account/entitlement/activation, exact-plan, zero-refund, reviewed
+install/receipt, lifecycle, commerce, stage-owner, namespace, and binding check
+still applies. Partial nulls, a nonzero mismatched entitlement amount, a zero or
+negative verified amount, provider mismatch, refund, or account conflict
+refuses.
+
+A null claim normalized email is a legacy omission only when its account,
+entitlement, and activation references are exact and that account already owns
+the verified Checkout email. Any non-null claim email must normalize to the
+same account/Checkout email. Selection and apply do not rewrite the entitlement
+snapshot or claim email. The disposable proof is
+`npm run replay:paid-telemetry-handoff -- --expect-legacy-entitlement-repaired`:
+dry-run reports `repair_ready`, first apply converges atomically to
+`already_repaired`, and replay is a no-op with those legacy fields unchanged.
+Deployed `812cf96` rejected the exact shape read-only without mutation; that is
+historical fail-closed evidence only, not deployment, apply authorization,
+current Production eligibility, or live qualification.
+
 ### Bounded activation-linkage diagnostics
 
 The authenticated paid-claim POST emits exactly one bounded operational outcome

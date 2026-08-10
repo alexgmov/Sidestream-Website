@@ -1169,6 +1169,27 @@ function paidPathAgrees(path: PaidPathRow, namespace: PaidTelemetryRepairNamespa
     path.paid_payment_ref === path.entitlement_payment_intent_id ||
     path.paid_payment_ref === path.entitlement_checkout_session_id
   );
+  const strictEntitlementPaymentSnapshot =
+    path.paid_product_ref === path.entitlement_product_id &&
+    path.paid_price_ref === path.entitlement_price_id &&
+    path.paid_amount_minor === path.entitlement_amount_paid;
+  const exactLegacyEntitlementPaymentSnapshot =
+    path.entitlement_product_id === null &&
+    path.entitlement_price_id === null &&
+    path.entitlement_amount_paid === "0" &&
+    Boolean(path.paid_checkout_session_ref) &&
+    Boolean(path.paid_payment_ref) &&
+    Boolean(path.paid_product_ref) &&
+    Boolean(path.paid_price_ref) &&
+    Boolean(path.paid_currency) &&
+    isStrictlyPositiveMinorAmount(path.paid_amount_minor);
+  const claimEmailMatches = path.claim_email === null
+    ? path.claim_account_ref === path.account_id &&
+      path.claim_entitlement_ref === path.entitlement_id &&
+      path.claim_activation_ref === path.activation_id &&
+      Boolean(accountEmail) &&
+      accountEmail === checkoutEmail
+    : Boolean(accountEmail) && accountEmail === checkoutEmail && accountEmail === claimEmail;
   return path.integrity_state === "intact" &&
     path.paid_environment === namespace &&
     path.checkout_state === "completed" &&
@@ -1194,17 +1215,17 @@ function paidPathAgrees(path: PaidPathRow, namespace: PaidTelemetryRepairNamespa
     path.paid_checkout_session_ref === path.checkout_session_id &&
     path.paid_checkout_session_ref === path.entitlement_checkout_session_id &&
     path.paid_product_ref === path.checkout_product_id &&
-    path.paid_product_ref === path.entitlement_product_id &&
     path.paid_price_ref === path.checkout_price_id &&
-    path.paid_price_ref === path.entitlement_price_id &&
     path.paid_quantity === 1 &&
-    path.paid_amount_minor === path.entitlement_amount_paid &&
+    (strictEntitlementPaymentSnapshot || exactLegacyEntitlementPaymentSnapshot) &&
     path.entitlement_amount_refunded === "0" &&
     path.paid_currency === path.entitlement_currency &&
     canonicalPaymentMatches &&
-    Boolean(accountEmail) &&
-    accountEmail === checkoutEmail &&
-    accountEmail === claimEmail;
+    claimEmailMatches;
+}
+
+function isStrictlyPositiveMinorAmount(value: string | null): boolean {
+  return typeof value === "string" && /^[1-9][0-9]*$/.test(value);
 }
 
 function exactIdentityAgrees(identity: ExactIdentityRow): boolean {

@@ -345,17 +345,18 @@ Apply revalidates all live eligibility facts and requires the operation,
 namespace, connected-target fingerprint, and journey fingerprint copied from a
 fresh dry-run. An identical confirmed replay is a no-op.
 
-#### Three exact paid-telemetry repair boundaries
+#### Four exact paid-telemetry repair boundaries
 
-The guarded correction recognizes three exact topologies; neither reviewed
-form is a looser version of the simple split.
+The guarded correction recognizes four exact boundaries; neither reviewed
+form nor the legacy snapshot is a looser version of the simple split.
 
-| Boundary | Simple install-profile split | Single pending-review path | Direct historical plus reviewed active path |
-| --- | --- | --- | --- |
-| Paid attempts | One eligible paid activation path is already direct. | Historical Checkout/paid/activation attempts may remain, but only one path is otherwise eligible. | Two independently active, account/payment/entitlement-consistent paths coexist; the direct-account path is historical and exactly one disjoint reviewed path is selected. |
-| Current telemetry root | The activation/account evidence and current install/receipt evidence begin on two compatible live profiles. | The current install, activation, and verified native receipt are on a telemetry profile with no direct account or Stripe identity; the exact authenticated account is on one other live profile. | The reviewed path has that same telemetry/account split, while the historical path separately owns its own activation, install, receipt, account link, Checkout, claim, and entitlement. |
-| Account bridge | The exact direct `account_identity` link selects the owner. | Exactly one `pending_review` row joins the activation profile to the live exact-account owner with `evidence_type=account_identity`, `evidence_trust=verified_server`, and `attachment_source=activation_claim`. | That same exact review is the unique selection boundary. The reviewed activation profile must have no direct account/Stripe link before binding, and the historical direct path is excluded rather than compared by age or order. |
-| Claim state | The exact Checkout and claim already agree as `claimed/claimed`. | The exact current Checkout and claim may agree as `unclaimed/unclaimed`; both become claimed only inside the successful convergence transaction. | Only the selected reviewed Checkout/claim pair may move together from `unclaimed/unclaimed`; the historical direct pair is untouched. |
+| Boundary | Simple install-profile split | Single pending-review path | Direct historical plus reviewed active path | Exact legacy entitlement snapshot |
+| --- | --- | --- | --- | --- |
+| Paid attempts | One eligible paid activation path is already direct. | Historical Checkout/paid/activation attempts may remain, but only one path is otherwise eligible. | Two independently active, account/payment/entitlement-consistent paths coexist; the direct-account path is historical and exactly one disjoint reviewed path is selected. | The same unique reviewed path is selected; the historical direct path remains untouched. |
+| Current telemetry root | The activation/account evidence and current install/receipt evidence begin on two compatible live profiles. | The current install, activation, and verified native receipt are on a telemetry profile with no direct account or Stripe identity; the exact authenticated account is on one other live profile. | The reviewed path has that same telemetry/account split, while the historical path separately owns its own activation, install, receipt, account link, Checkout, claim, and entitlement. | Identical to the reviewed active path, including its exact install and locally verified receipt. |
+| Account bridge | The exact direct `account_identity` link selects the owner. | Exactly one `pending_review` row joins the activation profile to the live exact-account owner with `evidence_type=account_identity`, `evidence_trust=verified_server`, and `attachment_source=activation_claim`. | That same exact review is the unique selection boundary. The reviewed activation profile must have no direct account/Stripe link before binding, and the historical direct path is excluded rather than compared by age or order. | The same exact review selects the owner. A null claim email is only a legacy omission when claim account, entitlement, and activation are exact and the account owns the verified Checkout email; a non-null claim email must match. |
+| Entitlement payment snapshot | Product, Price, and amount equal the verified paid row. | Product, Price, and amount equal the verified paid row. | Product, Price, and amount equal the verified paid row. | Entitlement Product and Price are both null and entitlement `amount_paid` is exactly zero, while the verified paid amount is strictly positive and its Checkout Session, payment, core Product/Price, currency, plan, and zero-refund facts remain exact. |
+| Claim state | The exact Checkout and claim already agree as `claimed/claimed`. | The exact current Checkout and claim may agree as `unclaimed/unclaimed`; both become claimed only inside the successful convergence transaction. | Only the selected reviewed Checkout/claim pair may move together from `unclaimed/unclaimed`; the historical direct pair is untouched. | The selected reviewed pair follows the same atomic transition; the entitlement snapshot and omitted claim email are never backfilled. |
 
 Current-path selection never chooses the newest, oldest, first, or most common
 attempt. Before a binding exists, the active activation must own the exact
@@ -383,6 +384,8 @@ trusted activation + exact current install/receipt
       matching active Checkout/claim state
                     |
  direct account link OR one exact verified-account review
+                    |
+ strict entitlement snapshot OR exact null/null/zero legacy tuple
                     |
  authentication + claim state + merge + binding (one transaction)
                     |
@@ -415,6 +418,26 @@ the historical direct path remains history. The deployed `a4be35d` read-only
 Production dry-run rejected this dual-path shape without mutation. That is
 fail-closed historical evidence, not proof this revision is deployed, current
 Production is eligible, apply is authorized, or a live journey is qualified.
+
+The fourth boundary changes only the final paid-path agreement gate. The exact
+strict entitlement snapshot remains valid. Its single legacy alternative
+requires the complete null/null/zero entitlement tuple, a strictly positive
+verified paid amount, and every existing Checkout Session/payment, core
+Product/Price/currency, account/entitlement/activation, plan, zero-refund,
+install/receipt, lifecycle, commerce, stage-owner, namespace, and binding
+invariant. A partial snapshot, nonzero mismatch, zero or negative verified
+amount, provider mismatch, refund, or ownership conflict still refuses. The
+selector and apply never rewrite the entitlement Product, Price, amount, or
+omitted claim email.
+
+Disposable proof is
+`npm run replay:paid-telemetry-handoff -- --expect-legacy-entitlement-repaired`.
+It proves read-only `repair_ready`, atomic convergence to `already_repaired`,
+and a count-for-count no-op replay while the legacy fields remain unchanged.
+Deployed `812cf96` rejected this exact shape in a read-only Production dry-run
+without mutation. That historical fail-closed result does not prove this
+revision is deployed, authorize apply, establish current Production
+eligibility, or qualify a live journey.
 
 Historical evidence is deliberately separate: against deployed commit
 `aa5a604`, the earlier read-only Production dry-run rejected the real journey as

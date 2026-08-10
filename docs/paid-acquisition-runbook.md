@@ -230,9 +230,10 @@ Disposable proof is:
 npm run replay:paid-telemetry-handoff
 npm run replay:paid-telemetry-handoff -- --expect-pending-review-repaired
 npm run replay:paid-telemetry-handoff -- --expect-reviewed-path-repaired
+npm run replay:paid-telemetry-handoff -- --expect-legacy-entitlement-repaired
 ```
 
-All three forms require the approved disposable `SIDESTREAM_TEST_POSTGRES_URL`, use
+All four forms require the approved disposable `SIDESTREAM_TEST_POSTGRES_URL`, use
 real migration, identity, usage, commerce, exact lookup, and funnel code, and
 print privacy-safe summaries. The default replay proves the simple
 install-profile split: one live/one merged profile, eight expected stages
@@ -251,7 +252,7 @@ rollback-contained operator apply, runtime convergence, matching
 stable journey fingerprint, and common commerce/lookup/funnel ownership. A
 second eligible activation path, second reviewed owner, mismatched claim states,
 or any stale eligibility fact fails closed and rolls back the whole transaction.
-All three summaries omit fixture UUIDs, hashes, email, Stripe references,
+All four summaries omit fixture UUIDs, hashes, email, Stripe references,
 tokens, and connection strings. No form inspects or repairs a deployed database.
 
 The third replay keeps two independently valid active paths: one direct
@@ -271,6 +272,27 @@ The read-only Production dry-run on deployed `a4be35d` rejected this dual-path
 shape without mutation. Preserve that as fail-closed historical evidence only:
 it does not show the selector correction is deployed, authorize apply, prove
 current eligibility, or qualify the live journey.
+
+The fourth replay starts from that exact reviewed path but preserves the
+historical entitlement placeholders: both Product and Price are null and
+`amount_paid` is exactly zero, while the verified paid row retains a strictly
+positive amount and exact canonical Checkout Session, payment, core
+Product/Price, currency, account, activation, plan, zero-refund,
+install/receipt, lifecycle, commerce, stage-owner, and binding evidence. Its
+claim normalized email is null only behind exact claim account, entitlement,
+activation, and account-to-verified-Checkout email ownership. Any partial
+snapshot, nonzero mismatch, zero/nonpositive payment, provider mismatch,
+refund, conflicting account, or non-null mismatched claim email refuses before
+mutation.
+
+The replay proves read-only `repair_ready`, atomic apply to
+`already_repaired`, and a count-for-count no-op replay. It also proves the
+entitlement Product/Price/amount and omitted claim email remain unchanged;
+selection does not backfill them. Deployed `812cf96` rejected this exact shape
+in a read-only Production dry-run without mutation. Preserve that as historical
+fail-closed evidence only: it does not prove this revision is deployed,
+authorize apply, establish current Production eligibility, or qualify the live
+journey.
 
 The earlier read-only Production dry-run on deployed commit `aa5a604` rejected
 the actual pending-review topology as ineligible and wrote nothing. Record that

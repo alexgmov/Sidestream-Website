@@ -184,10 +184,10 @@ export async function runPaidTelemetryHandoffFixture({
     "broken",
     "pending-review-repaired",
     "reviewed-path-repaired",
-    "legacy-entitlement-broken",
+    "legacy-entitlement-repaired",
   ].includes(expectation)) {
     throw new TypeError(
-      "Paid telemetry handoff expectation must be repaired, broken, pending-review-repaired, reviewed-path-repaired, or legacy-entitlement-broken",
+      "Paid telemetry handoff expectation must be repaired, broken, pending-review-repaired, reviewed-path-repaired, or legacy-entitlement-repaired",
     );
   }
 
@@ -219,7 +219,7 @@ export async function runPaidTelemetryHandoffFixture({
     if (
       expectation === "pending-review-repaired" ||
       expectation === "reviewed-path-repaired" ||
-      expectation === "legacy-entitlement-broken"
+      expectation === "legacy-entitlement-repaired"
     ) {
       const summary = await runPendingReviewRepairedScenario({
         pool,
@@ -232,12 +232,12 @@ export async function runPaidTelemetryHandoffFixture({
         integrityDependencies,
         repairUniqueReviewedPath:
           expectation === "reviewed-path-repaired" ||
-          expectation === "legacy-entitlement-broken",
-        expectLegacyEntitlementBroken:
-          expectation === "legacy-entitlement-broken",
+          expectation === "legacy-entitlement-repaired",
+        expectLegacyEntitlementRepaired:
+          expectation === "legacy-entitlement-repaired",
       });
-      if (expectation === "legacy-entitlement-broken") {
-        assertLegacyEntitlementBrokenExpectation(summary);
+      if (expectation === "legacy-entitlement-repaired") {
+        assertLegacyEntitlementRepairedExpectation(summary);
       } else if (expectation === "reviewed-path-repaired") {
         assertReviewedPathRepairedExpectation(summary);
       } else {
@@ -491,7 +491,7 @@ async function runPendingReviewRepairedScenario({
   readTransaction,
   integrityDependencies,
   repairUniqueReviewedPath,
-  expectLegacyEntitlementBroken,
+  expectLegacyEntitlementRepaired,
 }) {
   await acquisitionIntegrity.createCanonicalAcquisitionRoot({
     acquisitionId: IDS.acquisition,
@@ -626,7 +626,8 @@ async function runPendingReviewRepairedScenario({
     "test",
   );
 
-  if (expectLegacyEntitlementBroken) {
+  let legacyShapeBefore = null;
+  if (expectLegacyEntitlementRepaired) {
     await pool.query(
       `update ${quotedCrm}.sidestream_licenses
        set stripe_product_id = null, stripe_price_id = null, amount_paid = 0
@@ -639,32 +640,11 @@ async function runPendingReviewRepairedScenario({
        where id = $1::uuid`,
       [IDS.claim],
     );
-    const mutableBefore = await paidTelemetryAmbiguityMutationCounts(pool, quotedCrm);
-    const legacyBefore = await legacyEntitlementPlaceholderPrivacySafeSummary({
+    legacyShapeBefore = await legacyEntitlementPlaceholderPrivacySafeSummary({
       pool,
       quotedCrm,
       telemetryOwner,
       accountOwner: accountAttachment.profileId,
-    });
-    const guardedDryRun = await readTransaction((client) =>
-      paidTelemetryRepair.inspectPaidTelemetryHandoffRepair(client, {
-        acquisitionId: IDS.acquisition,
-        namespace: "test",
-      }));
-    const mutableAfter = await paidTelemetryAmbiguityMutationCounts(pool, quotedCrm);
-    const legacyAfter = await legacyEntitlementPlaceholderPrivacySafeSummary({
-      pool,
-      quotedCrm,
-      telemetryOwner,
-      accountOwner: accountAttachment.profileId,
-    });
-    return legacyEntitlementBrokenPrivacySafeSummary({
-      legacyShape: legacyBefore,
-      guardedDryRun,
-      mutableBefore,
-      mutableAfter,
-      legacyStateUnchanged:
-        JSON.stringify(legacyBefore) === JSON.stringify(legacyAfter),
     });
   }
 
@@ -676,12 +656,13 @@ async function runPendingReviewRepairedScenario({
         namespace: "test",
       }));
     const mutableAfterDryRun = await paidTelemetryAmbiguityMutationCounts(pool, quotedCrm);
-    const boundary = await reviewedPathSelectionPrivacySafeSummary({
-      pool,
-      quotedCrm,
-      telemetryOwner,
-      accountOwner: accountAttachment.profileId,
-    });
+    const boundary = legacyShapeBefore ||
+      await reviewedPathSelectionPrivacySafeSummary({
+        pool,
+        quotedCrm,
+        telemetryOwner,
+        accountOwner: accountAttachment.profileId,
+      });
     const guardedFirstApply = await writeTransaction((client) =>
       paidTelemetryRepair.applyPaidTelemetryHandoffRepair(client, {
         acquisitionId: IDS.acquisition,
@@ -704,6 +685,32 @@ async function runPendingReviewRepairedScenario({
         acquisitionId: IDS.acquisition,
         namespace: "test",
       }));
+    if (legacyShapeBefore) {
+      const legacyShapeAfter = await legacyEntitlementPlaceholderPrivacySafeSummary({
+        pool,
+        quotedCrm,
+        telemetryOwner,
+        accountOwner: accountAttachment.profileId,
+      });
+      return legacyEntitlementRepairedPrivacySafeSummary({
+        legacyShape: legacyShapeBefore,
+        guardedDryRun,
+        guardedFirstApply,
+        guardedReplay,
+        guardedAfterReplay,
+        mutableBefore,
+        mutableAfterDryRun,
+        mutableAfterFirstApply,
+        mutableAfterReplay,
+        legacyStateUnchanged:
+          legacyShapeAfter.reviewedLegacyPath.nullEntitlementProductAndPrice ===
+            legacyShapeBefore.reviewedLegacyPath.nullEntitlementProductAndPrice &&
+          legacyShapeAfter.reviewedLegacyPath.zeroEntitlementAmountPaid ===
+            legacyShapeBefore.reviewedLegacyPath.zeroEntitlementAmountPaid &&
+          legacyShapeAfter.reviewedLegacyPath.nullClaimGoogleEmail ===
+            legacyShapeBefore.reviewedLegacyPath.nullClaimGoogleEmail,
+      });
+    }
     return reviewedPathRepairedPrivacySafeSummary({
       boundary,
       guardedDryRun,
@@ -1804,36 +1811,47 @@ async function legacyEntitlementPlaceholderPrivacySafeSummary({
   });
 }
 
-function legacyEntitlementBrokenPrivacySafeSummary({
+function legacyEntitlementRepairedPrivacySafeSummary({
   legacyShape,
   guardedDryRun,
+  guardedFirstApply,
+  guardedReplay,
+  guardedAfterReplay,
   mutableBefore,
-  mutableAfter,
+  mutableAfterDryRun,
+  mutableAfterFirstApply,
+  mutableAfterReplay,
   legacyStateUnchanged,
 }) {
   return Object.freeze({
-    observedContract: "unique-reviewed-legacy-entitlement-rejected",
+    observedContract: "unique-reviewed-legacy-entitlement-repaired",
     ...legacyShape,
     guardedOperator: Object.freeze({
-      reasonCode: guardedDryRun.reasonCode,
-      eligible: guardedDryRun.eligible,
-      wouldMutate: guardedDryRun.wouldMutate,
+      beforeReasonCode: guardedDryRun.reasonCode,
+      beforeEligible: guardedDryRun.eligible,
+      beforeWouldMutate: guardedDryRun.wouldMutate,
       hasJourneyFingerprint: guardedDryRun.journeyFingerprint !== null,
-      canonicalAcquisitionSelected:
-        guardedDryRun.booleans.canonicalAcquisition,
-      exactPaidPathSelected: guardedDryRun.booleans.exactPaidPath,
+      firstApplyReasonCode: guardedFirstApply.reasonCode,
+      replayReasonCode: guardedReplay.reasonCode,
+      afterReplayReasonCode: guardedAfterReplay.reasonCode,
+      afterReplayWouldMutate: guardedAfterReplay.wouldMutate,
     }),
     mutationBoundary: Object.freeze({
-      stateUnchanged:
-        JSON.stringify(mutableBefore) === JSON.stringify(mutableAfter),
+      dryRunStateUnchanged:
+        JSON.stringify(mutableBefore) === JSON.stringify(mutableAfterDryRun),
+      applyChangedState:
+        JSON.stringify(mutableBefore) !== JSON.stringify(mutableAfterFirstApply),
+      replayWasNoOp:
+        JSON.stringify(mutableAfterFirstApply) === JSON.stringify(mutableAfterReplay),
       legacyStateUnchanged,
       before: mutableBefore,
-      after: mutableAfter,
+      afterFirstApply: mutableAfterFirstApply,
+      afterReplay: mutableAfterReplay,
     }),
   });
 }
 
-function assertLegacyEntitlementBrokenExpectation(summary) {
+function assertLegacyEntitlementRepairedExpectation(summary) {
   const expectedMutationCounts = {
     authenticationStages: 0,
     installationStages: 1,
@@ -1844,10 +1862,20 @@ function assertLegacyEntitlementBrokenExpectation(summary) {
     claimedClaims: 1,
     unclaimedClaims: 1,
   };
+  const expectedRepairedCounts = {
+    authenticationStages: 1,
+    installationStages: 1,
+    bindings: 1,
+    mergeAudits: 1,
+    claimedCheckouts: 2,
+    unclaimedCheckouts: 0,
+    claimedClaims: 2,
+    unclaimedClaims: 0,
+  };
   const pathChecksPass = Object.values(summary.reviewedLegacyPath)
     .every((value) => value === true);
   const observed =
-    summary.observedContract === "unique-reviewed-legacy-entitlement-rejected" &&
+    summary.observedContract === "unique-reviewed-legacy-entitlement-repaired" &&
     summary.acquisitionShape.paidPaths === 2 &&
     summary.acquisitionShape.activeConsistentPaths === 1 &&
     summary.acquisitionShape.activationPaths === 2 &&
@@ -1856,21 +1884,27 @@ function assertLegacyEntitlementBrokenExpectation(summary) {
     summary.reviewedPath.uniqueExactAccountOwnerLinks === 1 &&
     summary.bridgeKindsNonOverlapping === true &&
     pathChecksPass &&
-    summary.guardedOperator.reasonCode === "payment_or_account_conflict" &&
-    summary.guardedOperator.eligible === false &&
-    summary.guardedOperator.wouldMutate === false &&
-    summary.guardedOperator.hasJourneyFingerprint === false &&
-    summary.guardedOperator.canonicalAcquisitionSelected === true &&
-    summary.guardedOperator.exactPaidPathSelected === true &&
-    summary.mutationBoundary.stateUnchanged === true &&
+    summary.guardedOperator.beforeReasonCode === "repair_ready" &&
+    summary.guardedOperator.beforeEligible === true &&
+    summary.guardedOperator.beforeWouldMutate === true &&
+    summary.guardedOperator.hasJourneyFingerprint === true &&
+    summary.guardedOperator.firstApplyReasonCode === "already_repaired" &&
+    summary.guardedOperator.replayReasonCode === "already_repaired" &&
+    summary.guardedOperator.afterReplayReasonCode === "already_repaired" &&
+    summary.guardedOperator.afterReplayWouldMutate === false &&
+    summary.mutationBoundary.dryRunStateUnchanged === true &&
+    summary.mutationBoundary.applyChangedState === true &&
+    summary.mutationBoundary.replayWasNoOp === true &&
     summary.mutationBoundary.legacyStateUnchanged === true &&
     JSON.stringify(summary.mutationBoundary.before) ===
       JSON.stringify(expectedMutationCounts) &&
-    JSON.stringify(summary.mutationBoundary.after) ===
-      JSON.stringify(expectedMutationCounts);
+    JSON.stringify(summary.mutationBoundary.afterFirstApply) ===
+      JSON.stringify(expectedRepairedCounts) &&
+    JSON.stringify(summary.mutationBoundary.afterReplay) ===
+      JSON.stringify(expectedRepairedCounts);
   if (!observed) {
     throw new Error(
-      `Expected legacy-entitlement-broken paid telemetry handoff contract; observed ${JSON.stringify(summary)}`,
+      `Expected legacy-entitlement-repaired paid telemetry handoff contract; observed ${JSON.stringify(summary)}`,
     );
   }
 }
