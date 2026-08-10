@@ -229,9 +229,10 @@ Disposable proof is:
 ```bash
 npm run replay:paid-telemetry-handoff
 npm run replay:paid-telemetry-handoff -- --expect-pending-review-repaired
+npm run replay:paid-telemetry-handoff -- --expect-reviewed-path-repaired
 ```
 
-Both forms require the approved disposable `SIDESTREAM_TEST_POSTGRES_URL`, use
+All three forms require the approved disposable `SIDESTREAM_TEST_POSTGRES_URL`, use
 real migration, identity, usage, commerce, exact lookup, and funnel code, and
 print privacy-safe summaries. The default replay proves the simple
 install-profile split: one live/one merged profile, eight expected stages
@@ -250,8 +251,26 @@ rollback-contained operator apply, runtime convergence, matching
 stable journey fingerprint, and common commerce/lookup/funnel ownership. A
 second eligible activation path, second reviewed owner, mismatched claim states,
 or any stale eligibility fact fails closed and rolls back the whole transaction.
-Both summaries omit fixture UUIDs, hashes, email, Stripe references, tokens, and
-connection strings. Neither form inspects or repairs a deployed database.
+All three summaries omit fixture UUIDs, hashes, email, Stripe references,
+tokens, and connection strings. No form inspects or repairs a deployed database.
+
+The third replay keeps two independently valid active paths: one direct
+historical path and one disjoint path owning exactly one verified-server
+`account_identity` review from `activation_claim` to the unique exact-account
+owner. Discovery starts only from the canonical acquisition and trusted
+namespace and selects the reviewed activation without timestamps, row order,
+newest/oldest rules, Stripe reviews, email, hashes, provider references,
+receipt/activation input, or a new operator selector. It proves `repair_ready`,
+first-apply `already_repaired`, and count-for-count no-op replay. No reviewed
+path retains the earlier direct/simple behavior; duplicate reviewed paths or
+owners, pre-binding direct+review overlap, root mismatch, or any downstream
+eligibility conflict refuses before mutation. The exact immutable binding is
+the only post-repair replay disambiguator.
+
+The read-only Production dry-run on deployed `a4be35d` rejected this dual-path
+shape without mutation. Preserve that as fail-closed historical evidence only:
+it does not show the selector correction is deployed, authorize apply, prove
+current eligibility, or qualify the live journey.
 
 The earlier read-only Production dry-run on deployed commit `aa5a604` rejected
 the actual pending-review topology as ineligible and wrote nothing. Record that

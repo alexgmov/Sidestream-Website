@@ -183,10 +183,10 @@ export async function runPaidTelemetryHandoffFixture({
     "repaired",
     "broken",
     "pending-review-repaired",
-    "reviewed-path-ambiguous",
+    "reviewed-path-repaired",
   ].includes(expectation)) {
     throw new TypeError(
-      "Paid telemetry handoff expectation must be repaired, broken, pending-review-repaired, or reviewed-path-ambiguous",
+      "Paid telemetry handoff expectation must be repaired, broken, pending-review-repaired, or reviewed-path-repaired",
     );
   }
 
@@ -217,7 +217,7 @@ export async function runPaidTelemetryHandoffFixture({
 
     if (
       expectation === "pending-review-repaired" ||
-      expectation === "reviewed-path-ambiguous"
+      expectation === "reviewed-path-repaired"
     ) {
       const summary = await runPendingReviewRepairedScenario({
         pool,
@@ -228,10 +228,10 @@ export async function runPaidTelemetryHandoffFixture({
         writeTransaction,
         readTransaction,
         integrityDependencies,
-        reproduceReviewedPathAmbiguity: expectation === "reviewed-path-ambiguous",
+        repairUniqueReviewedPath: expectation === "reviewed-path-repaired",
       });
-      if (expectation === "reviewed-path-ambiguous") {
-        assertReviewedPathAmbiguityExpectation(summary);
+      if (expectation === "reviewed-path-repaired") {
+        assertReviewedPathRepairedExpectation(summary);
       } else {
         assertPendingReviewRepairedExpectation(summary);
       }
@@ -482,7 +482,7 @@ async function runPendingReviewRepairedScenario({
   writeTransaction,
   readTransaction,
   integrityDependencies,
-  reproduceReviewedPathAmbiguity,
+  repairUniqueReviewedPath,
 }) {
   await acquisitionIntegrity.createCanonicalAcquisitionRoot({
     acquisitionId: IDS.acquisition,
@@ -522,8 +522,8 @@ async function runPendingReviewRepairedScenario({
     [IDS.claim, IDS.activation],
   );
   await seedHistoricalPaidReplays(pool, quotedCrm, {
-    replayCount: reproduceReviewedPathAmbiguity ? 1 : HISTORICAL_PAID_REPLAYS.length,
-    independentEntitlement: reproduceReviewedPathAmbiguity,
+    replayCount: repairUniqueReviewedPath ? 1 : HISTORICAL_PAID_REPLAYS.length,
+    independentEntitlement: repairUniqueReviewedPath,
   });
 
   for (const [stage, stableServerReference, occurredAt] of [
@@ -569,7 +569,7 @@ async function runPendingReviewRepairedScenario({
       environment: { namespace: "test" },
       identity: {
         installIdHash: HASHES.historicalInstall,
-        ...(reproduceReviewedPathAmbiguity
+        ...(repairUniqueReviewedPath
           ? { installerReceiptIdHash: HASHES.directNativeReceipt }
           : {}),
       },
@@ -611,30 +611,60 @@ async function runPendingReviewRepairedScenario({
     throw new Error("Pending-review verified account conflict was not reproduced");
   }
 
-  if (reproduceReviewedPathAmbiguity) {
+  await customerCommerce.materializeCustomerCommerceEvent(
+    paymentIntentEvent(),
+    schemaQuery(pool, quotedCrm),
+    "test",
+  );
+
+  if (repairUniqueReviewedPath) {
     const mutableBefore = await paidTelemetryAmbiguityMutationCounts(pool, quotedCrm);
     const guardedDryRun = await readTransaction((client) =>
       paidTelemetryRepair.inspectPaidTelemetryHandoffRepair(client, {
         acquisitionId: IDS.acquisition,
         namespace: "test",
       }));
-    const mutableAfter = await paidTelemetryAmbiguityMutationCounts(pool, quotedCrm);
-    return reviewedPathAmbiguityPrivacySafeSummary({
+    const mutableAfterDryRun = await paidTelemetryAmbiguityMutationCounts(pool, quotedCrm);
+    const boundary = await reviewedPathSelectionPrivacySafeSummary({
       pool,
       quotedCrm,
       telemetryOwner,
       accountOwner: accountAttachment.profileId,
+    });
+    const guardedFirstApply = await writeTransaction((client) =>
+      paidTelemetryRepair.applyPaidTelemetryHandoffRepair(client, {
+        acquisitionId: IDS.acquisition,
+        namespace: "test",
+        confirmJourney: guardedDryRun.journeyFingerprint,
+      }));
+    const mutableAfterFirstApply = await paidTelemetryAmbiguityMutationCounts(
+      pool,
+      quotedCrm,
+    );
+    const guardedReplay = await writeTransaction((client) =>
+      paidTelemetryRepair.applyPaidTelemetryHandoffRepair(client, {
+        acquisitionId: IDS.acquisition,
+        namespace: "test",
+        confirmJourney: guardedDryRun.journeyFingerprint,
+      }));
+    const mutableAfterReplay = await paidTelemetryAmbiguityMutationCounts(pool, quotedCrm);
+    const guardedAfterReplay = await readTransaction((client) =>
+      paidTelemetryRepair.inspectPaidTelemetryHandoffRepair(client, {
+        acquisitionId: IDS.acquisition,
+        namespace: "test",
+      }));
+    return reviewedPathRepairedPrivacySafeSummary({
+      boundary,
       guardedDryRun,
+      guardedFirstApply,
+      guardedReplay,
+      guardedAfterReplay,
       mutableBefore,
-      mutableAfter,
+      mutableAfterDryRun,
+      mutableAfterFirstApply,
+      mutableAfterReplay,
     });
   }
-
-  await customerCommerce.materializeCustomerCommerceEvent(
-    paymentIntentEvent(),
-    schemaQuery(pool, quotedCrm),
-    "test",
-  );
 
   const linkageInput = {
     environment: "test",
@@ -1354,14 +1384,11 @@ async function paidTelemetryAmbiguityMutationCounts(pool, quotedCrm) {
   });
 }
 
-async function reviewedPathAmbiguityPrivacySafeSummary({
+async function reviewedPathSelectionPrivacySafeSummary({
   pool,
   quotedCrm,
   telemetryOwner,
   accountOwner,
-  guardedDryRun,
-  mutableBefore,
-  mutableAfter,
 }) {
   const paths = await pool.query(
     `select
@@ -1505,7 +1532,6 @@ async function reviewedPathAmbiguityPrivacySafeSummary({
     bridgeRow.reviewed_direct_account_or_stripe_links === 0 &&
     bridgeRow.reviewed_account_reviews === 1;
   return Object.freeze({
-    observedContract: "direct-and-reviewed-paid-path-ambiguity",
     acquisitionShape: Object.freeze({
       paidPaths: pathRow.paid_paths,
       activeConsistentPaths: pathRow.active_consistent_paths,
@@ -1527,21 +1553,48 @@ async function reviewedPathAmbiguityPrivacySafeSummary({
       uniqueExactAccountOwnerLinks: bridgeRow.unique_account_owner_links,
     }),
     bridgeKindsNonOverlapping,
+  });
+}
+
+function reviewedPathRepairedPrivacySafeSummary({
+  boundary,
+  guardedDryRun,
+  guardedFirstApply,
+  guardedReplay,
+  guardedAfterReplay,
+  mutableBefore,
+  mutableAfterDryRun,
+  mutableAfterFirstApply,
+  mutableAfterReplay,
+}) {
+  return Object.freeze({
+    observedContract: "unique-reviewed-paid-path-repaired",
+    ...boundary,
     guardedOperator: Object.freeze({
-      reasonCode: guardedDryRun.reasonCode,
-      eligible: guardedDryRun.eligible,
-      wouldMutate: guardedDryRun.wouldMutate,
+      beforeReasonCode: guardedDryRun.reasonCode,
+      beforeEligible: guardedDryRun.eligible,
+      beforeWouldMutate: guardedDryRun.wouldMutate,
       hasJourneyFingerprint: guardedDryRun.journeyFingerprint !== null,
+      firstApplyReasonCode: guardedFirstApply.reasonCode,
+      replayReasonCode: guardedReplay.reasonCode,
+      afterReplayReasonCode: guardedAfterReplay.reasonCode,
+      afterReplayWouldMutate: guardedAfterReplay.wouldMutate,
     }),
     mutationBoundary: Object.freeze({
-      stateUnchanged: JSON.stringify(mutableBefore) === JSON.stringify(mutableAfter),
+      dryRunStateUnchanged:
+        JSON.stringify(mutableBefore) === JSON.stringify(mutableAfterDryRun),
+      applyChangedState:
+        JSON.stringify(mutableBefore) !== JSON.stringify(mutableAfterFirstApply),
+      replayWasNoOp:
+        JSON.stringify(mutableAfterFirstApply) === JSON.stringify(mutableAfterReplay),
       before: mutableBefore,
-      after: mutableAfter,
+      afterFirstApply: mutableAfterFirstApply,
+      afterReplay: mutableAfterReplay,
     }),
   });
 }
 
-function assertReviewedPathAmbiguityExpectation(summary) {
+function assertReviewedPathRepairedExpectation(summary) {
   const expectedMutationCounts = {
     authenticationStages: 0,
     installationStages: 1,
@@ -1552,8 +1605,18 @@ function assertReviewedPathAmbiguityExpectation(summary) {
     claimedClaims: 1,
     unclaimedClaims: 1,
   };
+  const expectedRepairedCounts = {
+    authenticationStages: 1,
+    installationStages: 1,
+    bindings: 1,
+    mergeAudits: 1,
+    claimedCheckouts: 2,
+    unclaimedCheckouts: 0,
+    claimedClaims: 2,
+    unclaimedClaims: 0,
+  };
   const observed =
-    summary.observedContract === "direct-and-reviewed-paid-path-ambiguity" &&
+    summary.observedContract === "unique-reviewed-paid-path-repaired" &&
     summary.acquisitionShape.paidPaths === 2 &&
     summary.acquisitionShape.activeConsistentPaths === 2 &&
     summary.acquisitionShape.activationPaths === 2 &&
@@ -1569,18 +1632,26 @@ function assertReviewedPathAmbiguityExpectation(summary) {
     summary.reviewedPath.verifiedAccountReviews === 1 &&
     summary.reviewedPath.uniqueExactAccountOwnerLinks === 1 &&
     summary.bridgeKindsNonOverlapping === true &&
-    summary.guardedOperator.reasonCode === "paid_path_missing_or_ambiguous" &&
-    summary.guardedOperator.eligible === false &&
-    summary.guardedOperator.wouldMutate === false &&
-    summary.guardedOperator.hasJourneyFingerprint === false &&
-    summary.mutationBoundary.stateUnchanged === true &&
+    summary.guardedOperator.beforeReasonCode === "repair_ready" &&
+    summary.guardedOperator.beforeEligible === true &&
+    summary.guardedOperator.beforeWouldMutate === true &&
+    summary.guardedOperator.hasJourneyFingerprint === true &&
+    summary.guardedOperator.firstApplyReasonCode === "already_repaired" &&
+    summary.guardedOperator.replayReasonCode === "already_repaired" &&
+    summary.guardedOperator.afterReplayReasonCode === "already_repaired" &&
+    summary.guardedOperator.afterReplayWouldMutate === false &&
+    summary.mutationBoundary.dryRunStateUnchanged === true &&
+    summary.mutationBoundary.applyChangedState === true &&
+    summary.mutationBoundary.replayWasNoOp === true &&
     JSON.stringify(summary.mutationBoundary.before) ===
       JSON.stringify(expectedMutationCounts) &&
-    JSON.stringify(summary.mutationBoundary.after) ===
-      JSON.stringify(expectedMutationCounts);
+    JSON.stringify(summary.mutationBoundary.afterFirstApply) ===
+      JSON.stringify(expectedRepairedCounts) &&
+    JSON.stringify(summary.mutationBoundary.afterReplay) ===
+      JSON.stringify(expectedRepairedCounts);
   if (!observed) {
     throw new Error(
-      `Expected reviewed-path-ambiguous paid telemetry handoff contract; observed ${JSON.stringify(summary)}`,
+      `Expected reviewed-path-repaired paid telemetry handoff contract; observed ${JSON.stringify(summary)}`,
     );
   }
 }
