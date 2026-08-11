@@ -29,6 +29,7 @@
     "test:download-referral": "node --test tests/download-referral.test.mjs",
     "test:paid-acquisition-e2e": "node --experimental-strip-types --test tests/paid-acquisition-e2e-fixtures.test.mjs",
     "test:referral-visits": "node --test tests/referral-visits.test.mjs",
+    "test:renamed-launcher-attribution": "node --test tests/renamed-launcher-attribution.test.mjs",
     "test:entitlement": "node --experimental-strip-types --test tests/entitlement.test.mjs",
     "test:migrations": "node --experimental-strip-types --test tests/migrations.test.mjs",
     "test:postgres-config": "node --experimental-strip-types --test tests/postgres-config.test.mjs",
@@ -48,7 +49,8 @@
     "pricing:sync": "node scripts/sync-pricing-contract.mjs && node scripts/build-paid-landing.mjs",
     "pricing:check": "node scripts/sync-pricing-contract.mjs --check && node scripts/build-paid-landing.mjs --check && node --test tests/pricing-contract.test.mjs",
     "reconcile:paid-telemetry-handoff": "node --experimental-strip-types scripts/reconcile-paid-telemetry-handoff.mjs",
-    "replay:paid-telemetry-handoff": "node --experimental-strip-types scripts/replay-paid-telemetry-handoff.mjs"
+    "replay:paid-telemetry-handoff": "node --experimental-strip-types scripts/replay-paid-telemetry-handoff.mjs",
+    "launcher-attribution:server": "node scripts/run-renamed-launcher-proof-server.mjs"
   },
   "dependencies": {
     "@paper-design/shaders-react": "^0.0.76",
