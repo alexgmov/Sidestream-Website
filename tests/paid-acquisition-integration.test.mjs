@@ -471,6 +471,34 @@ test("public paid routes accept no browser-selected commerce truth", async () =>
   assert.match(landing, /ENTRY_PLACEHOLDER/);
 });
 
+test("authenticated Upgrade pricing cannot contaminate paid-acquisition Checkout", async () => {
+  const [account, paidCheckout] = await Promise.all([
+    readFile(new URL("../api/_lib/account.ts", import.meta.url), "utf8"),
+    readFile(new URL("../api/paid-acquisition/checkout.ts", import.meta.url), "utf8"),
+  ]);
+  const anonymousStart = account.indexOf(
+    "export async function createCheckoutIntentConfirmation",
+  );
+  const sharedWorkerStart = account.indexOf(
+    "export async function createOrReuseCheckoutSession",
+    anonymousStart,
+  );
+  const anonymousIntent = account.slice(anonymousStart, sharedWorkerStart);
+  assert.ok(anonymousStart >= 0 && sharedWorkerStart > anonymousStart);
+  assert.doesNotMatch(anonymousIntent, /resolveUpgradePricingCheckout/);
+  assert.doesNotMatch(anonymousIntent, /upgrade_pricing_snapshot_version/);
+  assert.match(anonymousIntent, /intent_kind[\s\S]*'anonymous'/);
+
+  assert.match(paidCheckout, /createCheckoutIntentConfirmation/);
+  assert.match(paidCheckout, /paidAcquisition:\s*true/);
+  assert.doesNotMatch(paidCheckout, /upgrade_pricing|monthly_half|subscription/);
+  assert.match(account, /options\.paidAcquisition[\s\S]*sidestream_paid_acquisition/);
+  assert.match(
+    account,
+    /billingModel:\s*upgradePricingSnapshot\?\.billingModel \|\| "one_time"/,
+  );
+});
+
 function paidNonce() {
   for (let value = 0; value < 10_000; value += 1) {
     const nonce = new Uint8Array(16);

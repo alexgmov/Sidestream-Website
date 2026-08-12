@@ -19,6 +19,7 @@ import {
   getStripeCustomerIdempotencyKey,
   getStripeCheckoutWindow,
   getStripePriceIdempotencyKey,
+  getStripeRecurringPriceIdempotencyKey,
   hasSameOrigin,
   isActivationClaimReplay,
   isCanonicalLicenseEntitlementUsable,
@@ -27,20 +28,34 @@ import {
   isActivationTokenReplayAllowed,
   parseStripeIdAllowlist,
   planOneTimeEntitlementTransition,
+  planUpgradePricingSubscriptionTransition,
   REFRESH_RETRY_GRACE_SECONDS,
   matchesDeviceHash,
   safeEqual,
   sanitizeAccountNextPath,
+  shouldApplyStripeEventWatermark,
   validateActivationClaimPost,
   validateClaimCsrfToken,
   verifyApprovedCheckoutPurchase,
   verifyLegacySubscriptionEntitlement,
+  verifyUpgradePricingSubscriptionTruth,
 } from "./entitlement.js";
 import {
   getTrustedCheckoutCountry,
+  selectMonthlyCheckoutPrice,
+  SIDESTREAM_CHECKOUT_OFFER_CATALOG,
   SIDESTREAM_GLOBAL_CHECKOUT_OFFER,
   selectCheckoutOffer,
 } from "./checkout-offers.js";
+import {
+  decideUpgradePricing,
+  UPGRADE_PRICING_EXPERIMENT_ID,
+  type UpgradePricingBillingModel,
+  type UpgradePricingDecision,
+  type UpgradePricingDecisionReason,
+  type UpgradePricingPersistedAssignment,
+  type UpgradePricingVariant,
+} from "./upgrade-pricing-experiment.js";
 import {
   DEVICE_POLICY_ERROR_CODES,
   MAX_ACTIVE_DEVICES,
@@ -120,6 +135,7 @@ const ACTIVATION_TOKEN_REPLAY_SECONDS = 10 * 60;
 const MAX_BODY_BYTES = 64 * 1024;
 const DEVICE_POLICY_MODE_ENV = "SIDESTREAM_DEVICE_POLICY_MODE";
 const ACCOUNT_DEVICE_LOCK_PREFIX = "sidestream:device-support";
+const PAID_ELIGIBILITY_LOCK_PREFIX = "sidestream:paid-eligibility";
 const ACQUISITION_ID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 export const DEVICE_DEACTIVATION_INTENT = "deactivate_active_device";
@@ -141,6 +157,9 @@ const SIDESTREAM_PRO_PRICE = {
   unitAmount: SIDESTREAM_GLOBAL_CHECKOUT_OFFER.amountMinor,
   currency: SIDESTREAM_GLOBAL_CHECKOUT_OFFER.currency,
 };
+const UPGRADE_PRICING_MONTHLY_INTERVAL = "month";
+const UPGRADE_PRICING_MONTHLY_INTERVAL_COUNT = 1;
+const UPGRADE_PRICING_MONTHLY_USAGE_TYPE = "licensed";
 const BASIC_SUBSCRIPTION_RESOURCE_KEY_BASE = "basic_subscription";
 const BASIC_SUBSCRIPTION_PRODUCT = {
   name: "Basic subscription",
@@ -1066,6 +1085,24 @@ type CheckoutIntentRow = {
   activation_key: string | null;
   activation_expires_at: Date | string | null;
   activation_checkout_session_id: string | null;
+  upgrade_pricing_snapshot_version: number | null;
+  upgrade_pricing_experiment_id: string | null;
+  upgrade_pricing_decision_reason: string | null;
+  upgrade_pricing_assignment_id: string | null;
+  upgrade_pricing_assignment_bucket: number | null;
+  upgrade_pricing_rollout_basis_points: number | null;
+  upgrade_pricing_assigned_at: Date | string | null;
+  upgrade_pricing_variant: string | null;
+  upgrade_pricing_billing_model: string | null;
+  upgrade_pricing_country: string | null;
+  upgrade_pricing_currency: string | null;
+  upgrade_pricing_amount_minor: number | null;
+  upgrade_pricing_stripe_product_id: string | null;
+  upgrade_pricing_stripe_price_id: string | null;
+  upgrade_pricing_account_id: string | null;
+  upgrade_pricing_acquisition_id: string | null;
+  upgrade_pricing_checkout_intent_id: string | null;
+  upgrade_pricing_activation_session_id: string | null;
 };
 
 type CheckoutOfferSnapshot = Readonly<{
@@ -1075,6 +1112,32 @@ type CheckoutOfferSnapshot = Readonly<{
   amountMinor: number;
   productId: string;
   priceId: string;
+}>;
+
+type UpgradePricingIntentSnapshot = Readonly<{
+  snapshotVersion: 1;
+  experimentId: "upgrade-pricing-v1";
+  decisionReason: UpgradePricingDecisionReason;
+  assignmentId: string | null;
+  assignmentBucket: number | null;
+  rolloutBasisPoints: number;
+  assignedAt: string | null;
+  variant: UpgradePricingVariant;
+  billingModel: UpgradePricingBillingModel;
+  country: string;
+  currency: string;
+  amountMinor: number;
+  productId: string;
+  priceId: string;
+  accountId: string;
+  acquisitionId: string;
+  intentId: string;
+  activationSessionId: string | null;
+}>;
+
+type ResolvedUpgradePricingCheckout = Readonly<{
+  offer: CheckoutOfferSnapshot;
+  snapshot: UpgradePricingIntentSnapshot;
 }>;
 
 function readCheckoutOfferSnapshot(
@@ -1107,6 +1170,265 @@ function readCheckoutOfferSnapshot(
   return { offerId, country, currency, amountMinor, productId, priceId };
 }
 
+function readUpgradePricingIntentSnapshot(
+  row: Partial<CheckoutIntentRow>,
+): UpgradePricingIntentSnapshot | null {
+  if (row.upgrade_pricing_snapshot_version !== 1) return null;
+  const decisionReason = cleanString(row.upgrade_pricing_decision_reason, 80) as
+    UpgradePricingDecisionReason;
+  const variant = cleanString(row.upgrade_pricing_variant, 40) as
+    UpgradePricingVariant;
+  const billingModel = cleanString(row.upgrade_pricing_billing_model, 40) as
+    UpgradePricingBillingModel;
+  const country = cleanString(row.upgrade_pricing_country, 2).toUpperCase();
+  const currency = cleanString(row.upgrade_pricing_currency, 3).toLowerCase();
+  const amountMinor = Number(row.upgrade_pricing_amount_minor);
+  const productId = cleanString(row.upgrade_pricing_stripe_product_id, 160);
+  const priceId = cleanString(row.upgrade_pricing_stripe_price_id, 160);
+  const accountId = cleanString(row.upgrade_pricing_account_id, 80);
+  const acquisitionId = cleanString(row.upgrade_pricing_acquisition_id, 80);
+  const intentId = cleanString(row.upgrade_pricing_checkout_intent_id, 80);
+  if (
+    row.upgrade_pricing_experiment_id !== UPGRADE_PRICING_EXPERIMENT_ID ||
+    ![
+      "existing_assignment", "rollout_control", "rollout_monthly", "rollout_zero",
+      "kill_switch", "assignment_unavailable", "unsupported_currency",
+    ].includes(decisionReason) ||
+    !["control_one_time", "monthly_half"].includes(variant) ||
+    !["one_time", "subscription"].includes(billingModel) ||
+    (variant === "control_one_time" ? billingModel !== "one_time" : billingModel !== "subscription") ||
+    !/^[A-Z]{2}$/.test(country) ||
+    !/^[a-z]{3}$/.test(currency) ||
+    !Number.isSafeInteger(amountMinor) ||
+    amountMinor <= 0 ||
+    !productId ||
+    !priceId ||
+    !accountId ||
+    !acquisitionId ||
+    !intentId
+  ) return null;
+  return {
+    snapshotVersion: 1,
+    experimentId: UPGRADE_PRICING_EXPERIMENT_ID,
+    decisionReason,
+    assignmentId: cleanString(row.upgrade_pricing_assignment_id, 80) || null,
+    assignmentBucket: row.upgrade_pricing_assignment_bucket === null
+      ? null
+      : Number(row.upgrade_pricing_assignment_bucket),
+    rolloutBasisPoints: Number(row.upgrade_pricing_rollout_basis_points),
+    assignedAt: row.upgrade_pricing_assigned_at
+      ? new Date(row.upgrade_pricing_assigned_at).toISOString()
+      : null,
+    variant,
+    billingModel,
+    country,
+    currency,
+    amountMinor,
+    productId,
+    priceId,
+    accountId,
+    acquisitionId,
+    intentId,
+    activationSessionId:
+      cleanString(row.upgrade_pricing_activation_session_id, 80) || null,
+  };
+}
+
+async function loadUpgradePricingAssignment(
+  accountId: string,
+  runner: Pick<Pool | PoolClient, "query"> = getPool(),
+): Promise<UpgradePricingPersistedAssignment | null> {
+  const result = await runner.query<{
+    id: string;
+    experiment_id: string;
+    account_id: string;
+    variant: UpgradePricingVariant;
+    billing_model: UpgradePricingBillingModel;
+    assignment_bucket: number;
+    rollout_basis_points: number;
+    assigned_at: Date | string;
+  }>(
+    `
+      select id, experiment_id, account_id, variant, billing_model,
+        assignment_bucket, rollout_basis_points, assigned_at
+      from public.sidestream_upgrade_pricing_assignments
+      where experiment_id = $1 and account_id = $2
+      limit 1
+    `,
+    [UPGRADE_PRICING_EXPERIMENT_ID, accountId],
+  );
+  const row = result.rows[0];
+  return row
+    ? {
+        assignmentId: row.id,
+        experimentId: "upgrade-pricing-v1",
+        accountId: row.account_id,
+        variant: row.variant,
+        billingModel: row.billing_model,
+        bucket: Number(row.assignment_bucket),
+        rolloutBasisPoints: Number(row.rollout_basis_points),
+        assignedAt: row.assigned_at,
+      }
+    : null;
+}
+
+async function persistUpgradePricingAssignment(
+  decision: UpgradePricingDecision,
+  runner: Pick<Pool | PoolClient, "query"> = getPool(),
+): Promise<Readonly<{
+  assignment: UpgradePricingPersistedAssignment | null;
+  inserted: boolean;
+}>> {
+  if (!decision.shouldPersistAssignment || decision.bucket === null) {
+    return {
+      assignment: await loadUpgradePricingAssignment(decision.accountId, runner),
+      inserted: false,
+    };
+  }
+  const assignmentId = randomUUID();
+  const inserted = await runner.query<{ id: string }>(
+    `
+      insert into public.sidestream_upgrade_pricing_assignments (
+        id, assignment_version, experiment_id, account_id, variant,
+        billing_model, assignment_bucket, rollout_basis_points, assigned_at
+      ) values ($1, 1, $2, $3, $4, $5, $6, $7, now())
+      on conflict (experiment_id, account_id) do nothing
+      returning id
+    `,
+    [
+      assignmentId,
+      decision.experimentId,
+      decision.accountId,
+      decision.variant,
+      decision.billingModel,
+      decision.bucket,
+      decision.rolloutBasisPoints,
+    ],
+  );
+  return {
+    assignment: await loadUpgradePricingAssignment(decision.accountId, runner),
+    inserted: inserted.rows[0]?.id === assignmentId,
+  };
+}
+
+function attachUpgradePricingAssignment(
+  decision: UpgradePricingDecision,
+  assignment: UpgradePricingPersistedAssignment,
+): UpgradePricingDecision {
+  return Object.freeze({
+    ...decision,
+    assignmentId: assignment.assignmentId,
+    assignedAt: new Date(assignment.assignedAt).toISOString(),
+    shouldPersistAssignment: false,
+  });
+}
+
+function fallbackUpgradePricingDecision(
+  decision: UpgradePricingDecision,
+): UpgradePricingDecision {
+  return Object.freeze({
+    ...decision,
+    variant: "control_one_time" as const,
+    billingModel: "one_time" as const,
+    bucket: null,
+    monthlyAmountMinor: null,
+    reason: "assignment_unavailable" as const,
+    assignmentId: null,
+    assignedAt: null,
+    shouldPersistAssignment: false,
+    monthlyCohortEligible: false,
+  });
+}
+
+async function resolveUpgradePricingCheckout(options: {
+  accountId: string;
+  acquisitionId: string;
+  intentId: string;
+  activationSessionId: string | null;
+  oneTimeOffer: CheckoutOfferSnapshot;
+  runner?: Pick<Pool | PoolClient, "query">;
+}): Promise<ResolvedUpgradePricingCheckout> {
+  const runner = options.runner || getPool();
+  const existingAssignment = await loadUpgradePricingAssignment(options.accountId, runner);
+  let decision = decideUpgradePricing({
+    accountId: options.accountId,
+    currency: options.oneTimeOffer.currency,
+    oneTimeAmountMinor: options.oneTimeOffer.amountMinor,
+    existingAssignment,
+  });
+  let offer = options.oneTimeOffer;
+  if (decision.billingModel === "subscription") {
+    try {
+      // Prove the immutable provider Price before persisting a new monthly
+      // assignment. A provider/config failure must not contaminate assignment
+      // balance with an account that could only receive control.
+      offer = await resolveMonthlyCheckoutOfferSnapshot(
+        options.oneTimeOffer,
+        decision.monthlyAmountMinor,
+      );
+    } catch (error) {
+      console.error("[sidestream checkout] monthly Price unavailable", {
+        code: "upgrade_pricing_monthly_price_unavailable",
+        cause: error instanceof Error ? error.name : "unknown",
+      });
+      decision = fallbackUpgradePricingDecision(decision);
+    }
+  }
+  if (decision.shouldPersistAssignment) {
+    const persisted = await persistUpgradePricingAssignment(decision, runner);
+    decision = persisted.assignment
+      ? persisted.inserted
+        ? attachUpgradePricingAssignment(decision, persisted.assignment)
+        : decideUpgradePricing({
+          accountId: options.accountId,
+          currency: options.oneTimeOffer.currency,
+          oneTimeAmountMinor: options.oneTimeOffer.amountMinor,
+          existingAssignment: persisted.assignment,
+        })
+      : fallbackUpgradePricingDecision(decision);
+  }
+  if (decision.billingModel === "one_time") {
+    offer = options.oneTimeOffer;
+  } else if (offer === options.oneTimeOffer) {
+    try {
+      offer = await resolveMonthlyCheckoutOfferSnapshot(
+        options.oneTimeOffer,
+        decision.monthlyAmountMinor,
+      );
+    } catch (error) {
+      console.error("[sidestream checkout] monthly Price unavailable", {
+        code: "upgrade_pricing_monthly_price_unavailable",
+        cause: error instanceof Error ? error.name : "unknown",
+      });
+      decision = fallbackUpgradePricingDecision(decision);
+    }
+  }
+
+  return {
+    offer,
+    snapshot: {
+      snapshotVersion: 1,
+      experimentId: "upgrade-pricing-v1",
+      decisionReason: decision.reason,
+      assignmentId: decision.assignmentId,
+      assignmentBucket: decision.bucket,
+      rolloutBasisPoints: decision.rolloutBasisPoints,
+      assignedAt: decision.assignedAt,
+      variant: decision.variant,
+      billingModel: decision.billingModel,
+      country: offer.country,
+      currency: offer.currency,
+      amountMinor: offer.amountMinor,
+      productId: offer.productId,
+      priceId: offer.priceId,
+      accountId: options.accountId,
+      acquisitionId: options.acquisitionId,
+      intentId: options.intentId,
+      activationSessionId: options.activationSessionId,
+    },
+  };
+}
+
 export async function createCheckoutIntent(options: {
   acquisitionId: string;
   activationKey?: string;
@@ -1116,12 +1438,23 @@ export async function createCheckoutIntent(options: {
 }): Promise<CheckoutIntent | null> {
   if (options.session.license.active) return null;
 
+  return withPgClient(async (client) => {
+    await client.query("begin");
+    try {
+      await lockPaidEligibility(client, options.session.accountId);
+      if (await hasCanonicalActivePaidLicense(options.session.accountId, client)) {
+        await client.query("rollback");
+        return null;
+      }
+
   const now = options.now || new Date();
   const acquisitionId = requiredAcquisitionId(options.acquisitionId);
   assertCheckoutAcquisitionIntact(
-    await requireCanonicalAcquisition(acquisitionId),
+    await requireCanonicalAcquisition(
+      acquisitionId,
+      acquisitionTransactionDependencies(client),
+    ),
   );
-  const offer = await resolveCheckoutOfferSnapshot(options.buyerCountry);
   const activationKey = cleanString(options.activationKey, 160);
   const kind: CheckoutIntentKind = activationKey
     ? "activation"
@@ -1130,22 +1463,83 @@ export async function createCheckoutIntent(options: {
   const browserToken = randomToken(32);
   const expiresAt = addHours(now, CHECKOUT_INTENT_TTL_HOURS);
   const accountId = options.session.accountId;
+  const activationSessionId = activationKey
+    ? (await client.query<{ id: string }>(
+        `
+          select id
+          from public.sidestream_activation_sessions
+          where activation_key = $1
+            and expires_at > $2::timestamptz
+            and completed_at is null
+            and device_id_hash is not null
+            and account_id is null
+            and status = 'pending'
+          limit 1
+        `,
+        [activationKey, now.toISOString()],
+      )).rows[0]?.id || null
+    : null;
+  if (activationKey && !activationSessionId) return null;
+  const oneTimeOffer = await resolveCheckoutOfferSnapshot(options.buyerCountry);
+  const upgradePricing = await resolveUpgradePricingCheckout({
+    accountId,
+    acquisitionId,
+    intentId,
+    activationSessionId,
+    oneTimeOffer,
+    runner: client,
+  });
+  const { offer, snapshot } = upgradePricing;
+  const snapshotParameters = [
+    snapshot.experimentId,
+    snapshot.decisionReason,
+    snapshot.assignmentId,
+    snapshot.assignmentBucket,
+    snapshot.rolloutBasisPoints,
+    snapshot.assignedAt,
+    snapshot.variant,
+    snapshot.billingModel,
+    snapshot.country,
+    snapshot.currency,
+    snapshot.amountMinor,
+    snapshot.productId,
+    snapshot.priceId,
+    snapshot.accountId,
+    snapshot.acquisitionId,
+    snapshot.intentId,
+    snapshot.activationSessionId,
+  ];
   const result = activationKey
-    ? await query<{ id: string }>(
+    ? await client.query<{ id: string }>(
         `
           insert into public.sidestream_checkout_intents (
             id, acquisition_id, intent_kind, browser_token_hash, account_id,
             activation_session_id, state, attempt, expires_at,
             offer_id, offer_country, offer_currency, offer_amount_minor,
             offer_stripe_product_id, offer_stripe_price_id,
+            upgrade_pricing_snapshot_version, upgrade_pricing_experiment_id,
+            upgrade_pricing_decision_reason, upgrade_pricing_assignment_id,
+            upgrade_pricing_assignment_bucket,
+            upgrade_pricing_rollout_basis_points, upgrade_pricing_assigned_at,
+            upgrade_pricing_variant, upgrade_pricing_billing_model,
+            upgrade_pricing_country, upgrade_pricing_currency,
+            upgrade_pricing_amount_minor, upgrade_pricing_stripe_product_id,
+            upgrade_pricing_stripe_price_id, upgrade_pricing_account_id,
+            upgrade_pricing_acquisition_id,
+            upgrade_pricing_checkout_intent_id,
+            upgrade_pricing_activation_session_id,
             created_at, updated_at
           )
           select $1::uuid, $2::uuid, 'activation', $3, $4::uuid, a.id,
             'pending', 0, $5::timestamptz,
             $8, $9, $10, $11, $12, $13,
+            1, $14, $15, $16::uuid, $17, $18, $19::timestamptz,
+            $20, $21, $22, $23, $24, $25, $26, $27::uuid,
+            $28::uuid, $29::uuid, $30::uuid,
             $6::timestamptz, $6::timestamptz
           from public.sidestream_activation_sessions a
           where a.activation_key = $7
+            and a.id = $30::uuid
             and a.expires_at > $6::timestamptz
             and a.completed_at is null
             and a.device_id_hash is not null
@@ -1167,19 +1561,34 @@ export async function createCheckoutIntent(options: {
           offer.amountMinor,
           offer.productId,
           offer.priceId,
+          ...snapshotParameters,
         ],
       )
-    : await query<{ id: string }>(
+    : await client.query<{ id: string }>(
         `
           insert into public.sidestream_checkout_intents (
             id, acquisition_id, intent_kind, browser_token_hash, account_id,
             activation_session_id, state, attempt, expires_at,
             offer_id, offer_country, offer_currency, offer_amount_minor,
             offer_stripe_product_id, offer_stripe_price_id,
+            upgrade_pricing_snapshot_version, upgrade_pricing_experiment_id,
+            upgrade_pricing_decision_reason, upgrade_pricing_assignment_id,
+            upgrade_pricing_assignment_bucket,
+            upgrade_pricing_rollout_basis_points, upgrade_pricing_assigned_at,
+            upgrade_pricing_variant, upgrade_pricing_billing_model,
+            upgrade_pricing_country, upgrade_pricing_currency,
+            upgrade_pricing_amount_minor, upgrade_pricing_stripe_product_id,
+            upgrade_pricing_stripe_price_id, upgrade_pricing_account_id,
+            upgrade_pricing_acquisition_id,
+            upgrade_pricing_checkout_intent_id,
+            upgrade_pricing_activation_session_id,
             created_at, updated_at
           ) values (
             $1::uuid, $2::uuid, $3, $4, $5::uuid, null, 'pending', 0,
             $6::timestamptz, $8, $9, $10, $11, $12, $13,
+            1, $14, $15, $16::uuid, $17, $18, $19::timestamptz,
+            $20, $21, $22, $23, $24, $25, $26, $27::uuid,
+            $28::uuid, $29::uuid, $30::uuid,
             $7::timestamptz, $7::timestamptz
           )
           returning id
@@ -1198,16 +1607,27 @@ export async function createCheckoutIntent(options: {
           offer.amountMinor,
           offer.productId,
           offer.priceId,
+          ...snapshotParameters,
         ],
       );
-  if (!result.rows[0]) return null;
+  if (!result.rows[0]) {
+    await client.query("rollback");
+    return null;
+  }
 
-  return buildCheckoutIntent({
+  const intent = buildCheckoutIntent({
     intentId,
     browserToken,
     intentExpiresAt: expiresAt,
     kind,
     activationKey,
+  });
+      await client.query("commit");
+      return intent;
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    }
   });
 }
 
@@ -1280,6 +1700,57 @@ export async function createCheckoutIntentConfirmation(options: {
   });
 }
 
+export function buildUpgradeCheckoutSessionParameters(options: {
+  billingModel: UpgradePricingBillingModel;
+  stripeCustomerId: string;
+  stripePriceId: string;
+  successUrl: string;
+  cancelUrl: string;
+  expiresAt?: number;
+  clientReferenceId: string;
+  metadata: Record<string, string>;
+}): Stripe.Checkout.SessionCreateParams {
+  const metadata = options.metadata;
+  const common = {
+    ...(options.stripeCustomerId ? { customer: options.stripeCustomerId } : {}),
+    line_items: [{ price: options.stripePriceId, quantity: 1 }],
+    payment_method_types: ["card" as const],
+    billing_address_collection: "auto" as const,
+    success_url: options.successUrl,
+    cancel_url: options.cancelUrl,
+    ...(options.expiresAt ? { expires_at: options.expiresAt } : {}),
+    client_reference_id: options.clientReferenceId,
+    metadata,
+  };
+  if (options.billingModel === "subscription") {
+    if (!options.stripeCustomerId) {
+      throw new Error("Monthly Checkout requires the authenticated account Customer");
+    }
+    return {
+      mode: "subscription",
+      ...common,
+      subscription_data: { metadata },
+    };
+  }
+  return {
+    mode: "payment",
+    ...common,
+    ...(!options.stripeCustomerId ? { customer_creation: "always" as const } : {}),
+    allow_promotion_codes: true,
+    custom_text: {
+      submit: {
+        message:
+          "We'll email your Sidestream download link to the address you enter above. One-time payment. No subscription.",
+      },
+    },
+    invoice_creation: {
+      enabled: true,
+      invoice_data: { metadata },
+    },
+    payment_intent_data: { metadata },
+  };
+}
+
 export async function createOrReuseCheckoutSession(options: {
   intentId: string;
   browserToken: string;
@@ -1302,6 +1773,24 @@ export async function createOrReuseCheckoutSession(options: {
             ci.stripe_product_id, ci.offer_id, ci.offer_country,
             ci.offer_currency, ci.offer_amount_minor,
             ci.offer_stripe_product_id, ci.offer_stripe_price_id,
+            ci.upgrade_pricing_snapshot_version,
+            ci.upgrade_pricing_experiment_id,
+            ci.upgrade_pricing_decision_reason,
+            ci.upgrade_pricing_assignment_id,
+            ci.upgrade_pricing_assignment_bucket,
+            ci.upgrade_pricing_rollout_basis_points,
+            ci.upgrade_pricing_assigned_at,
+            ci.upgrade_pricing_variant,
+            ci.upgrade_pricing_billing_model,
+            ci.upgrade_pricing_country,
+            ci.upgrade_pricing_currency,
+            ci.upgrade_pricing_amount_minor,
+            ci.upgrade_pricing_stripe_product_id,
+            ci.upgrade_pricing_stripe_price_id,
+            ci.upgrade_pricing_account_id,
+            ci.upgrade_pricing_acquisition_id,
+            ci.upgrade_pricing_checkout_intent_id,
+            ci.upgrade_pricing_activation_session_id,
             ci.stripe_session_expires_at,
             ci.expires_at, a.activation_key,
             a.expires_at as activation_expires_at,
@@ -1360,7 +1849,22 @@ export async function createOrReuseCheckoutSession(options: {
           "intent_account_mismatch",
         ));
       }
+      if (row.account_id) {
+        // Serialize the eligibility check with every paid-entitlement grant so
+        // a concurrent webhook cannot make an already-paid owner chargeable.
+        await lockPaidEligibility(client, row.account_id);
+      }
       if (options.session?.license.active) {
+        return commitCheckoutIntentResult(client, checkoutIntentError(
+          409,
+          "Sidestream Unlimited is already active. Open your account or use Restore Purchase.",
+          "active_license",
+        ));
+      }
+      if (
+        row.account_id &&
+        await hasCanonicalActivePaidLicense(row.account_id, client)
+      ) {
         return commitCheckoutIntentResult(client, checkoutIntentError(
           409,
           "Sidestream Unlimited is already active. Open your account or use Restore Purchase.",
@@ -1380,6 +1884,26 @@ export async function createOrReuseCheckoutSession(options: {
           409,
           "Checkout offer snapshot is unavailable",
           "offer_snapshot_missing",
+        ));
+      }
+      const upgradePricingSnapshot = readUpgradePricingIntentSnapshot(row);
+      if (
+        row.upgrade_pricing_snapshot_version !== null &&
+        (!upgradePricingSnapshot ||
+          upgradePricingSnapshot.intentId !== row.id ||
+          upgradePricingSnapshot.accountId !== row.account_id ||
+          upgradePricingSnapshot.acquisitionId !== row.acquisition_id ||
+          upgradePricingSnapshot.activationSessionId !== row.activation_session_id ||
+          upgradePricingSnapshot.country !== checkoutOffer.country ||
+          upgradePricingSnapshot.currency !== checkoutOffer.currency ||
+          upgradePricingSnapshot.amountMinor !== checkoutOffer.amountMinor ||
+          upgradePricingSnapshot.productId !== checkoutOffer.productId ||
+          upgradePricingSnapshot.priceId !== checkoutOffer.priceId)
+      ) {
+        return commitCheckoutIntentResult(client, checkoutIntentError(
+          409,
+          "Checkout experiment snapshot is unavailable",
+          "upgrade_pricing_snapshot_missing",
         ));
       }
       let stripePriceId = checkoutOffer.priceId;
@@ -1672,6 +2196,48 @@ export async function createOrReuseCheckoutSession(options: {
         metadata.sidestream_account_id = options.session.accountId;
       }
       if (activationKey) metadata.sidestream_activation_key = activationKey;
+      if (upgradePricingSnapshot) {
+        Object.assign(metadata, {
+          sidestream_upgrade_snapshot_version:
+            String(upgradePricingSnapshot.snapshotVersion),
+          sidestream_upgrade_experiment_id:
+            upgradePricingSnapshot.experimentId,
+          sidestream_upgrade_decision_reason:
+            upgradePricingSnapshot.decisionReason,
+          sidestream_upgrade_rollout_bps:
+            String(upgradePricingSnapshot.rolloutBasisPoints),
+          sidestream_upgrade_variant: upgradePricingSnapshot.variant,
+          sidestream_upgrade_billing_model:
+            upgradePricingSnapshot.billingModel,
+          sidestream_upgrade_country: upgradePricingSnapshot.country,
+          sidestream_upgrade_currency: upgradePricingSnapshot.currency,
+          sidestream_upgrade_amount_minor:
+            String(upgradePricingSnapshot.amountMinor),
+          sidestream_upgrade_product_id: upgradePricingSnapshot.productId,
+          sidestream_upgrade_price_id: upgradePricingSnapshot.priceId,
+          sidestream_upgrade_account_id: upgradePricingSnapshot.accountId,
+          sidestream_upgrade_acquisition_id:
+            upgradePricingSnapshot.acquisitionId,
+          sidestream_upgrade_intent_id:
+            upgradePricingSnapshot.intentId,
+        });
+        if (upgradePricingSnapshot.assignmentId) {
+          metadata.sidestream_upgrade_assignment_id =
+            upgradePricingSnapshot.assignmentId;
+        }
+        if (upgradePricingSnapshot.assignmentBucket !== null) {
+          metadata.sidestream_upgrade_assignment_bucket =
+            String(upgradePricingSnapshot.assignmentBucket);
+        }
+        if (upgradePricingSnapshot.assignedAt) {
+          metadata.sidestream_upgrade_assigned_at =
+            upgradePricingSnapshot.assignedAt;
+        }
+        if (upgradePricingSnapshot.activationSessionId) {
+          metadata.sidestream_upgrade_activation_id =
+            upgradePricingSnapshot.activationSessionId;
+        }
+      }
 
       const checkoutWindow = activationExpiresAt
         ? getStripeCheckoutWindow(
@@ -1689,31 +2255,16 @@ export async function createOrReuseCheckoutSession(options: {
           "activation_window_too_short",
         ));
       }
-      const checkoutParams: Stripe.Checkout.SessionCreateParams = {
-        mode: "payment",
-        ...(stripeCustomerId ? { customer: stripeCustomerId } : {}),
-        ...(!stripeCustomerId ? { customer_creation: "always" as const } : {}),
-        line_items: [{ price: stripePriceId, quantity: 1 }],
-        payment_method_types: ["card"],
-        allow_promotion_codes: true,
-        billing_address_collection: "auto",
-        success_url: buildCheckoutCompletionUrl(options.baseUrl, activationKey),
-        cancel_url: cancelUrl.toString(),
-        ...(checkoutWindow ? { expires_at: checkoutWindow.checkoutExpiresAt } : {}),
-        client_reference_id: activationKey || options.session?.accountId || row.id,
-        custom_text: {
-          submit: {
-            message:
-              "We'll email your Sidestream download link to the address you enter above. One-time payment. No subscription.",
-          },
-        },
-        invoice_creation: {
-          enabled: true,
-          invoice_data: { metadata },
-        },
+      const checkoutParams = buildUpgradeCheckoutSessionParameters({
+        billingModel: upgradePricingSnapshot?.billingModel || "one_time",
+        stripeCustomerId,
+        stripePriceId,
+        successUrl: buildCheckoutCompletionUrl(options.baseUrl, activationKey),
+        cancelUrl: cancelUrl.toString(),
+        expiresAt: checkoutWindow?.checkoutExpiresAt,
+        clientReferenceId: activationKey || options.session?.accountId || row.id,
         metadata,
-        payment_intent_data: { metadata },
-      };
+      });
       const checkoutSession = await getStripe().checkout.sessions.create(
         checkoutParams,
         {
@@ -1769,6 +2320,10 @@ export async function createOrReuseCheckoutSession(options: {
         ],
       );
       await recordCheckoutStarted(
+        client,
+        checkoutStartedStage(row, now),
+      );
+      await recordUpgradePricingExposure(
         client,
         checkoutStartedStage(row, now),
       );
@@ -1879,28 +2434,59 @@ async function prepareCheckoutSessionReplacement(
 async function commitCheckoutIntentResult(
   client: PoolClient,
   result: CheckoutIntentResult,
-  acquisition?: Readonly<{
-    acquisitionId: string;
-    intentId: string;
-    occurredAt: Date;
-  }>,
+  acquisition?: CheckoutStartedStage,
 ) {
   if (result.ok && acquisition) {
     await recordCheckoutStarted(client, acquisition);
+    await recordUpgradePricingExposure(client, acquisition);
   }
   await client.query("commit");
   return result;
 }
 
 function checkoutStartedStage(
-  row: Pick<CheckoutIntentRow, "id" | "acquisition_id">,
+  row: CheckoutIntentRow,
   occurredAt: Date,
-) {
+): CheckoutStartedStage {
   return {
     acquisitionId: requiredAcquisitionId(row.acquisition_id),
     intentId: row.id,
     occurredAt,
+    upgradePricing: readUpgradePricingIntentSnapshot(row),
   };
+}
+
+type CheckoutStartedStage = Readonly<{
+  acquisitionId: string;
+  intentId: string;
+  occurredAt: Date;
+  upgradePricing: UpgradePricingIntentSnapshot | null;
+}>;
+
+async function recordUpgradePricingExposure(
+  client: PoolClient,
+  input: CheckoutStartedStage,
+) {
+  const snapshot = input.upgradePricing;
+  if (!snapshot) return;
+  await client.query(
+    `
+      insert into public.sidestream_upgrade_pricing_exposures (
+        assignment_id, experiment_id, account_id, variant, billing_model,
+        checkout_intent_id, exposed_at
+      ) values ($1::uuid, $2, $3::uuid, $4, $5, $6::uuid, $7::timestamptz)
+      on conflict (experiment_id, checkout_intent_id) do nothing
+    `,
+    [
+      snapshot.assignmentId,
+      snapshot.experimentId,
+      snapshot.accountId,
+      snapshot.variant,
+      snapshot.billingModel,
+      snapshot.intentId,
+      input.occurredAt.toISOString(),
+    ],
+  );
 }
 
 async function recordCheckoutStarted(
@@ -2054,6 +2640,193 @@ async function resolveCheckoutOfferSnapshot(
     productId,
     priceId: price.id,
   };
+}
+
+async function resolveMonthlyCheckoutOfferSnapshot(
+  oneTimeOffer: CheckoutOfferSnapshot,
+  monthlyAmountMinor: number | null,
+): Promise<CheckoutOfferSnapshot> {
+  if (!Number.isSafeInteger(monthlyAmountMinor) || (monthlyAmountMinor || 0) <= 0) {
+    throw new Error("Upgrade pricing monthly amount is unavailable");
+  }
+  const catalogEntry = SIDESTREAM_CHECKOUT_OFFER_CATALOG.find(
+    (entry) => entry.offerId === oneTimeOffer.offerId,
+  );
+  if (!catalogEntry) throw new Error("Upgrade pricing offer is not in the catalog");
+  const monthlySelection = selectMonthlyCheckoutPrice(catalogEntry);
+  const productId = oneTimeOffer.productId;
+  const lookupKey = upgradePricingMonthlyLookupKey(
+    oneTimeOffer.currency,
+    monthlyAmountMinor!,
+  );
+  const priceId = monthlySelection.kind === "lookup"
+    ? await getSidestreamUpgradeMonthlyPriceId({
+        productId,
+        currency: oneTimeOffer.currency,
+        amountMinor: monthlyAmountMinor!,
+        configuredPriceId: monthlySelection.configuredPriceId,
+      })
+    : monthlySelection.configuredPriceId;
+  if (!priceId) {
+    throw new Error(`Approved monthly offer ${catalogEntry.offerId} has no configured Price`);
+  }
+
+  const [price, product] = await Promise.all([
+    getStripe().prices.retrieve(priceId, {}, getStripeRequestOptions()),
+    getStripe().products.retrieve(productId, {}, getStripeRequestOptions()),
+  ]);
+  if (
+    "deleted" in product ||
+    product.id !== productId ||
+    product.active !== true ||
+    product.livemode !== isLiveStripeMode()
+  ) {
+    throw new Error("Monthly Checkout Product is not the active Sidestream Unlimited Product");
+  }
+  if (!isUpgradePricingMonthlyPriceShape(price, {
+    productId,
+    currency: oneTimeOffer.currency,
+    amountMinor: monthlyAmountMinor!,
+    lookupKey,
+  })) {
+    throw new Error(`Stripe Price ${priceId} does not match the approved monthly offer`);
+  }
+  return {
+    offerId: `${oneTimeOffer.offerId}-monthly`,
+    country: oneTimeOffer.country,
+    currency: price.currency,
+    amountMinor: price.unit_amount!,
+    productId,
+    priceId: price.id,
+  };
+}
+
+export async function getSidestreamUpgradeMonthlyPriceId(options: {
+  productId: string;
+  currency: string;
+  amountMinor: number;
+  configuredPriceId?: string;
+}) {
+  const lookupKey = upgradePricingMonthlyLookupKey(
+    options.currency,
+    options.amountMinor,
+  );
+  const expected = {
+    productId: options.productId,
+    currency: options.currency,
+    amountMinor: options.amountMinor,
+    lookupKey,
+  };
+  if (options.configuredPriceId) {
+    try {
+      const configured = await getStripe().prices.retrieve(
+        options.configuredPriceId,
+        {},
+        getStripeRequestOptions(),
+      );
+      if (isUpgradePricingMonthlyPriceShape(configured, expected)) {
+        return configured.id;
+      }
+    } catch (error) {
+      if (!isStripeResourceMissing(error)) throw error;
+    }
+  }
+
+  const product = await retrieveSidestreamProProduct(options.productId);
+  if (product.livemode !== isLiveStripeMode()) {
+    throw new Error("Sidestream Unlimited Product belongs to the wrong Stripe namespace");
+  }
+  const lookupPrices = await getStripe().prices.list({
+    active: true,
+    lookup_keys: [lookupKey],
+    product: options.productId,
+    limit: 10,
+  }, getStripeRequestOptions());
+  const lookupMatch = lookupPrices.data.find((price) =>
+    price.lookup_key === lookupKey &&
+    isUpgradePricingMonthlyPriceShape(price, expected)
+  );
+  if (lookupMatch) return lookupMatch.id;
+  if (lookupPrices.data.length > 0) {
+    throw new Error(`Stripe lookup key ${lookupKey} has conflicting monthly terms`);
+  }
+
+  const recurring = {
+    interval: UPGRADE_PRICING_MONTHLY_INTERVAL,
+    interval_count: UPGRADE_PRICING_MONTHLY_INTERVAL_COUNT,
+    usage_type: UPGRADE_PRICING_MONTHLY_USAGE_TYPE,
+  } as const;
+  try {
+    const created = await getStripe().prices.create({
+      product: options.productId,
+      currency: options.currency,
+      unit_amount: options.amountMinor,
+      lookup_key: lookupKey,
+      recurring,
+      metadata: {
+        sidestream_plan: SIDESTREAM_PRO_PLAN_KEY,
+        sidestream_upgrade_experiment_id: UPGRADE_PRICING_EXPERIMENT_ID,
+      },
+    }, {
+      ...getStripeRequestOptions(),
+      idempotencyKey: getStripeRecurringPriceIdempotencyKey({
+        ...expected,
+        interval: UPGRADE_PRICING_MONTHLY_INTERVAL,
+        intervalCount: UPGRADE_PRICING_MONTHLY_INTERVAL_COUNT,
+        usageType: UPGRADE_PRICING_MONTHLY_USAGE_TYPE,
+        livemode: isLiveStripeMode(),
+      }),
+    });
+    if (!isUpgradePricingMonthlyPriceShape(created, expected)) {
+      throw new Error("Stripe created a monthly Price with unexpected terms");
+    }
+    return created.id;
+  } catch (error) {
+    const converged = await getStripe().prices.list({
+      active: true,
+      lookup_keys: [lookupKey],
+      product: options.productId,
+      limit: 10,
+    }, getStripeRequestOptions());
+    const match = converged.data.find((price) =>
+      price.lookup_key === lookupKey &&
+      isUpgradePricingMonthlyPriceShape(price, expected)
+    );
+    if (match) return match.id;
+    throw error;
+  }
+}
+
+export function upgradePricingMonthlyLookupKey(currency: string, amountMinor: number) {
+  const normalizedCurrency = cleanString(currency, 3).toLowerCase();
+  if (!/^[a-z]{3}$/.test(normalizedCurrency) || !Number.isSafeInteger(amountMinor) || amountMinor <= 0) {
+    throw new TypeError("Monthly lookup key requires a currency and positive minor amount");
+  }
+  return `sidestream_pro_monthly_${normalizedCurrency}_${amountMinor}`;
+}
+
+function isUpgradePricingMonthlyPriceShape(
+  price: Stripe.Price,
+  expected: {
+    productId: string;
+    currency: string;
+    amountMinor: number;
+    lookupKey: string;
+  },
+) {
+  return Boolean(
+    price.id &&
+    price.active === true &&
+    price.livemode === isLiveStripeMode() &&
+    price.lookup_key === expected.lookupKey &&
+    normalizeStripeId(price.product) === expected.productId &&
+    price.currency === expected.currency &&
+    price.unit_amount === expected.amountMinor &&
+    price.type === "recurring" &&
+    price.recurring?.interval === UPGRADE_PRICING_MONTHLY_INTERVAL &&
+    price.recurring?.interval_count === UPGRADE_PRICING_MONTHLY_INTERVAL_COUNT &&
+    price.recurring?.usage_type === UPGRADE_PRICING_MONTHLY_USAGE_TYPE,
+  );
 }
 
 export async function getSidestreamProPriceId() {
@@ -3372,6 +4145,7 @@ export async function upsertLicenseFromSubscription(
       await client.query("select pg_advisory_xact_lock(hashtext($1))", [
         `legacy_subscription:${subscriptionId}`,
       ]);
+      await lockPaidEligibility(client, accountId);
       const result = await client.query<{ id: string }>(
         `
           insert into public.sidestream_licenses (
@@ -3775,6 +4549,588 @@ async function revokeLicenseCredentials(runner: Pool | PoolClient, licenseId: st
   );
 }
 
+type UpgradePricingSubscriptionEventType =
+  | "checkout.session.completed"
+  | "customer.subscription.created"
+  | "customer.subscription.updated"
+  | "customer.subscription.deleted"
+  | "invoice.paid"
+  | "invoice.payment_failed";
+
+type UpgradePricingSubscriptionContextRow = CheckoutIntentRow & {
+  assignment_version: number | null;
+  assignment_experiment_id: string | null;
+  assignment_account_id: string | null;
+  assignment_variant: string | null;
+  assignment_billing_model: string | null;
+  assignment_bucket: number | null;
+  assignment_rollout_basis_points: number | null;
+  assignment_assigned_at: Date | string | null;
+  account_stripe_customer_id: string | null;
+  activation_id: string | null;
+  activation_account_id: string | null;
+  activation_license_id: string | null;
+  activation_key_value: string | null;
+  activation_checkout_session_id: string | null;
+  activation_checkout_price_id: string | null;
+  activation_checkout_product_id: string | null;
+  activation_checkout_attached_at: Date | string | null;
+  activation_checkout_expires_at: Date | string | null;
+  activation_checkout_claim_grace_until: Date | string | null;
+};
+
+export async function reconcileUpgradePricingSubscription(
+  subscriptionPayload: unknown,
+  stripeEvent: { eventId: string; created: number },
+  options: {
+    eventType: UpgradePricingSubscriptionEventType;
+    invoicePayload?: unknown;
+    checkoutSession?: Stripe.Checkout.Session;
+    expectedActivationKey?: string;
+  },
+) {
+  const eventWatermark = normalizeStripeEventWatermark(stripeEvent);
+  const subscriptionId = normalizeStripeId(
+    (subscriptionPayload as { id?: unknown } | null)?.id,
+  );
+  if (!subscriptionId) {
+    return { fulfilled: false as const, reason: "missing_subscription_identity" };
+  }
+  const subscription = await getStripe().subscriptions.retrieve(
+    subscriptionId,
+    { expand: ["items.data.price", "latest_invoice"] },
+    getStripeRequestOptions(),
+  );
+  if (subscription.id !== subscriptionId) {
+    return { fulfilled: false as const, reason: "subscription_identity_mismatch" };
+  }
+  const intentId = cleanString(
+    subscription.metadata?.sidestream_checkout_intent_id,
+    80,
+  );
+  if (!intentId) {
+    return { fulfilled: false as const, reason: "not_upgrade_pricing_subscription" };
+  }
+
+  const context = await query<UpgradePricingSubscriptionContextRow>(
+    `
+      select ci.*,
+        assignment.assignment_version,
+        assignment.experiment_id as assignment_experiment_id,
+        assignment.account_id as assignment_account_id,
+        assignment.variant as assignment_variant,
+        assignment.billing_model as assignment_billing_model,
+        assignment.assignment_bucket,
+        assignment.rollout_basis_points as assignment_rollout_basis_points,
+        assignment.assigned_at as assignment_assigned_at,
+        account.stripe_customer_id as account_stripe_customer_id,
+        activation.id as activation_id,
+        activation.account_id as activation_account_id,
+        activation.license_id as activation_license_id,
+        activation.activation_key as activation_key_value,
+        activation.stripe_checkout_session_id as activation_checkout_session_id,
+        activation.stripe_checkout_price_id as activation_checkout_price_id,
+        activation.stripe_checkout_product_id as activation_checkout_product_id,
+        activation.checkout_attached_at as activation_checkout_attached_at,
+        activation.stripe_checkout_expires_at as activation_checkout_expires_at,
+        activation.checkout_claim_grace_until as activation_checkout_claim_grace_until
+      from public.sidestream_checkout_intents ci
+      join public.sidestream_accounts account on account.id = ci.account_id
+      join public.sidestream_acquisitions acquisition on acquisition.id = ci.acquisition_id
+      left join public.sidestream_upgrade_pricing_assignments assignment
+        on assignment.id = ci.upgrade_pricing_assignment_id
+      left join public.sidestream_activation_sessions activation
+        on activation.id = ci.activation_session_id
+      where ci.id = $1
+      limit 1
+    `,
+    [intentId],
+  );
+  const row = context.rows[0];
+  const snapshot = row ? readUpgradePricingIntentSnapshot(row) : null;
+  if (
+    !row ||
+    !snapshot ||
+    snapshot.variant !== "monthly_half" ||
+    snapshot.billingModel !== "subscription"
+  ) {
+    return { fulfilled: false as const, reason: "not_upgrade_pricing_subscription" };
+  }
+  const offer = readCheckoutOfferSnapshot(row);
+  if (
+    !offer ||
+    offer.country !== snapshot.country ||
+    offer.currency !== snapshot.currency ||
+    offer.amountMinor !== snapshot.amountMinor ||
+    offer.priceId !== snapshot.priceId ||
+    offer.productId !== snapshot.productId ||
+    row.account_id !== snapshot.accountId ||
+    row.acquisition_id !== snapshot.acquisitionId ||
+    row.stripe_price_id !== snapshot.priceId ||
+    row.stripe_product_id !== snapshot.productId ||
+    !row.stripe_checkout_session_id ||
+    !["open", "completed"].includes(row.state)
+  ) {
+    return { fulfilled: false as const, reason: "upgrade_subscription_intent_mismatch" };
+  }
+  if (
+    !snapshot.assignmentId ||
+    row.assignment_version !== 1 ||
+    row.assignment_experiment_id !== snapshot.experimentId ||
+    row.assignment_account_id !== snapshot.accountId ||
+    row.assignment_variant !== snapshot.variant ||
+    row.assignment_billing_model !== snapshot.billingModel ||
+    Number(row.assignment_bucket) !== snapshot.assignmentBucket ||
+    Number(row.assignment_rollout_basis_points) !== snapshot.rolloutBasisPoints ||
+    toIsoString(row.assignment_assigned_at) !== snapshot.assignedAt
+  ) {
+    return { fulfilled: false as const, reason: "upgrade_subscription_assignment_mismatch" };
+  }
+  assertCheckoutAcquisitionIntact(
+    await requireCanonicalAcquisition(snapshot.acquisitionId),
+  );
+
+  const checkoutSession = options.checkoutSession ||
+    await getStripe().checkout.sessions.retrieve(
+      row.stripe_checkout_session_id,
+      { expand: ["line_items.data.price.product"] },
+      getStripeRequestOptions(),
+    );
+  const canonicalSubscriptionId = normalizeStripeId(checkoutSession.subscription);
+  const customerId = normalizeStripeId(checkoutSession.customer);
+  const initialInvoiceId = normalizeStripeId(checkoutSession.invoice);
+  if (
+    checkoutSession.id !== row.stripe_checkout_session_id ||
+    canonicalSubscriptionId !== subscriptionId ||
+    !customerId ||
+    !initialInvoiceId ||
+    row.stripe_customer_id !== customerId ||
+    row.account_stripe_customer_id !== customerId
+  ) {
+    return { fulfilled: false as const, reason: "upgrade_subscription_owner_mismatch" };
+  }
+
+  const activationKey = cleanString(row.activation_key_value, 160);
+  if (snapshot.activationSessionId) {
+    if (
+      row.activation_id !== snapshot.activationSessionId ||
+      !activationKey ||
+      row.activation_checkout_session_id !== checkoutSession.id ||
+      row.activation_checkout_price_id !== snapshot.priceId ||
+      row.activation_checkout_product_id !== snapshot.productId ||
+      !row.activation_checkout_attached_at ||
+      !row.activation_checkout_expires_at ||
+      !row.activation_checkout_claim_grace_until ||
+      new Date(row.activation_checkout_attached_at).getTime() >
+        new Date(row.activation_checkout_expires_at).getTime() ||
+      new Date(row.activation_checkout_expires_at).getTime() >
+        new Date(row.activation_checkout_claim_grace_until).getTime() ||
+      !canBindActivationAccount(row.activation_account_id, snapshot.accountId)
+    ) {
+      return { fulfilled: false as const, reason: "upgrade_subscription_activation_mismatch" };
+    }
+  } else if (row.activation_id || activationKey) {
+    return { fulfilled: false as const, reason: "upgrade_subscription_activation_mismatch" };
+  }
+  if (
+    options.expectedActivationKey &&
+    options.expectedActivationKey !== activationKey
+  ) {
+    return { fulfilled: false as const, reason: "activation_mismatch" };
+  }
+
+  const eventInvoiceId = normalizeStripeId(
+    (options.invoicePayload as { id?: unknown } | null)?.id,
+  );
+  const invoiceId = eventInvoiceId || (
+    options.eventType === "checkout.session.completed"
+      ? initialInvoiceId
+      : normalizeStripeId(subscription.latest_invoice)
+  );
+  if (!invoiceId) {
+    return { fulfilled: false as const, reason: "missing_subscription_invoice" };
+  }
+  const itemPriceId = normalizeStripeId(subscription.items?.data?.[0]?.price);
+  if (!itemPriceId) {
+    return { fulfilled: false as const, reason: "subscription_item_mismatch" };
+  }
+  const [customer, invoice, price] = await Promise.all([
+    getStripe().customers.retrieve(customerId, {}, getStripeRequestOptions()),
+    getStripe().invoices.retrieve(
+      invoiceId,
+      { expand: ["lines.data", "payments.data.payment.payment_intent"] },
+      getStripeRequestOptions(),
+    ),
+    getStripe().prices.retrieve(itemPriceId, {}, getStripeRequestOptions()),
+  ]);
+  const productId = normalizeStripeId(price.product);
+  if (!productId) {
+    return { fulfilled: false as const, reason: "subscription_product_mismatch" };
+  }
+  const product = await getStripe().products.retrieve(
+    productId,
+    {},
+    getStripeRequestOptions(),
+  );
+  const metadata = upgradePricingSubscriptionMetadata(snapshot, offer, activationKey);
+  const verification = verifyUpgradePricingSubscriptionTruth({
+    session: checkoutSession as unknown as Record<string, any>,
+    subscription: subscription as unknown as Record<string, any>,
+    customer: customer as unknown as Record<string, any>,
+    invoice: invoice as unknown as Record<string, any>,
+    price: price as unknown as Record<string, any>,
+    product: product as unknown as Record<string, any>,
+    expected: {
+      sessionId: checkoutSession.id,
+      subscriptionId,
+      customerId,
+      invoiceId,
+      initialInvoiceId,
+      priceId: snapshot.priceId,
+      productId: snapshot.productId,
+      currency: snapshot.currency,
+      amountMinor: snapshot.amountMinor,
+      livemode: isLiveStripeMode(),
+      clientReferenceId: activationKey || snapshot.accountId,
+      metadata,
+      invoiceEventType: options.eventType,
+    },
+  });
+  if (!verification.ok) {
+    return { fulfilled: false as const, reason: verification.reason };
+  }
+
+  return withPgClient(async (client) => {
+    await client.query("begin");
+    try {
+      await client.query("select pg_advisory_xact_lock(hashtext($1))", [
+        `upgrade_subscription:${subscriptionId}`,
+      ]);
+      await lockPaidEligibility(client, snapshot.accountId);
+      const lockedIntent = await client.query<{
+        acquisition_id: string | null;
+        account_id: string | null;
+        stripe_checkout_session_id: string | null;
+      }>(
+        `
+          select acquisition_id, account_id, stripe_checkout_session_id
+          from public.sidestream_checkout_intents
+          where id = $1
+          for update
+        `,
+        [snapshot.intentId],
+      );
+      const locked = lockedIntent.rows[0];
+      if (
+        locked?.acquisition_id !== snapshot.acquisitionId ||
+        locked?.account_id !== snapshot.accountId ||
+        locked?.stripe_checkout_session_id !== checkoutSession.id
+      ) {
+        await client.query("rollback");
+        return { fulfilled: false as const, reason: "upgrade_subscription_intent_mismatch" };
+      }
+      assertCheckoutAcquisitionIntact(await requireCanonicalAcquisition(
+        snapshot.acquisitionId,
+        acquisitionTransactionDependencies(client),
+      ));
+
+      const selected = await client.query<{
+        id: string;
+        account_id: string;
+        stripe_customer_id: string;
+        stripe_subscription_id: string | null;
+        stripe_checkout_session_id: string | null;
+        stripe_price_id: string | null;
+        stripe_product_id: string | null;
+        entitlement_status: string;
+        status_reason: string;
+        stripe_state_event_created_at: Date | string | null;
+        stripe_state_event_id: string | null;
+      }>(
+        `
+          select id, account_id, stripe_customer_id, stripe_subscription_id,
+            stripe_checkout_session_id, stripe_price_id, stripe_product_id,
+            entitlement_status, status_reason, stripe_state_event_created_at,
+            stripe_state_event_id
+          from public.sidestream_licenses
+          where stripe_subscription_id = $1 or stripe_checkout_session_id = $2
+          order by created_at asc
+          limit 2
+          for update
+        `,
+        [subscriptionId, checkoutSession.id],
+      );
+      if (selected.rows.length > 1) {
+        await client.query("rollback");
+        return { fulfilled: false as const, reason: "ambiguous_subscription_license" };
+      }
+      const existing = selected.rows[0] || null;
+      if (
+        existing &&
+        (
+          existing.account_id !== snapshot.accountId ||
+          existing.stripe_customer_id !== customerId ||
+          (existing.stripe_subscription_id && existing.stripe_subscription_id !== subscriptionId) ||
+          (existing.stripe_checkout_session_id && existing.stripe_checkout_session_id !== checkoutSession.id) ||
+          (existing.stripe_price_id && existing.stripe_price_id !== snapshot.priceId) ||
+          (existing.stripe_product_id && existing.stripe_product_id !== snapshot.productId)
+        )
+      ) {
+        await client.query("rollback");
+        return { fulfilled: false as const, reason: "subscription_license_owner_mismatch" };
+      }
+
+      const transition = planUpgradePricingSubscriptionTransition({
+        status: verification.status,
+        currentPeriodEndMs: verification.currentPeriodEndMs,
+        cancelAtPeriodEnd: verification.cancelAtPeriodEnd,
+        invoicePaid: verification.invoicePaid,
+        eventType: options.eventType,
+        eventCreatedAtMs: eventWatermark!.createdAtMs,
+        storedEntitlementStatus: existing?.entitlement_status,
+        storedStatusReason: existing?.status_reason,
+      });
+      const currentWatermark = existing?.stripe_state_event_created_at
+        ? {
+            createdAtMs: new Date(existing.stripe_state_event_created_at).getTime(),
+            eventId: existing.stripe_state_event_id || "",
+          }
+        : null;
+      const applyLifecycle = !existing || shouldApplyStripeEventWatermark(
+        currentWatermark,
+        {
+          createdAtMs: eventWatermark!.createdAtMs,
+          eventId: eventWatermark!.eventId,
+        },
+      );
+      const features = JSON.stringify({
+        unlimited_downloads: transition.entitlementStatus === "active",
+        customer_portal: true,
+        upgrade_pricing_v1: true,
+        subscription: true,
+      });
+      let licenseId = existing?.id || "";
+      let resultingEntitlement = existing?.entitlement_status || transition.entitlementStatus;
+      if (!existing) {
+        const inserted = await client.query<{ id: string }>(
+          `
+            insert into public.sidestream_licenses (
+              account_id, stripe_customer_id, stripe_subscription_id,
+              stripe_checkout_session_id, stripe_price_id, stripe_product_id,
+              plan_key, status, current_period_end, cancel_at_period_end,
+              grace_until, features, entitlement_status, status_reason,
+              revoked_at, suspended_at, reconciled_at,
+              legacy_subscription_eligible, legacy_subscription_audited_at,
+              legacy_subscription_quarantined_at,
+              stripe_state_event_created_at, stripe_state_event_id,
+              created_at, updated_at
+            ) values (
+              $1, $2, $3, $4, $5, $6, $7, $8, $9::timestamptz, $10,
+              $11::timestamptz, $12::jsonb, $13, $14,
+              case when $13 = 'revoked' then now() else null end,
+              case when $13 = 'suspended' then now() else null end,
+              now(), false, null, null, $15::timestamptz, $16, now(), now()
+            )
+            returning id
+          `,
+          [
+            snapshot.accountId,
+            customerId,
+            subscriptionId,
+            checkoutSession.id,
+            snapshot.priceId,
+            snapshot.productId,
+            SIDESTREAM_PRO_PLAN_KEY,
+            verification.status,
+            new Date(verification.currentPeriodEndMs).toISOString(),
+            verification.cancelAtPeriodEnd,
+            transition.graceUntilMs
+              ? new Date(transition.graceUntilMs).toISOString()
+              : null,
+            features,
+            transition.entitlementStatus,
+            transition.statusReason,
+            eventWatermark!.createdAtIso,
+            eventWatermark!.eventId,
+          ],
+        );
+        licenseId = inserted.rows[0]?.id || "";
+      } else if (applyLifecycle) {
+        const updated = await client.query<{ id: string; entitlement_status: string }>(
+          `
+            update public.sidestream_licenses
+            set status = $2,
+                current_period_end = $3::timestamptz,
+                cancel_at_period_end = $4,
+                grace_until = $5::timestamptz,
+                features = features || $6::jsonb,
+                entitlement_status = $7,
+                status_reason = $8,
+                revoked_at = case
+                  when $7 = 'revoked' then coalesce(revoked_at, now())
+                  else revoked_at
+                end,
+                suspended_at = case
+                  when $7 = 'suspended' then coalesce(suspended_at, now())
+                  else suspended_at
+                end,
+                reconciled_at = now(),
+                legacy_subscription_eligible = false,
+                stripe_state_event_created_at = $9::timestamptz,
+                stripe_state_event_id = $10,
+                updated_at = now()
+            where id = $1
+            returning id, entitlement_status
+          `,
+          [
+            existing.id,
+            verification.status,
+            new Date(verification.currentPeriodEndMs).toISOString(),
+            verification.cancelAtPeriodEnd,
+            transition.graceUntilMs
+              ? new Date(transition.graceUntilMs).toISOString()
+              : null,
+            features,
+            transition.entitlementStatus,
+            transition.statusReason,
+            eventWatermark!.createdAtIso,
+            eventWatermark!.eventId,
+          ],
+        );
+        resultingEntitlement = updated.rows[0]?.entitlement_status || transition.entitlementStatus;
+      }
+      if (!licenseId) {
+        await client.query("rollback");
+        return { fulfilled: false as const, reason: "license_write_failed" };
+      }
+      if (applyLifecycle && transition.revokeCredentials) {
+        await revokeLicenseCredentials(client, licenseId);
+      }
+
+      let activationBound = Boolean(
+        snapshot.activationSessionId &&
+        row.activation_license_id === licenseId &&
+        row.activation_account_id === snapshot.accountId,
+      );
+      if (
+        snapshot.activationSessionId &&
+        activationKey &&
+        resultingEntitlement === "active"
+      ) {
+        const bound = await client.query<{ id: string }>(
+          `
+            update public.sidestream_activation_sessions
+            set account_id = $3,
+                license_id = $4,
+                status = case when status = 'linked' then status else 'paid' end,
+                updated_at = now()
+            where id = $1
+              and activation_key = $2
+              and stripe_checkout_session_id = $5
+              and checkout_claim_grace_until >= now()
+              and checkout_attached_at <= stripe_checkout_expires_at
+              and (account_id is null or account_id = $3)
+              and (license_id is null or license_id = $4)
+            returning id
+          `,
+          [
+            snapshot.activationSessionId,
+            activationKey,
+            snapshot.accountId,
+            licenseId,
+            checkoutSession.id,
+          ],
+        );
+        activationBound = Boolean(bound.rows[0]) || activationBound;
+      }
+
+      await client.query(
+        `
+          update public.sidestream_checkout_intents
+          set state = 'completed', stripe_customer_id = $2, updated_at = now()
+          where id = $1 and stripe_checkout_session_id = $3
+        `,
+        [snapshot.intentId, customerId, checkoutSession.id],
+      );
+      if (invoiceId === initialInvoiceId) {
+        const dependencies = acquisitionTransactionDependencies(client);
+        await addTrustedDeliveryEvidence({
+          acquisitionId: snapshot.acquisitionId,
+          evidence: "stripe_checkout_session",
+        }, dependencies);
+        const completedStage = await recordAcquisitionStage({
+          acquisitionId: snapshot.acquisitionId,
+          stage: "checkout_completed",
+          stableServerReference: `checkout-session:${checkoutSession.id}`,
+          occurredAt: new Date(stripeEvent.created * 1_000),
+        }, dependencies);
+        const settledStage = await recordAcquisitionStage({
+          acquisitionId: snapshot.acquisitionId,
+          stage: "payment_settled",
+          stableServerReference: `stripe-invoice:${invoiceId}`,
+          occurredAt: new Date(stripeEvent.created * 1_000),
+        }, dependencies);
+        if (completedStage.ownerConflict || settledStage.ownerConflict) {
+          await client.query("rollback");
+          return { fulfilled: false as const, reason: "acquisition_stage_conflict" };
+        }
+      }
+      await client.query("commit");
+      return {
+        fulfilled: true as const,
+        applied: applyLifecycle,
+        activationBound,
+        entitlementStatus: resultingEntitlement,
+        experimentSubscription: true as const,
+      };
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    }
+  });
+}
+
+function upgradePricingSubscriptionMetadata(
+  snapshot: UpgradePricingIntentSnapshot,
+  offer: CheckoutOfferSnapshot,
+  activationKey: string,
+) {
+  return {
+    sidestream_acquisition_id: snapshot.acquisitionId,
+    sidestream_plan: SIDESTREAM_PRO_PLAN_KEY,
+    sidestream_price_id: snapshot.priceId,
+    sidestream_product_id: snapshot.productId,
+    sidestream_checkout_intent_id: snapshot.intentId,
+    sidestream_offer_id: offer.offerId,
+    sidestream_offer_country: offer.country,
+    sidestream_offer_currency: offer.currency,
+    sidestream_offer_amount_minor: String(offer.amountMinor),
+    sidestream_account_id: snapshot.accountId,
+    sidestream_activation_key: activationKey || null,
+    sidestream_upgrade_snapshot_version: "1",
+    sidestream_upgrade_experiment_id: snapshot.experimentId,
+    sidestream_upgrade_decision_reason: snapshot.decisionReason,
+    sidestream_upgrade_assignment_id: snapshot.assignmentId,
+    sidestream_upgrade_assignment_bucket:
+      snapshot.assignmentBucket === null ? null : String(snapshot.assignmentBucket),
+    sidestream_upgrade_rollout_bps:
+      String(snapshot.rolloutBasisPoints),
+    sidestream_upgrade_assigned_at: snapshot.assignedAt,
+    sidestream_upgrade_variant: snapshot.variant,
+    sidestream_upgrade_billing_model: snapshot.billingModel,
+    sidestream_upgrade_country: snapshot.country,
+    sidestream_upgrade_currency: snapshot.currency,
+    sidestream_upgrade_amount_minor: String(snapshot.amountMinor),
+    sidestream_upgrade_product_id: snapshot.productId,
+    sidestream_upgrade_price_id: snapshot.priceId,
+    sidestream_upgrade_account_id: snapshot.accountId,
+    sidestream_upgrade_acquisition_id: snapshot.acquisitionId,
+    sidestream_upgrade_intent_id: snapshot.intentId,
+    sidestream_upgrade_activation_id:
+      snapshot.activationSessionId,
+  } as const;
+}
+
 export async function upsertLicenseFromCheckoutSession(
   sessionPayload: unknown,
   stripeEvent?: { eventId: string; created: number },
@@ -3802,11 +5158,15 @@ export async function fulfillCheckoutSession(
     offer_amount_minor: number | null;
     offer_stripe_product_id: string | null;
     offer_stripe_price_id: string | null;
+    upgrade_pricing_snapshot_version: number | null;
+    upgrade_pricing_variant: string | null;
+    upgrade_pricing_billing_model: string | null;
   }>(
     `
       select id, acquisition_id, account_id, activation_session_id, offer_id, offer_country,
         offer_currency, offer_amount_minor, offer_stripe_product_id,
-        offer_stripe_price_id
+        offer_stripe_price_id, upgrade_pricing_snapshot_version,
+        upgrade_pricing_variant, upgrade_pricing_billing_model
       from public.sidestream_checkout_intents
       where stripe_checkout_session_id = $1
       order by updated_at desc, id desc
@@ -3831,8 +5191,43 @@ export async function fulfillCheckoutSession(
       120,
     ) === PAID_ACQUISITION_EXPERIMENT_ID;
 
+  const checkoutIntentId = cleanString(
+    checkoutSession.metadata?.sidestream_checkout_intent_id,
+    80,
+  );
+  const checkoutIntent = intentCandidates.rows.find(
+    (candidate) => candidate.id === checkoutIntentId,
+  );
+
   const subscriptionId = normalizeStripeId(checkoutSession.subscription);
   if (subscriptionId) {
+    if (
+      checkoutIntent?.upgrade_pricing_snapshot_version === 1 &&
+      checkoutIntent.upgrade_pricing_variant === "monthly_half" &&
+      checkoutIntent.upgrade_pricing_billing_model === "subscription"
+    ) {
+      const created = Number(checkoutSession.created);
+      if (!stripeEvent && (!Number.isSafeInteger(created) || created < 0)) {
+        return { fulfilled: false as const, reason: "invalid_checkout_created_at" };
+      }
+      const experimentResult = await reconcileUpgradePricingSubscription(
+        { id: subscriptionId },
+        stripeEvent || {
+          eventId: `checkout_session_${checkoutSession.id}`,
+          created,
+        },
+        {
+          eventType: "checkout.session.completed",
+          checkoutSession,
+          expectedActivationKey,
+        },
+      );
+      return experimentResult.fulfilled
+        ? experimentResult
+        : { ...experimentResult, experimentSubscription: true as const };
+    }
+    // Historical subscription reconciliation remains a separate allowlisted
+    // compatibility path. Upgrade-pricing subscriptions never enter it.
     if (
       checkoutSession.status !== "complete" ||
       !isSidestreamPaidPlanKey(cleanString(checkoutSession.metadata?.sidestream_plan, 120))
@@ -3852,14 +5247,6 @@ export async function fulfillCheckoutSession(
     if (!subscriptionResult.fulfilled) return subscriptionResult;
     return { fulfilled: true as const, activationBound: false };
   }
-
-  const checkoutIntentId = cleanString(
-    checkoutSession.metadata?.sidestream_checkout_intent_id,
-    80,
-  );
-  const checkoutIntent = intentCandidates.rows.find(
-    (candidate) => candidate.id === checkoutIntentId,
-  );
   if (!checkoutIntent) {
     return { fulfilled: false as const, reason: "checkout_intent_mismatch" };
   }
@@ -3968,6 +5355,7 @@ export async function fulfillCheckoutSession(
       await client.query("select pg_advisory_xact_lock(hashtext($1))", [
         `checkout_session:${checkoutSessionId}`,
       ]);
+      await lockPaidEligibility(client, accountId);
       const lockedIntent = await client.query<{ acquisition_id: string | null }>(
         `
           select acquisition_id
@@ -4974,6 +6362,38 @@ function buildLicenseSummary(options: {
 
 function isLicenseStatusUsable(status: string) {
   return status === "active" || status === "trialing";
+}
+
+async function hasCanonicalActivePaidLicense(
+  accountId: string,
+  runner: Pool | PoolClient = getPostgresPool(),
+) {
+  const result = await runner.query<{ active: boolean }>(
+    `
+      select exists (
+        select 1
+        from public.sidestream_licenses l
+        where l.account_id = $1
+          and l.plan_key in ('sidestream_pro', 'sidestream_unlimited')
+          and (${LICENSE_ENTITLEMENT_STATUS_SQL}) = 'active'
+      ) as active
+    `,
+    [accountId],
+  );
+  return result.rows[0]?.active === true;
+}
+
+function getPaidEligibilityLockKey(accountId: string) {
+  return `${PAID_ELIGIBILITY_LOCK_PREFIX}:${accountId}`;
+}
+
+async function lockPaidEligibility(
+  client: Pick<PoolClient, "query">,
+  accountId: string,
+) {
+  await client.query("select pg_advisory_xact_lock(hashtext($1))", [
+    getPaidEligibilityLockKey(accountId),
+  ]);
 }
 
 function isSidestreamPaidPlanKey(planKey: string) {

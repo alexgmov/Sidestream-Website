@@ -33,7 +33,7 @@ export default async function handler(
   }
 
   const destination = new URL(
-    fulfillment.paidAcquisition
+    "paidAcquisition" in fulfillment && fulfillment.paidAcquisition === true
       ? "/paid-thank-you.html"
       : "/thank-you.html",
     baseUrl,

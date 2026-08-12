@@ -101,6 +101,7 @@ export async function recordStripeEvent(
 export async function claimStripeEvents(options: {
   batchSize?: number;
   leaseMs?: number;
+  maxAttempts?: number;
   claimToken?: string;
   query?: StripeEventQuery;
 } = {}): Promise<ClaimedStripeEvent[]> {
@@ -118,14 +119,37 @@ export async function claimStripeEvents(options: {
     15 * 60 * 1_000,
   );
   const claimToken = options.claimToken || randomUUID();
+  const maxAttempts = boundedInteger(
+    options.maxAttempts,
+    DEFAULT_STRIPE_EVENT_MAX_ATTEMPTS,
+    1,
+    20,
+  );
   if (!isUuid(claimToken)) throw new TypeError("Stripe event claim token must be a UUID");
 
   const result = await query(
     `
-      with candidates as materialized (
+      with exhausted as (
+        update public.sidestream_stripe_events
+        set processing_status = 'dead_letter',
+            last_error_code = 'attempt_limit_exhausted',
+            outcome = 'dead_letter',
+            terminal_at = clock_timestamp(),
+            claim_token = null,
+            lease_expires_at = null,
+            updated_at = now()
+        where terminal_at is null
+          and attempt_count >= $4
+          and (
+            (processing_status in ('received', 'retryable') and next_attempt_at <= clock_timestamp())
+            or (processing_status = 'processing' and lease_expires_at <= clock_timestamp())
+          )
+        returning event_id
+      ), candidates as materialized (
         select event_id
         from public.sidestream_stripe_events
         where terminal_at is null
+          and attempt_count < $4
           and (
             (
               processing_status in ('received', 'retryable')
@@ -165,7 +189,7 @@ export async function claimStripeEvents(options: {
         event.attempt_count,
         event.claim_token
     `,
-    [batchSize, claimToken, leaseMs],
+    [batchSize, claimToken, leaseMs, maxAttempts],
   );
 
   return result.rows.map((row) => ({
@@ -196,6 +220,7 @@ export async function drainStripeEventQueue(
   const claimed = await claimStripeEvents({
     batchSize: options.batchSize,
     leaseMs: options.leaseMs,
+    maxAttempts,
     claimToken: options.createClaimToken?.(),
     query,
   });
@@ -298,6 +323,14 @@ async function reconcileInheritedEntitlement(
         { eventId: event.id, created: event.created },
       );
       if (!result.fulfilled) {
+        if (
+          "experimentSubscription" in result &&
+          result.experimentSubscription === true
+        ) {
+          throw new StripeEventProcessingError(
+            safeOutcome(`upgrade_subscription_${result.reason}`),
+          );
+        }
         return { status: "ignored", outcome: safeOutcome(`checkout_${result.reason}`) };
       }
       return {
@@ -319,6 +352,24 @@ async function reconcileInheritedEntitlement(
         {},
         account.getStripeRequestOptions(),
       );
+      const experimentResult = await account.reconcileUpgradePricingSubscription(
+        subscription,
+        { eventId: event.id, created: event.created },
+        { eventType: event.type },
+      );
+      if (experimentResult.fulfilled) {
+        return {
+          status: "processed",
+          outcome: experimentResult.applied
+            ? "upgrade_subscription_reconciled"
+            : "upgrade_subscription_stale_noop",
+        };
+      }
+      if (experimentResult.reason !== "not_upgrade_pricing_subscription") {
+        throw new StripeEventProcessingError(
+          safeOutcome(`upgrade_subscription_${experimentResult.reason}`),
+        );
+      }
       const result = await account.upsertLicenseFromSubscription(
         subscription,
         undefined,
@@ -334,6 +385,39 @@ async function reconcileInheritedEntitlement(
             ? "subscription_quarantined"
             : "subscription_reconciled")
           : "subscription_stale_noop",
+      };
+    }
+    case "invoice.paid":
+    case "invoice.payment_failed": {
+      const invoiceId = stripeObjectId(event.data.object);
+      if (!invoiceId) {
+        return { status: "ignored", outcome: "invoice_missing_id" };
+      }
+      const invoice = await account.getStripe().invoices.retrieve(
+        invoiceId,
+        {},
+        account.getStripeRequestOptions(),
+      );
+      const subscriptionId = stripeInvoiceSubscriptionId(invoice);
+      if (!subscriptionId) return null;
+      const result = await account.reconcileUpgradePricingSubscription(
+        { id: subscriptionId },
+        { eventId: event.id, created: event.created },
+        { eventType: event.type, invoicePayload: invoice },
+      );
+      if (!result.fulfilled) {
+        if (result.reason === "not_upgrade_pricing_subscription") return null;
+        throw new StripeEventProcessingError(
+          safeOutcome(`upgrade_subscription_${result.reason}`),
+        );
+      }
+      return {
+        status: "processed",
+        outcome: result.applied
+          ? event.type === "invoice.paid"
+            ? "upgrade_subscription_invoice_paid"
+            : "upgrade_subscription_invoice_failed"
+          : "upgrade_subscription_stale_noop",
       };
     }
     case "charge.refunded":
@@ -365,6 +449,10 @@ async function reconcileInheritedEntitlement(
       };
     }
     default:
+      // refund.failed and the warning_closed/prevented dispute recovery policy
+      // intentionally remain outside this step. The existing production
+      // blocker stays explicit until exact recovery behavior is separately
+      // approved and tested.
       return null;
   }
 }
@@ -483,6 +571,15 @@ function stripeObjectId(value: unknown) {
   if (!value || typeof value !== "object" || !("id" in value)) return "";
   const id = (value as { id?: unknown }).id;
   return typeof id === "string" ? id.trim().slice(0, 255) : "";
+}
+
+function stripeInvoiceSubscriptionId(value: unknown) {
+  if (!value || typeof value !== "object") return "";
+  const invoice = value as Record<string, any>;
+  const candidate = invoice.subscription ||
+    invoice.parent?.subscription_details?.subscription;
+  if (typeof candidate === "string") return candidate.trim().slice(0, 255);
+  return stripeObjectId(candidate);
 }
 
 function safeStripeEventErrorCode(error: unknown) {

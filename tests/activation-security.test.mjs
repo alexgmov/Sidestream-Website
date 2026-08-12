@@ -833,6 +833,9 @@ async function loadRuntimeModules() {
       "./checkout-offers.js": pathToFileURL(
         join(repositoryRoot, "api", "_lib", "checkout-offers.ts"),
       ).href,
+      "./upgrade-pricing-experiment.js": pathToFileURL(
+        join(repositoryRoot, "api", "_lib", "upgrade-pricing-experiment.ts"),
+      ).href,
       "./device-policy.js": pathToFileURL(
         join(repositoryRoot, "api", "_lib", "device-policy.ts"),
       ).href,

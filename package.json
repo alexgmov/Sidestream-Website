@@ -20,6 +20,7 @@
     "leads:dump": "node scripts/dump-download-leads.mjs",
     "leads:migrate": "node scripts/migrate-download-leads-to-postgres.mjs",
     "release:publish-manifest": "node scripts/publish-release-manifest.mjs",
+    "report:upgrade-pricing": "node scripts/report-upgrade-pricing-experiment.mjs",
     "test:api": "node scripts/run-api-tests.mjs",
     "test:acquisition-journey-matrix": "node scripts/test-acquisition-journey-matrix.mjs",
     "test:acquisition-journey-matrix-postgres": "node scripts/test-acquisition-journey-matrix.mjs --postgres",

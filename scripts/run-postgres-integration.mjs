@@ -27,12 +27,15 @@ export const RUNTIME_DATABASE_ENV_NAMES = Object.freeze([
 
 const POSTGRES_INTEGRATION_TESTS = Object.freeze([
   "tests/postgres-integration.test.mjs",
+  "tests/paid-telemetry-handoff-repair.test.mjs",
   "tests/activation-security.test.mjs",
   "tests/checkout-abuse.test.mjs",
   "tests/maintenance.test.mjs",
   "tests/stripe-events.test.mjs",
   "tests/single-device-postgres.test.mjs",
   "tests/customer-360/usage-sync-postgres.test.mjs",
+  "tests/customer-360/upgrade-pricing-postgres.test.mjs",
+  "tests/upgrade-pricing-report-postgres.test.mjs",
 ]);
 
 export function requireSafeTestDatabaseUrl(environment = process.env) {

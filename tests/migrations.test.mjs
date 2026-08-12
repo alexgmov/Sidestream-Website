@@ -38,7 +38,7 @@ function knownBaselineSnapshot(rowSecurityEnabled = false) {
 
 test("migration files are ordered, checksummed, and append-only baseline files are pinned", async () => {
   const migrations = validateMigrationFiles(await loadMigrationFiles());
-  assert.equal(migrations.length, 31);
+  assert.equal(migrations.length, 32);
   assert.deepEqual(
     migrations.map((migration) => migration.filename),
     [...migrations.map((migration) => migration.filename)].sort(),
@@ -68,9 +68,74 @@ test("migration files are ordered, checksummed, and append-only baseline files a
     "20260729120000_add_regional_checkout_offer_snapshots.sql",
     "20260803120000_add_acquisition_integrity.sql",
     "20260810120000_bind_paid_telemetry_profile.sql",
+    "20260812120000_add_upgrade_pricing_experiment.sql",
   ]) {
     assert.ok(migrations.some((migration) => migration.filename === filename));
   }
+});
+
+test("Upgrade pricing migration is permanent, complete, private, and append-only", async () => {
+  const migration = await readFile(new URL(
+    "../db/migrations/20260812120000_add_upgrade_pricing_experiment.sql",
+    import.meta.url,
+  ), "utf8");
+  assert.match(migration, /create table public\.sidestream_upgrade_pricing_assignments/);
+  assert.match(migration, /create table public\.sidestream_upgrade_pricing_exposures/);
+  assert.match(migration, /unique \(experiment_id, account_id\)/);
+  assert.match(migration, /assignment_bucket between 0 and 9999/);
+  assert.match(migration, /rollout_basis_points between 0 and 10000/);
+  assert.match(migration, /variant = 'control_one_time' and billing_model = 'one_time'/);
+  assert.match(migration, /variant = 'monthly_half' and billing_model = 'subscription'/);
+  assert.match(migration, /assigned_at timestamptz not null/);
+  assert.match(migration, /exposed_at timestamptz not null/);
+  assert.match(migration, /unique \(experiment_id, checkout_intent_id\)/);
+  assert.match(migration, /stripe_checkout_session_id is not null/);
+  assert.match(migration, /new\.assignment_id is null/);
+  assert.match(migration, /intent\.upgrade_pricing_decision_reason in/);
+  assert.match(migration, /before update or delete on public\.sidestream_upgrade_pricing_assignments/);
+  assert.match(migration, /before update or delete on public\.sidestream_upgrade_pricing_exposures/);
+  assert.match(migration, /before update on public\.sidestream_checkout_intents/);
+  assert.match(migration, /upgrade_pricing_snapshot_version is null/);
+  assert.match(migration, /upgrade_pricing_snapshot_version = 1/);
+  for (const column of [
+    "upgrade_pricing_experiment_id",
+    "upgrade_pricing_decision_reason",
+    "upgrade_pricing_assignment_id",
+    "upgrade_pricing_assignment_bucket",
+    "upgrade_pricing_rollout_basis_points",
+    "upgrade_pricing_assigned_at",
+    "upgrade_pricing_variant",
+    "upgrade_pricing_billing_model",
+    "upgrade_pricing_country",
+    "upgrade_pricing_currency",
+    "upgrade_pricing_amount_minor",
+    "upgrade_pricing_stripe_product_id",
+    "upgrade_pricing_stripe_price_id",
+    "upgrade_pricing_account_id",
+    "upgrade_pricing_acquisition_id",
+    "upgrade_pricing_checkout_intent_id",
+    "upgrade_pricing_activation_session_id",
+  ]) {
+    assert.match(migration, new RegExp(`\\b${column}\\b`));
+  }
+  assert.match(migration, /upgrade_pricing_checkout_intent_id = id/);
+  assert.match(migration, /upgrade_pricing_account_id = account_id/);
+  assert.match(migration, /upgrade_pricing_acquisition_id = acquisition_id/);
+  assert.match(
+    migration,
+    /upgrade_pricing_activation_session_id is not distinct from activation_session_id/,
+  );
+  assert.match(migration, /sidestream_checkout_intents_upgrade_pricing_reporting_idx/);
+  assert.match(migration, /sidestream_upgrade_pricing_assignments_reporting_idx/);
+  assert.match(migration, /sidestream_upgrade_pricing_exposures_reporting_idx/);
+  assert.equal((migration.match(/enable row level security/g) || []).length, 2);
+  assert.match(migration, /revoke all on table public\.sidestream_upgrade_pricing_assignments from public/);
+  assert.match(migration, /revoke all on table public\.sidestream_upgrade_pricing_exposures from public/);
+  assert.match(migration, /array\['anon', 'authenticated'\]/);
+  assert.doesNotMatch(
+    migration,
+    /\b(email|raw_ip|ip_address|cookie|activation_key|device_id|payment_secret|client_secret)\b/i,
+  );
 });
 
 test("paid telemetry binding is exact, immutable, private, and replay-safe", async () => {

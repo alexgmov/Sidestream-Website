@@ -1329,6 +1329,7 @@ async function loadAccountModuleForSchema(schema) {
   const sourceImports = {
     "./entitlement.js": pathToFileURL(join(repositoryRoot, "api", "_lib", "entitlement.ts")).href,
     "./checkout-offers.js": pathToFileURL(join(repositoryRoot, "api", "_lib", "checkout-offers.ts")).href,
+    "./upgrade-pricing-experiment.js": pathToFileURL(join(repositoryRoot, "api", "_lib", "upgrade-pricing-experiment.ts")).href,
     "./device-policy.js": pathToFileURL(join(repositoryRoot, "api", "_lib", "device-policy.ts")).href,
     "./license-environment.js": pathToFileURL(join(repositoryRoot, "api", "_lib", "license-environment.ts")).href,
     "./license-entitlement-sql.js": pathToFileURL(join(repositoryRoot, "api", "_lib", "license-entitlement-sql.ts")).href,

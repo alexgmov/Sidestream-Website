@@ -6,6 +6,10 @@ const globalOffer = Object.freeze({
   displayLocale: "en-US",
   lookupKey: "sidestream_pro_once_1999",
   priceSource: Object.freeze({ kind: "default" }),
+  monthlyPriceSource: Object.freeze({
+    kind: "lookup",
+    configuredVariable: "SIDESTREAM_PRO_MONTHLY_PRICE_ID",
+  }),
 });
 
 const indiaOffer = Object.freeze({
@@ -18,6 +22,10 @@ const indiaOffer = Object.freeze({
   priceSource: Object.freeze({
     kind: "environment",
     variable: "SIDESTREAM_PRO_INDIA_PRICE_ID",
+  }),
+  monthlyPriceSource: Object.freeze({
+    kind: "environment",
+    variable: "SIDESTREAM_PRO_INDIA_MONTHLY_PRICE_ID",
   }),
 });
 
@@ -32,6 +40,10 @@ const brazilOffer = Object.freeze({
     kind: "environment",
     variable: "SIDESTREAM_PRO_BRAZIL_PRICE_ID",
   }),
+  monthlyPriceSource: Object.freeze({
+    kind: "environment",
+    variable: "SIDESTREAM_PRO_BRAZIL_MONTHLY_PRICE_ID",
+  }),
 });
 
 const southKoreaOffer = Object.freeze({
@@ -44,6 +56,10 @@ const southKoreaOffer = Object.freeze({
   priceSource: Object.freeze({
     kind: "environment",
     variable: "SIDESTREAM_PRO_SOUTH_KOREA_PRICE_ID",
+  }),
+  monthlyPriceSource: Object.freeze({
+    kind: "environment",
+    variable: "SIDESTREAM_PRO_SOUTH_KOREA_MONTHLY_PRICE_ID",
   }),
 });
 

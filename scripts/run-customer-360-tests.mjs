@@ -48,6 +48,7 @@ export const CUSTOMER_360_POSTGRES_TESTS = Object.freeze([
   "customer-360/paid-telemetry-handoff-postgres.test.mjs",
   "customer-360/pipeline-postgres.test.mjs",
   "customer-360/query-api-postgres.test.mjs",
+  "customer-360/upgrade-pricing-postgres.test.mjs",
   "customer-360/usage-sync-postgres.test.mjs",
 ]);
 

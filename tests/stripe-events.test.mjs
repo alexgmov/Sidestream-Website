@@ -272,6 +272,46 @@ test("Stripe events use a durable claimed queue with bounded retry and protected
       assert.equal(claimed[0].claimToken, "00000000-0000-4000-8000-000000000004");
     });
 
+    await t.test("an exhausted crashed lease dead-letters instead of reclaiming forever", async () => {
+      await resetEvents(pool);
+      const event = stripeEvent("evt_exhausted_lease", "test.lease", 1_700_002_100);
+      await runtime.stripeEvents.recordStripeEvent(event, JSON.stringify(event), query);
+      await pool.query(
+        `
+          update public.sidestream_stripe_events
+          set processing_status = 'processing',
+              attempt_count = 8,
+              claim_token = '00000000-0000-4000-8000-000000000013',
+              lease_expires_at = now() - interval '1 minute'
+          where event_id = $1
+        `,
+        [event.id],
+      );
+      const claimed = await runtime.stripeEvents.claimStripeEvents({
+        batchSize: 1,
+        maxAttempts: 8,
+        claimToken: "00000000-0000-4000-8000-000000000014",
+        query,
+      });
+      assert.deepEqual(claimed, []);
+      const stored = await pool.query(
+        `
+          select processing_status, attempt_count, last_error_code, outcome,
+            terminal_at is not null as terminal
+          from public.sidestream_stripe_events
+          where event_id = $1
+        `,
+        [event.id],
+      );
+      assert.deepEqual(stored.rows[0], {
+        processing_status: "dead_letter",
+        attempt_count: 8,
+        last_error_code: "attempt_limit_exhausted",
+        outcome: "dead_letter",
+        terminal: true,
+      });
+    });
+
     await t.test("a poison event retries without blocking ignored or processed rows", async () => {
       await resetEvents(pool);
       const events = [
@@ -815,6 +855,12 @@ test("Stripe events use a durable claimed queue with bounded retry and protected
       });
       assert.deepEqual(runtime.stub.calls, [
         ["retrieve", "sub_canonical"],
+        ["experiment-subscription", canonical, {
+          eventId: event.id,
+          created: event.created,
+        }, {
+          eventType: event.type,
+        }],
         ["subscription", canonical, undefined, {
           eventId: event.id,
           created: event.created,
@@ -827,6 +873,111 @@ test("Stripe events use a durable claimed queue with bounded retry and protected
           commerceQuery,
         ),
         { status: "processed", outcome: "commerce_reconciled" },
+      );
+    });
+
+    await t.test("experiment subscription and invoice events never enter the legacy path", async () => {
+      runtime.stub.reset();
+      runtime.stub.setExperimentSubscriptionResult({ fulfilled: true, applied: true });
+      const canonical = { id: "sub_experiment", metadata: { sidestream_checkout_intent_id: "intent" } };
+      const invoice = { id: "in_experiment", subscription: canonical.id };
+      runtime.stub.setStripeClient({
+        subscriptions: {
+          async retrieve() { return canonical; },
+        },
+        invoices: {
+          async retrieve() { return invoice; },
+        },
+      });
+      const commerceQuery = async () => ({
+        rows: [{ result: { applied: 1, stale: 0 } }],
+      });
+      const subscriptionEvent = stripeEvent(
+        "evt_experiment_subscription",
+        "customer.subscription.updated",
+        1_700_005_100,
+        { id: canonical.id },
+      );
+      assert.deepEqual(
+        await runtime.stripeEvents.reconcileStripeEvent(subscriptionEvent, commerceQuery),
+        { status: "processed", outcome: "upgrade_subscription_reconciled" },
+      );
+      assert.equal(
+        runtime.stub.calls.some(([kind]) => kind === "subscription"),
+        false,
+      );
+
+      runtime.stub.reset();
+      runtime.stub.setExperimentSubscriptionResult({ fulfilled: true, applied: true });
+      runtime.stub.setStripeClient({
+        invoices: { async retrieve() { return invoice; } },
+      });
+      const invoiceEvent = stripeEvent(
+        "evt_experiment_invoice",
+        "invoice.payment_failed",
+        1_700_005_101,
+        { id: invoice.id },
+      );
+      assert.deepEqual(
+        await runtime.stripeEvents.reconcileStripeEvent(invoiceEvent, commerceQuery),
+        { status: "processed", outcome: "upgrade_subscription_invoice_failed" },
+      );
+      assert.equal(
+        runtime.stub.calls.some(([kind]) => kind === "subscription"),
+        false,
+      );
+    });
+
+    await t.test("recognized experiment provider mismatch remains retryable", async () => {
+      runtime.stub.reset();
+      runtime.stub.setExperimentSubscriptionResult({
+        fulfilled: false,
+        reason: "subscription_price_mismatch",
+      });
+      runtime.stub.setStripeClient({
+        subscriptions: {
+          async retrieve() { return { id: "sub_mismatch" }; },
+        },
+      });
+      await assert.rejects(
+        runtime.stripeEvents.reconcileStripeEvent(
+          stripeEvent(
+            "evt_experiment_mismatch",
+            "customer.subscription.updated",
+            1_700_005_102,
+            { id: "sub_mismatch" },
+          ),
+          async () => ({ rows: [] }),
+        ),
+        (error) => {
+          assert.equal(
+            error.code,
+            "upgrade_subscription_subscription_price_mismatch",
+          );
+          return true;
+        },
+      );
+
+      runtime.stub.reset();
+      runtime.stub.setCheckoutResult({
+        fulfilled: false,
+        reason: "invoice_not_paid",
+        experimentSubscription: true,
+      });
+      await assert.rejects(
+        runtime.stripeEvents.reconcileStripeEvent(
+          stripeEvent(
+            "evt_experiment_checkout_mismatch",
+            "checkout.session.completed",
+            1_700_005_103,
+            { id: "cs_experiment_mismatch" },
+          ),
+          async () => ({ rows: [] }),
+        ),
+        (error) => {
+          assert.equal(error.code, "upgrade_subscription_invoice_not_paid");
+          return true;
+        },
       );
     });
 
@@ -1116,15 +1267,27 @@ async function loadRuntimeModules() {
     await writeFile(stubPath, `
 let stripeClient = null;
 let subscriptionResult = { fulfilled: true, applied: true };
+let experimentSubscriptionResult = {
+  fulfilled: false,
+  reason: "not_upgrade_pricing_subscription",
+};
 let checkoutResult = { fulfilled: true, activationBound: false };
 export const calls = [];
 export function reset() {
   calls.length = 0;
   stripeClient = null;
   subscriptionResult = { fulfilled: true, applied: true };
+  experimentSubscriptionResult = {
+    fulfilled: false,
+    reason: "not_upgrade_pricing_subscription",
+  };
   checkoutResult = { fulfilled: true, activationBound: false };
 }
 export function setStripeClient(value) { stripeClient = value; }
+export function setExperimentSubscriptionResult(value) {
+  experimentSubscriptionResult = value;
+}
+export function setCheckoutResult(value) { checkoutResult = value; }
 export function getStripe() {
   if (!stripeClient) throw new Error("Stripe test client is not configured");
   return stripeClient;
@@ -1140,6 +1303,10 @@ export async function upsertLicenseFromCheckoutSession(...args) {
 export async function upsertLicenseFromSubscription(...args) {
   calls.push(["subscription", ...args]);
   return subscriptionResult;
+}
+export async function reconcileUpgradePricingSubscription(...args) {
+  calls.push(["experiment-subscription", ...args]);
+  return experimentSubscriptionResult;
 }
 export function getStripeWebhookSecret() { return "webhook-secret"; }
 export function methodNotAllowed(response, allowed) {
@@ -1265,6 +1432,9 @@ async function loadAccountRuntime(directory) {
       ).href,
       "./checkout-offers.js": pathToFileURL(
         join(repositoryRoot, "api/_lib/checkout-offers.ts"),
+      ).href,
+      "./upgrade-pricing-experiment.js": pathToFileURL(
+        join(repositoryRoot, "api/_lib/upgrade-pricing-experiment.ts"),
       ).href,
       "./maintenance.js": maintenanceUrl,
       "./paid-acquisition.js": paidAcquisitionUrl,

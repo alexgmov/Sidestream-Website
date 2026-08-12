@@ -331,6 +331,7 @@ export async function runMaintenanceJob(
           from public.sidestream_checkout_intents as intent
           where intent.expires_at <=
             $1::timestamptz - ($2::bigint * interval '1 day')
+            and intent.upgrade_pricing_snapshot_version is null
           order by intent.expires_at, intent.id
           limit $3
           for update skip locked

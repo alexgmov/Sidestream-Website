@@ -30,6 +30,11 @@ const INTERNAL_CRONS = Object.freeze([
 
 const PROTECTED_ADMIN_ROUTES = Object.freeze([
   {
+    path: "/api/internal/upgrade-pricing-report",
+    source: "api/internal/upgrade-pricing-report.ts",
+    testSource: "tests/upgrade-pricing-report.test.mjs",
+  },
+  {
     path: "/api/internal/customer-summary",
     source: "api/internal/customer-summary.ts",
     testSource: "tests/customer-360/summary.test.mjs",

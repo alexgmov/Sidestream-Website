@@ -14,10 +14,14 @@ const REQUIRED_ROOT_TESTS = Object.freeze([
   "acquisition-journey-matrix.test.mjs",
 ]);
 const ROOT_POSTGRES_ONLY_TESTS = new Set([
+  "paid-telemetry-handoff-repair.test.mjs",
   "postgres-integration.test.mjs",
   "single-device-postgres.test.mjs",
+  "upgrade-pricing-report-postgres.test.mjs",
 ]);
-const CUSTOMER_360_POSTGRES_ONLY_TESTS = new Set(CUSTOMER_360_POSTGRES_TESTS);
+const CUSTOMER_360_POSTGRES_ONLY_TESTS = new Set([
+  ...CUSTOMER_360_POSTGRES_TESTS,
+]);
 const CUSTOMER_360_CLASSIFIED_TESTS = new Set([
   ...CUSTOMER_360_NON_POSTGRES_TESTS,
   ...CUSTOMER_360_POSTGRES_TESTS,

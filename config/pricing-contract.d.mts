@@ -8,6 +8,9 @@ export type PricingOffer = Readonly<{
   priceSource:
     | Readonly<{ kind: "default" }>
     | Readonly<{ kind: "environment"; variable: string }>;
+  monthlyPriceSource:
+    | Readonly<{ kind: "lookup"; configuredVariable: string }>
+    | Readonly<{ kind: "environment"; variable: string }>;
 }>;
 
 export const SIDESTREAM_PRICING_CONTRACT: Readonly<{

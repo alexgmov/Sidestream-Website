@@ -131,6 +131,12 @@ test("cross-lane contracts hold in one isolated disposable Postgres schema", {
     await t.test("checkout intent reuse creates one Stripe Session under concurrent retries", async () => {
       configureCheckoutEnvironment();
       const checkoutAcquisitionId = "77777777-7777-4777-8777-777777777777";
+      const freeAccount = await pool.query(
+        `insert into ${quotedSchema}.sidestream_accounts (
+           google_sub, email, display_name, stripe_customer_id
+         ) values ('google-integration-checkout', 'buyer@example.com', 'Buyer', 'cus_checkout')
+         returning id`,
+      );
       await pool.query(
         `insert into ${quotedSchema}.sidestream_acquisitions (
            id, license_namespace, first_observed_source, entry_channel,
@@ -145,7 +151,7 @@ test("cross-lane contracts hold in one isolated disposable Postgres schema", {
       runtime.account.__setPostgresIntegrationStripeClient({
         customers: {
           async retrieve(id) {
-            assert.equal(id, "cus_integration");
+            assert.equal(id, "cus_checkout");
             return { id, deleted: false };
           },
         },
@@ -179,11 +185,11 @@ test("cross-lane contracts hold in one isolated disposable Postgres schema", {
         },
       });
       const buyerSession = {
-        accountId: accountFixture.accountId,
-        email: "owner@example.com",
-        name: "Owner",
+        accountId: freeAccount.rows[0].id,
+        email: "buyer@example.com",
+        name: "Buyer",
         avatarUrl: "",
-        stripeCustomerId: "cus_integration",
+        stripeCustomerId: "cus_checkout",
         license: {
           active: false,
           plan: "free",
@@ -411,6 +417,13 @@ test("cross-lane contracts hold in one isolated disposable Postgres schema", {
       assert.equal(completed.outcome, "completed");
       assert.ok(completed.counts.rateLimitBucketsDeleted >= 1);
       assert.ok(completed.batchSize <= 50);
+      const retainedExperimentLineage = await pool.query(
+        `select count(*)::integer as retained
+         from ${quotedSchema}.sidestream_upgrade_pricing_exposures as exposure
+         join ${quotedSchema}.sidestream_checkout_intents as intent
+           on intent.id = exposure.checkout_intent_id`,
+      );
+      assert.equal(retainedExperimentLineage.rows[0].retained, 1);
     });
   } finally {
     restoreEnvironment(environmentSnapshot);
@@ -572,6 +585,10 @@ export async function query() { throw new Error("Inject a Postgres query into qu
       "./entitlement.js": new URL("../api/_lib/entitlement.ts", import.meta.url).href,
       "./checkout-offers.js": new URL(
         "../api/_lib/checkout-offers.ts",
+        import.meta.url,
+      ).href,
+      "./upgrade-pricing-experiment.js": new URL(
+        "../api/_lib/upgrade-pricing-experiment.ts",
         import.meta.url,
       ).href,
       "./device-policy.js": new URL("../api/_lib/device-policy.ts", import.meta.url).href,

@@ -15,6 +15,11 @@ export type CheckoutOfferSelection = Readonly<{
   configuredPriceId: string;
 }>;
 
+export type MonthlyCheckoutPriceSelection = Readonly<{
+  kind: "lookup" | "environment";
+  configuredPriceId: string;
+}>;
+
 export const SIDESTREAM_GLOBAL_CHECKOUT_OFFER: CheckoutOfferCatalogEntry =
   SIDESTREAM_PRICING_CONTRACT.global;
 
@@ -64,6 +69,28 @@ export function getCheckoutOfferPresentation(
   const currency = entry.currency.toUpperCase();
   const formattedPrice = formatOfferPrice(entry);
   return Object.freeze({ formattedPrice, currency });
+}
+
+/**
+ * Monthly Price configuration stays server-owned and follows the already
+ * selected one-time offer. Regional offers fail closed without their exact
+ * configured recurring Price; only the global USD offer may discover/create.
+ */
+export function selectMonthlyCheckoutPrice(
+  entry: CheckoutOfferCatalogEntry,
+  environment: NodeJS.ProcessEnv = process.env,
+): MonthlyCheckoutPriceSelection {
+  const source = entry.monthlyPriceSource;
+  return Object.freeze({
+    kind: source.kind,
+    configuredPriceId: cleanEnvironmentValue(
+      environment[
+        source.kind === "lookup"
+          ? source.configuredVariable
+          : source.variable
+      ],
+    ),
+  });
 }
 
 function cleanEnvironmentValue(value: unknown) {

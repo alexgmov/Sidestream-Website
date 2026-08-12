@@ -188,6 +188,32 @@ export type LegacySubscriptionVerification =
   | Readonly<{ ok: true; priceId: string; productId: string }>
   | Readonly<{ ok: false; reason: string }>;
 
+export type UpgradePricingSubscriptionMetadata = Readonly<
+  Record<string, string | null>
+>;
+
+export type UpgradePricingSubscriptionVerification =
+  | Readonly<{
+      ok: true;
+      subscriptionId: string;
+      customerId: string;
+      invoiceId: string;
+      priceId: string;
+      productId: string;
+      status: string;
+      currentPeriodEndMs: number;
+      cancelAtPeriodEnd: boolean;
+      invoicePaid: boolean;
+    }>
+  | Readonly<{ ok: false; reason: string }>;
+
+export type UpgradePricingSubscriptionTransition = Readonly<{
+  entitlementStatus: "active" | "suspended" | "revoked";
+  statusReason: string;
+  revokeCredentials: boolean;
+  graceUntilMs: number | null;
+}>;
+
 export function buildCheckoutCompletionUrl(
   baseUrl: string,
   activationKey = "",
@@ -260,6 +286,21 @@ export function getStripeCustomerIdempotencyKey(accountId: string) {
 export function getStripePriceIdempotencyKey(productId: string) {
   const digest = createHash("sha256").update(productId).digest("hex");
   return `sidestream_pro_price_${digest}`;
+}
+
+export function getStripeRecurringPriceIdempotencyKey(options: {
+  productId: string;
+  currency: string;
+  amountMinor: number;
+  interval: "month";
+  intervalCount: 1;
+  usageType: "licensed";
+  livemode: boolean;
+}) {
+  const digest = createHash("sha256")
+    .update(JSON.stringify(options))
+    .digest("hex");
+  return `sidestream_upgrade_monthly_price_${digest}`;
 }
 
 export function getStripeCheckoutWindow(
@@ -467,6 +508,304 @@ export function verifyLegacySubscriptionEntitlement(
   }
 
   return { ok: true, priceId, productId };
+}
+
+/**
+ * Verifies the provider-owned half-price monthly purchase independently from
+ * the historical subscription allowlist. All values in `expected.metadata`
+ * come from the immutable Checkout intent/assignment snapshot, never from the
+ * browser or today's catalog.
+ */
+export function verifyUpgradePricingSubscriptionTruth(options: {
+  session: Record<string, any>;
+  subscription: Record<string, any>;
+  customer: Record<string, any>;
+  invoice: Record<string, any>;
+  price: Record<string, any>;
+  product: Record<string, any>;
+  expected: {
+    sessionId: string;
+    subscriptionId: string;
+    customerId: string;
+    invoiceId: string;
+    initialInvoiceId: string;
+    priceId: string;
+    productId: string;
+    currency: string;
+    amountMinor: number;
+    livemode: boolean;
+    clientReferenceId: string;
+    metadata: UpgradePricingSubscriptionMetadata;
+    invoiceEventType:
+      | "checkout.session.completed"
+      | "customer.subscription.created"
+      | "customer.subscription.updated"
+      | "customer.subscription.deleted"
+      | "invoice.paid"
+      | "invoice.payment_failed";
+  };
+}): UpgradePricingSubscriptionVerification {
+  const { session, subscription, customer, invoice, price, product, expected } = options;
+  if (
+    session.livemode !== expected.livemode ||
+    subscription.livemode !== expected.livemode ||
+    invoice.livemode !== expected.livemode ||
+    price.livemode !== expected.livemode ||
+    product.livemode !== expected.livemode
+  ) {
+    return { ok: false, reason: "provider_namespace_mismatch" };
+  }
+  if (
+    stringId(session.id) !== expected.sessionId ||
+    session.mode !== "subscription" ||
+    session.status !== "complete" ||
+    session.payment_status !== "paid"
+  ) {
+    return { ok: false, reason: "invalid_subscription_checkout" };
+  }
+  if (
+    stringId(session.subscription) !== expected.subscriptionId ||
+    stringId(session.customer) !== expected.customerId ||
+    stringId(session.invoice) !== expected.initialInvoiceId ||
+    stringId(session.client_reference_id) !== expected.clientReferenceId
+  ) {
+    return { ok: false, reason: "checkout_identity_mismatch" };
+  }
+  if (!metadataExactlyMatches(session.metadata, expected.metadata)) {
+    return { ok: false, reason: "checkout_metadata_mismatch" };
+  }
+  const checkoutItems = session.line_items?.data || [];
+  if (
+    checkoutItems.length !== 1 ||
+    session.line_items?.has_more !== false ||
+    checkoutItems[0]?.quantity !== 1 ||
+    stringId(checkoutItems[0]?.price) !== expected.priceId ||
+    stringId(checkoutItems[0]?.price?.product) !== expected.productId
+  ) {
+    return { ok: false, reason: "checkout_line_item_mismatch" };
+  }
+  if (
+    session.currency !== expected.currency ||
+    session.amount_subtotal !== expected.amountMinor ||
+    session.amount_total !== expected.amountMinor ||
+    (session.total_details?.amount_discount ?? 0) !== 0 ||
+    (session.total_details?.amount_shipping ?? 0) !== 0 ||
+    (session.total_details?.amount_tax ?? 0) !== 0
+  ) {
+    return { ok: false, reason: "checkout_amount_mismatch" };
+  }
+
+  if (
+    stringId(customer.id) !== expected.customerId ||
+    customer.deleted === true
+  ) {
+    return { ok: false, reason: "customer_mismatch" };
+  }
+  if (
+    stringId(subscription.id) !== expected.subscriptionId ||
+    stringId(subscription.customer) !== expected.customerId ||
+    subscription.collection_method !== "charge_automatically" ||
+    !metadataExactlyMatches(subscription.metadata, expected.metadata)
+  ) {
+    return { ok: false, reason: "subscription_identity_mismatch" };
+  }
+  const subscriptionItems = subscription.items?.data || [];
+  if (
+    subscriptionItems.length !== 1 ||
+    subscription.items?.has_more !== false ||
+    subscriptionItems[0]?.quantity !== 1 ||
+    stringId(subscriptionItems[0]?.price) !== expected.priceId
+  ) {
+    return { ok: false, reason: "subscription_item_mismatch" };
+  }
+  const status = stringId(subscription.status);
+  if (![
+    "active", "trialing", "incomplete", "incomplete_expired", "past_due",
+    "unpaid", "canceled", "paused",
+  ].includes(status)) {
+    return { ok: false, reason: "subscription_status_mismatch" };
+  }
+  const currentPeriodEnd = Number(
+    subscriptionItems[0]?.current_period_end ?? subscription.current_period_end,
+  );
+  if (!Number.isSafeInteger(currentPeriodEnd) || currentPeriodEnd <= 0) {
+    return { ok: false, reason: "subscription_period_mismatch" };
+  }
+
+  if (
+    stringId(price.id) !== expected.priceId ||
+    stringId(price.product) !== expected.productId ||
+    price.active !== true ||
+    price.type !== "recurring" ||
+    price.currency !== expected.currency ||
+    price.unit_amount !== expected.amountMinor ||
+    price.recurring?.interval !== "month" ||
+    price.recurring?.interval_count !== 1 ||
+    price.recurring?.usage_type !== "licensed"
+  ) {
+    return { ok: false, reason: "subscription_price_mismatch" };
+  }
+  if (
+    stringId(product.id) !== expected.productId ||
+    product.active !== true ||
+    product.deleted === true
+  ) {
+    return { ok: false, reason: "subscription_product_mismatch" };
+  }
+
+  if (
+    stringId(invoice.id) !== expected.invoiceId ||
+    stringId(invoice.customer) !== expected.customerId ||
+    invoiceSubscriptionId(invoice) !== expected.subscriptionId ||
+    invoice.collection_method !== "charge_automatically" ||
+    invoice.currency !== expected.currency
+  ) {
+    return { ok: false, reason: "invoice_identity_mismatch" };
+  }
+  const invoiceItems = invoice.lines?.data || [];
+  if (
+    invoiceItems.length !== 1 ||
+    invoice.lines?.has_more !== false ||
+    invoiceItems[0]?.quantity !== 1 ||
+    invoiceLinePriceId(invoiceItems[0]) !== expected.priceId ||
+    invoiceLineSubscriptionId(invoiceItems[0]) !== expected.subscriptionId ||
+    invoiceItems[0]?.currency !== expected.currency ||
+    invoiceItems[0]?.amount !== expected.amountMinor ||
+    invoice.amount_due !== expected.amountMinor ||
+    invoice.total !== expected.amountMinor
+  ) {
+    return { ok: false, reason: "invoice_line_item_mismatch" };
+  }
+  const invoiceMetadata = invoiceSubscriptionMetadata(invoice);
+  if (!metadataExactlyMatches(invoiceMetadata, expected.metadata)) {
+    return { ok: false, reason: "invoice_metadata_mismatch" };
+  }
+  const invoicePaid = invoice.status === "paid" && (
+    invoice.paid === undefined || invoice.paid === true
+  );
+  if (invoicePaid) {
+    if (
+      invoice.amount_paid !== expected.amountMinor ||
+      invoice.amount_remaining !== 0 ||
+      !invoicePaymentTruthMatches(invoice, expected, true)
+    ) {
+      return { ok: false, reason: "invoice_settlement_mismatch" };
+    }
+  } else if (
+    ![undefined, false].includes(invoice.paid) ||
+    !["open", "uncollectible"].includes(stringId(invoice.status)) ||
+    invoice.amount_paid !== 0 ||
+    invoice.amount_remaining !== expected.amountMinor ||
+    !invoicePaymentTruthMatches(invoice, expected, false)
+  ) {
+    return { ok: false, reason: "invoice_settlement_mismatch" };
+  }
+  if (
+    (expected.invoiceEventType === "checkout.session.completed" ||
+      expected.invoiceEventType === "invoice.paid") &&
+    !invoicePaid
+  ) {
+    return { ok: false, reason: "invoice_not_paid" };
+  }
+  if (expected.invoiceEventType === "invoice.payment_failed" && invoicePaid) {
+    return { ok: false, reason: "invoice_not_failed" };
+  }
+  if (
+    expected.invoiceEventType === "checkout.session.completed" &&
+    invoice.billing_reason !== "subscription_create"
+  ) {
+    return { ok: false, reason: "initial_invoice_mismatch" };
+  }
+
+  return {
+    ok: true,
+    subscriptionId: expected.subscriptionId,
+    customerId: expected.customerId,
+    invoiceId: expected.invoiceId,
+    priceId: expected.priceId,
+    productId: expected.productId,
+    status,
+    currentPeriodEndMs: currentPeriodEnd * 1_000,
+    cancelAtPeriodEnd: subscription.cancel_at_period_end === true,
+    invoicePaid,
+  };
+}
+
+/**
+ * No unpaid dunning grace is granted. A failed invoice or past-due state
+ * suspends immediately; paid-through cancellation remains active until Stripe
+ * reports the period ended, and only canonical paid recovery can reactivate a
+ * non-terminal subscription.
+ */
+export function planUpgradePricingSubscriptionTransition(options: {
+  status: string;
+  currentPeriodEndMs: number;
+  cancelAtPeriodEnd: boolean;
+  invoicePaid: boolean;
+  eventType: string;
+  eventCreatedAtMs: number;
+  storedEntitlementStatus?: string | null;
+  storedStatusReason?: string | null;
+}): UpgradePricingSubscriptionTransition {
+  const terminalStored = [
+    "subscription_canceled",
+    "subscription_deleted",
+    "subscription_incomplete_expired",
+  ].includes(options.storedStatusReason || "");
+  const deleted = options.eventType === "customer.subscription.deleted";
+  if (deleted || terminalStored || ["canceled", "incomplete_expired", "unpaid", "paused"].includes(options.status)) {
+    return {
+      entitlementStatus: "revoked",
+      statusReason: deleted ? "subscription_deleted" : `subscription_${options.status}`,
+      revokeCredentials: true,
+      graceUntilMs: null,
+    };
+  }
+  if (
+    options.eventType === "invoice.payment_failed" ||
+    ["incomplete", "past_due"].includes(options.status) ||
+    !options.invoicePaid
+  ) {
+    return {
+      entitlementStatus: "suspended",
+      statusReason: options.eventType === "invoice.payment_failed"
+        ? "invoice_payment_failed"
+        : `subscription_${options.status}`,
+      revokeCredentials: true,
+      graceUntilMs: null,
+    };
+  }
+  if (!["active", "trialing"].includes(options.status)) {
+    return {
+      entitlementStatus: "revoked",
+      statusReason: "subscription_unknown",
+      revokeCredentials: true,
+      graceUntilMs: null,
+    };
+  }
+  if (
+    options.cancelAtPeriodEnd &&
+    options.currentPeriodEndMs <= options.eventCreatedAtMs
+  ) {
+    return {
+      entitlementStatus: "revoked",
+      statusReason: "subscription_paid_period_ended",
+      revokeCredentials: true,
+      graceUntilMs: null,
+    };
+  }
+  return {
+    entitlementStatus: "active",
+    statusReason: options.cancelAtPeriodEnd
+      ? "subscription_cancel_at_period_end"
+      : options.status === "trialing"
+        ? "subscription_trialing"
+        : options.storedEntitlementStatus === "suspended"
+          ? "invoice_payment_recovered"
+          : "subscription_active",
+    revokeCredentials: false,
+    graceUntilMs: options.cancelAtPeriodEnd ? options.currentPeriodEndMs : null,
+  };
 }
 
 export function isCanonicalLicenseEntitlementUsable(options: {
@@ -880,4 +1219,90 @@ function stringId(value: unknown) {
     return typeof value.id === "string" ? value.id : "";
   }
   return "";
+}
+
+function metadataExactlyMatches(
+  value: unknown,
+  expected: UpgradePricingSubscriptionMetadata,
+) {
+  const actual = value && typeof value === "object"
+    ? value as Record<string, unknown>
+    : {};
+  return Object.entries(expected).every(([key, expectedValue]) =>
+    expectedValue === null
+      ? stringId(actual[key]) === ""
+      : stringId(actual[key]) === expectedValue
+  );
+}
+
+function invoiceSubscriptionId(invoice: Record<string, any>) {
+  return stringId(invoice.subscription) || (
+    invoice.parent?.type === "subscription_details"
+      ? stringId(invoice.parent?.subscription_details?.subscription)
+      : ""
+  );
+}
+
+function invoiceSubscriptionMetadata(invoice: Record<string, any>) {
+  return invoice.subscription_details?.metadata || (
+    invoice.parent?.type === "subscription_details"
+      ? invoice.parent?.subscription_details?.metadata
+      : undefined
+  );
+}
+
+function invoiceLinePriceId(line: Record<string, any>) {
+  return stringId(line.price) ||
+    stringId(line.pricing?.price_details?.price);
+}
+
+function invoiceLineSubscriptionId(line: Record<string, any>) {
+  return stringId(line.subscription) || (
+    line.parent?.type === "subscription_item_details"
+      ? stringId(line.parent?.subscription_item_details?.subscription)
+      : ""
+  );
+}
+
+function invoicePaymentTruthMatches(
+  invoice: Record<string, any>,
+  expected: {
+    invoiceId: string;
+    customerId: string;
+    currency: string;
+    amountMinor: number;
+    livemode: boolean;
+  },
+  paid: boolean,
+) {
+  // `paid` was removed from current Stripe Invoice objects when Invoice
+  // Payments became the provider-owned settlement ledger. Historical API
+  // objects have no `payments` list, so their exact Invoice amounts and paid
+  // boolean remain the compatibility proof.
+  if (!invoice.payments) return invoice.paid !== undefined;
+  const payments = invoice.payments?.data || [];
+  if (payments.length !== 1 || invoice.payments?.has_more !== false) return false;
+  const payment = payments[0];
+  const paymentIntent = payment?.payment?.payment_intent;
+  if (
+    stringId(payment?.invoice) !== expected.invoiceId ||
+    payment?.livemode !== expected.livemode ||
+    payment?.currency !== expected.currency ||
+    payment?.amount_requested !== expected.amountMinor ||
+    payment?.payment?.type !== "payment_intent" ||
+    !stringId(paymentIntent) ||
+    stringId(paymentIntent?.customer) !== expected.customerId ||
+    paymentIntent?.livemode !== expected.livemode ||
+    paymentIntent?.currency !== expected.currency ||
+    paymentIntent?.amount !== expected.amountMinor
+  ) return false;
+  return paid
+    ? payment?.status === "paid" &&
+        payment?.amount_paid === expected.amountMinor &&
+        paymentIntent?.status === "succeeded" &&
+        paymentIntent?.amount_received === expected.amountMinor
+    : payment?.status === "open" &&
+        payment?.amount_paid === null &&
+        paymentIntent?.status !== "succeeded" &&
+        paymentIntent?.amount_received === 0;
 }
