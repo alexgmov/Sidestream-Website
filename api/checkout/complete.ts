@@ -32,6 +32,14 @@ export default async function handler(
     });
   }
 
+  if (
+    "paidAcquisitionReceiptCookie" in fulfillment &&
+    typeof fulfillment.paidAcquisitionReceiptCookie === "string" &&
+    fulfillment.paidAcquisitionReceiptCookie
+  ) {
+    response.setHeader("Set-Cookie", fulfillment.paidAcquisitionReceiptCookie);
+  }
+
   const destination = new URL(
     "paidAcquisition" in fulfillment && fulfillment.paidAcquisition === true
       ? "/paid-thank-you.html"

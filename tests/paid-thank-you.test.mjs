@@ -27,6 +27,11 @@ test("paid thank-you is a phone-first computer and email handoff", async () => {
   assert.doesNotMatch(html, /You are finished on this phone\./);
   assert.doesNotMatch(html, /Your receipt comes from Stripe\./);
   assert.doesNotMatch(html, /class="done"/);
+  assert.match(html, />Send download to your computer<\/button>/);
+  assert.match(html, /secure Sidestream Unlimited installer link/);
+  assert.match(html, /fetch\("\/api\/paid-acquisition\/artifact"/);
+  assert.match(html, /navigator\.share/);
+  assert.match(html, /Secure Unlimited link copied/);
   assert.doesNotMatch(html, /href="\/api\/download|Download latest/);
 });
 
@@ -57,6 +62,10 @@ test("Checkout completion routes only server-verified paid acquisition to the ne
     const destination = new URL(result.response.getHeader("location"));
     assert.equal(destination.pathname, expectedPath);
     assert.equal(destination.searchParams.get("checkout"), "success");
+    assert.equal(
+      result.response.getHeader("set-cookie"),
+      paidAcquisition === true ? "paid-receipt-cookie" : undefined,
+    );
   }
 
   const accountSource = await readFile(accountSourceUrl, "utf8");
@@ -81,6 +90,9 @@ async function loadCompleteHandler(paidAcquisition) {
             fulfilled: true,
             activationBound: false,
             paidAcquisition,
+            ...(paidAcquisition === true
+              ? { paidAcquisitionReceiptCookie: "paid-receipt-cookie" }
+              : {}),
           };
         },
         getBaseUrl() {

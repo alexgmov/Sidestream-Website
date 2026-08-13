@@ -149,6 +149,59 @@
     font-weight: 750;
   }
 
+  .handoff {
+    display: grid;
+    gap: 9px;
+  }
+
+  .handoff-button {
+    align-items: center;
+    appearance: none;
+    background: var(--accent);
+    border: 0;
+    border-radius: 999px;
+    color: #fff;
+    cursor: pointer;
+    display: inline-flex;
+    font: inherit;
+    font-size: 0.92rem;
+    font-weight: 800;
+    justify-content: center;
+    min-height: 56px;
+    padding: 14px 22px;
+    text-align: center;
+    transition: background 160ms ease, transform 160ms ease;
+    white-space: nowrap;
+    width: 100%;
+  }
+
+  .handoff-button:hover {
+    background: #ff2a2a;
+    transform: translateY(-1px);
+  }
+
+  .handoff-button:focus-visible {
+    outline: 3px solid rgba(240, 68, 56, 0.38);
+    outline-offset: 3px;
+  }
+
+  .handoff-button:disabled {
+    cursor: wait;
+    opacity: 0.72;
+    transform: none;
+  }
+
+  .handoff-helper,
+  .handoff-status {
+    color: var(--faint);
+    font-size: 0.82rem;
+    line-height: 1.4;
+    margin: 0;
+    text-align: center;
+  }
+
+  .handoff-status.is-error { color: #ff9a93; }
+
   .support {
     color: var(--soft);
     font-size: 0.9rem;
@@ -182,6 +235,12 @@
         <h1>Finish setup on your computer.</h1>
       </section>
 
+      <section class="handoff" aria-label="Send Sidestream Unlimited to your computer">
+        <button class="handoff-button" id="paid-computer-handoff" type="button">Send download to your computer</button>
+        <p class="handoff-helper">Shares a secure Sidestream Unlimited installer link.</p>
+        <p class="handoff-status" id="paid-computer-handoff-status" aria-live="polite"></p>
+      </section>
+
       <section class="steps" aria-labelledby="next-steps-title">
         <h2 class="steps-title" id="next-steps-title">What to do next</h2>
 
@@ -213,5 +272,52 @@
       <p class="support">Still missing the setup email? <a href="mailto:alex@alexg.mov?subject=Sidestream%20setup%20email%20help">Contact Sidestream support</a>.</p>
     </main>
   </div>
+  <script>
+    const paidComputerHandoff = document.getElementById("paid-computer-handoff");
+    const paidComputerHandoffStatus = document.getElementById("paid-computer-handoff-status");
+
+    paidComputerHandoff.addEventListener("click", async () => {
+      paidComputerHandoff.disabled = true;
+      paidComputerHandoff.textContent = "Opening share options...";
+      paidComputerHandoffStatus.textContent = "";
+      paidComputerHandoffStatus.classList.remove("is-error");
+
+      try {
+        const response = await fetch("/api/paid-acquisition/artifact", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ handoffOnly: true })
+        });
+        if (!response.ok) throw new Error("Paid computer handoff returned " + response.status);
+        const result = await response.json();
+        if (!result || typeof result.handoffUrl !== "string") {
+          throw new Error("Paid computer handoff response was invalid");
+        }
+
+        if (navigator.share) {
+          await navigator.share({
+            title: "Download Sidestream Unlimited",
+            text: "Open this secure Sidestream Unlimited download link on your computer.",
+            url: result.handoffUrl
+          });
+          paidComputerHandoff.textContent = "Sent to your computer";
+        } else {
+          await navigator.clipboard.writeText(result.handoffUrl);
+          paidComputerHandoff.textContent = "Secure Unlimited link copied";
+        }
+      } catch (error) {
+        if (error && error.name === "AbortError") {
+          paidComputerHandoff.textContent = "Send download to your computer";
+        } else {
+          console.warn("Sidestream Unlimited computer handoff failed", error);
+          paidComputerHandoffStatus.textContent = "Could not create your Unlimited link. Use the setup email below or try again.";
+          paidComputerHandoffStatus.classList.add("is-error");
+          paidComputerHandoff.textContent = "Send download to your computer";
+        }
+      } finally {
+        paidComputerHandoff.disabled = false;
+      }
+    });
+  </script>
 </body>
 </html>

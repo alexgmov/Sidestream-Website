@@ -5504,8 +5504,9 @@ export async function fulfillCheckoutSession(
     }
   });
   if (!fulfillment.fulfilled) return fulfillment;
+  let paidAcquisitionReceiptCookie = "";
   if (paidAcquisitionCheckout) {
-    await completePaidAcquisitionCheckout({
+    const paidCompletion = await completePaidAcquisitionCheckout({
       environment: requireMatchingLicenseEnvironment().namespace,
       verifiedCheckoutSessionRef: checkoutSessionId,
       canonicalPaymentRef:
@@ -5525,11 +5526,17 @@ export async function fulfillCheckoutSession(
       accountRef: accountId,
       entitlementRef: fulfillment.licenseId,
     });
+    if (paidCompletion.matched) {
+      paidAcquisitionReceiptCookie = paidCompletion.receiptCookie;
+    }
   }
   return {
     fulfilled: true as const,
     activationBound: fulfillment.activationBound,
     paidAcquisition: paidAcquisitionCheckout,
+    ...(paidAcquisitionReceiptCookie
+      ? { paidAcquisitionReceiptCookie }
+      : {}),
   };
 }
 

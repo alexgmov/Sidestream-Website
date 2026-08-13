@@ -912,6 +912,22 @@ export function createPaidAcquisitionReceiptCookie(options: {
   return `${receipt}.${signature}`;
 }
 
+export function serializePaidAcquisitionReceiptCookie(options: {
+  receipt: string;
+  environment: "test" | "production";
+  secret: string | Buffer | Uint8Array;
+}) {
+  const value = createPaidAcquisitionReceiptCookie(options);
+  return [
+    `${PAID_ACQUISITION_RECEIPT_COOKIE}=${value}`,
+    `Max-Age=${PAID_ACQUISITION_RECEIPT_MAX_AGE_SECONDS}`,
+    "Path=/",
+    "Secure",
+    "HttpOnly",
+    "SameSite=Lax",
+  ].join("; ");
+}
+
 export function validatePaidAcquisitionReceiptCookie(options: {
   cookieValue: string;
   environment: "test" | "production";
@@ -1348,7 +1364,15 @@ export async function completePaidAcquisitionCheckout(options: {
       publicOrigin: options.publicOrigin,
     });
   }
-  return { matched: true as const, receipt };
+  return {
+    matched: true as const,
+    receipt,
+    receiptCookie: serializePaidAcquisitionReceiptCookie({
+      receipt,
+      environment,
+      secret: requireReceiptSecret(),
+    }),
+  };
 }
 
 export async function deliverPaidAcquisitionInstallerEmail(options: {
