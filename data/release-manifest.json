@@ -5,7 +5,7 @@
   "version": "1.0.18",
   "minSupportedVersion": "1.0.12",
   "critical": false,
-  "rolloutPercent": 50,
+  "rolloutPercent": 100,
   "publishedAt": "2026-08-10T21:02:47.653Z",
   "releaseNotesUrl": "https://sidestream.tv/",
   "artifact": {
