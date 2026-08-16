@@ -49,7 +49,7 @@ The variants are:
 | ID | Billing | Offer |
 | --- | --- | --- |
 | `control_one_time` | Stripe `mode=payment` | The current trusted-country one-time offer, unchanged |
-| `monthly_half` | Stripe `mode=subscription` | An exact monthly Price derived from that intent's current server-owned one-time offer |
+| `monthly_half` | Stripe `mode=subscription` | The exact recurring amount stored beside that trusted-country offer in the canonical pricing contract |
 
 `SIDESTREAM_UPGRADE_PRICING_EXPERIMENT_SECRET` is a server-only secret of at
 least 32 bytes. HMAC-SHA-256 over the experiment ID and canonical account UUID
@@ -68,24 +68,26 @@ Exposure is append-only and is recorded once per immutable intent only after a
 Stripe Checkout Session is successfully created or safely reused. An Upgrade
 click, a started Google login, or an unconfirmed intent is not an exposure.
 
-## Monthly price derivation and Stripe contract
+## Monthly price contract and Stripe contract
 
-The input is the exact current server-owned one-time amount selected for the new
-intent. Integer arithmetic chooses the closest approved psychological ending to
-half, with an exact tie choosing the lower positive candidate.
+The input is the exact current server-owned offer selected for the new intent.
+Its one-time and recurring amounts must match the same canonical catalog entry;
+the runtime does not infer a recurring price from one-time arithmetic. The
+database and Stripe identifier `monthly_half` remains a stable legacy variant
+name and must not be renamed when the approved recurring amount changes.
 
-| Currency | Current one-time example | Monthly result | Ending rule | Lookup key |
-| --- | ---: | ---: | --- | --- |
-| USD | `$19.99` (`1999`) | `$9.99` (`999`) | nearest `$x.99` | `sidestream_pro_monthly_usd_999` |
-| INR | `₹499` (`49900`) | `₹299` (`29900`) | nearest `₹x99` | `sidestream_pro_monthly_inr_29900` |
-| INR example | `₹999` (`99900`) | `₹499` (`49900`) | nearest `₹x99` | new amount-specific key |
-| BRL | `R$25` (`2500`) | `R$12.99` (`1299`) | nearest `R$x.99` | `sidestream_pro_monthly_brl_1299` |
-| KRW | `₩24,900` (`24900`) | `₩12,900` (`12900`) | nearest `₩x,900` | `sidestream_pro_monthly_krw_12900` |
+| Currency | Current one-time offer | Current recurring offer | Lookup key |
+| --- | ---: | ---: | --- |
+| USD | `$19.99` (`1999`) | `$4.99` (`499`) | `sidestream_pro_monthly_usd_499` |
+| INR | `₹499` (`49900`) | `₹299` (`29900`) | `sidestream_pro_monthly_inr_29900` |
+| BRL | `R$25` (`2500`) | `R$12.99` (`1299`) | `sidestream_pro_monthly_brl_1299` |
+| KRW | `₩24,900` (`24900`) | `₩12,900` (`12900`) | `sidestream_pro_monthly_krw_12900` |
 
-Unsupported currencies fall back to control. A later one-time price change
-derives a new amount and therefore a new immutable recurring Price and lookup
-key for future intents. Open intents retain their stored Product, Price,
-currency, amount, and billing mode.
+Unsupported currencies or a one-time amount that no longer matches the catalog
+fall back to control. A price change requires an explicit recurring amount and
+a new immutable amount-specific Stripe lookup key for future intents. Existing
+open intents retain their stored Product, Price, currency, amount, and billing
+mode; existing paid subscriptions retain their original recurring Price.
 
 All monthly Prices use the existing Sidestream Unlimited Product, quantity one,
 `interval=month`, `interval_count=1`, and `usage_type=licensed`. Price

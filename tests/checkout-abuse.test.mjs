@@ -838,7 +838,7 @@ test("database-backed intents serialize retries, rotate deliberately, and fulfil
       upgrade_pricing_billing_model: "subscription",
       upgrade_pricing_country: "US",
       upgrade_pricing_currency: "usd",
-      upgrade_pricing_amount_minor: "999",
+      upgrade_pricing_amount_minor: "499",
       upgrade_pricing_stripe_product_id: "prod_checkout_test",
       upgrade_pricing_stripe_price_id: "price_checkout_monthly_v1",
       upgrade_pricing_account_id: monthlyBuyer.accountId,
@@ -1036,14 +1036,14 @@ class RecordingStripe {
           product: "prod_checkout_test",
           unit_amount: priceId.endsWith("_wrong_amount")
             ? 49901
-            : monthly ? 999 : india ? 49900 : brazil ? 2500 : southKorea ? 24900 : 1999,
+            : monthly ? 499 : india ? 49900 : brazil ? 2500 : southKorea ? 24900 : 1999,
           currency: india ? "inr" : brazil ? "brl" : southKorea ? "krw" : "usd",
           type: monthly ? "recurring" : "one_time",
           recurring: monthly
             ? { interval: "month", interval_count: 1, usage_type: "licensed" }
             : null,
           lookup_key: monthly
-            ? "sidestream_pro_monthly_usd_999"
+            ? "sidestream_pro_monthly_usd_499"
             : india || brazil || southKorea
             ? null
             : "sidestream_pro_once_1999",
@@ -1117,7 +1117,7 @@ class RecordingStripe {
           const monthly = params.line_items[0].price.startsWith(
             "price_checkout_monthly",
           );
-          const amount = monthly ? 999 : india ? 49900 : brazil ? 2500 : southKorea ? 24900 : 1999;
+          const amount = monthly ? 499 : india ? 49900 : brazil ? 2500 : southKorea ? 24900 : 1999;
           const currency = india ? "inr" : brazil ? "brl" : southKorea ? "krw" : "usd";
           const session = {
             id,

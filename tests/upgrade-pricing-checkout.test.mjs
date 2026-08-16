@@ -37,7 +37,7 @@ test("monthly Price and Checkout idempotency rotate across exact term and reques
   const basePriceKey = getStripeRecurringPriceIdempotencyKey({
     productId: "prod_sidestream",
     currency: "usd",
-    amountMinor: 999,
+    amountMinor: 499,
     interval: "month",
     intervalCount: 1,
     usageType: "licensed",
@@ -46,7 +46,7 @@ test("monthly Price and Checkout idempotency rotate across exact term and reques
   assert.equal(basePriceKey, getStripeRecurringPriceIdempotencyKey({
     productId: "prod_sidestream",
     currency: "usd",
-    amountMinor: 999,
+    amountMinor: 499,
     interval: "month",
     intervalCount: 1,
     usageType: "licensed",

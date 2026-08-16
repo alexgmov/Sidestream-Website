@@ -60,11 +60,10 @@ test("the canonical server contract is default-off and validates rollout basis p
   }
 });
 
-test("monthly_half uses explicit currency price-ending rounding", () => {
+test("monthly_half uses the exact recurring amounts from the pricing contract", () => {
   for (const [currency, oneTimeAmountMinor, monthlyAmountMinor] of [
-    ["usd", 1999, 999],
+    ["usd", 1999, 499],
     ["inr", 49900, 29900],
-    ["inr", 99900, 49900],
     ["brl", 2500, 1299],
     ["krw", 24900, 12900],
   ]) {
@@ -80,6 +79,11 @@ test("monthly_half uses explicit currency price-ending rounding", () => {
   );
   assert.throws(
     () => deriveMonthlyHalfAmount("usd", 0),
+    (error) => error instanceof UpgradePricingExperimentError &&
+      error.code === "invalid_offer",
+  );
+  assert.throws(
+    () => deriveMonthlyHalfAmount("usd", 2499),
     (error) => error instanceof UpgradePricingExperimentError &&
       error.code === "invalid_offer",
   );
@@ -152,7 +156,7 @@ test("a persisted account assignment survives rollout, country, device, client, 
     retry: 99,
   });
   assert.equal(first.variant, UPGRADE_PRICING_MONTHLY_VARIANT);
-  assert.equal(first.monthlyAmountMinor, 999);
+  assert.equal(first.monthlyAmountMinor, 499);
   assert.equal(retryFromAnotherClient.variant, UPGRADE_PRICING_MONTHLY_VARIANT);
   assert.equal(retryFromAnotherClient.monthlyAmountMinor, 29900);
   assert.equal(retryFromAnotherClient.assignmentId, existingAssignment.assignmentId);

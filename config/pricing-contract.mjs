@@ -3,6 +3,7 @@ const globalOffer = Object.freeze({
   countryCodes: Object.freeze(["*"]),
   currency: "usd",
   amountMinor: 1999,
+  monthlyAmountMinor: 499,
   displayLocale: "en-US",
   lookupKey: "sidestream_pro_once_1999",
   priceSource: Object.freeze({ kind: "default" }),
@@ -17,6 +18,7 @@ const indiaOffer = Object.freeze({
   countryCodes: Object.freeze(["IN"]),
   currency: "inr",
   amountMinor: 49900,
+  monthlyAmountMinor: 29900,
   displayLocale: "en-IN",
   lookupKey: null,
   priceSource: Object.freeze({
@@ -34,6 +36,7 @@ const brazilOffer = Object.freeze({
   countryCodes: Object.freeze(["BR"]),
   currency: "brl",
   amountMinor: 2500,
+  monthlyAmountMinor: 1299,
   displayLocale: "pt-BR",
   lookupKey: null,
   priceSource: Object.freeze({
@@ -51,6 +54,7 @@ const southKoreaOffer = Object.freeze({
   countryCodes: Object.freeze(["KR"]),
   currency: "krw",
   amountMinor: 24900,
+  monthlyAmountMinor: 12900,
   displayLocale: "ko-KR",
   lookupKey: null,
   priceSource: Object.freeze({

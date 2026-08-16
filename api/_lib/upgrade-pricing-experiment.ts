@@ -1,4 +1,5 @@
 import { createHmac } from "node:crypto";
+import { SIDESTREAM_PRICING_CONTRACT } from "../../config/pricing-contract.mjs";
 // The runtime contract is intentionally dependency-free JavaScript so operator
 // and test code can read it without compiling the API TypeScript graph.
 // @ts-expect-error The owned config surface is an .mjs runtime contract.
@@ -75,23 +76,13 @@ const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const MINIMUM_ASSIGNMENT_SECRET_BYTES = 32;
 
-type MonthlyRoundingRule = Readonly<{ stepMinor: number; endingMinor: number }>;
-
 /**
- * Monthly candidates use the nearest familiar price ending to exactly half of
- * the server-owned one-time amount. Integer doubled-distance comparisons make
- * half-minor-unit ties explicit and avoid floating point money arithmetic.
+ * Monthly candidates must match an exact current server-owned catalog offer.
+ * Keeping the recurring amount explicit prevents a later one-time price edit
+ * from silently repricing subscriptions. The legacy `monthly_half` variant ID
+ * remains stable for persisted assignments and historical Stripe metadata.
  */
-export const UPGRADE_PRICING_MONTHLY_ROUNDING_RULES: Readonly<
-  Record<string, MonthlyRoundingRule>
-> = Object.freeze({
-  usd: Object.freeze({ stepMinor: 100, endingMinor: 99 }),
-  inr: Object.freeze({ stepMinor: 10_000, endingMinor: 9_900 }),
-  brl: Object.freeze({ stepMinor: 100, endingMinor: 99 }),
-  krw: Object.freeze({ stepMinor: 1_000, endingMinor: 900 }),
-});
-
-export function deriveMonthlyHalfAmount(
+export function deriveMonthlyOfferAmount(
   currencyValue: unknown,
   oneTimeAmountMinorValue: unknown,
 ): number {
@@ -105,42 +96,34 @@ export function deriveMonthlyHalfAmount(
       "The server-owned one-time amount must be a positive safe integer",
     );
   }
-  const rule = UPGRADE_PRICING_MONTHLY_ROUNDING_RULES[currency];
-  if (!rule) {
+  const currencyOffers = SIDESTREAM_PRICING_CONTRACT.checkoutCatalog.filter(
+    (offer) => offer.currency === currency,
+  );
+  if (currencyOffers.length === 0) {
     throw new UpgradePricingExperimentError(
       "unsupported_currency",
-      "The one-time offer currency has no approved monthly rounding rule",
+      "The one-time offer currency has no approved monthly offer",
     );
   }
-
-  const approximateIndex = Math.floor(
-    (oneTimeAmountMinor - (2 * rule.endingMinor)) / (2 * rule.stepMinor),
+  const offer = currencyOffers.find(
+    (candidate) => candidate.amountMinor === oneTimeAmountMinor,
   );
-  let selectedAmount = 0;
-  let selectedDistance = Number.POSITIVE_INFINITY;
-  for (let offset = -2; offset <= 3; offset += 1) {
-    const candidate = rule.endingMinor + ((approximateIndex + offset) * rule.stepMinor);
-    if (candidate <= 0 || !Number.isSafeInteger(candidate)) continue;
-    const doubledDistance = Math.abs((2 * candidate) - oneTimeAmountMinor);
-    if (
-      doubledDistance < selectedDistance ||
-      (doubledDistance === selectedDistance && candidate < selectedAmount)
-    ) {
-      selectedAmount = candidate;
-      selectedDistance = doubledDistance;
-    }
-  }
-  if (selectedAmount <= 0) {
+  if (
+    !offer ||
+    !Number.isSafeInteger(offer.monthlyAmountMinor) ||
+    offer.monthlyAmountMinor <= 0
+  ) {
     throw new UpgradePricingExperimentError(
       "invalid_offer",
-      "The server-owned one-time amount cannot produce an approved monthly amount",
+      "The server-owned one-time offer has no exact approved monthly amount",
     );
   }
-  return selectedAmount;
+  return offer.monthlyAmountMinor;
 }
 
-export const roundUpgradePricingMonthlyAmount = deriveMonthlyHalfAmount;
-export const deriveMonthlyHalfAmountMinor = deriveMonthlyHalfAmount;
+export const deriveMonthlyHalfAmount = deriveMonthlyOfferAmount;
+export const roundUpgradePricingMonthlyAmount = deriveMonthlyOfferAmount;
+export const deriveMonthlyHalfAmountMinor = deriveMonthlyOfferAmount;
 
 export function upgradePricingBucket(options: {
   accountId: unknown;
@@ -193,7 +176,7 @@ export function decideUpgradePricing(options: {
   if (existing) {
     if (existing.variant === UPGRADE_PRICING_MONTHLY_VARIANT) {
       try {
-        const monthlyAmountMinor = deriveMonthlyHalfAmount(
+        const monthlyAmountMinor = deriveMonthlyOfferAmount(
           options.currency,
           options.oneTimeAmountMinor,
         );
@@ -269,7 +252,7 @@ export function decideUpgradePricing(options: {
       bucket,
       rolloutBasisPoints: rollout.rolloutBasisPoints,
       variant: UPGRADE_PRICING_MONTHLY_VARIANT,
-      monthlyAmountMinor: deriveMonthlyHalfAmount(
+      monthlyAmountMinor: deriveMonthlyOfferAmount(
         options.currency,
         options.oneTimeAmountMinor,
       ),

@@ -3,6 +3,7 @@ export type PricingOffer = Readonly<{
   countryCodes: readonly string[];
   currency: string;
   amountMinor: number;
+  monthlyAmountMinor: number;
   displayLocale: string;
   lookupKey: string | null;
   priceSource:
