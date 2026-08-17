@@ -5,6 +5,7 @@ import {
   materializeCustomerCommerceEvent,
   type CustomerCommerceQuery,
 } from "./customer-commerce.js";
+import { fulfillDownloadCreditPackCheckout } from "./download-credits.js";
 import {
   resolveLicenseEnvironment,
   type LicenseEnvironmentServerState,
@@ -291,15 +292,28 @@ export async function reconcileStripeEvent(
   if (signedEventNamespace !== environment.namespace) {
     throw new StripeEventProcessingError("stripe_event_namespace_mismatch");
   }
+  const creditPurchase = event.type === "checkout.session.completed"
+    ? await fulfillDownloadCreditPackCheckout(event.data.object, environment)
+    : { recognized: false as const, fulfilled: false as const, reason: "not_credit_pack" };
+  if (creditPurchase.recognized && !creditPurchase.fulfilled) {
+    throw new StripeEventProcessingError(
+      safeOutcome(`credit_pack_${creditPurchase.reason}`),
+    );
+  }
   // Preserve the inherited entitlement decision first. Commerce is an
   // independent projection: if its schema or normalization fails, the durable
   // queue retries the money work without changing the entitlement result.
-  const entitlement = await reconcileInheritedEntitlement(event);
+  const entitlement = creditPurchase.recognized
+    ? null
+    : await reconcileInheritedEntitlement(event);
   const commerce = await materializeCustomerCommerceEvent(
     event,
     commerceQuery,
     environment.namespace,
   );
+  if (creditPurchase.fulfilled) {
+    return { status: "processed", outcome: "credit_pack_purchase_granted" };
+  }
   if (entitlement) return entitlement;
 
   if (commerce.recognized) {

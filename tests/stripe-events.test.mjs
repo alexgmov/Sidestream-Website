@@ -609,6 +609,41 @@ test("Stripe events use a durable claimed queue with bounded retry and protected
       });
     });
 
+    await t.test("credit-pack Checkout grants bypass Unlimited fulfillment but retains commerce projection", async () => {
+      runtime.stub.reset();
+      runtime.creditStub.reset();
+      runtime.creditStub.setResult({
+        recognized: true,
+        fulfilled: true,
+        reason: "purchase_granted",
+      });
+      const event = stripeEvent(
+        "evt_credit_pack",
+        "checkout.session.completed",
+        1_700_004_550,
+        {
+          id: "cs_credit_pack",
+          customer: "cus_credit_pack",
+          mode: "payment",
+          payment_status: "paid",
+          amount_total: 500,
+          currency: "usd",
+          metadata: { sidestream_purchase_kind: "download_credit_pack" },
+        },
+      );
+      const result = await runtime.stripeEvents.reconcileStripeEvent(
+        event,
+        query,
+        process.env,
+      );
+      assert.deepEqual(result, {
+        status: "processed",
+        outcome: "credit_pack_purchase_granted",
+      });
+      assert.deepEqual(runtime.stub.calls, []);
+      runtime.creditStub.reset();
+    });
+
     await t.test("commerce failure preserves entitlement order and retries money independently", async () => {
       await resetEvents(pool);
       runtime.stub.reset();
@@ -1328,6 +1363,15 @@ export function sendJson(response, statusCode, payload) {
     await writeFile(vercelFunctionsStubPath, `
 export function waitUntil() {}
 `, { mode: 0o600 });
+    const downloadCreditsStubPath = join(directory, "download-credits-stub.mjs");
+    await writeFile(downloadCreditsStubPath, `
+let result = { recognized: false, fulfilled: false, reason: "not_credit_pack" };
+export function reset() {
+  result = { recognized: false, fulfilled: false, reason: "not_credit_pack" };
+}
+export function setResult(value) { result = value; }
+export async function fulfillDownloadCreditPackCheckout() { return result; }
+`, { mode: 0o600 });
     const stubUrl = pathToFileURL(stubPath).href;
     const customerCommerceUrl = pathToFileURL(
       join(repositoryRoot, "api/_lib/customer-commerce.ts"),
@@ -1336,6 +1380,7 @@ export function waitUntil() {}
       join(repositoryRoot, "api/_lib/license-environment.ts"),
     ).href;
     const vercelFunctionsStubUrl = pathToFileURL(vercelFunctionsStubPath).href;
+    const downloadCreditsStubUrl = pathToFileURL(downloadCreditsStubPath).href;
     const stripeEventsUrl = await writeAdaptedModule(
       directory,
       "stripe-events",
@@ -1343,6 +1388,7 @@ export function waitUntil() {}
       {
         "./account.js": stubUrl,
         "./customer-commerce.js": customerCommerceUrl,
+        "./download-credits.js": downloadCreditsStubUrl,
         "./license-environment.js": licenseEnvironmentUrl,
       },
     );
@@ -1363,13 +1409,14 @@ export function waitUntil() {}
       { "../../_lib/stripe-events.js": stripeEventsUrl },
     );
     const nonce = randomUUID();
-    const [stripeEvents, webhook, processRoute, stub] = await Promise.all([
+    const [stripeEvents, webhook, processRoute, stub, creditStub] = await Promise.all([
       import(`${stripeEventsUrl}?test=${nonce}`),
       import(`${webhookUrl}?test=${nonce}`),
       import(`${processRouteUrl}?test=${nonce}`),
       import(stubUrl),
+      import(downloadCreditsStubUrl),
     ]);
-    return { directory, stripeEvents, webhook, processRoute, stub };
+    return { directory, stripeEvents, webhook, processRoute, stub, creditStub };
   } catch (error) {
     await rm(directory, { recursive: true, force: true });
     throw error;

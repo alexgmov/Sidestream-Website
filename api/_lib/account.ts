@@ -7931,7 +7931,7 @@ function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
 }
 
-function hashPrivateIdentifier(value: string) {
+export function hashPrivateIdentifier(value: string) {
   return createHmac("sha256", getPrivateServerSecret()).update(value).digest("hex");
 }
 

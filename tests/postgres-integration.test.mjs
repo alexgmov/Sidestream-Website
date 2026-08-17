@@ -224,6 +224,149 @@ test("cross-lane contracts hold in one isolated disposable Postgres schema", {
       assert.equal(new Set(attempts.map((attempt) => attempt.url)).size, 1);
     });
 
+    await t.test("credit wallets serialize reservations, finalization, expiry, and purchase replay", async () => {
+      const environment = {
+        namespace: "test",
+        database: {
+          connectionString: testDatabaseUrl,
+          environmentVariable: TEST_DATABASE_ENV,
+        },
+      };
+      const deviceId = "credit-integration-device-0123456789abcdef";
+      const initial = await runtime.downloadCredits.synchronizeDownloadCredits({
+        deviceId,
+        environment,
+        legacyUsedCredits: 200,
+      });
+      assert.deepEqual({
+        balance: initial.balance,
+        granted: initial.granted,
+        spent: initial.spent,
+      }, { balance: 800, granted: 1_000, spent: 200 });
+
+      const reservationKeys = Array.from({ length: 12 }, (_, index) =>
+        `credit-${index.toString(16).padStart(32, "0")}`
+      );
+      const reservations = await Promise.all(reservationKeys.map((reservationKey) =>
+        runtime.downloadCredits.reserveDownloadCredits({
+          deviceId,
+          environment,
+          reservationKey,
+          formatType: "video",
+        })
+      ));
+      assert.equal(reservations.filter((reservation) => reservation.allowed).length, 8);
+      assert.equal(reservations.filter((reservation) => reservation.status === "insufficient").length, 4);
+
+      const replay = await runtime.downloadCredits.reserveDownloadCredits({
+        deviceId,
+        environment,
+        reservationKey: reservationKeys[0],
+        formatType: "video",
+      });
+      assert.equal(replay.allowed, true);
+      assert.equal(replay.balance, 0);
+
+      const committed = await runtime.downloadCredits.finalizeDownloadCredits({
+        deviceId,
+        environment,
+        reservationKey: reservationKeys[0],
+        outcome: "committed",
+      });
+      const commitReplay = await runtime.downloadCredits.finalizeDownloadCredits({
+        deviceId,
+        environment,
+        reservationKey: reservationKeys[0],
+        outcome: "committed",
+      });
+      assert.equal(committed.status, "committed");
+      assert.equal(commitReplay.status, "committed");
+      assert.equal(commitReplay.spent, 300);
+
+      const released = await runtime.downloadCredits.finalizeDownloadCredits({
+        deviceId,
+        environment,
+        reservationKey: reservationKeys[1],
+        outcome: "released",
+      });
+      const releaseReplay = await runtime.downloadCredits.finalizeDownloadCredits({
+        deviceId,
+        environment,
+        reservationKey: reservationKeys[1],
+        outcome: "released",
+      });
+      assert.equal(released.balance, 100);
+      assert.equal(releaseReplay.balance, 100);
+
+      const checkoutSessionId = "cs_test_creditpack123";
+      await Promise.all([
+        runtime.downloadCredits.grantPurchasedDownloadCredits({
+          deviceId,
+          environment,
+          credits: 500,
+          stripeCheckoutSessionId: checkoutSessionId,
+        }),
+        runtime.downloadCredits.grantPurchasedDownloadCredits({
+          deviceId,
+          environment,
+          credits: 500,
+          stripeCheckoutSessionId: checkoutSessionId,
+        }),
+      ]);
+      const afterPurchase = await runtime.downloadCredits.synchronizeDownloadCredits({
+        deviceId,
+        environment,
+      });
+      assert.deepEqual({
+        balance: afterPurchase.balance,
+        granted: afterPurchase.granted,
+        spent: afterPurchase.spent,
+        reserved: afterPurchase.reserved,
+      }, { balance: 600, granted: 1_500, spent: 300, reserved: 600 });
+
+      await pool.query(
+        `update ${quotedSchema}.sidestream_credit_reservations
+         set reserved_at = now() - interval '8 days',
+             expires_at = now() - interval '1 day',
+             updated_at = now()
+         where status = 'reserved'`,
+      );
+      const afterExpiry = await runtime.downloadCredits.synchronizeDownloadCredits({
+        deviceId,
+        environment,
+      });
+      assert.deepEqual({
+        balance: afterExpiry.balance,
+        granted: afterExpiry.granted,
+        spent: afterExpiry.spent,
+        reserved: afterExpiry.reserved,
+      }, { balance: 1_200, granted: 1_500, spent: 300, reserved: 0 });
+
+      const ledger = await pool.query(
+        `select entry_type, count(*)::integer as count
+         from ${quotedSchema}.sidestream_credit_ledger
+         group by entry_type order by entry_type`,
+      );
+      assert.deepEqual(Object.fromEntries(
+        ledger.rows.map((row) => [row.entry_type, row.count]),
+      ), {
+        download_committed: 1,
+        download_expired: 6,
+        download_released: 1,
+        download_reserved: 8,
+        legacy_usage_import: 1,
+        purchase_grant: 1,
+        starter_grant: 1,
+      });
+      await assert.rejects(
+        pool.query(
+          `update ${quotedSchema}.sidestream_credit_ledger
+           set available_balance_after = available_balance_after`,
+        ),
+        /append-only/,
+      );
+    });
+
     await t.test("the partial credential invariant permits only one live family", async () => {
       const activation = await pool.query(
         `insert into ${quotedSchema}.sidestream_activation_sessions (
@@ -620,6 +763,23 @@ export function __setPostgresIntegrationStripeClient(value: Stripe | null) {
 }
 `,
   });
+  const downloadCreditPackUrl = await writeSchemaModule({
+    schema,
+    temporaryDirectory,
+    name: "download-credit-pack",
+    source: "api/_lib/download-credit-pack.ts",
+  });
+  const downloadCreditsUrl = await writeSchemaModule({
+    schema,
+    temporaryDirectory,
+    name: "download-credits",
+    source: "api/_lib/download-credits.ts",
+    replacements: {
+      "./account.js": accountUrl,
+      "./postgres.js": postgresStubUrl,
+      "./download-credit-pack.js": downloadCreditPackUrl,
+    },
+  });
   const authSessionUrl = await writeSchemaModule({
     schema,
     temporaryDirectory,
@@ -643,7 +803,7 @@ export function __setPostgresIntegrationStripeClient(value: Stripe | null) {
   });
 
   const nonce = randomUUID();
-  const [rateLimit, downloadLeads, maintenance, account, authSession, stripeEvents] =
+  const [rateLimit, downloadLeads, maintenance, account, authSession, stripeEvents, downloadCredits] =
     await Promise.all([
       import(`${rateLimitUrl}?test=${nonce}`),
       import(`${downloadLeadsUrl}?test=${nonce}`),
@@ -651,8 +811,17 @@ export function __setPostgresIntegrationStripeClient(value: Stripe | null) {
       import(`${accountUrl}?test=${nonce}`),
       import(`${authSessionUrl}?test=${nonce}`),
       import(`${stripeEventsUrl}?test=${nonce}`),
+      import(`${downloadCreditsUrl}?test=${nonce}`),
     ]);
-  return { rateLimit, downloadLeads, maintenance, account, authSession, stripeEvents };
+  return {
+    rateLimit,
+    downloadLeads,
+    maintenance,
+    account,
+    authSession,
+    stripeEvents,
+    downloadCredits,
+  };
 }
 
 async function writeSchemaModule(options) {

@@ -38,7 +38,7 @@ function knownBaselineSnapshot(rowSecurityEnabled = false) {
 
 test("migration files are ordered, checksummed, and append-only baseline files are pinned", async () => {
   const migrations = validateMigrationFiles(await loadMigrationFiles());
-  assert.equal(migrations.length, 32);
+  assert.equal(migrations.length, 33);
   assert.deepEqual(
     migrations.map((migration) => migration.filename),
     [...migrations.map((migration) => migration.filename)].sort(),
@@ -69,9 +69,32 @@ test("migration files are ordered, checksummed, and append-only baseline files a
     "20260803120000_add_acquisition_integrity.sql",
     "20260810120000_bind_paid_telemetry_profile.sql",
     "20260812120000_add_upgrade_pricing_experiment.sql",
+    "20260814120000_add_server_download_credits.sql",
   ]) {
     assert.ok(migrations.some((migration) => migration.filename === filename));
   }
+});
+
+test("server download credits are private, append-only, and purchase-ready", async () => {
+  const migration = await readFile(new URL(
+    "../db/migrations/20260814120000_add_server_download_credits.sql",
+    import.meta.url,
+  ), "utf8");
+  assert.match(migration, /create table public\.sidestream_credit_wallets/);
+  assert.match(migration, /create table public\.sidestream_credit_reservations/);
+  assert.match(migration, /create table public\.sidestream_credit_ledger/);
+  assert.match(migration, /unique \(\s*license_namespace,\s*device_id_hash\s*\)/);
+  assert.match(migration, /sidestream_credit_wallets_account_unique/);
+  assert.match(migration, /entry_type = 'starter_grant'/);
+  assert.match(migration, /entry_type = 'legacy_usage_import'/);
+  assert.match(migration, /entry_type = 'purchase_grant'/);
+  assert.match(migration, /stripe_checkout_session_id is not null/);
+  assert.match(migration, /sidestream_credit_ledger_checkout_unique/);
+  assert.match(migration, /sidestream_credit_ledger is append-only/);
+  assert.match(migration, /before update or delete on public\.sidestream_credit_ledger/);
+  assert.equal((migration.match(/enable row level security/g) || []).length, 3);
+  assert.equal((migration.match(/revoke all on table .* from public/g) || []).length, 3);
+  assert.doesNotMatch(migration, /\b(raw_device|device_id|email|ip_address|user_agent)\b/i);
 });
 
 test("Upgrade pricing migration is permanent, complete, private, and append-only", async () => {
