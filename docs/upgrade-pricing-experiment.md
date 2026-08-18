@@ -96,8 +96,12 @@ Product, currency, amount, recurring terms, and Stripe live/test namespace.
 Only global USD may use guarded exact-key discovery/creation. Regional monthly
 Price IDs are explicit server environment configuration and fail closed.
 
-Recurring Checkout does not enable promotion codes until their subscription
-discount and renewal semantics have a dedicated exact-truth test. Control keeps
+Recurring Checkout enables Stripe's customer-entered promotion-code field.
+Coupon duration remains provider-owned: `once` discounts the first Invoice,
+`repeating` discounts its configured number of months, and `forever` discounts
+every renewal. Activation retry reuses an open Session only when Stripe confirms
+that it has the promotion-code capability; older open Sessions are expired and
+replaced through the existing attempt-bound idempotency contract. Control keeps
 its existing promotion, invoice, PaymentIntent, customer-creation, and customer
 copy parameters unchanged.
 
@@ -121,12 +125,17 @@ The database prevents later edits.
 Subscription fulfillment is first-class and separate from the historical
 legacy subscription allowlist. It verifies the exact completed Session,
 subscription, initial or event Invoice, Customer ownership, Product, Price,
-quantity, currency, amount, monthly interval, live/test namespace, immutable
-metadata, assignment, account, acquisition, intent, and activation attachment
-before writing entitlement. The browser or today's catalog is never provider
-truth for an old intent. All provider metadata keys use the stable
-`sidestream_upgrade_*` namespace and are at most Stripe's 40-character key
-limit; the longer database column names remain internal schema truth.
+quantity, currency, list amount, Checkout discount, Invoice line and aggregate
+discounts, actual settlement amount, monthly interval, live/test namespace,
+immutable metadata, assignment, account, acquisition, intent, and activation
+attachment before writing entitlement. A zero-total first Invoice grants access
+only when Stripe reports paid Invoice truth and its current Invoice Payments
+ledger is exactly empty; partial, once-only, repeating, and forever discounts
+remain independently reconciled on every later Invoice. The browser or today's
+catalog is never provider truth for an old intent. All provider metadata keys
+use the stable `sidestream_upgrade_*` namespace and are at most Stripe's
+40-character key limit; the longer database column names remain internal schema
+truth.
 
 ## Lifecycle and conservative access policy
 

@@ -574,6 +574,25 @@ test("database-backed intents serialize retries, rotate deliberately, and fulfil
       activationWrite.params.metadata.sidestream_activation_key,
       activationKey,
     );
+    assert.equal(activationWrite.session.allow_promotion_codes, true);
+    const legacyActivationSessionId = activationWrite.session.id;
+    stripe.setAllowPromotionCodes(legacyActivationSessionId, false);
+    const replacementIntent = await account.createCheckoutIntent({
+      acquisitionId: acquisition.acquisitionId,
+      activationKey,
+      session: buyerSession,
+    });
+    assert.ok(replacementIntent);
+    const promotionReadyActivation = await account.createOrReuseCheckoutSession({
+      intentId: replacementIntent.intentId,
+      browserToken: replacementIntent.browserToken,
+      session: buyerSession,
+      baseUrl: BASE_URL,
+    });
+    assert.equal(promotionReadyActivation.ok, true);
+    assert.notEqual(promotionReadyActivation.url, activationCheckout.url);
+    assert.equal(stripe.countWrites("checkout.sessions.expire"), 3);
+    assert.equal(stripe.sessionCreateWrites.at(-1).session.allow_promotion_codes, true);
     await databasePool.query(
       `
         update public.sidestream_checkout_intents
@@ -858,8 +877,8 @@ test("database-backed intents serialize retries, rotate deliberately, and fulfil
       { price: "price_checkout_monthly_v1", quantity: 1 },
     ]);
     assert.equal(monthlyWrite.params.customer.startsWith("cus_"), true);
+    assert.equal(monthlyWrite.params.allow_promotion_codes, true);
     for (const forbidden of [
-      "allow_promotion_codes",
       "customer_creation",
       "custom_text",
       "invoice_creation",
@@ -981,7 +1000,7 @@ test("database-backed intents serialize retries, rotate deliberately, and fulfil
     );
     assert.deepEqual(stages.rows, [
       { stage: "checkout_completed", count: 4 },
-      { stage: "checkout_started", count: 8 },
+      { stage: "checkout_started", count: 9 },
       { stage: "payment_settled", count: 4 },
     ]);
 
@@ -1125,6 +1144,7 @@ class RecordingStripe {
             mode: params.mode,
             status: "open",
             payment_status: "unpaid",
+            allow_promotion_codes: params.allow_promotion_codes ?? null,
             customer,
             customer_details: null,
             customer_email: null,
@@ -1196,6 +1216,12 @@ class RecordingStripe {
     const session = this.#sessions.get(sessionId);
     if (!session) throw new Error(`Unknown Stripe test Session ${sessionId}`);
     session.metadata.sidestream_acquisition_id = acquisitionId;
+  }
+
+  setAllowPromotionCodes(sessionId, value) {
+    const session = this.#sessions.get(sessionId);
+    if (!session) throw new Error(`Unknown Stripe test Session ${sessionId}`);
+    session.allow_promotion_codes = value;
   }
 
   completeZeroTotal(sessionId, paymentStatus = "no_payment_required") {

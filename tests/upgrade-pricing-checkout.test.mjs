@@ -143,7 +143,7 @@ test("every Upgrade experiment Stripe metadata key fits the provider limit", asy
   }
 });
 
-test("control request remains exact while monthly uses only recurring-safe parameters", async () => {
+test("control request remains exact while monthly allows recurring-safe promotion codes", async () => {
   const account = await source("api/_lib/account.ts");
   const builderStart = account.indexOf("export function buildUpgradeCheckoutSessionParameters");
   const workerStart = account.indexOf("export async function createOrReuseCheckoutSession", builderStart);
@@ -154,9 +154,9 @@ test("control request remains exact while monthly uses only recurring-safe param
   const paymentBranch = builder.slice(paymentStart);
 
   assert.match(subscriptionBranch, /mode: "subscription"/);
+  assert.match(subscriptionBranch, /allow_promotion_codes: true/);
   assert.match(subscriptionBranch, /subscription_data: \{ metadata \}/);
   for (const forbidden of [
-    "allow_promotion_codes",
     "customer_creation",
     "custom_text",
     "invoice_creation",

@@ -43,6 +43,16 @@ function subscriptionTruth(overrides = {}) {
   const invoiceId = overrides.invoiceId || "in_initial";
   const invoicePaid = overrides.invoicePaid ?? true;
   const status = overrides.status || "active";
+  const amountMinor = 1000;
+  const invoiceDiscountAmount = overrides.invoiceDiscountAmount ?? 0;
+  const checkoutDiscountAmount = overrides.checkoutDiscountAmount ?? (
+    invoiceId === "in_initial" ? invoiceDiscountAmount : 0
+  );
+  const invoiceTotal = amountMinor - invoiceDiscountAmount;
+  const checkoutTotal = amountMinor - checkoutDiscountAmount;
+  const invoiceDiscounts = invoiceDiscountAmount > 0
+    ? [{ amount: invoiceDiscountAmount, discount: "di_monthly" }]
+    : [];
   const invoice = {
     livemode: false,
     id: invoiceId,
@@ -51,15 +61,19 @@ function subscriptionTruth(overrides = {}) {
     collection_method: "charge_automatically",
     currency: "usd",
     status: invoicePaid ? "paid" : "open",
-    amount_due: 1000,
-    amount_paid: invoicePaid ? 1000 : 0,
-    amount_remaining: invoicePaid ? 0 : 1000,
-    total: 1000,
+    subtotal: amountMinor,
+    amount_due: invoiceTotal,
+    amount_paid: invoicePaid ? invoiceTotal : 0,
+    amount_remaining: invoicePaid ? 0 : invoiceTotal,
+    total: invoiceTotal,
+    total_discount_amounts: invoiceDiscounts,
     billing_reason: invoiceId === "in_initial" ? "subscription_create" : "subscription_cycle",
     lines: {
       data: [{
         quantity: 1,
-        amount: 1000,
+        amount: amountMinor,
+        subtotal: amountMinor,
+        discount_amounts: invoiceDiscounts,
         currency: "usd",
         parent: {
           type: "subscription_item_details",
@@ -86,13 +100,13 @@ function subscriptionTruth(overrides = {}) {
       },
     },
     payments: {
-      data: [{
+      data: invoiceTotal === 0 ? [] : [{
         id: "inpay_monthly",
         invoice: invoiceId,
         livemode: false,
         currency: "usd",
-        amount_requested: 1000,
-        amount_paid: invoicePaid ? 1000 : null,
+        amount_requested: invoiceTotal,
+        amount_paid: invoicePaid ? invoiceTotal : null,
         status: invoicePaid ? "paid" : "open",
         payment: {
           type: "payment_intent",
@@ -101,8 +115,8 @@ function subscriptionTruth(overrides = {}) {
             customer: "cus_owner",
             livemode: false,
             currency: "usd",
-            amount: 1000,
-            amount_received: invoicePaid ? 1000 : 0,
+            amount: invoiceTotal,
+            amount_received: invoicePaid ? invoiceTotal : 0,
             status: invoicePaid ? "succeeded" : "requires_payment_method",
           },
         },
@@ -115,15 +129,20 @@ function subscriptionTruth(overrides = {}) {
     id: "cs_monthly",
     mode: "subscription",
     status: "complete",
-    payment_status: "paid",
+    payment_status: overrides.checkoutPaymentStatus ||
+      (checkoutTotal === 0 ? "no_payment_required" : "paid"),
     customer: "cus_owner",
     subscription: "sub_monthly",
     invoice: "in_initial",
     client_reference_id: "activation-key",
     currency: "usd",
-    amount_subtotal: 1000,
-    amount_total: 1000,
-    total_details: { amount_discount: 0, amount_shipping: 0, amount_tax: 0 },
+    amount_subtotal: amountMinor,
+    amount_total: checkoutTotal,
+    total_details: {
+      amount_discount: checkoutDiscountAmount,
+      amount_shipping: 0,
+      amount_tax: 0,
+    },
     line_items: {
       data: [{
         quantity: 1,
@@ -160,7 +179,7 @@ function subscriptionTruth(overrides = {}) {
     priceId: "price_monthly_half",
     productId: "prod_sidestream",
     currency: "usd",
-    amountMinor: 1000,
+    amountMinor,
     livemode: false,
     clientReferenceId: "activation-key",
     metadata,
@@ -246,6 +265,45 @@ test("first and renewal invoices are exact and failed settlement cannot look pai
   assert.deepEqual(verifyUpgradePricingSubscriptionTruth(failed), {
     ok: false,
     reason: "invoice_not_paid",
+  });
+});
+
+test("subscription promotion codes reconcile partial, zero, once, and repeating discounts", () => {
+  const partial = subscriptionTruth({ invoiceDiscountAmount: 250 });
+  assert.equal(verifyUpgradePricingSubscriptionTruth(partial).ok, true);
+
+  const zero = subscriptionTruth({ invoiceDiscountAmount: 1000 });
+  const zeroResult = verifyUpgradePricingSubscriptionTruth(zero);
+  assert.equal(zeroResult.ok, true);
+  assert.equal(zeroResult.invoicePaid, true);
+
+  const onceRenewal = subscriptionTruth({
+    invoiceId: "in_renewal_once",
+    invoiceEventType: "invoice.paid",
+    checkoutDiscountAmount: 1000,
+  });
+  assert.equal(verifyUpgradePricingSubscriptionTruth(onceRenewal).ok, true);
+
+  const repeatingRenewal = subscriptionTruth({
+    invoiceId: "in_renewal_repeating",
+    invoiceEventType: "invoice.paid",
+    invoiceDiscountAmount: 500,
+    checkoutDiscountAmount: 500,
+  });
+  assert.equal(verifyUpgradePricingSubscriptionTruth(repeatingRenewal).ok, true);
+
+  const mismatchedDiscount = structuredClone(partial);
+  mismatchedDiscount.invoice.total_discount_amounts[0].amount = 249;
+  assert.deepEqual(verifyUpgradePricingSubscriptionTruth(mismatchedDiscount), {
+    ok: false,
+    reason: "invoice_line_item_mismatch",
+  });
+
+  const forgedZeroPayment = structuredClone(zero);
+  forgedZeroPayment.invoice.payments.data.push({ id: "inpay_unexpected" });
+  assert.deepEqual(verifyUpgradePricingSubscriptionTruth(forgedZeroPayment), {
+    ok: false,
+    reason: "invoice_settlement_mismatch",
   });
 });
 

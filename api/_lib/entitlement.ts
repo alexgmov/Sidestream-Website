@@ -558,8 +558,7 @@ export function verifyUpgradePricingSubscriptionTruth(options: {
   if (
     stringId(session.id) !== expected.sessionId ||
     session.mode !== "subscription" ||
-    session.status !== "complete" ||
-    session.payment_status !== "paid"
+    session.status !== "complete"
   ) {
     return { ok: false, reason: "invalid_subscription_checkout" };
   }
@@ -584,13 +583,23 @@ export function verifyUpgradePricingSubscriptionTruth(options: {
   ) {
     return { ok: false, reason: "checkout_line_item_mismatch" };
   }
+  const checkoutTotal = session.amount_total;
+  const checkoutDiscount = session.total_details?.amount_discount ?? 0;
   if (
     session.currency !== expected.currency ||
     session.amount_subtotal !== expected.amountMinor ||
-    session.amount_total !== expected.amountMinor ||
-    (session.total_details?.amount_discount ?? 0) !== 0 ||
+    !Number.isSafeInteger(checkoutTotal) ||
+    checkoutTotal < 0 ||
+    checkoutTotal > expected.amountMinor ||
+    !Number.isSafeInteger(checkoutDiscount) ||
+    checkoutDiscount !== expected.amountMinor - checkoutTotal ||
     (session.total_details?.amount_shipping ?? 0) !== 0 ||
-    (session.total_details?.amount_tax ?? 0) !== 0
+    (session.total_details?.amount_tax ?? 0) !== 0 ||
+    (
+      checkoutTotal === 0
+        ? !["paid", "no_payment_required"].includes(session.payment_status)
+        : session.payment_status !== "paid"
+    )
   ) {
     return { ok: false, reason: "checkout_amount_mismatch" };
   }
@@ -663,6 +672,8 @@ export function verifyUpgradePricingSubscriptionTruth(options: {
     return { ok: false, reason: "invoice_identity_mismatch" };
   }
   const invoiceItems = invoice.lines?.data || [];
+  const invoiceTotal = invoice.total;
+  const invoiceDiscount = exactInvoiceDiscountAmount(invoice, invoiceItems[0]);
   if (
     invoiceItems.length !== 1 ||
     invoice.lines?.has_more !== false ||
@@ -671,8 +682,18 @@ export function verifyUpgradePricingSubscriptionTruth(options: {
     invoiceLineSubscriptionId(invoiceItems[0]) !== expected.subscriptionId ||
     invoiceItems[0]?.currency !== expected.currency ||
     invoiceItems[0]?.amount !== expected.amountMinor ||
-    invoice.amount_due !== expected.amountMinor ||
-    invoice.total !== expected.amountMinor
+    (invoiceItems[0]?.subtotal !== undefined &&
+      invoiceItems[0]?.subtotal !== expected.amountMinor) ||
+    !Number.isSafeInteger(invoiceTotal) ||
+    invoiceTotal < 0 ||
+    invoiceTotal > expected.amountMinor ||
+    invoiceDiscount === null ||
+    invoiceDiscount !== expected.amountMinor - invoiceTotal ||
+    invoice.amount_due !== invoiceTotal ||
+    (
+      expected.invoiceId === expected.initialInvoiceId &&
+      (invoiceTotal !== checkoutTotal || invoiceDiscount !== checkoutDiscount)
+    )
   ) {
     return { ok: false, reason: "invoice_line_item_mismatch" };
   }
@@ -685,9 +706,13 @@ export function verifyUpgradePricingSubscriptionTruth(options: {
   );
   if (invoicePaid) {
     if (
-      invoice.amount_paid !== expected.amountMinor ||
+      invoice.amount_paid !== invoiceTotal ||
       invoice.amount_remaining !== 0 ||
-      !invoicePaymentTruthMatches(invoice, expected, true)
+      !invoicePaymentTruthMatches(
+        invoice,
+        { ...expected, amountMinor: invoiceTotal },
+        true,
+      )
     ) {
       return { ok: false, reason: "invoice_settlement_mismatch" };
     }
@@ -695,8 +720,12 @@ export function verifyUpgradePricingSubscriptionTruth(options: {
     ![undefined, false].includes(invoice.paid) ||
     !["open", "uncollectible"].includes(stringId(invoice.status)) ||
     invoice.amount_paid !== 0 ||
-    invoice.amount_remaining !== expected.amountMinor ||
-    !invoicePaymentTruthMatches(invoice, expected, false)
+    invoice.amount_remaining !== invoiceTotal ||
+    !invoicePaymentTruthMatches(
+      invoice,
+      { ...expected, amountMinor: invoiceTotal },
+      false,
+    )
   ) {
     return { ok: false, reason: "invoice_settlement_mismatch" };
   }
@@ -1264,6 +1293,36 @@ function invoiceLineSubscriptionId(line: Record<string, any>) {
   );
 }
 
+function exactInvoiceDiscountAmount(
+  invoice: Record<string, any>,
+  line: Record<string, any> | undefined,
+) {
+  const invoiceDiscount = exactDiscountAmount(invoice.total_discount_amounts);
+  const lineDiscount = exactDiscountAmount(line?.discount_amounts);
+  return invoiceDiscount !== null && invoiceDiscount === lineDiscount
+    ? invoiceDiscount
+    : null;
+}
+
+function exactDiscountAmount(value: unknown): number | null {
+  if (value === undefined || value === null) return 0;
+  if (!Array.isArray(value) || value.length > 1) return null;
+  if (value.length === 0) return 0;
+  const discount = value[0];
+  if (
+    !discount ||
+    typeof discount !== "object"
+  ) return null;
+  const entry = discount as { amount?: unknown; discount?: unknown };
+  if (
+    !stringId(entry.discount) ||
+    !Number.isSafeInteger(entry.amount) ||
+    typeof entry.amount !== "number" ||
+    entry.amount <= 0
+  ) return null;
+  return entry.amount;
+}
+
 function invoicePaymentTruthMatches(
   invoice: Record<string, any>,
   expected: {
@@ -1281,6 +1340,9 @@ function invoicePaymentTruthMatches(
   // boolean remain the compatibility proof.
   if (!invoice.payments) return invoice.paid !== undefined;
   const payments = invoice.payments?.data || [];
+  if (expected.amountMinor === 0) {
+    return paid && payments.length === 0 && invoice.payments?.has_more === false;
+  }
   if (payments.length !== 1 || invoice.payments?.has_more !== false) return false;
   const payment = payments[0];
   const paymentIntent = payment?.payment?.payment_intent;

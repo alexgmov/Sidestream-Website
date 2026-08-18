@@ -1729,6 +1729,7 @@ export function buildUpgradeCheckoutSessionParameters(options: {
     return {
       mode: "subscription",
       ...common,
+      allow_promotion_codes: true,
       subscription_data: { metadata },
     };
   }
@@ -2002,7 +2003,7 @@ export async function createOrReuseCheckoutSession(options: {
           const attachedOffer = attached
             ? readCheckoutOfferSnapshot(attached)
             : null;
-          const attachedUsesStoredOffer = Boolean(
+          let attachedUsesStoredOffer = Boolean(
             attachedOffer &&
             attached?.stripe_price_id === attachedOffer.priceId &&
             attached?.stripe_product_id === attachedOffer.productId,
@@ -2013,24 +2014,51 @@ export async function createOrReuseCheckoutSession(options: {
             attached?.stripe_checkout_url &&
             attachedExpiresAt > now.getTime()
           ) {
-            checkoutOffer = attachedOffer!;
-            stripePriceId = checkoutOffer.priceId;
-            stripeProductId = checkoutOffer.productId;
-            await attachExistingSessionToCheckoutIntent(client, row.id, {
-              sessionId: attachedSessionId,
-              url: attached.stripe_checkout_url,
-              customerId: attached.stripe_customer_id || "",
-              priceId: attached.stripe_price_id || "",
-              productId: attached.stripe_product_id || "",
-              expiresAt: new Date(attachedExpiresAt),
-              attempt,
-              offer: checkoutOffer,
-            });
-            return commitCheckoutIntentResult(client, {
-              ok: true,
-              url: attached.stripe_checkout_url,
-              reused: true,
-            }, checkoutStartedStage(row, now));
+            const candidateSession = await getStripe().checkout.sessions.retrieve(
+              attachedSessionId,
+              {},
+              getStripeRequestOptions(),
+            );
+            if (
+              candidateSession.status === "open" &&
+              candidateSession.url &&
+              candidateSession.allow_promotion_codes === true
+            ) {
+              checkoutOffer = attachedOffer!;
+              stripePriceId = checkoutOffer.priceId;
+              stripeProductId = checkoutOffer.productId;
+              await attachExistingSessionToCheckoutIntent(client, row.id, {
+                sessionId: attachedSessionId,
+                url: candidateSession.url,
+                customerId: normalizeStripeId(candidateSession.customer) ||
+                  attached.stripe_customer_id || "",
+                priceId: attached.stripe_price_id || "",
+                productId: attached.stripe_product_id || "",
+                expiresAt: new Date(candidateSession.expires_at * 1_000),
+                attempt,
+                offer: checkoutOffer,
+              });
+              return commitCheckoutIntentResult(client, {
+                ok: true,
+                url: candidateSession.url,
+                reused: true,
+              }, checkoutStartedStage(row, now));
+            }
+            if (candidateSession.status === "complete") {
+              const completionUrl = buildCheckoutCompletionUrl(
+                options.baseUrl,
+                activationKey,
+              ).replace(CHECKOUT_SESSION_PLACEHOLDER, attachedSessionId);
+              return commitCheckoutIntentResult(client, {
+                ok: true,
+                url: completionUrl,
+                reused: true,
+              }, checkoutStartedStage(row, now));
+            }
+            if (candidateSession.status === "open") {
+              await expireCheckoutSession(candidateSession.id, row.id, attempt);
+            }
+            attachedUsesStoredOffer = false;
           }
 
           if (!attached?.stripe_checkout_url || attachedExpiresAt <= now.getTime()) {
@@ -2054,6 +2082,7 @@ export async function createOrReuseCheckoutSession(options: {
               !options.rotateCancelledSession &&
               stripeSession.status === "open" &&
               stripeSession.url &&
+              stripeSession.allow_promotion_codes === true &&
               attachedOffer &&
               (
                 lockedActivation.stripe_checkout_price_id ||
