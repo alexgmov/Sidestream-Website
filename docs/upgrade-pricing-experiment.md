@@ -5,6 +5,12 @@ source behavior, Stripe Test qualification, Production rollout, and observed
 reporting so that a fixture, Preview, or open Checkout page is never reported
 as a completed purchase or live rollout.
 
+The 50/50 experiment ended on 2026-08-21 with one-time retained as the default
+offer. The canonical source-level closure overrides stale enabled/rollout
+environment values for every future unassigned account. Existing assignments,
+open Checkout Sessions, subscriptions, entitlements, acquisition roots, and
+financial history remain supported and unchanged.
+
 ## Hypothesis and invariants
 
 The hypothesis is that a lower monthly entry price increases activated paid
@@ -266,6 +272,13 @@ open Sessions, paid subscriptions, entitlements, acquisition roots, and
 financial history remain. If code rollback is necessary, keep webhook
 processing and Portal support for existing experiment subscriptions until the
 forward-compatible lifecycle code is restored.
+
+After the 2026-08-21 conclusion, `UPGRADE_PRICING_EXPERIMENT_CONFIG.closedAt`
+also holds the source-level stop. While it is populated, Production ignores a
+stale `true`/nonzero environment rollout and uses the same observable
+`kill_switch` one-time fallback. Reopening assignment requires a deliberate
+reviewed source change and a new Production deployment; changing environment
+values alone cannot restart the test.
 
 Stripe API `2025-03-31.basil` and later move invoice and invoice-line ancestry
 under typed `parent` objects and replace the Invoice `paid` boolean with the

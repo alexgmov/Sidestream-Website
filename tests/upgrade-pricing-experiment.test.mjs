@@ -33,12 +33,13 @@ function decide(index, overrides = {}) {
   });
 }
 
-test("the canonical server contract is default-off and validates rollout basis points", () => {
+test("the concluded experiment stays source-closed even when stale environment rollout remains", () => {
   assert.equal(UPGRADE_PRICING_EXPERIMENT_ID, "upgrade-pricing-v1");
   assert.deepEqual(UPGRADE_PRICING_EXPERIMENT_CONFIG.variants, [
     "control_one_time",
     "monthly_half",
   ]);
+  assert.equal(UPGRADE_PRICING_EXPERIMENT_CONFIG.closedAt, "2026-08-21T09:51:17.000Z");
   assert.deepEqual(readUpgradePricingRollout({}), {
     enabled: false,
     rolloutBasisPoints: 0,
@@ -48,15 +49,19 @@ test("the canonical server contract is default-off and validates rollout basis p
     SIDESTREAM_UPGRADE_PRICING_EXPERIMENT_ENABLED: "true",
     SIDESTREAM_UPGRADE_PRICING_EXPERIMENT_ROLLOUT_BPS: "125",
   }), {
-    enabled: true,
-    rolloutBasisPoints: 125,
-    reason: "configured",
+    enabled: false,
+    rolloutBasisPoints: 0,
+    reason: "kill_switch",
   });
   for (const invalid of ["", "-1", "10001", "1.5", "browser-value"] ) {
-    assert.equal(readUpgradePricingRollout({
+    assert.deepEqual(readUpgradePricingRollout({
       SIDESTREAM_UPGRADE_PRICING_EXPERIMENT_ENABLED: "true",
       SIDESTREAM_UPGRADE_PRICING_EXPERIMENT_ROLLOUT_BPS: invalid,
-    }).enabled, false);
+    }), {
+      enabled: false,
+      rolloutBasisPoints: 0,
+      reason: "kill_switch",
+    });
   }
 });
 

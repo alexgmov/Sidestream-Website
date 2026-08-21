@@ -11,6 +11,7 @@ export const UPGRADE_PRICING_EXPERIMENT_CONFIG = Object.freeze({
   secretEnvironmentVariable: "SIDESTREAM_UPGRADE_PRICING_EXPERIMENT_SECRET",
   defaultEnabled: false,
   defaultRolloutBasisPoints: 0,
+  closedAt: "2026-08-21T09:51:17.000Z",
   variants: Object.freeze([
     UPGRADE_PRICING_CONTROL_VARIANT,
     UPGRADE_PRICING_MONTHLY_VARIANT,
@@ -22,6 +23,14 @@ export const UPGRADE_PRICING_EXPERIMENT_CONFIG = Object.freeze({
  * accepted as an input to the rollout decision.
  */
 export function readUpgradePricingRollout(environment = process.env) {
+  if (UPGRADE_PRICING_EXPERIMENT_CONFIG.closedAt) {
+    return Object.freeze({
+      enabled: false,
+      rolloutBasisPoints: 0,
+      reason: "kill_switch",
+    });
+  }
+
   const enabledValue = cleanEnvironmentValue(
     environment[UPGRADE_PRICING_EXPERIMENT_CONFIG.enabledEnvironmentVariable],
   );
