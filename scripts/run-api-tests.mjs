@@ -55,6 +55,7 @@ export async function listApiTestFiles(directory = TESTS_DIRECTORY) {
   const unknownPostgresTests = relativeFiles.filter((filename) =>
     path.basename(filename).includes("postgres") &&
     filename !== "postgres-config.test.mjs" &&
+    filename !== "postgres-transfer.test.mjs" &&
     !ROOT_POSTGRES_ONLY_TESTS.has(filename) &&
     !CUSTOMER_360_POSTGRES_ONLY_TESTS.has(filename)
   );

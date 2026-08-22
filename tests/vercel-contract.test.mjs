@@ -39,7 +39,8 @@ test("the static Vercel contract includes every protected cron and both release 
   assert.deepEqual(result, {
     crons: 4,
     adminRoutes: 6,
-    internalRoutes: 10,
+    operationalRoutes: 1,
+    internalRoutes: 11,
     releaseEndpoints: 2,
   });
 });

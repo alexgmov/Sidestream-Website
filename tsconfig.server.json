@@ -1,0 +1,22 @@
+{
+  "extends": "./tsconfig.app.json",
+  "compilerOptions": {
+    "allowImportingTsExtensions": false,
+    "declaration": false,
+    "emitDeclarationOnly": false,
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "noEmit": false,
+    "outDir": ".server-dist",
+    "rootDir": ".",
+    "sourceMap": true,
+    "target": "ES2022"
+  },
+  "include": [
+    "api/**/*.ts",
+    "server/**/*.ts"
+  ],
+  "exclude": [
+    "tests/**"
+  ]
+}

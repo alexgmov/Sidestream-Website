@@ -189,7 +189,7 @@ test("landing page and Vercel config preserve Meta and ManyChat routes", () => {
   );
   assert.match(
     middleware,
-    /matcher:\s*\[\s*"\/",\s*"\/index\.html",\s*"\/mc",\s*"\/mc-preview",\s*"\/meta-default",\s*"\/meta-paid",\s*\]/,
+    /matcher:\s*\[\s*"\/",\s*"\/index\.html",\s*"\/mc",\s*"\/mc-preview",\s*"\/meta-default",\s*"\/meta-paid",\s*"\/api\/:path\*",\s*\]/,
   );
   assert.match(middleware, /META_DEFAULT_PATH = "\/meta-default"/);
   assert.match(middleware, /META_PAID_PATH = "\/meta-paid"/);

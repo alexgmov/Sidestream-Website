@@ -123,6 +123,7 @@ test("Vercel middleware and the existing /m redirect remain exactly scoped", () 
       "/mc-preview",
       "/meta-default",
       "/meta-paid",
+      "/api/:path*",
     ],
   });
   for (const source of ["/m", "/m/", "/mc/"]) {

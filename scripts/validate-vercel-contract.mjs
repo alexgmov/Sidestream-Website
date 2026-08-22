@@ -61,6 +61,15 @@ const PROTECTED_ADMIN_ROUTES = Object.freeze([
   },
 ]);
 
+const PROTECTED_OPERATIONAL_ROUTES = Object.freeze([
+  {
+    path: "/api/internal/hetzner-secret-export",
+    source: "api/internal/hetzner-secret-export.ts",
+    guardSource: "api/_lib/hetzner-secret-export.ts",
+    testSource: "tests/hetzner-secret-export.test.mjs",
+  },
+]);
+
 const RELEASE_SOURCES = Object.freeze([
   "api/download.ts",
   "api/releases/latest.ts",
@@ -116,6 +125,44 @@ export async function validateVercelContract(root = REPOSITORY_ROOT) {
     );
   }
 
+  for (const expected of PROTECTED_OPERATIONAL_ROUTES) {
+    requireCondition(
+      !configuredCrons.some((cron) => cron?.path === expected.path),
+      `${expected.path} is a one-time operational route and must not be a Vercel cron`,
+    );
+    const [routeSource, guardSource, testSource] = await Promise.all([
+      readFile(path.join(root, expected.source), "utf8"),
+      readFile(path.join(root, expected.guardSource), "utf8"),
+      readFile(path.join(root, expected.testSource), "utf8"),
+    ]);
+    requireCondition(
+      /createHetznerSecretExportHandler/.test(routeSource),
+      `${expected.source} must use the encrypted export guard`,
+    );
+    for (const marker of [
+      "SIDESTREAM_HETZNER_EXPORT_TOKEN",
+      "SIDESTREAM_HETZNER_EXPORT_PUBLIC_KEY",
+      "SIDESTREAM_HETZNER_EXPORT_NOT_AFTER",
+      "timingSafeEqual",
+      "publicEncrypt",
+      "no-store",
+    ]) {
+      requireCondition(
+        guardSource.includes(marker),
+        `${expected.guardSource} is missing ${marker}`,
+      );
+    }
+    requireCondition(
+      !/Access-Control-Allow-Origin/i.test(guardSource),
+      `${expected.guardSource} must not enable browser CORS`,
+    );
+    requireCondition(
+      testSource.includes(expected.path) ||
+        testSource.includes("one-time export is POST-only"),
+      `${expected.testSource} must cover the protected operational route`,
+    );
+  }
+
   const adminGuardSource = await readFile(
     path.join(root, "api/_lib/customer-admin.ts"),
     "utf8",
@@ -147,6 +194,7 @@ export async function validateVercelContract(root = REPOSITORY_ROOT) {
   const expectedRouteFiles = [
     ...INTERNAL_CRONS.map((cron) => cron.source),
     ...PROTECTED_ADMIN_ROUTES.map((route) => route.source),
+    ...PROTECTED_OPERATIONAL_ROUTES.map((route) => route.source),
   ].sort();
   const actualRouteFiles = internalRouteFiles
     .map((filename) => path.relative(root, filename).split(path.sep).join("/"))
@@ -231,6 +279,7 @@ export async function validateVercelContract(root = REPOSITORY_ROOT) {
   return {
     crons: INTERNAL_CRONS.length,
     adminRoutes: PROTECTED_ADMIN_ROUTES.length,
+    operationalRoutes: PROTECTED_OPERATIONAL_ROUTES.length,
     internalRoutes: actualRouteFiles.length,
     releaseEndpoints: 2,
   };
@@ -258,7 +307,7 @@ function requireCondition(condition, message) {
 async function main() {
   const result = await validateVercelContract();
   console.log(
-    `PASS: Vercel contract covers ${result.crons} crons, ${result.adminRoutes} protected admin routes, ${result.internalRoutes} internal routes, and ${result.releaseEndpoints} release endpoints.`,
+    `PASS: Vercel contract covers ${result.crons} crons, ${result.adminRoutes} protected admin routes, ${result.operationalRoutes} protected operational routes, ${result.internalRoutes} internal routes, and ${result.releaseEndpoints} release endpoints.`,
   );
 }
 

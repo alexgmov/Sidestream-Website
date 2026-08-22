@@ -68,6 +68,12 @@ const OPTIONAL_ATTRIBUTION_FIELDS = [
 ];
 const SAFE_CAMPAIGN_VALUE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const BASE64URL_VALUE = /^[A-Za-z0-9_-]+$/;
+export const DATABASE_CUTOVER_MODE = "source";
+const DATABASE_CUTOVER_MODES = new Set(["source", "fenced", "target"]);
+const HETZNER_ORIGIN_URL_NAME = "SIDESTREAM_HETZNER_ORIGIN_URL";
+const HETZNER_ORIGIN_AUTH_SECRET_NAME = "SIDESTREAM_ORIGIN_AUTH_SECRET";
+const ORIGIN_AUTH_HEADER = "x-sidestream-origin-auth";
+const ORIGINAL_HOST_HEADER = "x-sidestream-original-host";
 const encoder = new TextEncoder();
 const acquisitionExperiments = new WeakMap();
 
@@ -79,11 +85,89 @@ export const config = {
     "/mc-preview",
     "/meta-default",
     "/meta-paid",
+    "/api/:path*",
   ],
 };
 
 export default async function paidAcquisitionMiddleware(request) {
-  return routeBrowserRequest(request, productionRuntime());
+  const runtime = productionRuntime();
+  if (new URL(request.url).pathname.startsWith("/api/")) {
+    return routeDatabaseApiRequest(request, runtime);
+  }
+  return routeBrowserRequest(request, runtime);
+}
+
+export function databaseApiDecision(mode = DATABASE_CUTOVER_MODE) {
+  return DATABASE_CUTOVER_MODES.has(mode) ? mode : "fenced";
+}
+
+export function routeDatabaseApiForTest(request, overrides = {}) {
+  return routeDatabaseApiRequest(request, {
+    ...productionRuntime(),
+    ...overrides,
+  });
+}
+
+function routeDatabaseApiRequest(request, runtime) {
+  const mode = databaseApiDecision(runtime.databaseCutoverMode);
+  if (mode === "fenced") return databaseWriteFenceResponse();
+
+  const headers = new Headers(request.headers);
+  headers.delete(ORIGIN_AUTH_HEADER);
+  headers.delete(ORIGINAL_HOST_HEADER);
+  if (mode === "source") {
+    return next({ request: { headers } });
+  }
+
+  const origin = validHetznerOrigin(runtime.hetznerOriginUrl);
+  const secret = validOriginAuthSecret(runtime.originAuthSecret);
+  if (!origin || !secret) return databaseWriteFenceResponse();
+
+  const requestUrl = new URL(request.url);
+  const destination = new URL(origin);
+  destination.pathname = `${origin.pathname.replace(/\/$/, "")}${requestUrl.pathname}`;
+  destination.search = requestUrl.search;
+  headers.delete("host");
+  headers.set(ORIGIN_AUTH_HEADER, secret);
+  headers.set(ORIGINAL_HOST_HEADER, requestUrl.host);
+  headers.set("x-forwarded-host", requestUrl.host);
+  headers.set("x-forwarded-proto", requestUrl.protocol.replace(":", ""));
+  return rewrite(destination, { request: { headers } });
+}
+
+function databaseWriteFenceResponse() {
+  return new Response(JSON.stringify({
+    error: "Sidestream is briefly unavailable while its database is moved.",
+    code: "database_cutover_in_progress",
+  }), {
+    status: 503,
+    headers: {
+      "Cache-Control": "private, no-store",
+      "Content-Type": "application/json; charset=utf-8",
+      "Retry-After": "60",
+      "X-Robots-Tag": "noindex, nofollow",
+    },
+  });
+}
+
+function validHetznerOrigin(value) {
+  try {
+    const url = new URL(String(value || ""));
+    if (url.protocol !== "https:" || url.username || url.password || url.search || url.hash) {
+      return null;
+    }
+    url.pathname = url.pathname.replace(/\/+$/, "") + "/";
+    return url;
+  } catch {
+    return null;
+  }
+}
+
+function validOriginAuthSecret(value) {
+  const secret = String(value || "");
+  return secret.length >= 32 && secret.length <= 512 && /^[\x21-\x7e]+$/.test(secret)
+    ? secret
+    : "";
 }
 
 // This seam is called directly by the local routing tests. No request header,
@@ -320,6 +404,9 @@ function productionRuntime() {
     secret: process.env[ASSIGNMENT_SECRET_NAME],
     acquisitionSecret: process.env[ACQUISITION_SECRET_NAME],
     paidLandingPath: PAID_LANDING_PATH,
+    databaseCutoverMode: DATABASE_CUTOVER_MODE,
+    hetznerOriginUrl: process.env[HETZNER_ORIGIN_URL_NAME],
+    originAuthSecret: process.env[HETZNER_ORIGIN_AUTH_SECRET_NAME],
   };
 }
 
