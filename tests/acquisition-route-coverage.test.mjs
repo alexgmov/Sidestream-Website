@@ -36,7 +36,6 @@ const ROUTE_POLICY = Object.freeze({
   "api/internal/customers/index.ts": "operator_read",
   "api/internal/customers/lookup.ts": "operator_read",
   "api/internal/download-leads/replay.ts": "operator_job",
-  "api/internal/hetzner-secret-export.ts": "operator_job",
   "api/internal/maintenance.ts": "operator_job",
   "api/internal/stripe-events/process.ts": "operator_job",
   "api/internal/upgrade-pricing-report.ts": "operator_read",
