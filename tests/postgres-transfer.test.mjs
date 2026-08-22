@@ -112,9 +112,11 @@ test("transfer targets require exact selectors, distinct databases, and a loopba
 
 test("remote transfer reads require authenticated TLS and every pool is read-only", () => {
   const remote = createTransferPoolOptions(
-    "postgresql://user:secret@source.example.test/sidestream?sslmode=verify-full",
+    "postgresql://user:secret@source.example.test/sidestream?sslmode=verify-full&channel_binding=require",
   );
   assert.deepEqual(remote.ssl, { rejectUnauthorized: true });
+  assert.equal(remote.enableChannelBinding, true);
+  assert.doesNotMatch(remote.connectionString, /channel_binding/);
   assert.match(remote.options, /default_transaction_read_only=on/);
   assert.equal(remote.max, 1);
   assert.equal(remote.statement_timeout, 600_000);

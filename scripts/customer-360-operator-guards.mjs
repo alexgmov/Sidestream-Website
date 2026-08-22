@@ -75,10 +75,12 @@ export function authenticatedOperatorPoolOptions(connectionString, { readOnly = 
   const url = parseAuthenticatedPostgresUrl(connectionString);
   const local = isLocalHostname(url.hostname);
   const sslMode = (url.searchParams.get("sslmode") || "").toLowerCase();
+  const channelBinding = (url.searchParams.get("channel_binding") || "").toLowerCase();
   if (!local && ["", "disable", "false", "allow", "prefer"].includes(sslMode)) {
     throw new Customer360OperatorGuardError("Remote Postgres requires authenticated TLS.");
   }
   url.searchParams.delete("sslmode");
+  url.searchParams.delete("channel_binding");
   return {
     connectionString: url.toString(),
     max: 1,
@@ -87,6 +89,7 @@ export function authenticatedOperatorPoolOptions(connectionString, { readOnly = 
     query_timeout: 30_000,
     statement_timeout: 30_000,
     options: readOnly ? "-c default_transaction_read_only=on" : undefined,
+    enableChannelBinding: !local && ["prefer", "require"].includes(channelBinding),
     ssl: local ? false : { rejectUnauthorized: true },
   };
 }
