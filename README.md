@@ -80,6 +80,7 @@ This repository owns the whole Sidestream web service: the public/account fronte
 - `tests/license-environment.test.mjs` and `tests/single-device-*.test.mjs` - Static and disposable-Postgres proof for the complete migration chain, including installer-referral RLS, namespace isolation, policy states, database races, transfers/revocation, support tooling, account pages, download authorization, legacy compatibility, and Checkout preservation. `npm run test:single-device` is the aggregate command and requires a safe `SIDESTREAM_TEST_POSTGRES_URL`.
 - `scripts/apply-postgres-migrations.mjs` - Checksummed, advisory-locked migration runner for all SQL files under `db/migrations/`, with database-backed `--status`/`--baseline`/apply, local-only `--validate`/`--dry-run`, exact Test/Production selectors, authenticated remote TLS, connected namespace/target fingerprints, explicit Production confirmations, and atomic migration-plus-ledger transactions.
 - `scripts/verify-migration-baseline.mjs` - Read-only exact catalog/RLS verifier for recognized pre-20260713 profiles. Its current remote TLS path is not Production-safe, so Production use is blocked until the canonical runbook's authenticated-tooling prerequisite is implemented; never use it to bless unexplained drift.
+- `scripts/verify-postgres-transfer.mjs`, `scripts/verify-postgres-port-closed.mjs`, `tests/postgres-transfer.test.mjs`, and `docs/hetzner-database-handoff.md` - Provider-neutral, read-only source/localhost-target database parity, external public-5432 refusal proof, focused safety regressions, and the copy/paste Hetzner transfer handoff. Parity covers public catalog structure, exposed browser-role grants, migration checksums, whole-table count/content fingerprints, sequences, and loopback/SCRAM target posture without returning credentials or row contents. It authorizes no traffic cutover or provider shutdown.
 - `scripts/run-api-tests.mjs`, `scripts/run-postgres-integration.mjs`, `scripts/validate-vercel-contract.mjs`, `scripts/verify-production-source.mjs`, `scripts/generate-production-version.mjs`, `scripts/promote-canonical-production.mjs`, `scripts/verify-production-live.mjs`, and `scripts/verify-vercel-build.mjs` - Aggregate handler/state-machine test discovery, disposable-Postgres concurrency proof with runtime-target rejection, static Vercel route/cron validation, clean remote-main/project/checkout/live-ancestry deployment validation, build-time `version.json` generation, verified custom-domain promotion, canonical post-deploy verification, and the post-`vercel build` bundle verifier.
 - `scripts/audit-legacy-subscriptions.mjs` - Read-only-by-default Stripe/Product/Price inventory plus explicitly confirmed direct-database backfill/quarantine for exact allowlisted legacy subscriptions. Its current remote database connection is not Production-safe, so neither audit nor apply is authorized there.
 - `scripts/audit-license-devices.mjs` - Read-only-by-default pseudonymous fleet audit plus an explicitly confirmed direct-connection backfill mode. Its current environment selection and remote TLS path block every Production mode.
@@ -817,6 +818,24 @@ commits each migration plus its ledger row atomically. The command shape is not
 authorization or evidence that a Production migration occurred; preserve
 before/after connected status and follow `docs/customer-360.md`.
 
+For a private Neon-to-Hetzner copy, follow
+`docs/hetzner-database-handoff.md`. After the source is stable and a copy has
+been restored to a loopback-only target, compare them without mutation:
+
+```bash
+SIDESTREAM_TRANSFER_SOURCE_POSTGRES_URL='<source direct URL with authenticated TLS>' \
+SIDESTREAM_TRANSFER_TARGET_POSTGRES_URL='<localhost target URL>' \
+  npm run verify:database-transfer
+```
+
+Run the same command from the local target to a fresh restore-check database to
+prove the backup can be restored. The target must use localhost, SCRAM password
+encryption, and the same public schema/data/sequence state. Separately run
+`npm run verify:database-port-closed -- --host <public-host-or-ip>` from outside
+Hetzner. A parity pass and unreachable public port still do not prove API,
+authentication, webhook, scheduled-job, telemetry-routing, or Production
+cutover behavior.
+
 Exercise the installer-campaign report only against a loopback disposable/local
 database after its schema is applied:
 
@@ -1085,6 +1104,7 @@ Use the narrowest relevant check after edits:
 
 - Open the HTML page and check that the first fold intentionally places the hero copy lower than the older `Sidestream front end 2/screenshots/01-scan.png` reference.
 - Run `npm run test:api` after any API, shared helper, migration, cron, or handler-contract change. Run `npm run test:postgres-integration` with a disposable `SIDESTREAM_TEST_POSTGRES_URL` after any database/concurrency change; it must never target production or a deployed Test database.
+- Run `npm run test:postgres-transfer` after changing the Hetzner handoff, source/target selector guards, parity catalog, content fingerprints, target network/password posture, or external-port probe. Before any real database cutover, require a live `npm run verify:database-transfer` PASS for the stable source/localhost target, a second PASS for target/restore-check, source-matching checksummed Website migration status with every pending file called out, and an outside-Hetzner `npm run verify:database-port-closed` PASS. None authorizes traffic changes or provider shutdown.
 - Run `npm run test:credits` after changing credit pack configuration parsing, the credit helper, routes, Stripe fulfillment, or schema. Pair it with `npm run test:license-entitlement` in FlowState for client sync/reserve/finalize/purchase and fail-closed rendering contracts. The source-level suite is not a live database, Stripe payment, migration, or Premiere proof.
 - Run `npm run verify:checkout-contract` and `npm run test:entitlement` after checkout, authentication, activation-claim, account, or Stripe fulfillment changes. The source verifier proves the exact Upgrade, Google authentication, and Stripe sequence, the root-page allowlist, and both valid zero-total Stripe statuses.
 - Run `node --experimental-strip-types --test tests/checkout-offers.test.mjs tests/checkout-abuse.test.mjs` after regional catalog, trusted-country, Checkout-intent snapshot, Price reuse, or fulfillment-approval changes. The focused suites cover global and India purchases, ignored browser-forged regional inputs, cross-region Price mismatches, catalog changes during an open Session, concurrent/reused Sessions, failed Stripe verification, exact account metadata, and zero-total promotions.
@@ -1257,6 +1277,8 @@ Use the narrowest relevant check after edits:
 - `llms.txt` is useful as an AI-readable summary, but it is not a substitute for crawlable HTML, normal metadata, structured data, sitemap hygiene, or external citations/backlinks.
 
 ## Recent Change Log
+
+- 2026-08-22: Added the copy-only Hetzner database handoff plus provider-neutral, read-only source/localhost-target parity verification. The verifier compares public catalog structure, exposed browser-role grants, migration checksums, order-independent whole-table content fingerprints/counts, sequences, and loopback/SCRAM target posture; a separate outside-server probe fails if public PostgreSQL accepts a connection. Focused tests and a real disposable PostgreSQL dump/restore pass prove the tooling contract. No Production data, traffic, DNS, telemetry routing, provider configuration, or server state changed.
 
 - 2026-08-21: Ended the authenticated recurring-versus-one-time Upgrade experiment and retained one-time for every future unassigned account. A source-level closure now forces the existing observable `kill_switch` fallback even if stale Production environment values still request the former 50/50 rollout; existing assignments, Checkout Sessions, paid subscriptions, entitlements, lifecycle processing, and permanent experiment evidence remain unchanged.
 
