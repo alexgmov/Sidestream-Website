@@ -201,12 +201,14 @@ export function buildTelemetryPoolOptions(connectionString: string) {
   const url = parsePostgresUrl(connectionString, "SIDESTREAM_TELEMETRY_POSTGRES_URL");
   const local = ["localhost", "127.0.0.1", "::1"].includes(url.hostname.toLowerCase());
   const sslDisabled = /sslmode=(?:disable|false)/i.test(connectionString);
+  const channelBinding = (url.searchParams.get("channel_binding") || "").toLowerCase();
   if (!local && sslDisabled) {
     throw new Error("Remote telemetry Postgres requires authenticated TLS");
   }
   if (/^(prefer|require)$/i.test(url.searchParams.get("sslmode") || "")) {
     url.searchParams.delete("sslmode");
   }
+  url.searchParams.delete("channel_binding");
   return {
     connectionString: url.toString(),
     max: 1,
@@ -215,6 +217,7 @@ export function buildTelemetryPoolOptions(connectionString: string) {
     query_timeout: 15_000,
     statement_timeout: 15_000,
     options: "-c default_transaction_read_only=on",
+    enableChannelBinding: !local && ["prefer", "require"].includes(channelBinding),
     ssl: local ? false : { rejectUnauthorized: true },
   };
 }

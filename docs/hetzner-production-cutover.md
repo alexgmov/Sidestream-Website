@@ -92,8 +92,10 @@ root-owned, and mode 0700.
 
 Neon has `wal_level=replica` and logical replication is disabled, so the
 documented fallback is a custom-format direct-source dump while the selected
-application is fenced. Rehearsal dumps/restores can run live and are expected to
-show row drift; they are never accepted as final copies.
+application is fenced. Long read-only snapshots and dumps use Neon's direct
+non-pooler endpoint; the transaction pooler rejects the verifier's read-only
+startup session option. Rehearsal dumps/restores can run live and are expected
+to show row drift; they are never accepted as final copies.
 
 For one database at a time:
 

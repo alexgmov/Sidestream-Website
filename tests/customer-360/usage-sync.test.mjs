@@ -324,9 +324,15 @@ test("connected fingerprints bind operation and namespace while remote pools aut
   );
   assert.deepEqual(
     buildTelemetryPoolOptions(
-      "postgres://reader:secret@telemetry.example.com/events?sslmode=require",
+      "postgres://reader:secret@telemetry.example.com/events?sslmode=require&channel_binding=require",
     ).ssl,
     { rejectUnauthorized: true },
+  );
+  assert.equal(
+    buildTelemetryPoolOptions(
+      "postgres://reader:secret@telemetry.example.com/events?sslmode=require&channel_binding=require",
+    ).enableChannelBinding,
+    true,
   );
   assert.throws(
     () => buildTelemetryPoolOptions(
