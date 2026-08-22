@@ -8,7 +8,7 @@
     "analytics:referrals": "node scripts/report-referral-visits.mjs",
     "dev": "vite",
     "build": "npm run pricing:check && tsc -b && vite build && node scripts/stage-paid-landing-runtime.mjs && node scripts/generate-sitemap.mjs && node scripts/generate-production-version.mjs",
-    "build:hetzner-api": "rm -rf .server-dist && tsc -p tsconfig.server.json",
+    "build:hetzner-api": "rm -rf .server-dist && tsc -p tsconfig.server.json && mkdir -p .server-dist/config && cp config/pricing-contract.mjs config/upgrade-pricing-experiment.mjs .server-dist/config/",
     "billing:ensure-freedev": "node scripts/ensure-freedev-promo.mjs",
     "account:reset:alex": "node scripts/reset-alex-upgrade-state.mjs",
     "fresh-paid:reset": "node scripts/reset-alex-upgrade-state.mjs",
