@@ -68,7 +68,7 @@ const OPTIONAL_ATTRIBUTION_FIELDS = [
 ];
 const SAFE_CAMPAIGN_VALUE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const BASE64URL_VALUE = /^[A-Za-z0-9_-]+$/;
-export const DATABASE_CUTOVER_MODE = "fenced";
+export const DATABASE_CUTOVER_MODE = "target";
 const DATABASE_CUTOVER_MODES = new Set(["source", "fenced", "target"]);
 const HETZNER_ORIGIN_URL_NAME = "SIDESTREAM_HETZNER_ORIGIN_URL";
 const HETZNER_ORIGIN_AUTH_SECRET_NAME = "SIDESTREAM_ORIGIN_AUTH_SECRET";

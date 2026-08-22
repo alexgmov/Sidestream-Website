@@ -1280,7 +1280,7 @@ Use the narrowest relevant check after edits:
 
 ## Recent Change Log
 
-- 2026-08-22: Entered the guarded Website-only `fenced` phase after the direct-Neon rehearsal matched all 13 schema sections, all 32 recorded migration checksums, sequences, and local/SCRAM security posture; the expected live-row drift remains non-acceptable until the final fenced snapshot passes exact parity and restore-check gates.
+- 2026-08-22: Promoted Website API routing to the authenticated Hetzner target only after the fenced direct-Neon snapshot and an independent target backup/restore-check both matched all 13 schema sections, all 32 source-applied migration checksums, all 52 tables, and all 1,437,816 rows. The source-matching download-credits migration remains intentionally pending; no migration was applied or baselined during cutover.
 
 - 2026-08-22: Added the documented two-database Hetzner cutover boundary: complete writer inventory, source/fence/target Vercel routing, protected loopback Website API service, expiring encrypted runtime-secret transfer with exact license-hash continuity proof, focused routing/security tests, fail-closed target configuration, and a server build that carries the two imported pricing `.mjs` contracts.
 
