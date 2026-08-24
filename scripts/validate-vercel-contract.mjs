@@ -61,14 +61,10 @@ const PROTECTED_ADMIN_ROUTES = Object.freeze([
   },
 ]);
 
-const PROTECTED_OPERATIONAL_ROUTES = Object.freeze([
-  {
-    path: "/api/internal/hetzner-secret-export",
-    source: "api/internal/hetzner-secret-export.ts",
-    guardSource: "api/_lib/hetzner-secret-export.ts",
-    testSource: "tests/hetzner-secret-export.test.mjs",
-  },
-]);
+// One-time operational routes must be removed from this list when their
+// production purpose is complete. The Hetzner secret export was removed after
+// the database cutover, so no operational route remains deployable.
+const PROTECTED_OPERATIONAL_ROUTES = Object.freeze([]);
 
 const RELEASE_SOURCES = Object.freeze([
   "api/download.ts",

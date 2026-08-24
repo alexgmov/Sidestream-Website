@@ -3,6 +3,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -25,7 +26,7 @@ const PLATFORM_DEFAULTS = {
     releaseNotesUrl: "https://sidestream.tv/api/download?platform=win32-x64",
   },
 };
-const REQUIRED_GATES = ["verified", "uploaded", "smoke-tested"];
+const REQUIRED_GATES = ["verified", "smoke-tested"];
 
 main();
 
@@ -54,7 +55,7 @@ function main() {
 
   const artifactPath = required(args.artifact, "--artifact");
   const artifactUrl = args["artifact-url"] || platformDefaults.artifactUrl;
-  const pathname = normalizeBlobPath(required(args.pathname, "--pathname"));
+  const pathname = normalizeArtifactPath(required(args.pathname, "--pathname"));
   const version = normalizeVersion(required(args.version, "--version"));
   const minSupportedVersion = normalizeVersion(args["min-supported-version"] || "1.0.12");
   const channel = sanitizeLabel(args.channel || "stable");
@@ -64,6 +65,9 @@ function main() {
   const artifactType = sanitizeLabel(args["artifact-type"] || platformDefaults.artifactType);
   const critical = parseBoolean(args.critical);
   const manifestPath = MANIFEST_PATHS[platform];
+  const deliveryProvider = normalizeDeliveryProvider(
+    args.provider || process.env.SIDESTREAM_INSTALLER_PROVIDER || "hetzner",
+  );
 
   if (channel !== "stable") fail("Only the stable Sidestream release channel is supported right now.");
   if (!isSemver(version)) fail(`Invalid --version "${version}". Use x.y.z semver.`);
@@ -74,6 +78,19 @@ function main() {
 
   const stats = fs.statSync(artifactPath);
   if (!stats.isFile() || stats.size <= 0) fail(`Artifact is not a readable file: ${artifactPath}`);
+
+  const artifactSha256 = hashFile(artifactPath);
+  if (deliveryProvider === "hetzner") {
+    verifyHetznerArtifact({
+      identity: args.identity,
+      pathname,
+      sha256: artifactSha256,
+      size: stats.size,
+      target: args.target,
+    });
+  } else if (args.uploaded !== true) {
+    fail("Blob rollback publishing requires the explicit --uploaded gate.");
+  }
 
   const manifest = {
     schemaVersion: 1,
@@ -89,7 +106,7 @@ function main() {
       type: artifactType,
       url: artifactUrl,
       pathname,
-      sha256: hashFile(artifactPath),
+      sha256: artifactSha256,
       sizeBytes: stats.size,
     },
   };
@@ -98,7 +115,8 @@ function main() {
   fs.writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
   console.log(`Published Sidestream ${version} ${channel} ${platform} manifest to ${manifestPath}`);
   console.log(`Artifact URL: ${manifest.artifact.url}`);
-  console.log(`Blob pathname: ${manifest.artifact.pathname}`);
+  console.log(`Delivery provider verified: ${deliveryProvider}`);
+  console.log(`Artifact pathname: ${manifest.artifact.pathname}`);
   console.log(`Artifact sha256: ${manifest.artifact.sha256}`);
   console.log(`Artifact size: ${manifest.artifact.sizeBytes}`);
 }
@@ -152,14 +170,55 @@ function sanitizeLabel(value) {
   return String(value || "").trim().toLowerCase().replace(/[^a-z0-9_.-]/g, "").slice(0, 40);
 }
 
-function normalizeBlobPath(value) {
-  const pathname = String(value || "").trim().replace(/^\/+/, "");
-
-  if (!pathname || pathname.includes("..")) {
-    fail(`Invalid blob pathname "${value}".`);
-  }
-
+function normalizeArtifactPath(value) {
+  const pathname = String(value || "").trim();
+  if (
+    pathname.length < 1 || pathname.length > 255 ||
+    !pathname.startsWith("sidestream/") ||
+    !/^[0-9A-Za-z][0-9A-Za-z._+/-]*$/.test(pathname) ||
+    pathname.includes("//") ||
+    pathname.split("/").some((segment) => !segment || segment === "." || segment === "..")
+  ) fail(`Invalid artifact pathname "${value}".`);
   return pathname;
+}
+
+function normalizeDeliveryProvider(value) {
+  const provider = String(value || "").trim().toLowerCase();
+  if (provider !== "hetzner" && provider !== "blob") {
+    fail("--provider must be hetzner or blob.");
+  }
+  return provider;
+}
+
+function verifyHetznerArtifact({ identity, pathname, sha256, size, target }) {
+  const sshTarget = normalizeSshTarget(
+    target || process.env.SIDESTREAM_ARTIFACT_SSH_TARGET || "root@2.29.9.121",
+  );
+  const sshKey = path.resolve(
+    identity || process.env.SIDESTREAM_ARTIFACT_SSH_KEY ||
+      path.join(process.env.HOME || "", ".ssh", "sidestream_hetzner_ed25519"),
+  );
+  if (!fs.existsSync(sshKey)) fail(`SSH identity does not exist: ${sshKey}`);
+  const result = spawnSync("ssh", [
+    "-i", sshKey,
+    "-o", "BatchMode=yes",
+    "-o", "StrictHostKeyChecking=yes",
+    sshTarget,
+    "node",
+    "/srv/sidestream/website-backend/scripts/finalize-hetzner-artifact.mjs",
+    "--verify-only",
+    "--pathname", pathname,
+    "--size", String(size),
+    "--sha256", sha256,
+  ], { stdio: "inherit" });
+  if (result.error) throw result.error;
+  if (result.status !== 0) fail("Hetzner artifact verification failed; the manifest was not changed.");
+}
+
+function normalizeSshTarget(value) {
+  const target = String(value || "").trim();
+  if (!/^[A-Za-z0-9._-]+@[A-Za-z0-9.:-]+$/.test(target)) fail("Invalid SSH target.");
+  return target;
 }
 
 function normalizeRolloutPercent(value) {
@@ -212,7 +271,7 @@ function printUsage() {
     "    --pathname sidestream/1.0.12/Sidestream-1.0.12-Mac-Installer.dmg \\",
     `    --artifact-url ${PLATFORM_DEFAULTS.macos.artifactUrl} \\`,
     `    --release-notes-url ${PLATFORM_DEFAULTS.macos.releaseNotesUrl} \\`,
-    "    --signed --verified --uploaded --smoke-tested",
+    "    --signed --verified --smoke-tested --provider hetzner",
     "",
     "Windows private beta:",
     "  npm run release:publish-manifest -- \\",
@@ -220,6 +279,8 @@ function printUsage() {
     "    --version 1.0.13 \\",
     "    --artifact /path/to/Sidestream-1.0.13-Windows-Beta-Installer.exe \\",
     "    --pathname sidestream/1.0.13/Sidestream-1.0.13-Windows-Beta-Installer.exe \\",
-    "    --unsigned-beta-approved --verified --uploaded --smoke-tested",
+    "    --unsigned-beta-approved --verified --smoke-tested --provider hetzner",
+    "",
+    "Run release:upload-hetzner before publishing. Blob rollback publishing also requires --provider blob --uploaded.",
   ].join("\n"));
 }

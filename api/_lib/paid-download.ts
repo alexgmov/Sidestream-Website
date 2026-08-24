@@ -1,5 +1,11 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import {
+  createInstallerDownloadUrl,
+  headInstallerArtifact,
+  InstallerArtifactNotFoundError,
+  InstallerDeliveryError,
+} from "./installer-delivery.js";
+import {
   getPaidArtifactPathname,
   readPaidReleaseManifest,
   selectPaidReleasePlatform,
@@ -9,7 +15,6 @@ import type {
 } from "./paid-release-manifest.js";
 
 const DEFAULT_CONTENT_TYPE = "application/octet-stream";
-const SIGNED_DOWNLOAD_TTL_MS = 5 * 60 * 1000;
 
 // This internal helper signs generic installer bits only. The calling HTTP
 // route owns receipt/payment validation and entitlement checks.
@@ -21,6 +26,7 @@ type PaidDownloadRequest = IncomingMessage & {
 type PaidArtifactMetadata = {
   contentType?: string | null;
   etag?: string;
+  sha256?: string;
   size?: number | null;
 };
 
@@ -36,8 +42,8 @@ export function createPaidDownloadHandler(
   overrides: Partial<PaidDownloadDependencies> = {},
 ) {
   const dependencies: PaidDownloadDependencies = {
-    headArtifact: headPaidArtifact,
-    createSignedUrl: createSignedPaidDownloadUrl,
+    headArtifact: headInstallerArtifact,
+    createSignedUrl: createInstallerDownloadUrl,
     logArtifactError: (error) => {
       console.error("[sidestream paid download] artifact unavailable:", error);
     },
@@ -97,14 +103,14 @@ export function createPaidDownloadHandler(
     } catch (error) {
       if (
         error instanceof PaidArtifactUnavailableError ||
-        isBlobNotFoundError(error)
+        error instanceof InstallerArtifactNotFoundError
       ) {
         dependencies.logArtifactError(error);
         return sendJson(response, 404, { error: "artifact_not_found" });
       }
 
       dependencies.logArtifactError(error);
-      if (isBlobError(error)) {
+      if (error instanceof InstallerDeliveryError) {
         return sendJson(response, 503, {
           error: "temporarily_unavailable",
         });
@@ -115,31 +121,8 @@ export function createPaidDownloadHandler(
   };
 }
 
-async function headPaidArtifact(pathname: string) {
-  const { head } = await import("@vercel/blob");
-  return head(pathname);
-}
-
 export async function createSignedPaidDownloadUrl(pathname: string) {
-  const {
-    getDownloadUrl,
-    issueSignedToken,
-    presignUrl,
-  } = await import("@vercel/blob");
-  const validUntil = Date.now() + SIGNED_DOWNLOAD_TTL_MS;
-  const signedToken = await issueSignedToken({
-    pathname,
-    operations: ["get"],
-    validUntil,
-  });
-  const { presignedUrl } = await presignUrl(signedToken, {
-    access: "private",
-    operation: "get",
-    pathname,
-    validUntil,
-  });
-
-  return getDownloadUrl(presignedUrl);
+  return createInstallerDownloadUrl(pathname);
 }
 
 function validateArtifactMetadata(
@@ -149,7 +132,8 @@ function validateArtifactMetadata(
   if (
     !metadata ||
     !Number.isSafeInteger(metadata.size) ||
-    metadata.size !== manifest.sizeBytes
+    metadata.size !== manifest.sizeBytes ||
+    (metadata.sha256 !== undefined && metadata.sha256 !== manifest.sha256)
   ) {
     throw new PaidArtifactUnavailableError(
       "paid artifact metadata does not match manifest",
@@ -184,19 +168,14 @@ function isSafeSignedDownloadUrl(value: string) {
     const url = new URL(value);
     return url.protocol === "https:" &&
       !url.username &&
-      !url.password;
+      !url.password &&
+      (
+        url.hostname === "downloads.sidestream.tv" ||
+        url.hostname.endsWith(".blob.vercel-storage.com")
+      );
   } catch {
     return false;
   }
-}
-
-function isBlobNotFoundError(error: unknown) {
-  return error instanceof Error && error.name === "BlobNotFoundError";
-}
-
-function isBlobError(error: unknown) {
-  return error instanceof Error &&
-    (error.name === "BlobError" || error.name.startsWith("Blob"));
 }
 
 function sendJson(

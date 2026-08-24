@@ -1,13 +1,11 @@
-import {
-  BlobError,
-  BlobNotFoundError,
-  getDownloadUrl,
-  head,
-  issueSignedToken,
-  presignUrl,
-} from "@vercel/blob";
 import { waitUntil } from "@vercel/functions";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import {
+  createInstallerDownloadUrl,
+  headInstallerArtifact,
+  InstallerArtifactNotFoundError,
+  InstallerDeliveryError,
+} from "./_lib/installer-delivery.js";
 import {
   readReleaseManifest,
   resolveReleasePlatform,
@@ -45,7 +43,6 @@ import {
 import { ensureBrowserAcquisition } from "./acquisition/_lib.js";
 
 const DEFAULT_CONTENT_TYPE = "application/octet-stream";
-const SIGNED_DOWNLOAD_TTL_MS = 5 * 60 * 1000;
 const REFERRAL_WRITE_TIMEOUT_MS = 1_000;
 
 type DownloadRequest = IncomingMessage & {
@@ -57,6 +54,7 @@ type DownloadDependencies = {
   headInstaller: (pathname: string) => Promise<{
     contentType?: string | null;
     etag?: string;
+    sha256?: string;
     size?: number | null;
   }>;
   createSignedUrl: (pathname: string) => Promise<string>;
@@ -82,8 +80,8 @@ export function createDownloadHandler(
   overrides: Partial<DownloadDependencies> = {},
 ) {
   const dependencies: DownloadDependencies = {
-    headInstaller: head,
-    createSignedUrl: createSignedDownloadUrl,
+    headInstaller: headInstallerArtifact,
+    createSignedUrl: createInstallerDownloadUrl,
     recordReferral: recordInstallerReferral,
     recordAcquisition: persistAnonymousAcquisitionDownload,
     getAcquisitionSecret: () => process.env[ACQUISITION_SECRET_NAME]?.trim() || "",
@@ -206,13 +204,13 @@ export function createDownloadHandler(
         return sendText(response, 503, "Installer metadata does not match release manifest");
       }
 
-      if (error instanceof BlobNotFoundError) {
+      if (error instanceof InstallerArtifactNotFoundError) {
         return sendText(response, 404, "Installer not found");
       }
 
-      if (error instanceof BlobError) {
+      if (error instanceof InstallerDeliveryError) {
         const payload = {
-          error: "Blob download is not configured correctly",
+          error: "Installer delivery is not configured correctly",
         };
 
         if (process.env.VERCEL_ENV === "development") {
@@ -384,23 +382,6 @@ async function withTimeout(operation: Promise<void>, timeoutMs: number) {
   }
 }
 
-async function createSignedDownloadUrl(pathname: string) {
-  const validUntil = Date.now() + SIGNED_DOWNLOAD_TTL_MS;
-  const signedToken = await issueSignedToken({
-    pathname,
-    operations: ["get"],
-    validUntil,
-  });
-  const { presignedUrl } = await presignUrl(signedToken, {
-    access: "private",
-    operation: "get",
-    pathname,
-    validUntil,
-  });
-
-  return getDownloadUrl(presignedUrl);
-}
-
 function setDownloadHeaders(
   response: ServerResponse,
   options: {
@@ -429,15 +410,16 @@ function setDownloadHeaders(
 }
 
 function validateArtifactMetadata(
-  metadata: { size?: number | null },
+  metadata: { sha256?: string; size?: number | null },
   manifest: ReleaseManifest,
 ) {
   if (
     !Number.isSafeInteger(metadata.size) ||
-    metadata.size !== manifest.artifact.sizeBytes
+    metadata.size !== manifest.artifact.sizeBytes ||
+    (metadata.sha256 !== undefined && metadata.sha256 !== manifest.artifact.sha256)
   ) {
     throw new ReleaseArtifactMetadataError(
-      "Blob size does not match the validated release manifest",
+      "artifact metadata does not match the validated release manifest",
     );
   }
 }

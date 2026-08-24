@@ -26,6 +26,7 @@ import {
   consumeRateLimit,
 } from "../_lib/rate-limit.js";
 import { createSignedPaidDownloadUrl } from "../_lib/paid-download.js";
+import { headInstallerArtifact } from "../_lib/installer-delivery.js";
 
 const RECEIPT = /^[A-Za-z0-9_-]{43}$/;
 const HANDOFF_BODY_MAX_BYTES = 128;
@@ -161,12 +162,12 @@ export default async function handler(
 
     const manifest = readPaidReleaseManifest(platform);
     const pathname = getPaidArtifactPathname(manifest);
-    const { head } = await import("@vercel/blob");
-    const metadata = await head(pathname);
+    const metadata = await headInstallerArtifact(pathname);
     if (
       !metadata ||
       !Number.isSafeInteger(metadata.size) ||
-      metadata.size !== manifest.sizeBytes
+      metadata.size !== manifest.sizeBytes ||
+      metadata.sha256 !== manifest.sha256
     ) {
       return sendError(response, 404, "artifact_not_found");
     }

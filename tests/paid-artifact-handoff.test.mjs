@@ -167,7 +167,12 @@ async function loadArtifactHandler() {
       },
       "../_lib/paid-download.js": {
         async createSignedPaidDownloadUrl() {
-          return "https://blob.example/Sidestream.dmg";
+          return "https://test.private.blob.vercel-storage.com/Sidestream.dmg";
+        },
+      },
+      "../_lib/installer-delivery.js": {
+        async headInstallerArtifact() {
+          return { size: 1 };
         },
       },
     },

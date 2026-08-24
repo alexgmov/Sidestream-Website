@@ -5,6 +5,12 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { queryPostgres } from "../api/_lib/postgres.js";
+import {
+  authorizeHetznerInstallerDownload,
+  InstallerAuthorizationError,
+  InstallerDeliveryError,
+  resolveInstallerProvider,
+} from "../api/_lib/installer-delivery.js";
 
 type ApiResponse = ServerResponse & {
   status: (statusCode: number) => ApiResponse;
@@ -18,16 +24,21 @@ const host = configuredHost(process.env.HOST);
 const port = boundedPort(process.env.PORT);
 const originSecret = configuredOriginSecret(process.env.SIDESTREAM_ORIGIN_AUTH_SECRET);
 const deployedSha = configuredSha(process.env.SIDESTREAM_DEPLOYED_SHA);
+const installerProvider = resolveInstallerProvider();
 const apiRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../api");
 const routes = await loadRoutes(apiRoot);
 
 const server = createServer(async (request, response) => {
   response.setHeader("X-Content-Type-Options", "nosniff");
   response.setHeader("Referrer-Policy", "no-referrer");
+  const rawPath = String(request.url || "/").split("?", 1)[0];
   const pathname = new URL(request.url || "/", "http://internal.invalid").pathname;
 
   if (pathname === "/healthz") {
     return serveHealth(request, response);
+  }
+  if (rawPath.startsWith("/v1/")) {
+    return serveSignedInstaller(request, response);
   }
   if (!pathname.startsWith("/api/")) {
     return sendJson(response, 404, { error: "Not found" });
@@ -72,6 +83,7 @@ async function serveHealth(request: IncomingMessage, response: ServerResponse) {
       service: "sidestream-website-api",
       database: "reachable",
       deployedSha,
+      installerProvider,
     }, request.method === "HEAD");
   } catch (error) {
     console.error("Sidestream health check failed", safeErrorCode(error));
@@ -80,7 +92,46 @@ async function serveHealth(request: IncomingMessage, response: ServerResponse) {
       service: "sidestream-website-api",
       database: "unreachable",
       deployedSha,
+      installerProvider,
     }, request.method === "HEAD");
+  }
+}
+
+async function serveSignedInstaller(
+  request: IncomingMessage,
+  response: ServerResponse,
+) {
+  const method = String(request.method || "GET").toUpperCase();
+  if (method !== "GET" && method !== "HEAD") {
+    response.setHeader("Allow", "GET, HEAD");
+    return sendJson(response, 405, { error: "Method not allowed" });
+  }
+  try {
+    const authorization = await authorizeHetznerInstallerDownload({
+      method,
+      rawUrl: request.url || "",
+    });
+    response.statusCode = 200;
+    response.setHeader("Cache-Control", "private, no-store");
+    response.setHeader(
+      "Content-Disposition",
+      `attachment; filename="${authorization.artifact.filename}"`,
+    );
+    response.setHeader("Content-Type", authorization.artifact.contentType);
+    response.setHeader("ETag", authorization.etag);
+    response.setHeader("Last-Modified", authorization.lastModified.toUTCString());
+    response.setHeader("X-Accel-Redirect", authorization.internalPath);
+    response.setHeader("X-Accel-Expires", "0");
+    response.end();
+  } catch (error) {
+    if (
+      error instanceof InstallerAuthorizationError ||
+      error instanceof InstallerDeliveryError
+    ) {
+      return sendJson(response, 404, { error: "Not found" });
+    }
+    console.error("Sidestream installer authorization failed", safeErrorCode(error));
+    return sendJson(response, 503, { error: "Installer unavailable" });
   }
 }
 

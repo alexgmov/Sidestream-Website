@@ -45,6 +45,14 @@ before(async () => {
     "api/_lib/paid-download.ts",
   );
   copyTypeScriptModule(
+    "api/_lib/installer-delivery.ts",
+    "api/_lib/installer-delivery.ts",
+  );
+  copyTypeScriptModule(
+    "api/_lib/release-manifest.ts",
+    "api/_lib/release-manifest.ts",
+  );
+  copyTypeScriptModule(
     "api/releases/paid-latest.ts",
     "api/releases/paid-latest.ts",
   );
@@ -300,7 +308,7 @@ test("the receipt route's paid download helper signs only after metadata validat
   assert.equal(result.response.headers.get("cache-control"), "no-store");
   assert.equal(
     result.response.headers.get("location"),
-    "https://blob.example/short-lived-paid-artifact",
+    "https://test.private.blob.vercel-storage.com/short-lived-paid-artifact",
   );
   assert.equal((await result.response.arrayBuffer()).byteLength, 0);
   assert.deepEqual(state.headPathnames, [
@@ -401,7 +409,7 @@ function downloadState(overrides = {}) {
     }),
     createSignedUrl: overrides.createSignedUrl || (async (pathname) => {
       state.signedPathnames.push(pathname);
-      return "https://blob.example/short-lived-paid-artifact";
+      return "https://test.private.blob.vercel-storage.com/short-lived-paid-artifact";
     }),
     logArtifactError: () => {},
   });
@@ -430,8 +438,8 @@ function copyTypeScriptModule(sourceRelativePath, targetRelativePath) {
     path.join(repoRoot, sourceRelativePath),
     "utf8",
   ).replace(
-    /paid-release-manifest\.js/g,
-    "paid-release-manifest.ts",
+    /(paid-release-manifest|installer-delivery|release-manifest)\.js/g,
+    "$1.ts",
   );
   writeFileSync(targetPath, source, "utf8");
 }
