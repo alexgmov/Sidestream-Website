@@ -39,13 +39,17 @@ test("database cutover mode rejects unknown values by fencing", () => {
 
 test("source mode keeps the Vercel handler authoritative and strips forged origin headers", () => {
   const response = middleware.routeDatabaseApiForTest(request("/api/account", {
+    "if-none-match": "trusted-etag",
     "x-sidestream-origin-auth": "forged",
+    "x-sidestream-origin-if-none-match": "forged-etag",
     "x-sidestream-original-host": "forged.invalid",
   }), { databaseCutoverMode: "source" });
 
   assert.equal(response.headers.get("x-test-next"), "1");
   assert.equal(response.headers.get("x-request-x-sidestream-origin-auth"), null);
+  assert.equal(response.headers.get("x-request-x-sidestream-origin-if-none-match"), null);
   assert.equal(response.headers.get("x-request-x-sidestream-original-host"), null);
+  assert.equal(response.headers.get("x-request-if-none-match"), "trusted-etag");
 });
 
 test("fenced mode is retryable, non-cacheable, and does not reach either database", async () => {
@@ -62,7 +66,10 @@ test("fenced mode is retryable, non-cacheable, and does not reach either databas
 test("target mode preserves the origin prefix, path, query, and protected headers", () => {
   const secret = "0123456789abcdef0123456789abcdef";
   const response = middleware.routeDatabaseApiForTest(
-    request("/api/checkout/start?offer=pro%20once"),
+    request("/api/checkout/start?offer=pro%20once", {
+      "if-none-match": '"sha256-trusted"',
+      "x-sidestream-origin-if-none-match": "forged-etag",
+    }),
     {
       databaseCutoverMode: "target",
       hetznerOriginUrl: "https://static.example.invalid/sidestream/",
@@ -75,6 +82,10 @@ test("target mode preserves the origin prefix, path, query, and protected header
     "https://static.example.invalid/sidestream/api/checkout/start?offer=pro%20once",
   );
   assert.equal(response.headers.get("x-request-x-sidestream-origin-auth"), secret);
+  assert.equal(
+    response.headers.get("x-request-x-sidestream-origin-if-none-match"),
+    '"sha256-trusted"',
+  );
   assert.equal(response.headers.get("x-request-x-sidestream-original-host"), "sidestream.tv");
   assert.equal(response.headers.get("x-request-x-forwarded-host"), "sidestream.tv");
   assert.equal(response.headers.get("x-request-x-forwarded-proto"), "https");

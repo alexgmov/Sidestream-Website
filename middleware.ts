@@ -74,6 +74,7 @@ const HETZNER_ORIGIN_URL_NAME = "SIDESTREAM_HETZNER_ORIGIN_URL";
 const HETZNER_ORIGIN_AUTH_SECRET_NAME = "SIDESTREAM_ORIGIN_AUTH_SECRET";
 const ORIGIN_AUTH_HEADER = "x-sidestream-origin-auth";
 const ORIGINAL_HOST_HEADER = "x-sidestream-original-host";
+const ORIGINAL_IF_NONE_MATCH_HEADER = "x-sidestream-origin-if-none-match";
 const encoder = new TextEncoder();
 const acquisitionExperiments = new WeakMap();
 
@@ -113,8 +114,10 @@ function routeDatabaseApiRequest(request, runtime) {
   if (mode === "fenced") return databaseWriteFenceResponse();
 
   const headers = new Headers(request.headers);
+  const originalIfNoneMatch = boundedIfNoneMatch(headers.get("if-none-match"));
   headers.delete(ORIGIN_AUTH_HEADER);
   headers.delete(ORIGINAL_HOST_HEADER);
+  headers.delete(ORIGINAL_IF_NONE_MATCH_HEADER);
   if (mode === "source") {
     return next({ request: { headers } });
   }
@@ -130,9 +133,17 @@ function routeDatabaseApiRequest(request, runtime) {
   headers.delete("host");
   headers.set(ORIGIN_AUTH_HEADER, secret);
   headers.set(ORIGINAL_HOST_HEADER, requestUrl.host);
+  if (originalIfNoneMatch) {
+    headers.set(ORIGINAL_IF_NONE_MATCH_HEADER, originalIfNoneMatch);
+  }
   headers.set("x-forwarded-host", requestUrl.host);
   headers.set("x-forwarded-proto", requestUrl.protocol.replace(":", ""));
   return rewrite(destination, { request: { headers } });
+}
+
+function boundedIfNoneMatch(value) {
+  const etag = String(value || "").trim();
+  return etag && etag.length <= 256 && /^[\x20-\x7e]+$/.test(etag) ? etag : "";
 }
 
 function databaseWriteFenceResponse() {

@@ -145,7 +145,9 @@ export function createDownloadHandler(
         return;
       }
 
-      if (headerValue(request.headers["if-none-match"]) === metadata.etag) {
+      const ifNoneMatch = headerValue(request.headers["if-none-match"]) ||
+        headerValue(request.headers["x-sidestream-origin-if-none-match"]);
+      if (ifNoneMatch === metadata.etag) {
         response.setHeader("Cache-Control", "private, no-cache, max-age=0, must-revalidate");
         response.setHeader("X-Content-Type-Options", "nosniff");
         if (metadata.etag) response.setHeader("ETag", metadata.etag);

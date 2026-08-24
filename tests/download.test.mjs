@@ -102,6 +102,10 @@ test("HEAD, 304, scanners, invalid platform, and failed signing never record acq
   const cases = [
     { options: { method: "HEAD" }, expectedStatus: 200 },
     { options: { headers: { "if-none-match": "test-etag" } }, expectedStatus: 304 },
+    {
+      options: { headers: { "x-sidestream-origin-if-none-match": "test-etag" } },
+      expectedStatus: 304,
+    },
     { options: { headers: { "user-agent": "GoogleImageProxy" } }, expectedStatus: 302 },
     { options: { path: "/api/download?platform=linux" }, expectedStatus: 404 },
   ];
