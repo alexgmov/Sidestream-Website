@@ -683,6 +683,15 @@ Key hardened environment/configuration ownership:
 | Retention | `SIDESTREAM_MAINTENANCE_*`, session/credential/rate/intent grace variables, and Stripe processed/dead-letter payload retention variables are bounded before a query runs |
 | Integration proof | `SIDESTREAM_TEST_POSTGRES_URL` is required, must be disposable, and is rejected if it matches any normalized runtime database target |
 
+The origin Nginx locations `location = /sidestream/healthz` and
+`location ^~ /sidestream/api/`
+must set exactly one trusted `Host` value from `$sidestream_original_host` and
+must not include `/etc/nginx/proxy_params`, which injects a competing origin
+hostname. Preserve `X-Real-IP`, `X-Forwarded-For`, `X-Forwarded-Host`, and
+`X-Forwarded-Proto` explicitly. A competing Host makes activation-bound license
+requests fail closed with `503 license_environment_unavailable` even while the
+Node service and database remain healthy.
+
 Exact defaults, bounds, required Stripe events, pool budget, and Production blockers live in `docs/api-hardening-runbook.md`.
 
 ### Two-device entitlement contract
@@ -1291,6 +1300,7 @@ Use the narrowest relevant check after edits:
 
 ## Recent Change Log
 
+- 2026-08-24: Restored Production activation-bound Upgrade after the Hetzner origin Nginx config supplied two competing `Host` headers. Only the Sidestream health/API locations removed the generic `proxy_params` include and retained equivalent explicit forwarding headers with one trusted original Host; Nginx validation/reload passed, the Website service and database stayed healthy, forged browser forwarding headers remained non-authoritative, and canonical license verification changed from `503 license_environment_unavailable` to the expected `401 invalid_token`. The alexg.mov proxy, Node service, PostgreSQL, Stripe, Google, entitlements, migrations, and application security rules were unchanged.
 - 2026-08-24: Repaired the complete Customer 360 disposable-Postgres surface without changing runtime behavior: the anonymous acquisition journey now derives its cohort from current completed UTC days so its real-time claim stays inside the 30-day fail-closed window, and Upgrade pricing verifies its acquisition-integrity migration dependency without assuming it is the final repository migration. Production remained read-only and unchanged by this source fix.
 - 2026-08-24: Added provider-neutral installer delivery with a five-minute manifest-bound Hetzner HMAC path, loopback authorization plus Nginx internal static serving, exact immutable upload/finalization and pre-manifest verification, privacy-minimal transfer logs, focused tamper/expiry/traversal tests, dry-run-first Blob rollback, and a 14-day migration runbook. Public, updater, mobile-email, paid receipt, and acquisition boundaries remain on their existing Sidestream routes.
 - 2026-08-24: Reconciled the static Vercel route validator with the already-completed removal of the one-time Hetzner secret-export route, so the protected-route inventory again matches the ten deployable internal routes.
