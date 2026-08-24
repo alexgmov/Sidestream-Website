@@ -22,6 +22,8 @@ const ACTIVATION = "30000000-0000-4000-8000-000000000001";
 const INTENT = "40000000-0000-4000-8000-000000000001";
 const FALLBACK_INTENT = "40000000-0000-4000-8000-000000000002";
 const LICENSE = "50000000-0000-4000-8000-000000000001";
+const ACQUISITION_INTEGRITY_MIGRATION = "20260803120000_add_acquisition_integrity.sql";
+const UPGRADE_PRICING_MIGRATION = "20260812120000_add_upgrade_pricing_experiment.sql";
 
 test("full migrations preserve contended assignment, immutable lineage, fallback isolation, and activation binding", {
   timeout: 120_000,
@@ -39,7 +41,14 @@ test("full migrations preserve contended assignment, immutable lineage, fallback
       await pool.query(scopedMigrationSql(migration.sql, schema));
     }
     assert.ok(migrations.length >= 32);
-    assert.equal(migrations.at(-1).filename, "20260812120000_add_upgrade_pricing_experiment.sql");
+    const acquisitionIntegrityMigrationIndex = migrations.findIndex(
+      ({ filename }) => filename === ACQUISITION_INTEGRITY_MIGRATION,
+    );
+    const upgradePricingMigrationIndex = migrations.findIndex(
+      ({ filename }) => filename === UPGRADE_PRICING_MIGRATION,
+    );
+    assert.notEqual(acquisitionIntegrityMigrationIndex, -1);
+    assert.ok(upgradePricingMigrationIndex > acquisitionIntegrityMigrationIndex);
 
     await seedAccountsAndAcquisitions(pool, schema);
     const contenders = await Promise.all([

@@ -966,6 +966,10 @@ single-device separation, and end-to-end replay. It scrubs ambient runtime
 database selectors and blocks all network destinations except the approved
 disposable Postgres endpoint. Local self-provisioning requires `initdb` and
 `pg_ctl` on `PATH`; an explicit URL retains the runtime-target collision guard.
+Journey fixtures derive their synthetic cohort from the current completed UTC
+days so claim completion remains inside the real 30-day fail-closed window,
+and migration-specific coverage asserts required dependency order without
+assuming that migration is the repository tail.
 
 `test:api` discovers every `tests/*.test.mjs` suite and fails if a Postgres suite is not explicitly classified. `test:postgres-integration` never silently skips: it requires `SIDESTREAM_TEST_POSTGRES_URL`, rejects a normalized host/port/database match with any runtime URL even when credentials/query options differ, runs serially in a random schema, and drops that schema in `finally`. After a human runs `npx vercel@latest build`, run `npm run verify:vercel-build` to inspect `.vercel/output`; that verifier deliberately fails when no Vercel build artifact exists.
 
@@ -1287,6 +1291,7 @@ Use the narrowest relevant check after edits:
 
 ## Recent Change Log
 
+- 2026-08-24: Repaired the complete Customer 360 disposable-Postgres surface without changing runtime behavior: the anonymous acquisition journey now derives its cohort from current completed UTC days so its real-time claim stays inside the 30-day fail-closed window, and Upgrade pricing verifies its acquisition-integrity migration dependency without assuming it is the final repository migration. Production remained read-only and unchanged by this source fix.
 - 2026-08-24: Added provider-neutral installer delivery with a five-minute manifest-bound Hetzner HMAC path, loopback authorization plus Nginx internal static serving, exact immutable upload/finalization and pre-manifest verification, privacy-minimal transfer logs, focused tamper/expiry/traversal tests, dry-run-first Blob rollback, and a 14-day migration runbook. Public, updater, mobile-email, paid receipt, and acquisition boundaries remain on their existing Sidestream routes.
 - 2026-08-24: Reconciled the static Vercel route validator with the already-completed removal of the one-time Hetzner secret-export route, so the protected-route inventory again matches the ten deployable internal routes.
 - 2026-08-24: Made Blob-to-Hetzner seeding and Blob rollback verification tolerate private uncached responses without `Content-Length`; finalization still counts the downloaded file and requires the exact manifest size and SHA, while rollback counts streamed bytes and hashes them directly.

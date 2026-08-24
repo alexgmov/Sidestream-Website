@@ -46,6 +46,7 @@ const migrations = [
 const SECRET = "anonymous-acquisition-journey-postgres-secret-2026";
 const ACCOUNT = "10000000-0000-4000-8000-000000000001";
 const SOURCES = ["direct", "instagram", "facebook", "linkedin", "reddit"];
+const DAY_MS = 24 * 60 * 60_000;
 const ENVIRONMENT = Object.freeze({ namespace: "test" });
 const ACQUISITION_INTEGRITY = Object.freeze({
   addTrustedDeliveryEvidence,
@@ -83,8 +84,11 @@ test("anonymous acquisition survives download, claim, retention, and later verif
     }
 
     const journeys = [];
+    const cohortStart = new Date();
+    cohortStart.setUTCHours(0, 0, 0, 0);
+    cohortStart.setUTCDate(cohortStart.getUTCDate() - 10);
     for (const [index, source] of SOURCES.entries()) {
-      const firstSeenAt = new Date(Date.UTC(2026, 6, 20 + index, 9, 0, 0));
+      const firstSeenAt = new Date(cohortStart.getTime() + index * DAY_MS + 9 * 60 * 60_000);
       const installerRequestedAt = new Date(firstSeenAt.getTime() + 10 * 60_000);
       const firstInstallAt = new Date(firstSeenAt.getTime() + 30 * 60_000);
       const firstOpenAt = new Date(firstSeenAt.getTime() + 2 * 60 * 60_000);
@@ -233,9 +237,9 @@ test("anonymous acquisition survives download, claim, retention, and later verif
 
     const report = await funnelModule.queryAcquisitionFunnel({
       licenseNamespace: "test",
-      cohortStart: "2026-07-20T00:00:00Z",
-      cohortEnd: "2026-07-26T00:00:00Z",
-      observationEnd: "2026-08-01T00:00:00Z",
+      cohortStart: cohortStart.toISOString(),
+      cohortEnd: new Date(cohortStart.getTime() + 6 * DAY_MS).toISOString(),
+      observationEnd: new Date(cohortStart.getTime() + 9 * DAY_MS).toISOString(),
       journeyLimit: 10,
     }, { transaction: readOnlyTransaction });
 
@@ -280,7 +284,9 @@ test("anonymous acquisition survives download, claim, retention, and later verif
     assert.equal(directJourney.firstInstallAt, direct.firstInstallAt.toISOString());
     assert.equal(directJourney.firstOpenAt, direct.firstOpenAt.toISOString());
     assert.equal(directJourney.dayZeroDownloadAttempts, "1");
-    assert.deepEqual(directJourney.laterOpenDays, ["2026-07-22"]);
+    assert.deepEqual(directJourney.laterOpenDays, [
+      new Date(direct.firstOpenAt.getTime() + 2 * DAY_MS).toISOString().slice(0, 10),
+    ]);
     assert.equal(directJourney.returned, true);
     assert.equal(directJourney.oneAndDone, false);
 
