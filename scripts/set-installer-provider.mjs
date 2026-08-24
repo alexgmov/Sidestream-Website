@@ -126,14 +126,17 @@ async function verifyBlobArtifacts(artifacts, token) {
     if (
       !result ||
       result.statusCode !== 200 ||
-      result.blob.pathname !== artifact.pathname ||
-      result.blob.size !== artifact.size
+      result.blob.pathname !== artifact.pathname
     ) {
       fail(`Blob rollback artifact mismatch: ${artifact.pathname}`);
     }
     const hash = crypto.createHash("sha256");
-    for await (const chunk of Readable.fromWeb(result.stream)) hash.update(chunk);
-    if (hash.digest("hex") !== artifact.sha256) {
+    let streamedBytes = 0;
+    for await (const chunk of Readable.fromWeb(result.stream)) {
+      streamedBytes += chunk.length;
+      hash.update(chunk);
+    }
+    if (streamedBytes !== artifact.size || hash.digest("hex") !== artifact.sha256) {
       fail(`Blob rollback artifact sha256 mismatch: ${artifact.pathname}`);
     }
   }

@@ -39,7 +39,7 @@ try {
   const { get } = await import("@vercel/blob");
   const result = await get(pathname, { access: "private", token, useCache: false });
   if (!result || result.statusCode !== 200) fail(`Blob artifact was not found: ${pathname}`);
-  if (result.blob.pathname !== pathname || result.blob.size !== expectedSize) {
+  if (result.blob.pathname !== pathname) {
     fail(`Blob metadata mismatch: ${pathname}`);
   }
   await pipeline(
