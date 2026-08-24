@@ -66,10 +66,7 @@ async function main() {
 
   run("systemctl", ["restart", SERVICE]);
   run("systemctl", ["is-active", "--quiet", SERVICE]);
-  const health = await fetchHealth();
-  if (health.installerProvider !== provider || health.ok !== true) {
-    fail(`Service health did not confirm provider=${provider}. Roll back with the documented Blob command.`);
-  }
+  const health = await waitForHealth(provider);
   process.stdout.write(`Applied provider=${provider}; health confirmed sha=${health.deployedSha || "unknown"}.\n`);
   process.stdout.write(`Protected rollback snapshot: ${backupPath}\n`);
 }
@@ -163,10 +160,29 @@ function hashFile(filePath) {
 
 async function fetchHealth() {
   const response = await fetch("http://127.0.0.1:3101/healthz", {
-    signal: AbortSignal.timeout(10_000),
+    signal: AbortSignal.timeout(3_000),
   });
-  if (!response.ok) fail(`Local health check returned HTTP ${response.status}.`);
+  if (!response.ok) throw new Error(`Local health check returned HTTP ${response.status}.`);
   return response.json();
+}
+
+async function waitForHealth(provider) {
+  const deadline = Date.now() + 20_000;
+  let lastError = "service did not become reachable";
+  while (Date.now() < deadline) {
+    try {
+      const health = await fetchHealth();
+      if (health.installerProvider === provider && health.ok === true) return health;
+      lastError = `health reported provider=${health.installerProvider || "unknown"} ok=${String(health.ok)}`;
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : String(error);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+  fail(
+    `Service health did not confirm provider=${provider} within 20 seconds (${lastError}). ` +
+    "Roll back with the documented Blob command.",
+  );
 }
 
 function run(command, args) {
