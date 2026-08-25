@@ -183,6 +183,7 @@ export type AccountSession = {
   name: string;
   avatarUrl: string;
   stripeCustomerId: string;
+  stripeSubscriptionId: string;
   license: LicenseSummary;
 };
 
@@ -966,6 +967,7 @@ export async function getSession(
     display_name: string | null;
     avatar_url: string | null;
     stripe_customer_id: string | null;
+    stripe_subscription_id: string | null;
     license_status: string | null;
     plan_key: string | null;
     entitlement_status: string | null;
@@ -981,6 +983,7 @@ export async function getSession(
         a.display_name,
         a.avatar_url,
         a.stripe_customer_id,
+        l.stripe_subscription_id,
         l.status as license_status,
         l.plan_key,
         license_state.entitlement_status,
@@ -1018,6 +1021,7 @@ export async function getSession(
     name: row.display_name || "",
     avatarUrl: row.avatar_url || "",
     stripeCustomerId: row.stripe_customer_id || "",
+    stripeSubscriptionId: row.stripe_subscription_id || "",
     license: buildLicenseSummary({
       status: row.license_status,
       planKey: row.plan_key,
@@ -1057,8 +1061,18 @@ export function publicSessionPayload(session: AccountSession | null) {
     license: session.license,
     billing: {
       hasCustomer: Boolean(session.stripeCustomerId),
+      hasSubscription: Boolean(session.stripeSubscriptionId),
+      canCancelSubscription: canCancelAccountSubscription(session),
     },
   };
+}
+
+export function canCancelAccountSubscription(session: AccountSession) {
+  return Boolean(
+    session.stripeSubscriptionId &&
+    session.license.active &&
+    !session.license.cancelAtPeriodEnd
+  );
 }
 
 type CheckoutIntentRow = {

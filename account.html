@@ -126,6 +126,8 @@
     color: var(--ink);
   }
   .secondary:hover { background: rgba(255, 255, 255, 0.14); }
+  .danger { color: #ff8da4; }
+  .danger:hover { background: rgba(255, 0, 51, 0.16); color: #fff; }
   button:disabled {
     cursor: not-allowed;
     opacity: 0.58;
@@ -176,6 +178,7 @@
           <div class="actions">
             <a class="button primary" id="upgrade-link" href="/api/checkout/start">Upgrade</a>
             <button class="secondary" id="billing-button" type="button">Open Stripe portal</button>
+            <button class="secondary danger" id="cancel-subscription-button" type="button" hidden>Cancel subscription</button>
           </div>
         </div>
         <div class="row" id="purchase-row" hidden>
@@ -219,6 +222,7 @@
     const accountPlan = document.getElementById("account-plan");
     const upgradeLink = document.getElementById("upgrade-link");
     const billingButton = document.getElementById("billing-button");
+    const cancelSubscriptionButton = document.getElementById("cancel-subscription-button");
     const purchaseRow = document.getElementById("purchase-row");
     const deviceRow = document.getElementById("device-row");
     const deviceStatus = document.getElementById("device-status");
@@ -269,11 +273,13 @@
       signedInEmail = session.user.email || "";
       accountEmail.textContent = session.user.email;
       accountPlan.textContent = describePlan(session.license);
+      accountPlan.dataset.currentPeriodEnd = session.license?.currentPeriodEnd || "";
       const hasActiveLicense = Boolean(session.license && session.license.active);
       accountPlan.classList.toggle("status", hasActiveLicense);
       upgradeLink.hidden = hasActiveLicense;
       deviceRow.hidden = !hasActiveLicense;
       billingButton.hidden = !session.billing.hasCustomer;
+      cancelSubscriptionButton.hidden = !session.billing.canCancelSubscription;
       purchaseRow.hidden = !session.billing.hasCustomer;
       if (hasActiveLicense) {
         try {
@@ -324,6 +330,38 @@
         alert(error.message);
         billingButton.disabled = false;
         billingButton.textContent = "Open Stripe portal";
+      }
+    });
+
+    cancelSubscriptionButton.addEventListener("click", async () => {
+      const currentPeriodEnd = accountPlan.dataset.currentPeriodEnd || "";
+      const endLabel = currentPeriodEnd
+        ? new Date(currentPeriodEnd).toLocaleDateString()
+        : "the end of your current billing period";
+      if (!window.confirm(
+        "Cancel your Sidestream subscription? You will keep Unlimited access until " +
+        endLabel + "."
+      )) return;
+
+      cancelSubscriptionButton.disabled = true;
+      cancelSubscriptionButton.textContent = "Canceling...";
+      try {
+        const payload = await apiPost("/api/billing/subscription/cancel");
+        const confirmedEnd = payload.currentPeriodEnd || currentPeriodEnd;
+        accountPlan.textContent = confirmedEnd
+          ? "Unlimited - cancels " + new Date(confirmedEnd).toLocaleDateString()
+          : "Unlimited - cancellation scheduled";
+        cancelSubscriptionButton.hidden = true;
+        window.alert(
+          confirmedEnd
+            ? "Your subscription is canceled for renewal. Unlimited access continues until " +
+              new Date(confirmedEnd).toLocaleDateString() + "."
+            : "Your subscription is canceled for renewal."
+        );
+      } catch (error) {
+        alert(error.message);
+        cancelSubscriptionButton.disabled = false;
+        cancelSubscriptionButton.textContent = "Cancel subscription";
       }
     });
 

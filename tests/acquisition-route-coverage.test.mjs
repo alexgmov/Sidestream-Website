@@ -17,6 +17,7 @@ const ROUTE_POLICY = Object.freeze({
   "api/auth/session.ts": "account_state",
   "api/billing/portal.ts": "billing_state",
   "api/billing/receipt.ts": "billing_state",
+  "api/billing/subscription/cancel.ts": "billing_state",
   "api/checkout/complete.ts": "acquisition_stage",
   "api/checkout/offer.ts": "product_metadata",
   "api/checkout/start.ts": "acquisition_stage",
