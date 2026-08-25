@@ -38,16 +38,16 @@ test("the static Vercel contract includes every protected cron and both release 
   const result = await validateVercelContract();
   assert.deepEqual(result, {
     crons: 4,
-    adminRoutes: 6,
+    adminRoutes: 7,
     operationalRoutes: 0,
-    internalRoutes: 10,
+    internalRoutes: 11,
     releaseEndpoints: 2,
   });
 });
 
 test("every Customer 360 and experiment read is a protected on-demand admin route", async () => {
   const result = await validateVercelContract();
-  assert.equal(result.adminRoutes, 6);
+  assert.equal(result.adminRoutes, 7);
   assert.equal(result.crons, 4);
 });
 

@@ -59,6 +59,11 @@ const PROTECTED_ADMIN_ROUTES = Object.freeze([
     source: "api/internal/customers/lookup.ts",
     testSource: "tests/customer-360/query-api.test.mjs",
   },
+  {
+    path: "/api/internal/support/audit",
+    source: "api/internal/support/audit.ts",
+    testSource: "tests/support-automation.test.mjs",
+  },
 ]);
 
 // One-time operational routes must be removed from this list when their

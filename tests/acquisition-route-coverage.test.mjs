@@ -39,6 +39,7 @@ const ROUTE_POLICY = Object.freeze({
   "api/internal/download-leads/replay.ts": "operator_job",
   "api/internal/maintenance.ts": "operator_job",
   "api/internal/stripe-events/process.ts": "operator_job",
+  "api/internal/support/audit.ts": "operator_job",
   "api/internal/upgrade-pricing-report.ts": "operator_read",
   "api/license/authorize-download.ts": "entitlement_state",
   "api/license/deactivate.ts": "entitlement_state",
@@ -53,6 +54,7 @@ const ROUTE_POLICY = Object.freeze({
   "api/releases/paid-latest.ts": "product_metadata",
   "api/send-download-links.ts": "acquisition_stage",
   "api/stripe/webhook.ts": "acquisition_stage",
+  "api/support/webhook.ts": "support_ingestion",
 });
 
 test("every public API handler has an explicit acquisition role", async () => {

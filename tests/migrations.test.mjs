@@ -38,7 +38,7 @@ function knownBaselineSnapshot(rowSecurityEnabled = false) {
 
 test("migration files are ordered, checksummed, and append-only baseline files are pinned", async () => {
   const migrations = validateMigrationFiles(await loadMigrationFiles());
-  assert.equal(migrations.length, 33);
+  assert.equal(migrations.length, 34);
   assert.deepEqual(
     migrations.map((migration) => migration.filename),
     [...migrations.map((migration) => migration.filename)].sort(),
@@ -70,9 +70,36 @@ test("migration files are ordered, checksummed, and append-only baseline files a
     "20260810120000_bind_paid_telemetry_profile.sql",
     "20260812120000_add_upgrade_pricing_experiment.sql",
     "20260814120000_add_server_download_credits.sql",
+    "20260825120000_add_support_safety_ledger.sql",
   ]) {
     assert.ok(migrations.some((migration) => migration.filename === filename));
   }
+});
+
+test("support safety ledger is private, encrypted at the application boundary, and append-only", async () => {
+  const migration = await readFile(new URL(
+    "../db/migrations/20260825120000_add_support_safety_ledger.sql",
+    import.meta.url,
+  ), "utf8");
+  for (const table of [
+    "sidestream_support_threads",
+    "sidestream_support_messages",
+    "sidestream_support_action_requests",
+    "sidestream_support_gate_runs",
+    "sidestream_support_audit_events",
+  ]) {
+    assert.match(migration, new RegExp(`create table public\\.${table}`));
+    assert.match(migration, new RegExp(`alter table public\\.${table} enable row level security`));
+    assert.match(migration, new RegExp(`revoke all on table public\\.${table} from public`));
+  }
+  assert.match(migration, /requester_email_hash text not null/);
+  assert.match(migration, /requester_email_ciphertext text not null/);
+  assert.match(migration, /subject_ciphertext text not null/);
+  assert.match(migration, /body_ciphertext text not null/);
+  assert.doesNotMatch(migration, /\b(?:requester_email|subject|body) text\b/);
+  assert.match(migration, /sidestream support safety evidence is append-only/);
+  assert.equal((migration.match(/before update or delete on public\.sidestream_support_/g) || []).length, 3);
+  assert.equal((migration.match(/enable row level security/g) || []).length, 5);
 });
 
 test("server download credits are private, append-only, and purchase-ready", async () => {
