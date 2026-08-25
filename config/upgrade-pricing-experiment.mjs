@@ -1,20 +1,23 @@
-export const UPGRADE_PRICING_EXPERIMENT_ID = "upgrade-pricing-v1";
+export const UPGRADE_PRICING_LEGACY_EXPERIMENT_ID = "upgrade-pricing-v1";
+export const UPGRADE_PRICING_EXPERIMENT_ID = "upgrade-pricing-v2";
 export const UPGRADE_PRICING_CONTROL_VARIANT = "control_one_time";
 export const UPGRADE_PRICING_MONTHLY_VARIANT = "monthly_half";
+export const UPGRADE_PRICING_ANNUAL_VARIANT = "annual_same_price";
 
 export const UPGRADE_PRICING_EXPERIMENT_CONFIG = Object.freeze({
   experimentId: UPGRADE_PRICING_EXPERIMENT_ID,
-  assignmentVersion: 1,
+  assignmentVersion: 2,
   bucketCount: 10_000,
-  enabledEnvironmentVariable: "SIDESTREAM_UPGRADE_PRICING_EXPERIMENT_ENABLED",
-  rolloutEnvironmentVariable: "SIDESTREAM_UPGRADE_PRICING_EXPERIMENT_ROLLOUT_BPS",
-  secretEnvironmentVariable: "SIDESTREAM_UPGRADE_PRICING_EXPERIMENT_SECRET",
+  enabledEnvironmentVariable: "SIDESTREAM_UPGRADE_PRICING_V2_ENABLED",
+  rolloutEnvironmentVariable: "SIDESTREAM_UPGRADE_PRICING_V2_ROLLOUT_BPS",
+  secretEnvironmentVariable: "SIDESTREAM_UPGRADE_PRICING_V2_SECRET",
   defaultEnabled: false,
   defaultRolloutBasisPoints: 0,
-  closedAt: "2026-08-21T09:51:17.000Z",
+  openedAt: null,
+  closedAt: null,
   variants: Object.freeze([
     UPGRADE_PRICING_CONTROL_VARIANT,
-    UPGRADE_PRICING_MONTHLY_VARIANT,
+    UPGRADE_PRICING_ANNUAL_VARIANT,
   ]),
 });
 
@@ -34,7 +37,10 @@ export function readUpgradePricingRollout(environment = process.env) {
   const enabledValue = cleanEnvironmentValue(
     environment[UPGRADE_PRICING_EXPERIMENT_CONFIG.enabledEnvironmentVariable],
   );
-  if (enabledValue !== "true") {
+  const enabled = enabledValue === ""
+    ? UPGRADE_PRICING_EXPERIMENT_CONFIG.defaultEnabled
+    : enabledValue === "true";
+  if (!enabled) {
     return Object.freeze({
       enabled: false,
       rolloutBasisPoints: 0,
@@ -47,6 +53,13 @@ export function readUpgradePricingRollout(environment = process.env) {
   const rolloutValue = cleanEnvironmentValue(
     environment[UPGRADE_PRICING_EXPERIMENT_CONFIG.rolloutEnvironmentVariable],
   );
+  if (rolloutValue === "") {
+    return Object.freeze({
+      enabled: true,
+      rolloutBasisPoints: UPGRADE_PRICING_EXPERIMENT_CONFIG.defaultRolloutBasisPoints,
+      reason: "source_default",
+    });
+  }
   if (!/^\d{1,5}$/.test(rolloutValue)) {
     return Object.freeze({
       enabled: false,

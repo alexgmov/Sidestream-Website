@@ -11,6 +11,7 @@ export class UpgradePricingOperatorError extends Error {}
 export function parseUpgradePricingReportArguments(argv) {
   const options = {
     operator: "",
+    experimentId: "upgrade-pricing-v2",
     namespace: "",
     from: "",
     through: "",
@@ -31,6 +32,8 @@ export function parseUpgradePricingReportArguments(argv) {
       options.help = true;
     } else if (argument === "--operator" || argument.startsWith("--operator=")) {
       [options.operator, index] = readOption(argv, index, "--operator");
+    } else if (argument === "--experiment" || argument.startsWith("--experiment=")) {
+      [options.experimentId, index] = readOption(argv, index, "--experiment");
     } else if (argument === "--namespace" || argument.startsWith("--namespace=")) {
       [options.namespace, index] = readOption(argv, index, "--namespace");
     } else if (argument === "--from" || argument.startsWith("--from=")) {
@@ -75,6 +78,11 @@ export function parseUpgradePricingReportArguments(argv) {
   if (!new Set(["production", "test"]).has(options.namespace)) {
     throw new UpgradePricingOperatorError("Set --namespace to production or test.");
   }
+  if (!new Set(["upgrade-pricing-v1", "upgrade-pricing-v2"]).has(options.experimentId)) {
+    throw new UpgradePricingOperatorError(
+      "Set --experiment to upgrade-pricing-v1 or upgrade-pricing-v2.",
+    );
+  }
   if (!Number.isSafeInteger(options.pageSize) || options.pageSize < 1 || options.pageSize > 100) {
     throw new UpgradePricingOperatorError("--page-size must be an integer from 1 to 100.");
   }
@@ -107,6 +115,7 @@ export async function fetchCompleteUpgradePricingReport(options, dependencies = 
   }
   const url = buildLocalReportUrl(options.port);
   const body = {
+    experimentId: options.experimentId,
     namespace: options.namespace,
     ...(options.from ? { from: options.from } : {}),
     ...(options.through ? { through: options.through } : {}),
@@ -237,6 +246,7 @@ uses SIDESTREAM_CRM_ADMIN_SECRET, follows all signed pages, and never accepts an
 email, database URL, remote hostname, Stripe identifier, or customer identity.
 
 Options:
+  --experiment <upgrade-pricing-v1|upgrade-pricing-v2> (default: v2)
   --from <ISO> --through <ISO> --as-of <ISO> --page-size <1-100> --port <port>
   --ltv-months <n> --monthly-churn-rate <0-1> --fee-rate <0-1>
   --refund-rate <0-1> --fixed-fee <currency:minor> (repeat per currency)

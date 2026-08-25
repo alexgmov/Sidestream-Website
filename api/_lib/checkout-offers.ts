@@ -20,6 +20,11 @@ export type MonthlyCheckoutPriceSelection = Readonly<{
   configuredPriceId: string;
 }>;
 
+export type AnnualCheckoutPriceSelection = Readonly<{
+  kind: "lookup" | "environment";
+  configuredPriceId: string;
+}>;
+
 export const SIDESTREAM_GLOBAL_CHECKOUT_OFFER: CheckoutOfferCatalogEntry =
   SIDESTREAM_PRICING_CONTRACT.global;
 
@@ -81,6 +86,29 @@ export function selectMonthlyCheckoutPrice(
   environment: NodeJS.ProcessEnv = process.env,
 ): MonthlyCheckoutPriceSelection {
   const source = entry.monthlyPriceSource;
+  return Object.freeze({
+    kind: source.kind,
+    configuredPriceId: cleanEnvironmentValue(
+      environment[
+        source.kind === "lookup"
+          ? source.configuredVariable
+          : source.variable
+      ],
+    ),
+  });
+}
+
+/**
+ * The new annual experiment is deliberately USD-only. A catalog entry without
+ * an explicit annual contract is outside the cohort and falls back to its
+ * unchanged one-time offer.
+ */
+export function selectAnnualCheckoutPrice(
+  entry: CheckoutOfferCatalogEntry,
+  environment: NodeJS.ProcessEnv = process.env,
+): AnnualCheckoutPriceSelection | null {
+  const source = entry.annualPriceSource;
+  if (!source) return null;
   return Object.freeze({
     kind: source.kind,
     configuredPriceId: cleanEnvironmentValue(

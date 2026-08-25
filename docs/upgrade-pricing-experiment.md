@@ -1,15 +1,143 @@
-# Authenticated Upgrade pricing experiment
+# Authenticated Upgrade pricing experiments
 
-This document is the durable contract for `upgrade-pricing-v1`. It separates
-source behavior, Stripe Test qualification, Production rollout, and observed
-reporting so that a fixture, Preview, or open Checkout page is never reported
-as a completed purchase or live rollout.
+This document is the durable contract for the ended `upgrade-pricing-v1` test
+and the dormant `upgrade-pricing-v2` annual test. It separates source behavior,
+Stripe Test qualification, Production rollout, provider delivery, and observed
+reporting so that a fixture, Preview, accepted email request, or open Checkout
+page is never reported as a completed purchase or live result.
 
-The 50/50 experiment ended on 2026-08-21 with one-time retained as the default
-offer. The canonical source-level closure overrides stale enabled/rollout
-environment values for every future unassigned account. Existing assignments,
-open Checkout Sessions, subscriptions, entitlements, acquisition roots, and
-financial history remain supported and unchanged.
+## v2 annual experiment: dormant until qualified
+
+`upgrade-pricing-v2` is a new account-level experiment. It does not rename,
+reuse, or reinterpret the v1 monthly cohort.
+
+| ID | Billing | Initial charge | Customer-facing contract |
+| --- | --- | ---: | --- |
+| `control_one_time` | Stripe `mode=payment` | `$19.99` once | Existing global one-time Unlimited offer |
+| `annual_same_price` | Stripe `mode=subscription` | `$19.99` per year | Renews yearly until canceled; email reminder before renewal; cancel in Account; access continues through the paid year |
+
+The hypothesis is that annual billing at the same initial price may improve
+long-run realized revenue without reducing activated paid accounts. The primary
+early comparison is entitlement activations per exposed account and realized
+net revenue per exposed account. Annual renewal value is not observed until a
+second annual Invoice settles; it must not be projected as realized revenue or
+described as improved LTV before that anniversary.
+
+The v2 contract is deliberately narrow:
+
+- only the canonical global USD `$19.99` offer is eligible;
+- regional offers remain on their existing one-time Checkout outside v2;
+- any account with a permanent v1 assignment remains in v1 and is excluded;
+- new v2 assignments use assignment/snapshot version `2` and the stable
+  `annual_same_price` variant;
+- the annual Price must be active, on the existing Unlimited Product, exactly
+  USD `1999`, `interval=year`, `interval_count=1`, and `usage_type=licensed`;
+- missing configuration, invalid provider truth, unsupported currency, or
+  assignment failure falls back to one-time without entering v2 exposure or
+  analysis denominators.
+
+Source defaults are `enabled=false` and rollout `0`. V2 uses the separate
+`SIDESTREAM_UPGRADE_PRICING_V2_ENABLED`,
+`SIDESTREAM_UPGRADE_PRICING_V2_ROLLOUT_BPS`, and
+`SIDESTREAM_UPGRADE_PRICING_V2_SECRET` settings so stale v1 environment values
+cannot start the new test. A missing v2 rollout also stays at `0`. After
+qualification, increase from `0` to a small canary and inspect integrity before
+using `5000` for a 50/50 assignment of future eligible accounts. Existing
+assignments never change when rollout values change.
+
+The annual Checkout disclosure is part of the locked offer contract:
+
+> $19.99 per year. Renews automatically each year until canceled. We'll email
+> you 30 days before renewal, before you're billed again. Cancel anytime from
+> your Sidestream account;
+> access continues through your paid year.
+
+Do not shorten this to a bare price or hide renewal/cancellation terms below the
+primary action. The annual branch must show the billing cadence, automatic
+renewal, advance email, cancellation path, and paid-through access together.
+
+### Annual renewal reminder
+
+`20260825140000_add_annual_upgrade_pricing_experiment.sql` extends the immutable
+experiment constraints and creates the private
+`sidestream_annual_renewal_reminders` ledger. The protected six-hour GET job
+stays inert unless the literal
+`SIDESTREAM_ANNUAL_RENEWAL_REMINDERS_ENABLED=true` is set after migration and
+provider qualification. It stages only v2 annual subscriptions that are
+`active` or `trialing`, are not scheduled to cancel, and renew 7-30 days ahead.
+The wider window lets an outage
+recover while normal operation sends near the promised 30-day point.
+
+Each `(Stripe Subscription, renewal time)` has one durable identity. The worker
+uses short leases, bounded batches, retry scheduling, a maximum-attempt dead
+letter, and the same stable Resend idempotency key on every retry. If the
+subscription is canceled, rescheduled, no longer annual, or no longer active,
+the unsent row is canceled instead of emailed. Provider acceptance is recorded
+as `accepted`; actual mailbox delivery remains a separate rollout gate.
+
+The reminder names the `$19.99` amount and renewal date and states that
+canceling before that date prevents another charge while preserving access
+through the already-paid year. It links to the authenticated Sidestream Account
+page and contains no provider or database identifiers.
+
+### v2 analysis contract
+
+The protected report defaults to `upgrade-pricing-v2`; request v1 explicitly
+for the ended monthly history:
+
+```sh
+npm run report:upgrade-pricing -- \
+  --operator alex.ops \
+  --namespace test \
+  --experiment upgrade-pricing-v2 \
+  --from 2026-08-25T00:00:00Z \
+  --through 2026-09-25T00:00:00Z \
+  --as-of 2026-09-25T00:00:00Z
+```
+
+Compare the exact assignment and exposure denominators first, then:
+
+- entitlement activation rate and 24-hour/seven-day mature non-conversion;
+- realized gross, refunds/credits, net, and net revenue per exposed account;
+- active annual subscriptions, cancel-at-period-end, failed Invoices, recovery,
+  disputes, and refunds;
+- second successful annual Invoices only after the renewal anniversary;
+- reminder `accepted` evidence separately from confirmed provider delivery.
+
+V2 reporting admits only intents with a durable v2 assignment. Disabled,
+unsupported-currency, and provider/configuration fallbacks remain observable in
+their intent snapshots but cannot enter the v2 exposure, conversion, or revenue
+denominators. Historical v1 reporting remains unchanged.
+
+MRR for the annual variant is the exact annual amount divided by 12 and remains
+a normalized metric, not cash collected that month. Relative lift must always
+include both numerator and denominator; low-volume differences are descriptive,
+not statistically conclusive.
+
+### v2 activation gates
+
+Keep v2 disabled until all of these are current evidence:
+
+1. The complete migration chain is applied and checksummed on the attested
+   Production database after disposable-Postgres validation.
+2. Exact Test and live annual Prices exist and pass Product, amount, currency,
+   interval, active-state, and namespace checks.
+3. Required Checkout, subscription, Invoice, refund, and dispute webhook events
+   reach the deployed handler with healthy queue/retry/dead-letter state.
+4. Stripe Test proves annual Checkout copy, payment, entitlement, activation,
+   cancellation, renewal, failure/recovery, and Portal behavior.
+5. A real reminder reaches an owned test mailbox with the promised content;
+   Resend API acceptance alone is insufficient.
+6. Rollout `0` proves the one-time control, then a small canary proves assignment
+   balance, report integrity, and no unexpected 5xx before `5000`.
+7. The clean pushed `main` SHA is the canonical Production `version.json` SHA.
+
+## Historical v1 monthly experiment
+
+The v1 50/50 experiment ended on 2026-08-21 with one-time retained as the
+default offer. Existing assignments, open Checkout Sessions, subscriptions,
+entitlements, acquisition roots, and financial history remain supported and
+unchanged. The remainder of this document preserves the v1 contract.
 
 ## Hypothesis and invariants
 
@@ -189,6 +317,7 @@ operator ID and a local `127.0.0.1` API:
 npm run report:upgrade-pricing -- \
   --operator alex.ops \
   --namespace test \
+  --experiment upgrade-pricing-v1 \
   --from 2026-08-01T00:00:00Z \
   --through 2026-08-13T00:00:00Z \
   --as-of 2026-08-13T00:00:00Z
@@ -266,19 +395,17 @@ Use this sequence and keep each proof distinct:
 
 ## Kill switch, rollback, and support
 
-Set `SIDESTREAM_UPGRADE_PRICING_EXPERIMENT_ENABLED=false` to send only future
-unassigned accounts to the current one-time fallback. Existing assignments,
-open Sessions, paid subscriptions, entitlements, acquisition roots, and
-financial history remain. If code rollback is necessary, keep webhook
-processing and Portal support for existing experiment subscriptions until the
+Set `SIDESTREAM_UPGRADE_PRICING_V2_ENABLED=false` to send only future unassigned
+accounts to the current one-time fallback. Existing v1/v2 assignments, open
+Sessions, paid subscriptions, entitlements, acquisition roots, and financial
+history remain. If code rollback is necessary, keep webhook processing, annual
+reminders, and Portal support for existing experiment subscriptions until the
 forward-compatible lifecycle code is restored.
 
-After the 2026-08-21 conclusion, `UPGRADE_PRICING_EXPERIMENT_CONFIG.closedAt`
-also holds the source-level stop. While it is populated, Production ignores a
-stale `true`/nonzero environment rollout and uses the same observable
-`kill_switch` one-time fallback. Reopening assignment requires a deliberate
-reviewed source change and a new Production deployment; changing environment
-values alone cannot restart the test.
+The old v1 enabled/rollout settings are not read by v2. V1 cannot assign a new
+account because only its persisted historical rows are loaded. Starting v2
+requires the separate v2 settings plus a deployment that contains this contract;
+changing stale v1 environment values cannot restart or repurpose the old test.
 
 Stripe API `2025-03-31.basil` and later move invoice and invoice-line ancestry
 under typed `parent` objects and replace the Invoice `paid` boolean with the

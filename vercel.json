@@ -26,6 +26,10 @@
     {
       "path": "/api/internal/customer-usage/sync",
       "schedule": "27 5 * * *"
+    },
+    {
+      "path": "/api/internal/annual-renewal-reminders",
+      "schedule": "17 */6 * * *"
     }
   ],
   "redirects": [

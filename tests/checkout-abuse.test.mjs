@@ -51,9 +51,10 @@ const CONTROLLED_ENVIRONMENT = [
   "SIDESTREAM_PRO_INDIA_MONTHLY_PRICE_ID",
   "SIDESTREAM_PRO_BRAZIL_MONTHLY_PRICE_ID",
   "SIDESTREAM_PRO_SOUTH_KOREA_MONTHLY_PRICE_ID",
-  "SIDESTREAM_UPGRADE_PRICING_EXPERIMENT_ENABLED",
-  "SIDESTREAM_UPGRADE_PRICING_EXPERIMENT_ROLLOUT_BPS",
-  "SIDESTREAM_UPGRADE_PRICING_EXPERIMENT_SECRET",
+  "SIDESTREAM_PRO_ANNUAL_PRICE_ID",
+  "SIDESTREAM_UPGRADE_PRICING_V2_ENABLED",
+  "SIDESTREAM_UPGRADE_PRICING_V2_ROLLOUT_BPS",
+  "SIDESTREAM_UPGRADE_PRICING_V2_SECRET",
   "SIDESTREAM_BASE_URL",
   "PUBLIC_BASE_URL",
   "STRIPE_SECRET_KEY",
@@ -344,7 +345,7 @@ test("database-backed intents serialize retries, rotate deliberately, and fulfil
       [intent.intentId],
     );
     assert.deepEqual(initialUpgradeSnapshot.rows[0], {
-      upgrade_pricing_experiment_id: "upgrade-pricing-v1",
+      upgrade_pricing_experiment_id: "upgrade-pricing-v2",
       upgrade_pricing_decision_reason: "kill_switch",
       upgrade_pricing_variant: "control_one_time",
       upgrade_pricing_billing_model: "one_time",
@@ -822,23 +823,23 @@ test("database-backed intents serialize retries, rotate deliberately, and fulfil
       { fulfilled: true, activationBound: false, paidAcquisition: false },
     );
 
-    process.env.SIDESTREAM_UPGRADE_PRICING_EXPERIMENT_ENABLED = "true";
-    process.env.SIDESTREAM_UPGRADE_PRICING_EXPERIMENT_ROLLOUT_BPS = "10000";
-    process.env.SIDESTREAM_UPGRADE_PRICING_EXPERIMENT_SECRET = TEST_SECRET;
-    process.env.SIDESTREAM_PRO_MONTHLY_PRICE_ID = "price_checkout_monthly_v1";
-    const monthlyBuyer = await seedFreeAccount(databasePool, "monthly-buyer");
-    const monthlyBuyerSession = accountSession({
-      accountId: monthlyBuyer.accountId,
-      email: monthlyBuyer.email,
+    process.env.SIDESTREAM_UPGRADE_PRICING_V2_ENABLED = "true";
+    process.env.SIDESTREAM_UPGRADE_PRICING_V2_ROLLOUT_BPS = "10000";
+    process.env.SIDESTREAM_UPGRADE_PRICING_V2_SECRET = TEST_SECRET;
+    process.env.SIDESTREAM_PRO_ANNUAL_PRICE_ID = "price_checkout_annual_v1";
+    const annualBuyer = await seedFreeAccount(databasePool, "annual-buyer");
+    const annualBuyerSession = accountSession({
+      accountId: annualBuyer.accountId,
+      email: annualBuyer.email,
       active: false,
     });
-    const monthlyIntent = await account.createCheckoutIntent({
+    const annualIntent = await account.createCheckoutIntent({
       acquisitionId: acquisition.acquisitionId,
       buyerCountry: "US",
-      session: monthlyBuyerSession,
+      session: annualBuyerSession,
     });
-    assert.ok(monthlyIntent);
-    const monthlySnapshot = await databasePool.query(
+    assert.ok(annualIntent);
+    const annualSnapshot = await databasePool.query(
       `
         select upgrade_pricing_decision_reason, upgrade_pricing_assignment_id,
           upgrade_pricing_variant, upgrade_pricing_billing_model,
@@ -848,100 +849,125 @@ test("database-backed intents serialize retries, rotate deliberately, and fulfil
           upgrade_pricing_acquisition_id, upgrade_pricing_checkout_intent_id
         from public.sidestream_checkout_intents where id = $1
       `,
-      [monthlyIntent.intentId],
+      [annualIntent.intentId],
     );
-    assert.deepEqual(monthlySnapshot.rows[0], {
-      upgrade_pricing_decision_reason: "rollout_monthly",
-      upgrade_pricing_assignment_id: assertUuid(monthlySnapshot.rows[0].upgrade_pricing_assignment_id),
-      upgrade_pricing_variant: "monthly_half",
+    assert.deepEqual(annualSnapshot.rows[0], {
+      upgrade_pricing_decision_reason: "rollout_annual",
+      upgrade_pricing_assignment_id: assertUuid(annualSnapshot.rows[0].upgrade_pricing_assignment_id),
+      upgrade_pricing_variant: "annual_same_price",
       upgrade_pricing_billing_model: "subscription",
       upgrade_pricing_country: "US",
       upgrade_pricing_currency: "usd",
-      upgrade_pricing_amount_minor: "499",
+      upgrade_pricing_amount_minor: "1999",
       upgrade_pricing_stripe_product_id: "prod_checkout_test",
-      upgrade_pricing_stripe_price_id: "price_checkout_monthly_v1",
-      upgrade_pricing_account_id: monthlyBuyer.accountId,
+      upgrade_pricing_stripe_price_id: "price_checkout_annual_v1",
+      upgrade_pricing_account_id: annualBuyer.accountId,
       upgrade_pricing_acquisition_id: acquisition.acquisitionId,
-      upgrade_pricing_checkout_intent_id: monthlyIntent.intentId,
+      upgrade_pricing_checkout_intent_id: annualIntent.intentId,
     });
-    const monthlyCheckout = await account.createOrReuseCheckoutSession({
-      intentId: monthlyIntent.intentId,
-      browserToken: monthlyIntent.browserToken,
-      session: monthlyBuyerSession,
+    const annualCheckout = await account.createOrReuseCheckoutSession({
+      intentId: annualIntent.intentId,
+      browserToken: annualIntent.browserToken,
+      session: annualBuyerSession,
       baseUrl: BASE_URL,
     });
-    assert.equal(monthlyCheckout.ok, true);
-    const monthlyWrite = stripe.sessionCreateWrites.at(-1);
-    assert.equal(monthlyWrite.params.mode, "subscription");
-    assert.deepEqual(monthlyWrite.params.line_items, [
-      { price: "price_checkout_monthly_v1", quantity: 1 },
+    assert.equal(annualCheckout.ok, true);
+    const annualWrite = stripe.sessionCreateWrites.at(-1);
+    assert.equal(annualWrite.params.mode, "subscription");
+    assert.deepEqual(annualWrite.params.line_items, [
+      { price: "price_checkout_annual_v1", quantity: 1 },
     ]);
-    assert.equal(monthlyWrite.params.customer.startsWith("cus_"), true);
-    assert.equal(monthlyWrite.params.allow_promotion_codes, true);
+    assert.equal(annualWrite.params.customer.startsWith("cus_"), true);
+    assert.equal(annualWrite.params.allow_promotion_codes, true);
     for (const forbidden of [
       "customer_creation",
-      "custom_text",
       "invoice_creation",
       "payment_intent_data",
     ]) {
-      assert.equal(forbidden in monthlyWrite.params, false, forbidden);
+      assert.equal(forbidden in annualWrite.params, false, forbidden);
     }
     assert.deepEqual(
-      monthlyWrite.params.subscription_data.metadata,
-      monthlyWrite.params.metadata,
+      annualWrite.params.subscription_data.metadata,
+      annualWrite.params.metadata,
     );
     assert.equal(
-      monthlyWrite.params.metadata.sidestream_upgrade_variant,
-      "monthly_half",
+      annualWrite.params.metadata.sidestream_upgrade_variant,
+      "annual_same_price",
     );
     assert.equal(
-      monthlyWrite.params.metadata.sidestream_upgrade_billing_model,
+      annualWrite.params.metadata.sidestream_upgrade_billing_model,
       "subscription",
     );
+    assert.match(
+      annualWrite.params.custom_text.submit.message,
+      /email you 30 days before renewal, before you're billed again/i,
+    );
 
-    process.env.SIDESTREAM_PRO_MONTHLY_PRICE_ID = "price_checkout_monthly_v2";
-    const preservedMonthly = await account.createOrReuseCheckoutSession({
-      intentId: monthlyIntent.intentId,
-      browserToken: monthlyIntent.browserToken,
-      session: monthlyBuyerSession,
+    process.env.SIDESTREAM_PRO_ANNUAL_PRICE_ID = "price_checkout_annual_v2";
+    const preservedAnnual = await account.createOrReuseCheckoutSession({
+      intentId: annualIntent.intentId,
+      browserToken: annualIntent.browserToken,
+      session: annualBuyerSession,
       baseUrl: BASE_URL,
     });
-    assert.equal(preservedMonthly.url, monthlyCheckout.url);
+    assert.equal(preservedAnnual.url, annualCheckout.url);
     assert.equal(stripe.sessionCreateWrites.at(-1).params.line_items[0].price,
-      "price_checkout_monthly_v1");
-    const monthlyExposure = await databasePool.query(
+      "price_checkout_annual_v1");
+    const annualExposure = await databasePool.query(
       `select count(*)::integer as count
        from public.sidestream_upgrade_pricing_exposures
        where checkout_intent_id = $1`,
-      [monthlyIntent.intentId],
+      [annualIntent.intentId],
     );
-    assert.equal(monthlyExposure.rows[0].count, 1);
+    assert.equal(annualExposure.rows[0].count, 1);
 
-    const nextMonthlyBuyer = await seedFreeAccount(databasePool, "next-monthly-buyer");
-    const nextMonthlySession = accountSession({
-      accountId: nextMonthlyBuyer.accountId,
-      email: nextMonthlyBuyer.email,
+    const travelingAnnualIntent = await account.createCheckoutIntent({
+      acquisitionId: acquisition.acquisitionId,
+      buyerCountry: "IN",
+      session: annualBuyerSession,
+    });
+    assert.ok(travelingAnnualIntent);
+    const travelingAnnualSnapshot = await databasePool.query(
+      `select upgrade_pricing_decision_reason, upgrade_pricing_variant,
+        upgrade_pricing_country, upgrade_pricing_currency,
+        upgrade_pricing_amount_minor, upgrade_pricing_stripe_price_id
+       from public.sidestream_checkout_intents where id = $1`,
+      [travelingAnnualIntent.intentId],
+    );
+    assert.deepEqual(travelingAnnualSnapshot.rows[0], {
+      upgrade_pricing_decision_reason: "existing_assignment",
+      upgrade_pricing_variant: "annual_same_price",
+      upgrade_pricing_country: "IN",
+      upgrade_pricing_currency: "usd",
+      upgrade_pricing_amount_minor: "1999",
+      upgrade_pricing_stripe_price_id: "price_checkout_annual_v2",
+    });
+
+    const nextAnnualBuyer = await seedFreeAccount(databasePool, "next-annual-buyer");
+    const nextAnnualSession = accountSession({
+      accountId: nextAnnualBuyer.accountId,
+      email: nextAnnualBuyer.email,
       active: false,
     });
-    const nextMonthlyIntent = await account.createCheckoutIntent({
+    const nextAnnualIntent = await account.createCheckoutIntent({
       acquisitionId: acquisition.acquisitionId,
       buyerCountry: "US",
-      session: nextMonthlySession,
+      session: nextAnnualSession,
     });
-    assert.ok(nextMonthlyIntent);
-    const nextMonthlyCheckout = await account.createOrReuseCheckoutSession({
-      intentId: nextMonthlyIntent.intentId,
-      browserToken: nextMonthlyIntent.browserToken,
-      session: nextMonthlySession,
+    assert.ok(nextAnnualIntent);
+    const nextAnnualCheckout = await account.createOrReuseCheckoutSession({
+      intentId: nextAnnualIntent.intentId,
+      browserToken: nextAnnualIntent.browserToken,
+      session: nextAnnualSession,
       baseUrl: BASE_URL,
     });
-    assert.equal(nextMonthlyCheckout.ok, true);
+    assert.equal(nextAnnualCheckout.ok, true);
     assert.equal(stripe.sessionCreateWrites.at(-1).params.line_items[0].price,
-      "price_checkout_monthly_v2");
+      "price_checkout_annual_v2");
 
-    process.env.SIDESTREAM_PRO_MONTHLY_PRICE_ID =
-      "price_checkout_monthly_wrong_amount";
-    const fallbackBuyer = await seedFreeAccount(databasePool, "monthly-fallback-buyer");
+    process.env.SIDESTREAM_PRO_ANNUAL_PRICE_ID =
+      "price_checkout_annual_wrong_amount";
+    const fallbackBuyer = await seedFreeAccount(databasePool, "annual-fallback-buyer");
     const fallbackSession = accountSession({
       accountId: fallbackBuyer.accountId,
       email: fallbackBuyer.email,
@@ -1048,6 +1074,7 @@ class RecordingStripe {
         const brazil = priceId.startsWith("price_checkout_brazil");
         const southKorea = priceId.startsWith("price_checkout_south_korea");
         const monthly = priceId.startsWith("price_checkout_monthly");
+        const annual = priceId.startsWith("price_checkout_annual");
         return {
           id: priceId,
           active: true,
@@ -1057,12 +1084,18 @@ class RecordingStripe {
             ? 49901
             : monthly ? 499 : india ? 49900 : brazil ? 2500 : southKorea ? 24900 : 1999,
           currency: india ? "inr" : brazil ? "brl" : southKorea ? "krw" : "usd",
-          type: monthly ? "recurring" : "one_time",
-          recurring: monthly
-            ? { interval: "month", interval_count: 1, usage_type: "licensed" }
+          type: monthly || annual ? "recurring" : "one_time",
+          recurring: monthly || annual
+            ? {
+                interval: annual ? "year" : "month",
+                interval_count: 1,
+                usage_type: "licensed",
+              }
             : null,
-          lookup_key: monthly
-            ? "sidestream_pro_monthly_usd_499"
+          lookup_key: monthly || annual
+            ? annual
+              ? "sidestream_pro_annual_usd_1999"
+              : "sidestream_pro_monthly_usd_499"
             : india || brazil || southKorea
             ? null
             : "sidestream_pro_once_1999",
@@ -1136,7 +1169,10 @@ class RecordingStripe {
           const monthly = params.line_items[0].price.startsWith(
             "price_checkout_monthly",
           );
-          const amount = monthly ? 499 : india ? 49900 : brazil ? 2500 : southKorea ? 24900 : 1999;
+          const annual = params.line_items[0].price.startsWith(
+            "price_checkout_annual",
+          );
+          const amount = monthly ? 499 : annual ? 1999 : india ? 49900 : brazil ? 2500 : southKorea ? 24900 : 1999;
           const currency = india ? "inr" : brazil ? "brl" : southKorea ? "krw" : "usd";
           const session = {
             id,

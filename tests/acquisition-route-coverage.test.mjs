@@ -30,6 +30,7 @@ const ROUTE_POLICY = Object.freeze({
   "api/installation/claim-complete.ts": "acquisition_stage",
   "api/installation/claim-status.ts": "acquisition_continuity",
   "api/installation/claim.ts": "acquisition_continuity",
+  "api/internal/annual-renewal-reminders.ts": "operator_job",
   "api/internal/customer-summary.ts": "operator_read",
   "api/internal/customer-usage/sync.ts": "operator_job",
   "api/internal/customers/[customerId].ts": "operator_read",

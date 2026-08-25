@@ -31,6 +31,7 @@ test("disposable Postgres proves namespace, exact lineage, nested event metadata
     await createSchema(pool);
     await seed(pool);
     const report = await reportModule.queryUpgradePricingReport({
+      experimentId: "upgrade-pricing-v1",
       namespace: "production",
       from: "2026-05-01T00:00:00Z",
       through: "2026-08-12T00:00:00Z",
@@ -41,7 +42,13 @@ test("disposable Postgres proves namespace, exact lineage, nested event metadata
       query: (sql, values = []) => pool.query(sql, values),
     });
 
+    assert.equal(report.experimentId, "upgrade-pricing-v1");
     assert.equal(report.assignmentBalance.total, 2);
+    assert.deepEqual(report.assignmentBalance.monthlyShare, {
+      numerator: 1,
+      denominator: 2,
+      rate: 0.5,
+    });
     assert.equal(report.segments.length, 2);
     const control = report.segments.find((row) => row.variant === "control_one_time");
     const monthly = report.segments.find((row) => row.variant === "monthly_half");
@@ -60,6 +67,7 @@ test("disposable Postgres proves namespace, exact lineage, nested event metadata
     assert.doesNotMatch(JSON.stringify(report), /buyer@example\.com|cs_test_|sub_|in_|activation-secret|raw_payload/i);
 
     const testNamespace = await reportModule.queryUpgradePricingReport({
+      experimentId: "upgrade-pricing-v1",
       namespace: "test",
       from: "2026-05-01T00:00:00Z",
       through: "2026-08-12T00:00:00Z",

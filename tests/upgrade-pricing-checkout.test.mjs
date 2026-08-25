@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import {
+  selectAnnualCheckoutPrice,
   selectCheckoutOffer,
   selectMonthlyCheckoutPrice,
 } from "../api/_lib/checkout-offers.ts";
@@ -33,6 +34,16 @@ test("regional monthly Price configuration follows only the trusted server-owned
   });
 });
 
+test("annual Price configuration exists only for the trusted global USD offer", () => {
+  const global = selectCheckoutOffer("US", {
+    SIDESTREAM_PRO_ANNUAL_PRICE_ID: "price_annual",
+  });
+  assert.deepEqual(selectAnnualCheckoutPrice(global.entry, {
+    SIDESTREAM_PRO_ANNUAL_PRICE_ID: "price_annual",
+  }), { kind: "lookup", configuredPriceId: "price_annual" });
+  assert.equal(selectAnnualCheckoutPrice(SIDESTREAM_PRICING_CONTRACT.india), null);
+});
+
 test("monthly Price and Checkout idempotency rotate across exact term and request changes", () => {
   const basePriceKey = getStripeRecurringPriceIdempotencyKey({
     productId: "prod_sidestream",
@@ -57,6 +68,15 @@ test("monthly Price and Checkout idempotency rotate across exact term and reques
     currency: "usd",
     amountMinor: 1099,
     interval: "month",
+    intervalCount: 1,
+    usageType: "licensed",
+    livemode: false,
+  }));
+  assert.notEqual(basePriceKey, getStripeRecurringPriceIdempotencyKey({
+    productId: "prod_sidestream",
+    currency: "usd",
+    amountMinor: 1999,
+    interval: "year",
     intervalCount: 1,
     usageType: "licensed",
     livemode: false,
@@ -143,7 +163,7 @@ test("every Upgrade experiment Stripe metadata key fits the provider limit", asy
   }
 });
 
-test("control request remains exact while monthly allows recurring-safe promotion codes", async () => {
+test("control remains one-time while annual Checkout states renewal, reminder, and cancellation terms", async () => {
   const account = await source("api/_lib/account.ts");
   const builderStart = account.indexOf("export function buildUpgradeCheckoutSessionParameters");
   const workerStart = account.indexOf("export async function createOrReuseCheckoutSession", builderStart);
@@ -158,12 +178,17 @@ test("control request remains exact while monthly allows recurring-safe promotio
   assert.match(subscriptionBranch, /subscription_data: \{ metadata \}/);
   for (const forbidden of [
     "customer_creation",
-    "custom_text",
     "invoice_creation",
     "payment_intent_data",
   ]) {
     assert.doesNotMatch(subscriptionBranch, new RegExp(forbidden), forbidden);
   }
+  assert.match(subscriptionBranch, /\$19\.99 per year/);
+  assert.match(subscriptionBranch, /Renews automatically each year/);
+  assert.match(subscriptionBranch, /email you 30 days before renewal/);
+  assert.match(subscriptionBranch, /before you're billed again/);
+  assert.match(subscriptionBranch, /Cancel anytime/);
+  assert.match(subscriptionBranch, /access continues through your paid year/);
   assert.match(paymentBranch, /mode: "payment"/);
   assert.match(paymentBranch, /customer_creation: "always"/);
   assert.match(paymentBranch, /allow_promotion_codes: true/);
@@ -172,7 +197,7 @@ test("control request remains exact while monthly allows recurring-safe promotio
   assert.match(paymentBranch, /One-time payment\. No subscription\./);
 });
 
-test("monthly Price validation, exposure timing, and legacy separation fail closed", async () => {
+test("annual and legacy monthly Price validation, exposure timing, and separation fail closed", async () => {
   const account = await source("api/_lib/account.ts");
   for (const marker of [
     "price.livemode === isLiveStripeMode()",
@@ -188,8 +213,19 @@ test("monthly Price validation, exposure timing, and legacy separation fail clos
   ]) {
     assert.match(account, new RegExp(escapeRegExp(marker)), marker);
   }
-  assert.match(account, /upgrade_pricing_monthly_price_unavailable/);
+  for (const marker of [
+    'price.recurring?.interval === UPGRADE_PRICING_ANNUAL_INTERVAL',
+    "price.recurring?.interval_count === UPGRADE_PRICING_ANNUAL_INTERVAL_COUNT",
+    "price.recurring?.usage_type === UPGRADE_PRICING_ANNUAL_USAGE_TYPE",
+  ]) {
+    assert.match(account, new RegExp(escapeRegExp(marker)), marker);
+  }
+  assert.match(account, /upgrade_pricing_recurring_price_unavailable/);
   assert.match(account, /recordUpgradePricingExposure/);
+  assert.match(
+    account,
+    /snapshot\.experimentId === UPGRADE_PRICING_EXPERIMENT_ID[\s\S]*!snapshot\.assignmentId/,
+  );
   assert.match(account, /on conflict \(experiment_id, checkout_intent_id\) do nothing/);
   assert.ok(
     account.indexOf("set state = 'open'") <

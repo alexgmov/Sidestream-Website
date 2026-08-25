@@ -292,7 +292,7 @@ export function getStripeRecurringPriceIdempotencyKey(options: {
   productId: string;
   currency: string;
   amountMinor: number;
-  interval: "month";
+  interval: "month" | "year";
   intervalCount: 1;
   usageType: "licensed";
   livemode: boolean;
@@ -300,7 +300,9 @@ export function getStripeRecurringPriceIdempotencyKey(options: {
   const digest = createHash("sha256")
     .update(JSON.stringify(options))
     .digest("hex");
-  return `sidestream_upgrade_monthly_price_${digest}`;
+  return options.interval === "month"
+    ? `sidestream_upgrade_monthly_price_${digest}`
+    : `sidestream_upgrade_annual_price_${digest}`;
 }
 
 export function getStripeCheckoutWindow(
@@ -511,7 +513,7 @@ export function verifyLegacySubscriptionEntitlement(
 }
 
 /**
- * Verifies the provider-owned half-price monthly purchase independently from
+ * Verifies a provider-owned Upgrade pricing subscription independently from
  * the historical subscription allowlist. All values in `expected.metadata`
  * come from the immutable Checkout intent/assignment snapshot, never from the
  * browser or today's catalog.
@@ -533,6 +535,7 @@ export function verifyUpgradePricingSubscriptionTruth(options: {
     productId: string;
     currency: string;
     amountMinor: number;
+    interval: "month" | "year";
     livemode: boolean;
     clientReferenceId: string;
     metadata: UpgradePricingSubscriptionMetadata;
@@ -648,7 +651,7 @@ export function verifyUpgradePricingSubscriptionTruth(options: {
     price.type !== "recurring" ||
     price.currency !== expected.currency ||
     price.unit_amount !== expected.amountMinor ||
-    price.recurring?.interval !== "month" ||
+    price.recurring?.interval !== expected.interval ||
     price.recurring?.interval_count !== 1 ||
     price.recurring?.usage_type !== "licensed"
   ) {

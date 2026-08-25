@@ -30,6 +30,7 @@ const INTERNAL_CRON_PATHS = Object.freeze([
   "/api/internal/download-leads/replay",
   "/api/internal/maintenance",
   "/api/internal/customer-usage/sync",
+  "/api/internal/annual-renewal-reminders",
 ]);
 
 const modules = await loadCronModules();
@@ -37,10 +38,10 @@ const modules = await loadCronModules();
 test("the static Vercel contract includes every protected cron and both release routes", async () => {
   const result = await validateVercelContract();
   assert.deepEqual(result, {
-    crons: 4,
+    crons: 5,
     adminRoutes: 8,
     operationalRoutes: 0,
-    internalRoutes: 12,
+    internalRoutes: 13,
     releaseEndpoints: 2,
   });
 });
@@ -48,7 +49,7 @@ test("the static Vercel contract includes every protected cron and both release 
 test("every Customer 360 and experiment read is a protected on-demand admin route", async () => {
   const result = await validateVercelContract();
   assert.equal(result.adminRoutes, 8);
-  assert.equal(result.crons, 4);
+  assert.equal(result.crons, 5);
 });
 
 test("the human-only bundle verifier requires both customer functions", async () => {
@@ -66,7 +67,7 @@ test("the source checkout contract is direct and retains both zero-total Stripe 
   assert.deepEqual(result, {
     checkoutRoute: "direct",
     zeroTotalStatuses: 2,
-    rootHtmlPages: 4,
+    rootHtmlPages: 5,
   });
 });
 
@@ -377,6 +378,7 @@ function createRoutes(options = {}) {
   let replayDeletes = 0;
   let replayPageInput = null;
   let usageRuns = 0;
+  let reminderRuns = 0;
   const blob = {
     pathname: "sidestream/download-leads/lead_v1_test.json",
     etag: "test-etag",
@@ -456,6 +458,25 @@ function createRoutes(options = {}) {
       }),
       work: () => usageRuns,
     },
+    {
+      path: INTERNAL_CRON_PATHS[4],
+      handler: modules.reminder.createAnnualRenewalReminderHandler({
+        isEnabled: () => true,
+        runJob: async () => {
+          reminderRuns += 1;
+          return {
+            outcome: "completed",
+            staged: 0,
+            canceled: 0,
+            accepted: 0,
+            retryable: 0,
+            deadLetter: 0,
+          };
+        },
+        log: () => {},
+      }),
+      work: () => reminderRuns,
+    },
   ];
 }
 
@@ -467,7 +488,7 @@ async function loadCronModules() {
       this.code = code;
     }
   }
-  const [stripe, replay, maintenance, usage] = await Promise.all([
+  const [stripe, replay, maintenance, usage, reminder] = await Promise.all([
     loadInjectedModule(new URL("../api/internal/stripe-events/process.ts", import.meta.url), {
       "../../_lib/stripe-events.js": {
         drainStripeEventQueue: async () => {
@@ -513,8 +534,15 @@ async function loadCronModules() {
         },
       },
     }),
+    loadInjectedModule(new URL("../api/internal/annual-renewal-reminders.ts", import.meta.url), {
+      "../_lib/annual-renewal-reminder.js": {
+        runAnnualRenewalReminders: async () => {
+          throw new Error("The test must inject an annual renewal reminder job");
+        },
+      },
+    }),
   ]);
-  return { stripe, replay, maintenance, usage };
+  return { stripe, replay, maintenance, usage, reminder };
 }
 
 function restoreEnvironment(name, value) {

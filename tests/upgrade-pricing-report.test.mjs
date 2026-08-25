@@ -56,9 +56,30 @@ test("request validation binds namespace, mature observation time, pagination, a
       fixedFeeMinorByCurrency: { usd: 30, inr: 200 },
     },
   }, new Date("2026-08-12T00:00:00Z"));
+  assert.equal(request.experimentId, "upgrade-pricing-v2");
   assert.equal(request.namespace, "test");
   assert.equal(request.pageSize, 7);
   assert.equal(request.modeledLtv.monthlyChurnRate, 0.05);
+  assert.equal(parseUpgradePricingReportRequest({
+    experimentId: "upgrade-pricing-v1",
+    namespace: "test",
+  }, new Date("2026-08-12T00:00:00Z")).experimentId, "upgrade-pricing-v1");
+  assert.match(
+    reportModule.UPGRADE_PRICING_COHORT_SQL,
+    /\$5 <> 'upgrade-pricing-v2' or intent\.upgrade_pricing_assignment_id is not null/,
+  );
+  assert.match(
+    reportModule.UPGRADE_PRICING_EVENTS_SQL,
+    /\$5 <> 'upgrade-pricing-v2' or intent\.upgrade_pricing_assignment_id is not null/,
+  );
+  assert.throws(
+    () => parseUpgradePricingReportRequest({
+      experimentId: "upgrade-pricing-v3",
+      namespace: "test",
+    }),
+    (error) => error instanceof UpgradePricingReportValidationError &&
+      error.code === "invalid_experiment",
+  );
   assert.throws(
     () => parseUpgradePricingReportRequest({ namespace: "preview" }),
     (error) => error instanceof UpgradePricingReportValidationError &&
@@ -81,8 +102,8 @@ test("request validation binds namespace, mature observation time, pagination, a
 test("observed report dedupes event order, matures non-converters, isolates currency, and preserves exact denominators", () => {
   const report = buildUpgradePricingReport(cohort(), events(), WINDOW, SECRET);
   const controlUsd = segment(report, "control_one_time", "US", "usd");
-  const monthlyUsd = segment(report, "monthly_half", "US", "usd");
-  const monthlyInr = segment(report, "monthly_half", "IN", "inr");
+  const monthlyUsd = segment(report, "annual_same_price", "US", "usd");
+  const monthlyInr = segment(report, "annual_same_price", "IN", "inr");
 
   assert.deepEqual(controlUsd.activation, { numerator: 1, denominator: 2, rate: 0.5 });
   assert.equal(controlUsd.counts.uniqueEligibleAssigned, 2);
@@ -125,7 +146,7 @@ test("observed report dedupes event order, matures non-converters, isolates curr
   assert.equal(monthlyUsd.realizedMoney.refundsMinor, "50");
   assert.equal(monthlyUsd.realizedMoney.creditsMinor, "25");
   assert.equal(monthlyUsd.realizedMoney.netMinor, "3921");
-  assert.equal(monthlyUsd.realizedMoney.mrrMinor, "999");
+  assert.equal(monthlyUsd.realizedMoney.mrrMinor, "83");
 
   assert.equal(monthlyInr.realizedMoney.currency, "inr");
   assert.equal(monthlyInr.realizedMoney.grossMinor, "0");
@@ -133,28 +154,28 @@ test("observed report dedupes event order, matures non-converters, isolates curr
   assert.equal(monthlyInr.counts.mature7DayNonConverters, 0);
   assert.equal(report.currencyTotals.some((row) => row.currency === "all"), false);
   assert.equal(report.currencyTotals.find((row) =>
-    row.currency === "usd" && row.variant === "monthly_half").grossMinor, "3996");
+    row.currency === "usd" && row.variant === "annual_same_price").grossMinor, "3996");
 
-  const allMonthly = report.allUpNonMoney.find((row) => row.variant === "monthly_half");
+  const allMonthly = report.allUpNonMoney.find((row) => row.variant === "annual_same_price");
   assert.deepEqual(allMonthly.activation, { numerator: 2, denominator: 4, rate: 0.5 });
   assert.equal(report.assignmentBalance.total, 6);
-  assert.deepEqual(report.assignmentBalance.monthlyShare, {
+  assert.deepEqual(report.assignmentBalance.annualShare, {
     numerator: 4,
     denominator: 6,
     rate: 0.666667,
   });
   assert.ok(report.relativeLift.activation.some((row) =>
     row.country === "ALL" && row.currency === "all" &&
-    row.monthly.numerator === 2 && row.monthly.denominator === 4 &&
+    row.annual.numerator === 2 && row.annual.denominator === 4 &&
     row.control.numerator === 1 && row.control.denominator === 2));
   assert.ok(report.relativeLift.realizedRevenuePerExposed.some((row) =>
     row.country === "US" && row.currency === "usd" &&
-    row.monthly.numeratorMinor === "3921" && row.monthly.denominator === 2 &&
+    row.annual.numeratorMinor === "3921" && row.annual.denominator === 2 &&
     row.control.numeratorMinor === "1899" && row.control.denominator === 2));
 
   assert.deepEqual(report.clientVersionSegments, [
     { variant: "control_one_time", clientVersion: "1.0.11", exactLineageActivations: 1 },
-    { variant: "monthly_half", clientVersion: "1.0.12", exactLineageActivations: 1 },
+    { variant: "annual_same_price", clientVersion: "1.0.12", exactLineageActivations: 1 },
   ]);
 });
 
@@ -298,6 +319,7 @@ test("operator CLI accepts only privacy-safe operators and local 127.0.0.1 pagin
   ]);
   assert.equal(buildLocalReportUrl(options.port),
     "http://127.0.0.1:4317/api/internal/upgrade-pricing-report");
+  assert.equal(options.experimentId, "upgrade-pricing-v2");
   assert.throws(() => parseUpgradePricingReportArguments([
     "--operator", "alex@example.com", "--namespace", "test",
   ]), /not an email/);
@@ -327,6 +349,8 @@ test("operator CLI accepts only privacy-safe operators and local 127.0.0.1 pagin
   assert.ok(calls.every((call) => call.url.startsWith("http://127.0.0.1:")));
   assert.ok(calls.every((call) => call.init.headers.Authorization === `Bearer ${SECRET}`));
   assert.ok(calls.every((call) => !("Origin" in call.init.headers)));
+  assert.ok(calls.every((call) =>
+    JSON.parse(call.init.body).experimentId === "upgrade-pricing-v2"));
   assert.deepEqual(complete.segments, [{ country: "US" }, { country: "IN" }]);
   assert.equal(complete.requestedByOperator, "alex.ops");
 });
@@ -345,7 +369,7 @@ function cohort() {
     row("control-no", "account-control-no", "control_one_time", "US", "usd", 1999, {
       exposedAt: "2026-08-01T00:00:00Z",
     }),
-    row("monthly-three", "account-monthly-three", "monthly_half", "US", "usd", 999, {
+    row("monthly-three", "account-monthly-three", "annual_same_price", "US", "usd", 999, {
       exposedAt: "2026-05-01T00:00:00Z",
       subscriptionStatus: "active",
       subscriptionEntitlementStatus: "active",
@@ -354,16 +378,16 @@ function cohort() {
       activationCompletedAt: "2026-05-01T01:00:00Z",
       activationClientVersion: "1.0.12",
     }),
-    row("monthly-canceled", "account-monthly-canceled", "monthly_half", "US", "usd", 999, {
+    row("monthly-canceled", "account-monthly-canceled", "annual_same_price", "US", "usd", 999, {
       exposedAt: "2026-06-01T00:00:00Z",
       subscriptionStatus: "canceled",
       subscriptionEntitlementStatus: "revoked",
       entitlementActivated: true,
     }),
-    row("monthly-recent", "account-monthly-recent", "monthly_half", "IN", "inr", 25000, {
+    row("monthly-recent", "account-monthly-recent", "annual_same_price", "IN", "inr", 25000, {
       exposedAt: "2026-08-10T00:00:00Z",
     }),
-    row("monthly-week", "account-monthly-week", "monthly_half", "BR", "brl", 1250, {
+    row("monthly-week", "account-monthly-week", "annual_same_price", "BR", "brl", 1250, {
       exposedAt: "2026-08-01T00:00:00Z",
     }),
   ];
@@ -376,7 +400,7 @@ function row(intentId, accountId, variant, country, currency, amountMinor, overr
     accountId,
     acquisitionId: `acquisition-${accountId}`,
     variant,
-    billingModel: variant === "monthly_half" ? "subscription" : "one_time",
+    billingModel: variant === "annual_same_price" ? "subscription" : "one_time",
     country,
     currency,
     amountMinor,

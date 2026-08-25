@@ -1,15 +1,31 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { withPostgresTransaction } from "./postgres.js";
 
-const EXPERIMENT_ID = "upgrade-pricing-v1";
+const DEFAULT_EXPERIMENT_ID = "upgrade-pricing-v2";
 const DEFAULT_WINDOW_DAYS = 30;
 const MAX_WINDOW_DAYS = 366;
 const DEFAULT_PAGE_SIZE = 50;
 const MAX_PAGE_SIZE = 100;
 const VERSION_PATTERN = /^\d{1,3}\.\d{1,3}\.\d{1,3}(?:[-+][0-9A-Za-z.-]{1,40})?$/;
-const VARIANTS = ["control_one_time", "monthly_half"] as const;
+const EXPERIMENTS = Object.freeze({
+  "upgrade-pricing-v1": Object.freeze({
+    snapshotVersion: 1,
+    featureKey: "upgrade_pricing_v1",
+    variants: Object.freeze(["control_one_time", "monthly_half"] as const),
+    treatmentVariant: "monthly_half" as const,
+    treatmentKey: "monthly" as const,
+  }),
+  "upgrade-pricing-v2": Object.freeze({
+    snapshotVersion: 2,
+    featureKey: "upgrade_pricing_v2",
+    variants: Object.freeze(["control_one_time", "annual_same_price"] as const),
+    treatmentVariant: "annual_same_price" as const,
+    treatmentKey: "annual" as const,
+  }),
+});
 
-type Variant = typeof VARIANTS[number];
+type ExperimentId = keyof typeof EXPERIMENTS;
+type Variant = "control_one_time" | "monthly_half" | "annual_same_price";
 type Namespace = "production" | "test";
 type QueryResult<Row> = Promise<{ rows: Row[] }>;
 type QueryFunction = <Row = Record<string, unknown>>(
@@ -18,6 +34,7 @@ type QueryFunction = <Row = Record<string, unknown>>(
 ) => QueryResult<Row>;
 
 export type UpgradePricingReportRequest = Readonly<{
+  experimentId: ExperimentId;
   namespace: Namespace;
   from: string;
   through: string;
@@ -202,7 +219,7 @@ export const UPGRADE_PRICING_COHORT_SQL = `
         intent.upgrade_pricing_billing_model = 'one_time'
         or (
           candidate.stripe_subscription_id is not null
-          and coalesce(candidate.features ->> 'upgrade_pricing_v1', 'false') = 'true'
+          and coalesce(candidate.features ->> $6::text, 'false') = 'true'
           and coalesce(candidate.features ->> 'subscription', 'false') = 'true'
         )
       )
@@ -225,8 +242,9 @@ export const UPGRADE_PRICING_COHORT_SQL = `
       candidate.id asc
     limit 1
   ) activation on true
-  where intent.upgrade_pricing_snapshot_version = 1
-    and intent.upgrade_pricing_experiment_id = '${EXPERIMENT_ID}'
+  where intent.upgrade_pricing_snapshot_version = $7::integer
+    and intent.upgrade_pricing_experiment_id = $5
+    and ($5 <> 'upgrade-pricing-v2' or intent.upgrade_pricing_assignment_id is not null)
     and intent.created_at >= $2::timestamptz
     and intent.created_at < $3::timestamptz
     and intent.created_at <= $4::timestamptz
@@ -300,8 +318,9 @@ export const UPGRADE_PRICING_EVENTS_SQL = `
   join public.sidestream_acquisitions acquisition
     on acquisition.id = intent.acquisition_id
     and acquisition.license_namespace = $1
-  where intent.upgrade_pricing_snapshot_version = 1
-    and intent.upgrade_pricing_experiment_id = '${EXPERIMENT_ID}'
+  where intent.upgrade_pricing_snapshot_version = $6::integer
+    and intent.upgrade_pricing_experiment_id = $5
+    and ($5 <> 'upgrade-pricing-v2' or intent.upgrade_pricing_assignment_id is not null)
     and intent.created_at >= $2::timestamptz
     and intent.created_at < $3::timestamptz
     and intent.created_at <= $4::timestamptz
@@ -317,12 +336,22 @@ export function parseUpgradePricingReportRequest(
   }
   const record = input as Record<string, unknown>;
   const allowed = new Set([
-    "namespace", "from", "through", "asOf", "pageSize", "cursor", "modeledLtv",
+    "experimentId", "namespace", "from", "through", "asOf", "pageSize", "cursor",
+    "modeledLtv",
   ]);
   for (const key of Object.keys(record)) {
     if (!allowed.has(key)) throw invalid("unknown_field", `Unknown report field: ${key}`);
   }
 
+  const experimentId = record.experimentId === undefined
+    ? DEFAULT_EXPERIMENT_ID
+    : record.experimentId;
+  if (experimentId !== "upgrade-pricing-v1" && experimentId !== "upgrade-pricing-v2") {
+    throw invalid(
+      "invalid_experiment",
+      "experimentId must be upgrade-pricing-v1 or upgrade-pricing-v2",
+    );
+  }
   const namespace = record.namespace;
   if (namespace !== "production" && namespace !== "test") {
     throw invalid("invalid_namespace", "namespace must be production or test");
@@ -354,6 +383,7 @@ export function parseUpgradePricingReportRequest(
     : stringValue(record.cursor, "cursor", 2_048);
 
   return Object.freeze({
+    experimentId,
     namespace,
     from: fromDate.toISOString(),
     through: throughDate.toISOString(),
@@ -374,15 +404,32 @@ export async function queryUpgradePricingReport(
   }> = {},
 ) {
   const request = parseUpgradePricingReportRequest(input, dependencies.now || new Date());
-  const values = [request.namespace, request.from, request.through, request.asOf];
+  const experiment = EXPERIMENTS[request.experimentId];
+  const cohortValues = [
+    request.namespace,
+    request.from,
+    request.through,
+    request.asOf,
+    request.experimentId,
+    experiment.featureKey,
+    experiment.snapshotVersion,
+  ];
+  const eventValues = [
+    request.namespace,
+    request.from,
+    request.through,
+    request.asOf,
+    request.experimentId,
+    experiment.snapshotVersion,
+  ];
   const loadRows = async (runQuery: QueryFunction) => {
     const cohortResult = await runQuery<CohortDatabaseRow>(
       UPGRADE_PRICING_COHORT_SQL,
-      values,
+      cohortValues,
     );
     const eventResult = await runQuery<EventDatabaseRow>(
       UPGRADE_PRICING_EVENTS_SQL,
-      values,
+      eventValues,
     );
     return { cohortResult, eventResult };
   };
@@ -415,6 +462,7 @@ export function buildUpgradePricingReport(
   const request = isParsedRequest(requestInput)
     ? requestInput
     : parseUpgradePricingReportRequest(requestInput);
+  const experiment = EXPERIMENTS[request.experimentId];
   const cohort = dedupeCohort(cohortInput);
   const cohortByIntent = new Map(cohort.map((row) => [row.intentId, row]));
   const events = dedupeEvents(eventInput)
@@ -425,7 +473,7 @@ export function buildUpgradePricingReport(
 
   const groups = new Map<string, MutableMetrics>();
   const allUp = new Map<Variant, MutableMetrics>(
-    VARIANTS.map((variant) => [variant, createMetrics(variant, "ALL", "all")]),
+    experiment.variants.map((variant) => [variant, createMetrics(variant, "ALL", "all")]),
   );
   const versionGroups = new Map<string, MutableVersionMetrics>();
 
@@ -470,7 +518,7 @@ export function buildUpgradePricingReport(
   const currencyTotals = finalizeCurrencyTotals(allSegments);
   const report = {
     schemaVersion: 1,
-    experimentId: EXPERIMENT_ID,
+    experimentId: request.experimentId,
     mode: "observed" as const,
     namespace: request.namespace,
     observationWindow: {
@@ -489,15 +537,20 @@ export function buildUpgradePricingReport(
       clientVersion: "only exact activation-session or Checkout-Session lineage; malformed versions are grouped as unknown",
     },
     allUpNonMoney: allUpRows.map(stripMoney),
-    assignmentBalance: buildAssignmentBalance(allUpRows),
+    assignmentBalance: buildAssignmentBalance(allUpRows, experiment),
     clientVersionSegments: [...versionGroups.values()].sort((left, right) =>
-      left.variant.localeCompare(right.variant) ||
+      experiment.variants.indexOf(left.variant as never) -
+        experiment.variants.indexOf(right.variant as never) ||
       compareVersions(left.clientVersion, right.clientVersion)),
     segments: page,
     currencyTotals,
     relativeLift: {
-      activation: buildActivationLift(allSegments, allUpRows),
-      realizedRevenuePerExposed: buildRevenueLift(allSegments, currencyTotals),
+      activation: buildActivationLift(allSegments, allUpRows, experiment),
+      realizedRevenuePerExposed: buildRevenueLift(
+        allSegments,
+        currencyTotals,
+        experiment,
+      ),
     },
     modeledLtvScenarios: request.modeledLtv
       ? buildModeledLtvScenarios(allSegments, request.modeledLtv)
@@ -642,7 +695,9 @@ function accumulateRow(
     if (row.subscriptionEntitlementStatus === "active" &&
         new Set(["active", "trialing"]).has(row.subscriptionStatus || "")) {
       metrics.activeSubscriberIds.add(row.accountId);
-      metrics.mrrMinor += row.amountMinor;
+      metrics.mrrMinor += row.variant === "annual_same_price"
+        ? Math.round(row.amountMinor / 12)
+        : row.amountMinor;
     }
     if (row.cancelAtPeriodEnd || materialized.latestSubscription?.cancelAtPeriodEnd) {
       metrics.cancelAtPeriodEndIds.add(row.accountId);
@@ -863,22 +918,36 @@ function finalizeCurrencyTotals(segments: readonly ReturnType<typeof finalizeMet
       left.currency.localeCompare(right.currency) || left.variant.localeCompare(right.variant));
 }
 
-function buildAssignmentBalance(allUp: readonly ReturnType<typeof finalizeMetrics>[]) {
+function buildAssignmentBalance(
+  allUp: readonly ReturnType<typeof finalizeMetrics>[],
+  experiment: typeof EXPERIMENTS[ExperimentId],
+) {
   const control = allUp.find((row) => row.variant === "control_one_time")!;
-  const monthly = allUp.find((row) => row.variant === "monthly_half")!;
-  const total = control.counts.uniqueEligibleAssigned + monthly.counts.uniqueEligibleAssigned;
-  return {
+  const treatment = allUp.find((row) => row.variant === experiment.treatmentVariant)!;
+  const total = control.counts.uniqueEligibleAssigned + treatment.counts.uniqueEligibleAssigned;
+  const shared = {
     controlOneTime: control.counts.uniqueEligibleAssigned,
-    monthlyHalf: monthly.counts.uniqueEligibleAssigned,
     total,
-    monthlyShare: rate(monthly.counts.uniqueEligibleAssigned, total),
-    integrityDefects: control.integrityDefects.total + monthly.integrityDefects.total,
+    integrityDefects: control.integrityDefects.total + treatment.integrityDefects.total,
+  };
+  if (experiment.treatmentKey === "monthly") {
+    return {
+      ...shared,
+      monthlyHalf: treatment.counts.uniqueEligibleAssigned,
+      monthlyShare: rate(treatment.counts.uniqueEligibleAssigned, total),
+    };
+  }
+  return {
+    ...shared,
+    annualSamePrice: treatment.counts.uniqueEligibleAssigned,
+    annualShare: rate(treatment.counts.uniqueEligibleAssigned, total),
   };
 }
 
 function buildActivationLift(
   segments: readonly ReturnType<typeof finalizeMetrics>[],
   allUp: readonly ReturnType<typeof finalizeMetrics>[],
+  experiment: typeof EXPERIMENTS[ExperimentId],
 ) {
   const dimensions = new Map<string, ReturnType<typeof finalizeMetrics>[]>();
   for (const segment of segments) {
@@ -887,15 +956,16 @@ function buildActivationLift(
   }
   const result = [...dimensions.entries()].flatMap(([key, rows]) => {
     const [country, currency] = key.split("\u0000");
-    return comparison(rows, "activation", country, currency);
+    return comparison(rows, "activation", country, currency, experiment);
   });
-  result.push(...comparison(allUp, "activation", "ALL", "all"));
+  result.push(...comparison(allUp, "activation", "ALL", "all", experiment));
   return result;
 }
 
 function buildRevenueLift(
   segments: readonly ReturnType<typeof finalizeMetrics>[],
   currencyTotals: ReturnType<typeof finalizeCurrencyTotals>,
+  experiment: typeof EXPERIMENTS[ExperimentId],
 ) {
   const dimensions = new Map<string, ReturnType<typeof finalizeMetrics>[]>();
   for (const segment of segments) {
@@ -904,32 +974,34 @@ function buildRevenueLift(
   }
   const result = [...dimensions.entries()].flatMap(([key, rows]) => {
     const control = rows.find((row) => row.variant === "control_one_time");
-    const monthly = rows.find((row) => row.variant === "monthly_half");
-    if (!control || !monthly) return [];
+    const treatment = rows.find((row) => row.variant === experiment.treatmentVariant);
+    if (!control || !treatment) return [];
     const [country, currency] = key.split("\u0000");
     return [liftRecord(
       country,
       currency,
-      BigInt(monthly.realizedMoney.netMinor),
-      monthly.counts.uniqueExposed,
+      BigInt(treatment.realizedMoney.netMinor),
+      treatment.counts.uniqueExposed,
       BigInt(control.realizedMoney.netMinor),
       control.counts.uniqueExposed,
+      experiment.treatmentKey,
     )];
   });
   const currencies = new Set(currencyTotals.map((row) => row.currency));
   for (const currency of currencies) {
     const control = currencyTotals.find((row) =>
       row.currency === currency && row.variant === "control_one_time");
-    const monthly = currencyTotals.find((row) =>
-      row.currency === currency && row.variant === "monthly_half");
-    if (control && monthly) {
+    const treatment = currencyTotals.find((row) =>
+      row.currency === currency && row.variant === experiment.treatmentVariant);
+    if (control && treatment) {
       result.push(liftRecord(
         "ALL",
         currency,
-        BigInt(monthly.netMinor),
-        monthly.realizedRevenuePerExposedDenominator,
+        BigInt(treatment.netMinor),
+        treatment.realizedRevenuePerExposedDenominator,
         BigInt(control.netMinor),
         control.realizedRevenuePerExposedDenominator,
+        experiment.treatmentKey,
       ));
     }
   }
@@ -941,16 +1013,17 @@ function comparison(
   field: "activation",
   country: string,
   currency: string,
+  experiment: typeof EXPERIMENTS[ExperimentId],
 ) {
   const control = rows.find((row) => row.variant === "control_one_time");
-  const monthly = rows.find((row) => row.variant === "monthly_half");
-  if (!control || !monthly) return [];
-  const left = monthly[field];
+  const treatment = rows.find((row) => row.variant === experiment.treatmentVariant);
+  if (!control || !treatment) return [];
+  const left = treatment[field];
   const right = control[field];
   return [{
     country,
     currency,
-    monthly: left,
+    [experiment.treatmentKey]: left,
     control: right,
     relativeLift: relativeRateLift(
       left.numerator,
@@ -964,18 +1037,19 @@ function comparison(
 function liftRecord(
   country: string,
   currency: string,
-  monthlyNumerator: bigint,
-  monthlyDenominator: number,
+  treatmentNumerator: bigint,
+  treatmentDenominator: number,
   controlNumerator: bigint,
   controlDenominator: number,
+  treatmentKey: "monthly" | "annual",
 ) {
   return {
     country,
     currency,
-    monthly: {
-      numeratorMinor: monthlyNumerator.toString(),
-      denominator: monthlyDenominator,
-      valueMinor: decimalRateBigInt(monthlyNumerator, monthlyDenominator),
+    [treatmentKey]: {
+      numeratorMinor: treatmentNumerator.toString(),
+      denominator: treatmentDenominator,
+      valueMinor: decimalRateBigInt(treatmentNumerator, treatmentDenominator),
     },
     control: {
       numeratorMinor: controlNumerator.toString(),
@@ -983,8 +1057,8 @@ function liftRecord(
       valueMinor: decimalRateBigInt(controlNumerator, controlDenominator),
     },
     relativeLift: relativeRevenueLift(
-      monthlyNumerator,
-      monthlyDenominator,
+      treatmentNumerator,
+      treatmentDenominator,
       controlNumerator,
       controlDenominator,
     ),
@@ -1001,7 +1075,9 @@ function buildModeledLtvScenarios(
     const fixedFee = assumptions.fixedFeeMinorByCurrency[segment.currency] || 0;
     const paymentCount = segment.variant === "control_one_time"
       ? 1
-      : survivalPaymentCount(assumptions.horizonMonths, assumptions.monthlyChurnRate);
+      : segment.variant === "annual_same_price"
+        ? annualPaymentCount(assumptions.horizonMonths, assumptions.monthlyChurnRate)
+        : monthlyPaymentCount(assumptions.horizonMonths, assumptions.monthlyChurnRate);
     const gross = price * paymentCount;
     const fees = gross * assumptions.feeRate + fixedFee * paymentCount;
     const refunds = gross * assumptions.refundRate;
@@ -1072,7 +1148,11 @@ function parseModeledLtv(value: unknown): ModeledLtvAssumptions | null {
 }
 
 function normalizeCohortRow(row: CohortDatabaseRow): UpgradePricingCohortObservation {
-  const variant = row.variant === "monthly_half" ? "monthly_half" : "control_one_time";
+  const variant = row.variant === "annual_same_price"
+    ? "annual_same_price"
+    : row.variant === "monthly_half"
+      ? "monthly_half"
+      : "control_one_time";
   return {
     intentId: String(row.intent_id || ""),
     assignmentId: row.assignment_id ? String(row.assignment_id) : null,
@@ -1178,6 +1258,7 @@ function verifyCursor(cursor: string, request: UpgradePricingReportRequest, secr
 function cursorPayload(lastKey: string, request: UpgradePricingReportRequest) {
   return {
     version: 1,
+    experimentId: request.experimentId,
     namespace: request.namespace,
     from: request.from,
     through: request.through,
@@ -1274,6 +1355,7 @@ function isoOrNull(value: unknown) {
 
 function isParsedRequest(value: unknown): value is UpgradePricingReportRequest {
   return Boolean(value && typeof value === "object" &&
+    (value as UpgradePricingReportRequest).experimentId &&
     (value as UpgradePricingReportRequest).namespace &&
     (value as UpgradePricingReportRequest).from &&
     (value as UpgradePricingReportRequest).through &&
@@ -1385,8 +1467,18 @@ function isMaturePeriod(periodEnd: string | null | undefined, asOfMs: number) {
   return Number.isFinite(time) && time <= asOfMs;
 }
 
-function survivalPaymentCount(months: number, churnRate: number) {
+function annualPaymentCount(months: number, churnRate: number) {
   let expected = 0;
-  for (let month = 0; month < months; month += 1) expected += (1 - churnRate) ** month;
+  for (let month = 0; month < months; month += 12) {
+    expected += (1 - churnRate) ** month;
+  }
+  return expected;
+}
+
+function monthlyPaymentCount(months: number, churnRate: number) {
+  let expected = 0;
+  for (let month = 0; month < months; month += 1) {
+    expected += (1 - churnRate) ** month;
+  }
   return expected;
 }

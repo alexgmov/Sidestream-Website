@@ -7,26 +7,36 @@ import * as upgradePricingConfig from "../../config/upgrade-pricing-experiment.m
 
 const {
   readUpgradePricingRollout,
+  UPGRADE_PRICING_ANNUAL_VARIANT,
   UPGRADE_PRICING_CONTROL_VARIANT,
   UPGRADE_PRICING_EXPERIMENT_CONFIG,
   UPGRADE_PRICING_EXPERIMENT_ID,
+  UPGRADE_PRICING_LEGACY_EXPERIMENT_ID,
   UPGRADE_PRICING_MONTHLY_VARIANT,
 } = upgradePricingConfig;
 
 export {
+  UPGRADE_PRICING_ANNUAL_VARIANT,
   UPGRADE_PRICING_CONTROL_VARIANT,
   UPGRADE_PRICING_EXPERIMENT_ID,
+  UPGRADE_PRICING_LEGACY_EXPERIMENT_ID,
   UPGRADE_PRICING_MONTHLY_VARIANT,
 };
 
+export type UpgradePricingExperimentId =
+  | "upgrade-pricing-v1"
+  | "upgrade-pricing-v2";
 export type UpgradePricingVariant =
   | "control_one_time"
-  | "monthly_half";
+  | "monthly_half"
+  | "annual_same_price";
 export type UpgradePricingBillingModel = "one_time" | "subscription";
+export type UpgradePricingRecurringInterval = "month" | "year";
 
 export type UpgradePricingPersistedAssignment = Readonly<{
   assignmentId: string;
-  experimentId: "upgrade-pricing-v1";
+  assignmentVersion: 1 | 2;
+  experimentId: UpgradePricingExperimentId;
   accountId: string;
   variant: UpgradePricingVariant;
   billingModel: UpgradePricingBillingModel;
@@ -39,26 +49,28 @@ export type UpgradePricingDecisionReason =
   | "existing_assignment"
   | "rollout_control"
   | "rollout_monthly"
+  | "rollout_annual"
   | "kill_switch"
   | "rollout_zero"
   | "assignment_unavailable"
   | "unsupported_currency";
 
 export type UpgradePricingDecision = Readonly<{
-  experimentId: "upgrade-pricing-v1";
-  assignmentVersion: 1;
+  experimentId: UpgradePricingExperimentId;
+  assignmentVersion: 1 | 2;
   accountId: string;
   variant: UpgradePricingVariant;
   billingModel: UpgradePricingBillingModel;
   assignedVariant: UpgradePricingVariant | null;
   bucket: number | null;
   rolloutBasisPoints: number;
-  monthlyAmountMinor: number | null;
+  recurringAmountMinor: number | null;
+  recurringInterval: UpgradePricingRecurringInterval | null;
   reason: UpgradePricingDecisionReason;
   assignmentId: string | null;
   assignedAt: string | null;
   shouldPersistAssignment: boolean;
-  monthlyCohortEligible: boolean;
+  recurringCohortEligible: boolean;
   usedExistingAssignment: boolean;
 }>;
 
@@ -125,6 +137,49 @@ export const deriveMonthlyHalfAmount = deriveMonthlyOfferAmount;
 export const roundUpgradePricingMonthlyAmount = deriveMonthlyOfferAmount;
 export const deriveMonthlyHalfAmountMinor = deriveMonthlyOfferAmount;
 
+/**
+ * The v2 treatment matches the current one-time amount and is available only
+ * for a catalog entry with explicit annual terms. Today that is the global USD
+ * offer; regional offers stay one-time and outside the annual cohort.
+ */
+export function deriveAnnualOfferAmount(
+  currencyValue: unknown,
+  oneTimeAmountMinorValue: unknown,
+): number {
+  const currency = typeof currencyValue === "string"
+    ? currencyValue.trim().toLowerCase()
+    : "";
+  const oneTimeAmountMinor = Number(oneTimeAmountMinorValue);
+  if (!Number.isSafeInteger(oneTimeAmountMinor) || oneTimeAmountMinor <= 0) {
+    throw new UpgradePricingExperimentError(
+      "invalid_offer",
+      "The server-owned one-time amount must be a positive safe integer",
+    );
+  }
+  const offer = SIDESTREAM_PRICING_CONTRACT.checkoutCatalog.find(
+    (candidate) =>
+      candidate.currency === currency &&
+      candidate.amountMinor === oneTimeAmountMinor,
+  );
+  if (!offer) {
+    throw new UpgradePricingExperimentError(
+      "unsupported_currency",
+      "The one-time offer currency has no approved annual offer",
+    );
+  }
+  if (
+    !Number.isSafeInteger(offer.annualAmountMinor) ||
+    (offer.annualAmountMinor || 0) <= 0 ||
+    !offer.annualPriceSource
+  ) {
+    throw new UpgradePricingExperimentError(
+      "invalid_offer",
+      "The server-owned one-time offer has no exact approved annual amount",
+    );
+  }
+  return offer.annualAmountMinor!;
+}
+
 export function upgradePricingBucket(options: {
   accountId: unknown;
   secret: unknown;
@@ -142,11 +197,10 @@ export function upgradePricingBucket(options: {
 export const getUpgradePricingBucket = upgradePricingBucket;
 
 /**
- * Decides only future unassigned accounts. A caller must load a persisted
- * account assignment first and pass it here; rollout and kill-switch changes
- * never rewrite that assignment. Any inability to make or price a monthly
- * assignment produces an explicit one-time fallback that must not be counted
- * as a monthly assignment or exposure.
+ * Decides only accounts without a persisted v1 or v2 assignment. Historical
+ * v1 assignments keep their original one-time/monthly terms. Any inability to
+ * price the current annual treatment produces an explicit one-time fallback
+ * that must not be counted as an annual assignment or exposure.
  */
 export function decideUpgradePricing(options: {
   accountId: unknown;
@@ -167,6 +221,8 @@ export function decideUpgradePricing(options: {
   if (options.existingAssignment && !existing) {
     return fallbackDecision({
       accountId,
+      experimentId: UPGRADE_PRICING_EXPERIMENT_ID,
+      assignmentVersion: UPGRADE_PRICING_EXPERIMENT_CONFIG.assignmentVersion,
       assignedVariant: null,
       rolloutBasisPoints: rollout.rolloutBasisPoints,
       reason: "assignment_unavailable",
@@ -174,22 +230,26 @@ export function decideUpgradePricing(options: {
   }
 
   if (existing) {
-    if (existing.variant === UPGRADE_PRICING_MONTHLY_VARIANT) {
+    if (
+      existing.variant === UPGRADE_PRICING_MONTHLY_VARIANT ||
+      existing.variant === UPGRADE_PRICING_ANNUAL_VARIANT
+    ) {
       try {
-        const monthlyAmountMinor = deriveMonthlyOfferAmount(
-          options.currency,
-          options.oneTimeAmountMinor,
-        );
+        const recurringAmountMinor = existing.variant === UPGRADE_PRICING_MONTHLY_VARIANT
+          ? deriveMonthlyOfferAmount(options.currency, options.oneTimeAmountMinor)
+          : deriveAnnualOfferAmount(options.currency, options.oneTimeAmountMinor);
         return assignedDecision({
           accountId,
           existing,
-          monthlyAmountMinor,
+          recurringAmountMinor,
           reason: "existing_assignment",
         });
       } catch (error) {
         if (error instanceof UpgradePricingExperimentError) {
           return fallbackDecision({
             accountId,
+            experimentId: existing.experimentId,
+            assignmentVersion: existing.assignmentVersion,
             assignedVariant: existing.variant,
             rolloutBasisPoints: existing.rolloutBasisPoints,
             reason: decisionFailureReason(error),
@@ -201,7 +261,7 @@ export function decideUpgradePricing(options: {
     return assignedDecision({
       accountId,
       existing,
-      monthlyAmountMinor: null,
+      recurringAmountMinor: null,
       reason: "existing_assignment",
     });
   }
@@ -209,6 +269,8 @@ export function decideUpgradePricing(options: {
   if (!rollout.enabled) {
     return fallbackDecision({
       accountId,
+      experimentId: UPGRADE_PRICING_EXPERIMENT_ID,
+      assignmentVersion: UPGRADE_PRICING_EXPERIMENT_CONFIG.assignmentVersion,
       assignedVariant: null,
       rolloutBasisPoints: 0,
       reason: rollout.reason === "kill_switch"
@@ -228,20 +290,22 @@ export function decideUpgradePricing(options: {
   } catch {
     return fallbackDecision({
       accountId,
+      experimentId: UPGRADE_PRICING_EXPERIMENT_ID,
+      assignmentVersion: UPGRADE_PRICING_EXPERIMENT_CONFIG.assignmentVersion,
       assignedVariant: null,
       rolloutBasisPoints: rollout.rolloutBasisPoints,
       reason: "assignment_unavailable",
     });
   }
 
-  const monthlySelected = bucket < rollout.rolloutBasisPoints;
-  if (!monthlySelected) {
+  const annualSelected = bucket < rollout.rolloutBasisPoints;
+  if (!annualSelected) {
     return newAssignmentDecision({
       accountId,
       bucket,
       rolloutBasisPoints: rollout.rolloutBasisPoints,
       variant: UPGRADE_PRICING_CONTROL_VARIANT,
-      monthlyAmountMinor: null,
+      recurringAmountMinor: null,
       reason: rollout.rolloutBasisPoints === 0 ? "rollout_zero" : "rollout_control",
     });
   }
@@ -251,17 +315,19 @@ export function decideUpgradePricing(options: {
       accountId,
       bucket,
       rolloutBasisPoints: rollout.rolloutBasisPoints,
-      variant: UPGRADE_PRICING_MONTHLY_VARIANT,
-      monthlyAmountMinor: deriveMonthlyOfferAmount(
+      variant: UPGRADE_PRICING_ANNUAL_VARIANT,
+      recurringAmountMinor: deriveAnnualOfferAmount(
         options.currency,
         options.oneTimeAmountMinor,
       ),
-      reason: "rollout_monthly",
+      reason: "rollout_annual",
     });
   } catch (error) {
     if (!(error instanceof UpgradePricingExperimentError)) throw error;
     return fallbackDecision({
       accountId,
+      experimentId: UPGRADE_PRICING_EXPERIMENT_ID,
+      assignmentVersion: UPGRADE_PRICING_EXPERIMENT_CONFIG.assignmentVersion,
       assignedVariant: null,
       rolloutBasisPoints: rollout.rolloutBasisPoints,
       reason: decisionFailureReason(error),
@@ -303,24 +369,25 @@ function newAssignmentDecision(options: {
   bucket: number;
   rolloutBasisPoints: number;
   variant: UpgradePricingVariant;
-  monthlyAmountMinor: number | null;
+  recurringAmountMinor: number | null;
   reason: UpgradePricingDecisionReason;
 }): UpgradePricingDecision {
   return Object.freeze({
     experimentId: UPGRADE_PRICING_EXPERIMENT_ID,
-    assignmentVersion: 1,
+    assignmentVersion: UPGRADE_PRICING_EXPERIMENT_CONFIG.assignmentVersion,
     accountId: options.accountId,
     variant: options.variant,
     billingModel: billingModelForVariant(options.variant),
     assignedVariant: options.variant,
     bucket: options.bucket,
     rolloutBasisPoints: options.rolloutBasisPoints,
-    monthlyAmountMinor: options.monthlyAmountMinor,
+    recurringAmountMinor: options.recurringAmountMinor,
+    recurringInterval: recurringIntervalForVariant(options.variant),
     reason: options.reason,
     assignmentId: null,
     assignedAt: null,
     shouldPersistAssignment: true,
-    monthlyCohortEligible: options.variant === UPGRADE_PRICING_MONTHLY_VARIANT,
+    recurringCohortEligible: options.variant === UPGRADE_PRICING_ANNUAL_VARIANT,
     usedExistingAssignment: false,
   });
 }
@@ -328,31 +395,35 @@ function newAssignmentDecision(options: {
 function assignedDecision(options: {
   accountId: string;
   existing: UpgradePricingPersistedAssignment;
-  monthlyAmountMinor: number | null;
+  recurringAmountMinor: number | null;
   reason: UpgradePricingDecisionReason;
 }): UpgradePricingDecision {
   return Object.freeze({
-    experimentId: UPGRADE_PRICING_EXPERIMENT_ID,
-    assignmentVersion: 1,
+    experimentId: options.existing.experimentId,
+    assignmentVersion: options.existing.assignmentVersion,
     accountId: options.accountId,
     variant: options.existing.variant,
     billingModel: options.existing.billingModel,
     assignedVariant: options.existing.variant,
     bucket: options.existing.bucket,
     rolloutBasisPoints: options.existing.rolloutBasisPoints,
-    monthlyAmountMinor: options.monthlyAmountMinor,
+    recurringAmountMinor: options.recurringAmountMinor,
+    recurringInterval: recurringIntervalForVariant(options.existing.variant),
     reason: options.reason,
     assignmentId: options.existing.assignmentId,
     assignedAt: new Date(options.existing.assignedAt).toISOString(),
     shouldPersistAssignment: false,
-    monthlyCohortEligible:
-      options.existing.variant === UPGRADE_PRICING_MONTHLY_VARIANT,
+    recurringCohortEligible:
+      options.existing.variant === UPGRADE_PRICING_MONTHLY_VARIANT ||
+      options.existing.variant === UPGRADE_PRICING_ANNUAL_VARIANT,
     usedExistingAssignment: true,
   });
 }
 
 function fallbackDecision(options: {
   accountId: string;
+  experimentId: UpgradePricingExperimentId;
+  assignmentVersion: 1 | 2;
   assignedVariant: UpgradePricingVariant | null;
   rolloutBasisPoints: number;
   reason: Extract<
@@ -361,20 +432,21 @@ function fallbackDecision(options: {
   >;
 }): UpgradePricingDecision {
   return Object.freeze({
-    experimentId: UPGRADE_PRICING_EXPERIMENT_ID,
-    assignmentVersion: 1,
+    experimentId: options.experimentId,
+    assignmentVersion: options.assignmentVersion,
     accountId: options.accountId,
     variant: UPGRADE_PRICING_CONTROL_VARIANT,
     billingModel: "one_time",
     assignedVariant: options.assignedVariant,
     bucket: null,
     rolloutBasisPoints: options.rolloutBasisPoints,
-    monthlyAmountMinor: null,
+    recurringAmountMinor: null,
+    recurringInterval: null,
     reason: options.reason,
     assignmentId: null,
     assignedAt: null,
     shouldPersistAssignment: false,
-    monthlyCohortEligible: false,
+    recurringCohortEligible: false,
     usedExistingAssignment: options.assignedVariant !== null,
   });
 }
@@ -390,7 +462,13 @@ function normalizeExistingAssignment(
     typeof value.experimentId !== "string" ||
     typeof value.variant !== "string" ||
     typeof value.billingModel !== "string" ||
-    value.experimentId !== UPGRADE_PRICING_EXPERIMENT_ID ||
+    ![UPGRADE_PRICING_LEGACY_EXPERIMENT_ID, UPGRADE_PRICING_EXPERIMENT_ID]
+      .includes(value.experimentId) ||
+    (
+      value.experimentId === UPGRADE_PRICING_LEGACY_EXPERIMENT_ID
+        ? value.assignmentVersion !== 1
+        : value.assignmentVersion !== 2
+    ) ||
     value.accountId.trim().toLowerCase() !== accountId ||
     !UUID_PATTERN.test(value.assignmentId) ||
     !UUID_PATTERN.test(accountId) ||
@@ -403,9 +481,17 @@ function normalizeExistingAssignment(
     (
       value.variant === UPGRADE_PRICING_CONTROL_VARIANT
         ? value.billingModel !== "one_time"
-        : value.variant === UPGRADE_PRICING_MONTHLY_VARIANT
+        : [UPGRADE_PRICING_MONTHLY_VARIANT, UPGRADE_PRICING_ANNUAL_VARIANT]
+            .includes(value.variant)
           ? value.billingModel !== "subscription"
           : true
+    ) ||
+    (
+      value.experimentId === UPGRADE_PRICING_LEGACY_EXPERIMENT_ID
+        ? ![UPGRADE_PRICING_CONTROL_VARIANT, UPGRADE_PRICING_MONTHLY_VARIANT]
+            .includes(value.variant)
+        : ![UPGRADE_PRICING_CONTROL_VARIANT, UPGRADE_PRICING_ANNUAL_VARIANT]
+            .includes(value.variant)
     ) ||
     !Number.isFinite(new Date(value.assignedAt).getTime())
   ) {
@@ -418,8 +504,19 @@ function billingModelForVariant(
   variant: UpgradePricingVariant,
 ): UpgradePricingBillingModel {
   if (variant === UPGRADE_PRICING_CONTROL_VARIANT) return "one_time";
-  if (variant === UPGRADE_PRICING_MONTHLY_VARIANT) return "subscription";
+  if (
+    variant === UPGRADE_PRICING_MONTHLY_VARIANT ||
+    variant === UPGRADE_PRICING_ANNUAL_VARIANT
+  ) return "subscription";
   throw new Error("Invalid persisted Upgrade pricing variant");
+}
+
+function recurringIntervalForVariant(
+  variant: UpgradePricingVariant,
+): UpgradePricingRecurringInterval | null {
+  if (variant === UPGRADE_PRICING_MONTHLY_VARIANT) return "month";
+  if (variant === UPGRADE_PRICING_ANNUAL_VARIANT) return "year";
+  return null;
 }
 
 export const upgradePricingBillingModelForVariant = billingModelForVariant;

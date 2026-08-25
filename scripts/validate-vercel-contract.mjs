@@ -26,6 +26,11 @@ const INTERNAL_CRONS = Object.freeze([
     schedule: "27 5 * * *",
     source: "api/internal/customer-usage/sync.ts",
   },
+  {
+    path: "/api/internal/annual-renewal-reminders",
+    schedule: "17 */6 * * *",
+    source: "api/internal/annual-renewal-reminders.ts",
+  },
 ]);
 
 const PROTECTED_ADMIN_ROUTES = Object.freeze([
@@ -110,7 +115,7 @@ export async function validateVercelContract(root = REPOSITORY_ROOT) {
       `${expected.source} must explicitly admit Vercel Cron GET`,
     );
     requireCondition(
-      !/SIDESTREAM_(?:DOWNLOAD_LEADS_REPLAY|STRIPE_EVENTS_PROCESS|MAINTENANCE|CUSTOMER_USAGE)_SECRET/.test(source),
+      !/SIDESTREAM_(?:DOWNLOAD_LEADS_REPLAY|STRIPE_EVENTS_PROCESS|MAINTENANCE|CUSTOMER_USAGE|ANNUAL_RENEWAL)_SECRET/.test(source),
       `${expected.source} must not introduce a second scheduler secret`,
     );
   }

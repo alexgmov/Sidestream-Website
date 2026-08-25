@@ -38,7 +38,7 @@ function knownBaselineSnapshot(rowSecurityEnabled = false) {
 
 test("migration files are ordered, checksummed, and append-only baseline files are pinned", async () => {
   const migrations = validateMigrationFiles(await loadMigrationFiles());
-  assert.equal(migrations.length, 35);
+  assert.equal(migrations.length, 36);
   assert.deepEqual(
     migrations.map((migration) => migration.filename),
     [...migrations.map((migration) => migration.filename)].sort(),
@@ -72,6 +72,7 @@ test("migration files are ordered, checksummed, and append-only baseline files a
     "20260814120000_add_server_download_credits.sql",
     "20260825120000_add_support_safety_ledger.sql",
     "20260825130000_add_support_reliability_queues.sql",
+    "20260825140000_add_annual_upgrade_pricing_experiment.sql",
   ]) {
     assert.ok(migrations.some((migration) => migration.filename === filename));
   }
@@ -214,6 +215,21 @@ test("Upgrade pricing migration is permanent, complete, private, and append-only
     migration,
     /\b(email|raw_ip|ip_address|cookie|activation_key|device_id|payment_secret|client_secret)\b/i,
   );
+});
+
+test("annual Upgrade pricing migration preserves v1 and adds private reminder delivery truth", async () => {
+  const migration = await readFile(new URL(
+    "../db/migrations/20260825140000_add_annual_upgrade_pricing_experiment.sql",
+    import.meta.url,
+  ), "utf8");
+  assert.match(migration, /assignment_version = 1[\s\S]*experiment_id = 'upgrade-pricing-v1'/);
+  assert.match(migration, /assignment_version = 2[\s\S]*experiment_id = 'upgrade-pricing-v2'/);
+  assert.match(migration, /variant = 'annual_same_price' and billing_model = 'subscription'/);
+  assert.match(migration, /experiment_id = 'upgrade-pricing-v2'[\s\S]*and assignment_id is not null/);
+  assert.match(migration, /create table public\.sidestream_annual_renewal_reminders/);
+  assert.match(migration, /unique \(stripe_subscription_id, renewal_at\)/);
+  assert.match(migration, /alter table public\.sidestream_annual_renewal_reminders enable row level security/);
+  assert.match(migration, /revoke all on table public\.sidestream_annual_renewal_reminders from public/);
 });
 
 test("paid telemetry binding is exact, immutable, private, and replay-safe", async () => {

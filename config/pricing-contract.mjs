@@ -4,12 +4,17 @@ const globalOffer = Object.freeze({
   currency: "usd",
   amountMinor: 1999,
   monthlyAmountMinor: 499,
+  annualAmountMinor: 1999,
   displayLocale: "en-US",
   lookupKey: "sidestream_pro_once_1999",
   priceSource: Object.freeze({ kind: "default" }),
   monthlyPriceSource: Object.freeze({
     kind: "lookup",
     configuredVariable: "SIDESTREAM_PRO_MONTHLY_PRICE_ID",
+  }),
+  annualPriceSource: Object.freeze({
+    kind: "lookup",
+    configuredVariable: "SIDESTREAM_PRO_ANNUAL_PRICE_ID",
   }),
 });
 
@@ -19,6 +24,7 @@ const indiaOffer = Object.freeze({
   currency: "inr",
   amountMinor: 49900,
   monthlyAmountMinor: 29900,
+  annualAmountMinor: null,
   displayLocale: "en-IN",
   lookupKey: null,
   priceSource: Object.freeze({
@@ -29,6 +35,7 @@ const indiaOffer = Object.freeze({
     kind: "environment",
     variable: "SIDESTREAM_PRO_INDIA_MONTHLY_PRICE_ID",
   }),
+  annualPriceSource: null,
 });
 
 const brazilOffer = Object.freeze({
@@ -37,6 +44,7 @@ const brazilOffer = Object.freeze({
   currency: "brl",
   amountMinor: 2500,
   monthlyAmountMinor: 1299,
+  annualAmountMinor: null,
   displayLocale: "pt-BR",
   lookupKey: null,
   priceSource: Object.freeze({
@@ -47,6 +55,7 @@ const brazilOffer = Object.freeze({
     kind: "environment",
     variable: "SIDESTREAM_PRO_BRAZIL_MONTHLY_PRICE_ID",
   }),
+  annualPriceSource: null,
 });
 
 const southKoreaOffer = Object.freeze({
@@ -55,6 +64,7 @@ const southKoreaOffer = Object.freeze({
   currency: "krw",
   amountMinor: 24900,
   monthlyAmountMinor: 12900,
+  annualAmountMinor: null,
   displayLocale: "ko-KR",
   lookupKey: null,
   priceSource: Object.freeze({
@@ -65,6 +75,7 @@ const southKoreaOffer = Object.freeze({
     kind: "environment",
     variable: "SIDESTREAM_PRO_SOUTH_KOREA_MONTHLY_PRICE_ID",
   }),
+  annualPriceSource: null,
 });
 
 export const SIDESTREAM_PRICING_CONTRACT = Object.freeze({

@@ -42,6 +42,7 @@ import {
 } from "./entitlement.js";
 import {
   getTrustedCheckoutCountry,
+  selectAnnualCheckoutPrice,
   selectMonthlyCheckoutPrice,
   SIDESTREAM_CHECKOUT_OFFER_CATALOG,
   SIDESTREAM_GLOBAL_CHECKOUT_OFFER,
@@ -49,7 +50,10 @@ import {
 } from "./checkout-offers.js";
 import {
   decideUpgradePricing,
+  UPGRADE_PRICING_ANNUAL_VARIANT,
   UPGRADE_PRICING_EXPERIMENT_ID,
+  UPGRADE_PRICING_LEGACY_EXPERIMENT_ID,
+  UPGRADE_PRICING_MONTHLY_VARIANT,
   type UpgradePricingBillingModel,
   type UpgradePricingDecision,
   type UpgradePricingDecisionReason,
@@ -160,6 +164,9 @@ const SIDESTREAM_PRO_PRICE = {
 const UPGRADE_PRICING_MONTHLY_INTERVAL = "month";
 const UPGRADE_PRICING_MONTHLY_INTERVAL_COUNT = 1;
 const UPGRADE_PRICING_MONTHLY_USAGE_TYPE = "licensed";
+const UPGRADE_PRICING_ANNUAL_INTERVAL = "year";
+const UPGRADE_PRICING_ANNUAL_INTERVAL_COUNT = 1;
+const UPGRADE_PRICING_ANNUAL_USAGE_TYPE = "licensed";
 const BASIC_SUBSCRIPTION_RESOURCE_KEY_BASE = "basic_subscription";
 const BASIC_SUBSCRIPTION_PRODUCT = {
   name: "Basic subscription",
@@ -1129,8 +1136,8 @@ type CheckoutOfferSnapshot = Readonly<{
 }>;
 
 type UpgradePricingIntentSnapshot = Readonly<{
-  snapshotVersion: 1;
-  experimentId: "upgrade-pricing-v1";
+  snapshotVersion: 1 | 2;
+  experimentId: "upgrade-pricing-v1" | "upgrade-pricing-v2";
   decisionReason: UpgradePricingDecisionReason;
   assignmentId: string | null;
   assignmentBucket: number | null;
@@ -1187,7 +1194,13 @@ function readCheckoutOfferSnapshot(
 function readUpgradePricingIntentSnapshot(
   row: Partial<CheckoutIntentRow>,
 ): UpgradePricingIntentSnapshot | null {
-  if (row.upgrade_pricing_snapshot_version !== 1) return null;
+  const snapshotVersion = Number(row.upgrade_pricing_snapshot_version);
+  const experimentId = cleanString(row.upgrade_pricing_experiment_id, 80);
+  const historicalMonthly =
+    snapshotVersion === 1 && experimentId === UPGRADE_PRICING_LEGACY_EXPERIMENT_ID;
+  const currentAnnual =
+    snapshotVersion === 2 && experimentId === UPGRADE_PRICING_EXPERIMENT_ID;
+  if (!historicalMonthly && !currentAnnual) return null;
   const decisionReason = cleanString(row.upgrade_pricing_decision_reason, 80) as
     UpgradePricingDecisionReason;
   const variant = cleanString(row.upgrade_pricing_variant, 40) as
@@ -1203,12 +1216,15 @@ function readUpgradePricingIntentSnapshot(
   const acquisitionId = cleanString(row.upgrade_pricing_acquisition_id, 80);
   const intentId = cleanString(row.upgrade_pricing_checkout_intent_id, 80);
   if (
-    row.upgrade_pricing_experiment_id !== UPGRADE_PRICING_EXPERIMENT_ID ||
     ![
-      "existing_assignment", "rollout_control", "rollout_monthly", "rollout_zero",
-      "kill_switch", "assignment_unavailable", "unsupported_currency",
+      "existing_assignment", "rollout_control", "rollout_monthly", "rollout_annual",
+      "rollout_zero", "kill_switch", "assignment_unavailable", "unsupported_currency",
     ].includes(decisionReason) ||
-    !["control_one_time", "monthly_half"].includes(variant) ||
+    (
+      historicalMonthly
+        ? !["control_one_time", "monthly_half"].includes(variant)
+        : !["control_one_time", "annual_same_price"].includes(variant)
+    ) ||
     !["one_time", "subscription"].includes(billingModel) ||
     (variant === "control_one_time" ? billingModel !== "one_time" : billingModel !== "subscription") ||
     !/^[A-Z]{2}$/.test(country) ||
@@ -1222,8 +1238,8 @@ function readUpgradePricingIntentSnapshot(
     !intentId
   ) return null;
   return {
-    snapshotVersion: 1,
-    experimentId: UPGRADE_PRICING_EXPERIMENT_ID,
+    snapshotVersion: snapshotVersion as 1 | 2,
+    experimentId: experimentId as "upgrade-pricing-v1" | "upgrade-pricing-v2",
     decisionReason,
     assignmentId: cleanString(row.upgrade_pricing_assignment_id, 80) || null,
     assignmentBucket: row.upgrade_pricing_assignment_bucket === null
@@ -1254,6 +1270,7 @@ async function loadUpgradePricingAssignment(
 ): Promise<UpgradePricingPersistedAssignment | null> {
   const result = await runner.query<{
     id: string;
+    assignment_version: number;
     experiment_id: string;
     account_id: string;
     variant: UpgradePricingVariant;
@@ -1263,19 +1280,28 @@ async function loadUpgradePricingAssignment(
     assigned_at: Date | string;
   }>(
     `
-      select id, experiment_id, account_id, variant, billing_model,
+      select id, assignment_version, experiment_id, account_id, variant, billing_model,
         assignment_bucket, rollout_basis_points, assigned_at
       from public.sidestream_upgrade_pricing_assignments
-      where experiment_id = $1 and account_id = $2
+      where account_id = $1
+        and experiment_id in ($2, $3)
+      order by
+        case when experiment_id = $2 then 0 else 1 end,
+        assigned_at asc
       limit 1
     `,
-    [UPGRADE_PRICING_EXPERIMENT_ID, accountId],
+    [
+      accountId,
+      UPGRADE_PRICING_LEGACY_EXPERIMENT_ID,
+      UPGRADE_PRICING_EXPERIMENT_ID,
+    ],
   );
   const row = result.rows[0];
   return row
     ? {
         assignmentId: row.id,
-        experimentId: "upgrade-pricing-v1",
+        assignmentVersion: Number(row.assignment_version) as 1 | 2,
+        experimentId: row.experiment_id as "upgrade-pricing-v1" | "upgrade-pricing-v2",
         accountId: row.account_id,
         variant: row.variant,
         billingModel: row.billing_model,
@@ -1305,12 +1331,13 @@ async function persistUpgradePricingAssignment(
       insert into public.sidestream_upgrade_pricing_assignments (
         id, assignment_version, experiment_id, account_id, variant,
         billing_model, assignment_bucket, rollout_basis_points, assigned_at
-      ) values ($1, 1, $2, $3, $4, $5, $6, $7, now())
+      ) values ($1, $2, $3, $4, $5, $6, $7, $8, now())
       on conflict (experiment_id, account_id) do nothing
       returning id
     `,
     [
       assignmentId,
+      decision.assignmentVersion,
       decision.experimentId,
       decision.accountId,
       decision.variant,
@@ -1345,13 +1372,48 @@ function fallbackUpgradePricingDecision(
     variant: "control_one_time" as const,
     billingModel: "one_time" as const,
     bucket: null,
-    monthlyAmountMinor: null,
+    recurringAmountMinor: null,
+    recurringInterval: null,
     reason: "assignment_unavailable" as const,
     assignmentId: null,
     assignedAt: null,
     shouldPersistAssignment: false,
-    monthlyCohortEligible: false,
+    recurringCohortEligible: false,
   });
+}
+
+function upgradePricingOfferForAssignment(
+  oneTimeOffer: CheckoutOfferSnapshot,
+  assignment: UpgradePricingPersistedAssignment | null,
+): CheckoutOfferSnapshot {
+  if (
+    !assignment ||
+    assignment.experimentId !== UPGRADE_PRICING_EXPERIMENT_ID ||
+    assignment.variant !== UPGRADE_PRICING_ANNUAL_VARIANT
+  ) {
+    return oneTimeOffer;
+  }
+  return upgradePricingAnnualOfferBasis(oneTimeOffer);
+}
+
+function upgradePricingAnnualOfferBasis(
+  oneTimeOffer: CheckoutOfferSnapshot,
+): CheckoutOfferSnapshot {
+  return {
+    ...oneTimeOffer,
+    offerId: SIDESTREAM_GLOBAL_CHECKOUT_OFFER.offerId,
+    currency: SIDESTREAM_GLOBAL_CHECKOUT_OFFER.currency,
+    amountMinor: SIDESTREAM_GLOBAL_CHECKOUT_OFFER.amountMinor,
+  };
+}
+
+function upgradePricingRecurringOfferBasis(
+  oneTimeOffer: CheckoutOfferSnapshot,
+  decision: UpgradePricingDecision,
+) {
+  return decision.variant === UPGRADE_PRICING_ANNUAL_VARIANT
+    ? upgradePricingAnnualOfferBasis(oneTimeOffer)
+    : oneTimeOffer;
 }
 
 async function resolveUpgradePricingCheckout(options: {
@@ -1364,25 +1426,29 @@ async function resolveUpgradePricingCheckout(options: {
 }): Promise<ResolvedUpgradePricingCheckout> {
   const runner = options.runner || getPool();
   const existingAssignment = await loadUpgradePricingAssignment(options.accountId, runner);
+  const decisionOffer = upgradePricingOfferForAssignment(
+    options.oneTimeOffer,
+    existingAssignment,
+  );
   let decision = decideUpgradePricing({
     accountId: options.accountId,
-    currency: options.oneTimeOffer.currency,
-    oneTimeAmountMinor: options.oneTimeOffer.amountMinor,
+    currency: decisionOffer.currency,
+    oneTimeAmountMinor: decisionOffer.amountMinor,
     existingAssignment,
   });
   let offer = options.oneTimeOffer;
   if (decision.billingModel === "subscription") {
     try {
-      // Prove the immutable provider Price before persisting a new monthly
+      // Prove the immutable provider Price before persisting a new recurring
       // assignment. A provider/config failure must not contaminate assignment
       // balance with an account that could only receive control.
-      offer = await resolveMonthlyCheckoutOfferSnapshot(
-        options.oneTimeOffer,
-        decision.monthlyAmountMinor,
+      offer = await resolveRecurringCheckoutOfferSnapshot(
+        upgradePricingRecurringOfferBasis(options.oneTimeOffer, decision),
+        decision,
       );
     } catch (error) {
-      console.error("[sidestream checkout] monthly Price unavailable", {
-        code: "upgrade_pricing_monthly_price_unavailable",
+      console.error("[sidestream checkout] recurring Price unavailable", {
+        code: "upgrade_pricing_recurring_price_unavailable",
         cause: error instanceof Error ? error.name : "unknown",
       });
       decision = fallbackUpgradePricingDecision(decision);
@@ -1395,8 +1461,14 @@ async function resolveUpgradePricingCheckout(options: {
         ? attachUpgradePricingAssignment(decision, persisted.assignment)
         : decideUpgradePricing({
           accountId: options.accountId,
-          currency: options.oneTimeOffer.currency,
-          oneTimeAmountMinor: options.oneTimeOffer.amountMinor,
+          currency: upgradePricingOfferForAssignment(
+            options.oneTimeOffer,
+            persisted.assignment,
+          ).currency,
+          oneTimeAmountMinor: upgradePricingOfferForAssignment(
+            options.oneTimeOffer,
+            persisted.assignment,
+          ).amountMinor,
           existingAssignment: persisted.assignment,
         })
       : fallbackUpgradePricingDecision(decision);
@@ -1405,13 +1477,13 @@ async function resolveUpgradePricingCheckout(options: {
     offer = options.oneTimeOffer;
   } else if (offer === options.oneTimeOffer) {
     try {
-      offer = await resolveMonthlyCheckoutOfferSnapshot(
-        options.oneTimeOffer,
-        decision.monthlyAmountMinor,
+      offer = await resolveRecurringCheckoutOfferSnapshot(
+        upgradePricingRecurringOfferBasis(options.oneTimeOffer, decision),
+        decision,
       );
     } catch (error) {
-      console.error("[sidestream checkout] monthly Price unavailable", {
-        code: "upgrade_pricing_monthly_price_unavailable",
+      console.error("[sidestream checkout] recurring Price unavailable", {
+        code: "upgrade_pricing_recurring_price_unavailable",
         cause: error instanceof Error ? error.name : "unknown",
       });
       decision = fallbackUpgradePricingDecision(decision);
@@ -1421,8 +1493,8 @@ async function resolveUpgradePricingCheckout(options: {
   return {
     offer,
     snapshot: {
-      snapshotVersion: 1,
-      experimentId: "upgrade-pricing-v1",
+      snapshotVersion: decision.assignmentVersion,
+      experimentId: decision.experimentId,
       decisionReason: decision.reason,
       assignmentId: decision.assignmentId,
       assignmentBucket: decision.bucket,
@@ -1547,7 +1619,7 @@ export async function createCheckoutIntent(options: {
           select $1::uuid, $2::uuid, 'activation', $3, $4::uuid, a.id,
             'pending', 0, $5::timestamptz,
             $8, $9, $10, $11, $12, $13,
-            1, $14, $15, $16::uuid, $17, $18, $19::timestamptz,
+            ${snapshot.snapshotVersion}, $14, $15, $16::uuid, $17, $18, $19::timestamptz,
             $20, $21, $22, $23, $24, $25, $26, $27::uuid,
             $28::uuid, $29::uuid, $30::uuid,
             $6::timestamptz, $6::timestamptz
@@ -1600,7 +1672,7 @@ export async function createCheckoutIntent(options: {
           ) values (
             $1::uuid, $2::uuid, $3, $4, $5::uuid, null, 'pending', 0,
             $6::timestamptz, $8, $9, $10, $11, $12, $13,
-            1, $14, $15, $16::uuid, $17, $18, $19::timestamptz,
+            ${snapshot.snapshotVersion}, $14, $15, $16::uuid, $17, $18, $19::timestamptz,
             $20, $21, $22, $23, $24, $25, $26, $27::uuid,
             $28::uuid, $29::uuid, $30::uuid,
             $7::timestamptz, $7::timestamptz
@@ -1716,6 +1788,7 @@ export async function createCheckoutIntentConfirmation(options: {
 
 export function buildUpgradeCheckoutSessionParameters(options: {
   billingModel: UpgradePricingBillingModel;
+  variant?: UpgradePricingVariant;
   stripeCustomerId: string;
   stripePriceId: string;
   successUrl: string;
@@ -1738,12 +1811,22 @@ export function buildUpgradeCheckoutSessionParameters(options: {
   };
   if (options.billingModel === "subscription") {
     if (!options.stripeCustomerId) {
-      throw new Error("Monthly Checkout requires the authenticated account Customer");
+      throw new Error("Subscription Checkout requires the authenticated account Customer");
     }
     return {
       mode: "subscription",
       ...common,
       allow_promotion_codes: true,
+      ...(options.variant === UPGRADE_PRICING_ANNUAL_VARIANT
+        ? {
+            custom_text: {
+              submit: {
+                message:
+                  "$19.99 per year. Renews automatically each year until canceled. We'll email you 30 days before renewal, before you're billed again. Cancel anytime from your Sidestream account; access continues through your paid year.",
+              },
+            },
+          }
+        : {}),
       subscription_data: { metadata },
     };
   }
@@ -2300,6 +2383,7 @@ export async function createOrReuseCheckoutSession(options: {
       }
       const checkoutParams = buildUpgradeCheckoutSessionParameters({
         billingModel: upgradePricingSnapshot?.billingModel || "one_time",
+        variant: upgradePricingSnapshot?.variant,
         stripeCustomerId,
         stripePriceId,
         successUrl: buildCheckoutCompletionUrl(options.baseUrl, activationKey),
@@ -2511,7 +2595,13 @@ async function recordUpgradePricingExposure(
   input: CheckoutStartedStage,
 ) {
   const snapshot = input.upgradePricing;
-  if (!snapshot) return;
+  if (
+    !snapshot ||
+    (
+      snapshot.experimentId === UPGRADE_PRICING_EXPERIMENT_ID &&
+      !snapshot.assignmentId
+    )
+  ) return;
   await client.query(
     `
       insert into public.sidestream_upgrade_pricing_exposures (
@@ -2685,6 +2775,25 @@ async function resolveCheckoutOfferSnapshot(
   };
 }
 
+async function resolveRecurringCheckoutOfferSnapshot(
+  oneTimeOffer: CheckoutOfferSnapshot,
+  decision: UpgradePricingDecision,
+): Promise<CheckoutOfferSnapshot> {
+  if (decision.variant === UPGRADE_PRICING_MONTHLY_VARIANT) {
+    return resolveMonthlyCheckoutOfferSnapshot(
+      oneTimeOffer,
+      decision.recurringAmountMinor,
+    );
+  }
+  if (decision.variant === UPGRADE_PRICING_ANNUAL_VARIANT) {
+    return resolveAnnualCheckoutOfferSnapshot(
+      oneTimeOffer,
+      decision.recurringAmountMinor,
+    );
+  }
+  throw new Error("Upgrade pricing recurring variant is unavailable");
+}
+
 async function resolveMonthlyCheckoutOfferSnapshot(
   oneTimeOffer: CheckoutOfferSnapshot,
   monthlyAmountMinor: number | null,
@@ -2736,6 +2845,68 @@ async function resolveMonthlyCheckoutOfferSnapshot(
   }
   return {
     offerId: `${oneTimeOffer.offerId}-monthly`,
+    country: oneTimeOffer.country,
+    currency: price.currency,
+    amountMinor: price.unit_amount!,
+    productId,
+    priceId: price.id,
+  };
+}
+
+async function resolveAnnualCheckoutOfferSnapshot(
+  oneTimeOffer: CheckoutOfferSnapshot,
+  annualAmountMinor: number | null,
+): Promise<CheckoutOfferSnapshot> {
+  if (!Number.isSafeInteger(annualAmountMinor) || (annualAmountMinor || 0) <= 0) {
+    throw new Error("Upgrade pricing annual amount is unavailable");
+  }
+  const catalogEntry = SIDESTREAM_CHECKOUT_OFFER_CATALOG.find(
+    (entry) => entry.offerId === oneTimeOffer.offerId,
+  );
+  if (!catalogEntry) throw new Error("Upgrade pricing offer is not in the catalog");
+  const annualSelection = selectAnnualCheckoutPrice(catalogEntry);
+  if (!annualSelection) {
+    throw new Error(`Approved offer ${catalogEntry.offerId} has no annual contract`);
+  }
+  const productId = oneTimeOffer.productId;
+  const lookupKey = upgradePricingAnnualLookupKey(
+    oneTimeOffer.currency,
+    annualAmountMinor!,
+  );
+  const priceId = annualSelection.kind === "lookup"
+    ? await getSidestreamUpgradeAnnualPriceId({
+        productId,
+        currency: oneTimeOffer.currency,
+        amountMinor: annualAmountMinor!,
+        configuredPriceId: annualSelection.configuredPriceId,
+      })
+    : annualSelection.configuredPriceId;
+  if (!priceId) {
+    throw new Error(`Approved annual offer ${catalogEntry.offerId} has no configured Price`);
+  }
+
+  const [price, product] = await Promise.all([
+    getStripe().prices.retrieve(priceId, {}, getStripeRequestOptions()),
+    getStripe().products.retrieve(productId, {}, getStripeRequestOptions()),
+  ]);
+  if (
+    "deleted" in product ||
+    product.id !== productId ||
+    product.active !== true ||
+    product.livemode !== isLiveStripeMode()
+  ) {
+    throw new Error("Annual Checkout Product is not the active Sidestream Unlimited Product");
+  }
+  if (!isUpgradePricingAnnualPriceShape(price, {
+    productId,
+    currency: oneTimeOffer.currency,
+    amountMinor: annualAmountMinor!,
+    lookupKey,
+  })) {
+    throw new Error(`Stripe Price ${priceId} does not match the approved annual offer`);
+  }
+  return {
+    offerId: `${oneTimeOffer.offerId}-annual`,
     country: oneTimeOffer.country,
     currency: price.currency,
     amountMinor: price.unit_amount!,
@@ -2840,12 +3011,116 @@ export async function getSidestreamUpgradeMonthlyPriceId(options: {
   }
 }
 
+export async function getSidestreamUpgradeAnnualPriceId(options: {
+  productId: string;
+  currency: string;
+  amountMinor: number;
+  configuredPriceId?: string;
+}) {
+  const lookupKey = upgradePricingAnnualLookupKey(
+    options.currency,
+    options.amountMinor,
+  );
+  const expected = {
+    productId: options.productId,
+    currency: options.currency,
+    amountMinor: options.amountMinor,
+    lookupKey,
+  };
+  if (options.configuredPriceId) {
+    try {
+      const configured = await getStripe().prices.retrieve(
+        options.configuredPriceId,
+        {},
+        getStripeRequestOptions(),
+      );
+      if (isUpgradePricingAnnualPriceShape(configured, expected)) {
+        return configured.id;
+      }
+    } catch (error) {
+      if (!isStripeResourceMissing(error)) throw error;
+    }
+  }
+
+  const product = await retrieveSidestreamProProduct(options.productId);
+  if (product.livemode !== isLiveStripeMode()) {
+    throw new Error("Sidestream Unlimited Product belongs to the wrong Stripe namespace");
+  }
+  const lookupPrices = await getStripe().prices.list({
+    active: true,
+    lookup_keys: [lookupKey],
+    product: options.productId,
+    limit: 10,
+  }, getStripeRequestOptions());
+  const lookupMatch = lookupPrices.data.find((price) =>
+    price.lookup_key === lookupKey &&
+    isUpgradePricingAnnualPriceShape(price, expected)
+  );
+  if (lookupMatch) return lookupMatch.id;
+  if (lookupPrices.data.length > 0) {
+    throw new Error(`Stripe lookup key ${lookupKey} has conflicting annual terms`);
+  }
+
+  const recurring = {
+    interval: UPGRADE_PRICING_ANNUAL_INTERVAL,
+    interval_count: UPGRADE_PRICING_ANNUAL_INTERVAL_COUNT,
+    usage_type: UPGRADE_PRICING_ANNUAL_USAGE_TYPE,
+  } as const;
+  try {
+    const created = await getStripe().prices.create({
+      product: options.productId,
+      currency: options.currency,
+      unit_amount: options.amountMinor,
+      lookup_key: lookupKey,
+      recurring,
+      metadata: {
+        sidestream_plan: SIDESTREAM_PRO_PLAN_KEY,
+        sidestream_upgrade_experiment_id: UPGRADE_PRICING_EXPERIMENT_ID,
+      },
+    }, {
+      ...getStripeRequestOptions(),
+      idempotencyKey: getStripeRecurringPriceIdempotencyKey({
+        ...expected,
+        interval: UPGRADE_PRICING_ANNUAL_INTERVAL,
+        intervalCount: UPGRADE_PRICING_ANNUAL_INTERVAL_COUNT,
+        usageType: UPGRADE_PRICING_ANNUAL_USAGE_TYPE,
+        livemode: isLiveStripeMode(),
+      }),
+    });
+    if (!isUpgradePricingAnnualPriceShape(created, expected)) {
+      throw new Error("Stripe created an annual Price with unexpected terms");
+    }
+    return created.id;
+  } catch (error) {
+    const converged = await getStripe().prices.list({
+      active: true,
+      lookup_keys: [lookupKey],
+      product: options.productId,
+      limit: 10,
+    }, getStripeRequestOptions());
+    const match = converged.data.find((price) =>
+      price.lookup_key === lookupKey &&
+      isUpgradePricingAnnualPriceShape(price, expected)
+    );
+    if (match) return match.id;
+    throw error;
+  }
+}
+
 export function upgradePricingMonthlyLookupKey(currency: string, amountMinor: number) {
   const normalizedCurrency = cleanString(currency, 3).toLowerCase();
   if (!/^[a-z]{3}$/.test(normalizedCurrency) || !Number.isSafeInteger(amountMinor) || amountMinor <= 0) {
     throw new TypeError("Monthly lookup key requires a currency and positive minor amount");
   }
   return `sidestream_pro_monthly_${normalizedCurrency}_${amountMinor}`;
+}
+
+export function upgradePricingAnnualLookupKey(currency: string, amountMinor: number) {
+  const normalizedCurrency = cleanString(currency, 3).toLowerCase();
+  if (!/^[a-z]{3}$/.test(normalizedCurrency) || !Number.isSafeInteger(amountMinor) || amountMinor <= 0) {
+    throw new TypeError("Annual lookup key requires a currency and positive minor amount");
+  }
+  return `sidestream_pro_annual_${normalizedCurrency}_${amountMinor}`;
 }
 
 function isUpgradePricingMonthlyPriceShape(
@@ -2869,6 +3144,30 @@ function isUpgradePricingMonthlyPriceShape(
     price.recurring?.interval === UPGRADE_PRICING_MONTHLY_INTERVAL &&
     price.recurring?.interval_count === UPGRADE_PRICING_MONTHLY_INTERVAL_COUNT &&
     price.recurring?.usage_type === UPGRADE_PRICING_MONTHLY_USAGE_TYPE,
+  );
+}
+
+function isUpgradePricingAnnualPriceShape(
+  price: Stripe.Price,
+  expected: {
+    productId: string;
+    currency: string;
+    amountMinor: number;
+    lookupKey: string;
+  },
+) {
+  return Boolean(
+    price.id &&
+    price.active === true &&
+    price.livemode === isLiveStripeMode() &&
+    price.lookup_key === expected.lookupKey &&
+    normalizeStripeId(price.product) === expected.productId &&
+    price.currency === expected.currency &&
+    price.unit_amount === expected.amountMinor &&
+    price.type === "recurring" &&
+    price.recurring?.interval === UPGRADE_PRICING_ANNUAL_INTERVAL &&
+    price.recurring?.interval_count === UPGRADE_PRICING_ANNUAL_INTERVAL_COUNT &&
+    price.recurring?.usage_type === UPGRADE_PRICING_ANNUAL_USAGE_TYPE,
   );
 }
 
@@ -4697,7 +4996,8 @@ export async function reconcileUpgradePricingSubscription(
   if (
     !row ||
     !snapshot ||
-    snapshot.variant !== "monthly_half" ||
+    ![UPGRADE_PRICING_MONTHLY_VARIANT, UPGRADE_PRICING_ANNUAL_VARIANT]
+      .includes(snapshot.variant) ||
     snapshot.billingModel !== "subscription"
   ) {
     return { fulfilled: false as const, reason: "not_upgrade_pricing_subscription" };
@@ -4721,7 +5021,7 @@ export async function reconcileUpgradePricingSubscription(
   }
   if (
     !snapshot.assignmentId ||
-    row.assignment_version !== 1 ||
+    row.assignment_version !== snapshot.snapshotVersion ||
     row.assignment_experiment_id !== snapshot.experimentId ||
     row.assignment_account_id !== snapshot.accountId ||
     row.assignment_variant !== snapshot.variant ||
@@ -4836,6 +5136,9 @@ export async function reconcileUpgradePricingSubscription(
       productId: snapshot.productId,
       currency: snapshot.currency,
       amountMinor: snapshot.amountMinor,
+      interval: snapshot.variant === UPGRADE_PRICING_ANNUAL_VARIANT
+        ? UPGRADE_PRICING_ANNUAL_INTERVAL
+        : UPGRADE_PRICING_MONTHLY_INTERVAL,
       livemode: isLiveStripeMode(),
       clientReferenceId: activationKey || snapshot.accountId,
       metadata,
@@ -4952,7 +5255,12 @@ export async function reconcileUpgradePricingSubscription(
       const features = JSON.stringify({
         unlimited_downloads: transition.entitlementStatus === "active",
         customer_portal: true,
-        upgrade_pricing_v1: true,
+        upgrade_pricing_v1:
+          snapshot.experimentId === UPGRADE_PRICING_LEGACY_EXPERIMENT_ID,
+        upgrade_pricing_v2:
+          snapshot.experimentId === UPGRADE_PRICING_EXPERIMENT_ID,
+        upgrade_pricing_experiment_id: snapshot.experimentId,
+        upgrade_pricing_variant: snapshot.variant,
         subscription: true,
       });
       let licenseId = existing?.id || "";
@@ -5153,7 +5461,7 @@ function upgradePricingSubscriptionMetadata(
     sidestream_offer_amount_minor: String(offer.amountMinor),
     sidestream_account_id: snapshot.accountId,
     sidestream_activation_key: activationKey || null,
-    sidestream_upgrade_snapshot_version: "1",
+    sidestream_upgrade_snapshot_version: String(snapshot.snapshotVersion),
     sidestream_upgrade_experiment_id: snapshot.experimentId,
     sidestream_upgrade_decision_reason: snapshot.decisionReason,
     sidestream_upgrade_assignment_id: snapshot.assignmentId,
@@ -5248,8 +5556,10 @@ export async function fulfillCheckoutSession(
   const subscriptionId = normalizeStripeId(checkoutSession.subscription);
   if (subscriptionId) {
     if (
-      checkoutIntent?.upgrade_pricing_snapshot_version === 1 &&
-      checkoutIntent.upgrade_pricing_variant === "monthly_half" &&
+      checkoutIntent &&
+      [1, 2].includes(checkoutIntent.upgrade_pricing_snapshot_version || 0) &&
+      [UPGRADE_PRICING_MONTHLY_VARIANT, UPGRADE_PRICING_ANNUAL_VARIANT]
+        .includes(checkoutIntent.upgrade_pricing_variant as UpgradePricingVariant) &&
       checkoutIntent.upgrade_pricing_billing_model === "subscription"
     ) {
       const created = Number(checkoutSession.created);

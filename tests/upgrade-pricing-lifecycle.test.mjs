@@ -180,6 +180,7 @@ function subscriptionTruth(overrides = {}) {
     productId: "prod_sidestream",
     currency: "usd",
     amountMinor,
+    interval: "month",
     livemode: false,
     clientReferenceId: "activation-key",
     metadata,
@@ -242,6 +243,18 @@ test("completed monthly Checkout requires exact provider and immutable snapshot 
       name,
     );
   }
+});
+
+test("annual Checkout accepts only an exact yearly recurring Price", () => {
+  const annual = subscriptionTruth();
+  annual.expected.interval = "year";
+  annual.price.recurring.interval = "year";
+  assert.equal(verifyUpgradePricingSubscriptionTruth(annual).ok, true);
+  annual.price.recurring.interval = "month";
+  assert.deepEqual(verifyUpgradePricingSubscriptionTruth(annual), {
+    ok: false,
+    reason: "subscription_price_mismatch",
+  });
 });
 
 test("first and renewal invoices are exact and failed settlement cannot look paid", () => {
@@ -421,7 +434,7 @@ test("runtime keeps experiment subscriptions separate and preserves activation b
   assert.doesNotMatch(accountSource, /upgrade_subscription_fulfillment_pending/);
   assert.match(
     accountSource,
-    /snapshot\.variant !== "monthly_half"[\s\S]*snapshot\.billingModel !== "subscription"/,
+    /UPGRADE_PRICING_MONTHLY_VARIANT[\s\S]*UPGRADE_PRICING_ANNUAL_VARIANT[\s\S]*snapshot\.billingModel !== "subscription"/,
   );
   assert.match(accountSource, /legacy_subscription_eligible, legacy_subscription_audited_at/);
   assert.match(accountSource, /legacy_subscription_eligible[\s\S]*false, null, null/);

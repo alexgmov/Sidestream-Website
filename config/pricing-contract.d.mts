@@ -4,6 +4,7 @@ export type PricingOffer = Readonly<{
   currency: string;
   amountMinor: number;
   monthlyAmountMinor: number;
+  annualAmountMinor: number | null;
   displayLocale: string;
   lookupKey: string | null;
   priceSource:
@@ -12,6 +13,10 @@ export type PricingOffer = Readonly<{
   monthlyPriceSource:
     | Readonly<{ kind: "lookup"; configuredVariable: string }>
     | Readonly<{ kind: "environment"; variable: string }>;
+  annualPriceSource:
+    | Readonly<{ kind: "lookup"; configuredVariable: string }>
+    | Readonly<{ kind: "environment"; variable: string }>
+    | null;
 }>;
 
 export const SIDESTREAM_PRICING_CONTRACT: Readonly<{

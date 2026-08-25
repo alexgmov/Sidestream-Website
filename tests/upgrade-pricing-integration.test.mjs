@@ -27,12 +27,12 @@ const reportModule = await loadInjectedModule(
 test("the deterministic fixture is exactly balanced and account assignments stay sticky", () => {
   const fixture = [];
   const wantedPerVariant = 64;
-  const counts = { control_one_time: 0, monthly_half: 0 };
+  const counts = { control_one_time: 0, annual_same_price: 0 };
   for (let index = 0; counts.control_one_time < wantedPerVariant ||
-    counts.monthly_half < wantedPerVariant; index += 1) {
+    counts.annual_same_price < wantedPerVariant; index += 1) {
     const accountId = fixtureAccountId(index);
     const expectedVariant = upgradePricingBucket({ accountId, secret: SECRET }) < 5_000
-      ? "monthly_half"
+      ? "annual_same_price"
       : "control_one_time";
     if (counts[expectedVariant] >= wantedPerVariant) continue;
     fixture.push({ accountId, expectedVariant });
@@ -54,34 +54,35 @@ test("the deterministic fixture is exactly balanced and account assignments stay
   assert.deepEqual(countVariants(decisions), counts);
   assert.equal(fixture.length, 128);
 
-  const monthly = decisions.find((decision) => decision.variant === "monthly_half");
+  const annual = decisions.find((decision) => decision.variant === "annual_same_price");
   const persisted = {
     assignmentId: "20000000-0000-4000-8000-000000000001",
-    experimentId: "upgrade-pricing-v1",
-    accountId: monthly.accountId,
-    variant: monthly.variant,
-    billingModel: monthly.billingModel,
-    bucket: monthly.bucket,
-    rolloutBasisPoints: monthly.rolloutBasisPoints,
-    assignedAt: "2026-08-12T00:00:00.000Z",
+    assignmentVersion: 2,
+    experimentId: "upgrade-pricing-v2",
+    accountId: annual.accountId,
+    variant: annual.variant,
+    billingModel: annual.billingModel,
+    bucket: annual.bucket,
+    rolloutBasisPoints: annual.rolloutBasisPoints,
+    assignedAt: "2026-08-22T00:00:00.000Z",
   };
   const retry = decideUpgradePricing({
-    accountId: monthly.accountId,
-    currency: "inr",
-    oneTimeAmountMinor: 49900,
+    accountId: annual.accountId,
+    currency: "usd",
+    oneTimeAmountMinor: 1999,
     enabled: false,
     rolloutBasisPoints: 0,
     secret: SECRET,
     existingAssignment: persisted,
   });
-  assert.equal(retry.variant, "monthly_half");
+  assert.equal(retry.variant, "annual_same_price");
   assert.equal(retry.assignmentId, persisted.assignmentId);
-  assert.equal(retry.monthlyAmountMinor, 29900);
+  assert.equal(retry.recurringAmountMinor, 1999);
   assert.equal(retry.usedExistingAssignment, true);
   assert.equal(retry.shouldPersistAssignment, false);
 });
 
-test("control fallback is observable but isolated from eligible monthly assignment", () => {
+test("control fallback is observable but isolated from eligible annual assignment", () => {
   const accountId = fixtureAccountId(9_999);
   for (const [overrides, reason] of [
     [{ enabled: false, rolloutBasisPoints: 10_000, secret: SECRET }, "kill_switch"],
@@ -98,13 +99,13 @@ test("control fallback is observable but isolated from eligible monthly assignme
       variant: decision.variant,
       billingModel: decision.billingModel,
       assignedVariant: decision.assignedVariant,
-      monthlyCohortEligible: decision.monthlyCohortEligible,
+      recurringCohortEligible: decision.recurringCohortEligible,
       reason: decision.reason,
     }, {
       variant: "control_one_time",
       billingModel: "one_time",
       assignedVariant: null,
-      monthlyCohortEligible: false,
+      recurringCohortEligible: false,
       reason,
     });
   }
@@ -226,21 +227,21 @@ test("report metrics retain exact windows, denominators, currency, version, and 
       activationCompletedAt: "2026-08-01T01:00:00Z",
       activationClientVersion: "1.0.11",
     }),
-    reportRow("monthly-paid", "account-monthly", "monthly_half", "usd", {
+    reportRow("annual-paid", "account-annual", "annual_same_price", "usd", {
       subscriptionStatus: "active",
       subscriptionEntitlementStatus: "active",
       entitlementActivated: true,
     }),
-    reportRow("monthly-pending", "account-pending", "monthly_half", "inr", {
+    reportRow("annual-pending", "account-pending", "annual_same_price", "inr", {
       amountMinor: 25000,
       exposedAt: "2026-08-10T00:00:00Z",
       intentCreatedAt: "2026-08-10T00:00:00Z",
     }),
   ];
   const events = [
-    invoiceEvent("evt-two", "monthly-paid", "invoice-two", "2026-07-01T00:00:00Z", "2026-08-01T00:00:00Z"),
-    invoiceEvent("evt-one", "monthly-paid", "invoice-one", "2026-06-01T00:00:00Z", "2026-07-01T00:00:00Z"),
-    invoiceEvent("evt-one", "monthly-paid", "invoice-one", "2026-06-01T00:00:00Z", "2026-07-01T00:00:00Z"),
+    invoiceEvent("evt-two", "annual-paid", "invoice-two", "2026-07-01T00:00:00Z", "2026-08-01T00:00:00Z"),
+    invoiceEvent("evt-one", "annual-paid", "invoice-one", "2026-06-01T00:00:00Z", "2026-07-01T00:00:00Z"),
+    invoiceEvent("evt-one", "annual-paid", "invoice-one", "2026-06-01T00:00:00Z", "2026-07-01T00:00:00Z"),
   ];
   const report = reportModule.buildUpgradePricingReport(cohort, events, {
     namespace: "production",
@@ -251,20 +252,20 @@ test("report metrics retain exact windows, denominators, currency, version, and 
     cursor: null,
     modeledLtv: null,
   }, REPORT_SECRET);
-  const monthlyUsd = report.segments.find((row) =>
-    row.variant === "monthly_half" && row.currency === "usd");
-  const monthlyInr = report.segments.find((row) => row.currency === "inr");
-  assert.deepEqual(monthlyUsd.retention.paymentTwo, { numerator: 1, denominator: 1, rate: 1 });
-  assert.equal(monthlyUsd.realizedMoney.grossMinor, "1998");
-  assert.equal(monthlyInr.counts.mature24HourNonConverters, 1);
-  assert.equal(monthlyInr.counts.mature7DayNonConverters, 0);
+  const annualUsd = report.segments.find((row) =>
+    row.variant === "annual_same_price" && row.currency === "usd");
+  const annualInr = report.segments.find((row) => row.currency === "inr");
+  assert.deepEqual(annualUsd.retention.paymentTwo, { numerator: 1, denominator: 1, rate: 1 });
+  assert.equal(annualUsd.realizedMoney.grossMinor, "1998");
+  assert.equal(annualInr.counts.mature24HourNonConverters, 1);
+  assert.equal(annualInr.counts.mature7DayNonConverters, 0);
   assert.equal(report.currencyTotals.some((row) => row.currency === "all"), false);
   assert.deepEqual(report.clientVersionSegments, [{
     variant: "control_one_time",
     clientVersion: "1.0.11",
     exactLineageActivations: 1,
   }]);
-  assert.doesNotMatch(JSON.stringify(report), /account-control|monthly-paid|evt-one|invoice-one/i);
+  assert.doesNotMatch(JSON.stringify(report), /account-control|annual-paid|evt-one|invoice-one/i);
 });
 
 function fixtureAccountId(index) {
@@ -275,7 +276,7 @@ function countVariants(decisions) {
   return decisions.reduce((counts, decision) => {
     counts[decision.variant] += 1;
     return counts;
-  }, { control_one_time: 0, monthly_half: 0 });
+  }, { control_one_time: 0, annual_same_price: 0 });
 }
 
 async function readSources(paths) {
@@ -286,17 +287,17 @@ async function readSources(paths) {
 }
 
 function reportRow(intentId, accountId, variant, currency, overrides = {}) {
-  const monthly = variant === "monthly_half";
+  const annual = variant === "annual_same_price";
   return {
     intentId,
     assignmentId: `assignment-${accountId}`,
     accountId,
     acquisitionId: `acquisition-${accountId}`,
     variant,
-    billingModel: monthly ? "subscription" : "one_time",
+    billingModel: annual ? "subscription" : "one_time",
     country: currency === "inr" ? "IN" : "US",
     currency,
-    amountMinor: monthly ? 999 : 1999,
+    amountMinor: annual ? 999 : 1999,
     assignedAt: "2026-06-01T00:00:00Z",
     intentCreatedAt: "2026-06-01T00:00:00Z",
     exposedAt: "2026-06-01T00:00:00Z",
