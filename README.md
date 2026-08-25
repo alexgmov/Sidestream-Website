@@ -704,6 +704,16 @@ hostname. Preserve `X-Real-IP`, `X-Forwarded-For`, `X-Forwarded-Host`, and
 requests fail closed with `503 license_environment_unavailable` even while the
 Node service and database remain healthy.
 
+The origin currently adds `Referrer-Policy: no-referrer` to API responses. A
+browser form POST from an authenticated activation confirmation can therefore
+arrive with the literal `Origin: null`. Restore and transfer accept that shape
+only when the browser-controlled Fetch Metadata headers are exactly
+`Sec-Fetch-Site: same-origin`, `Sec-Fetch-Mode: navigate`, and
+`Sec-Fetch-Dest: document`, and the existing account/activation-bound expiring
+HMAC still validates. Missing metadata, cross-site requests, other destinations,
+wrong content types, and invalid tokens continue to fail closed with
+`csrf_rejected`.
+
 Exact defaults, bounds, required Stripe events, pool budget, and Production blockers live in `docs/api-hardening-runbook.md`.
 
 ### Two-device entitlement contract
@@ -1315,6 +1325,7 @@ Use the narrowest relevant check after edits:
 
 ## Recent Change Log
 
+- 2026-08-25: Restored authenticated Unlimited device reconnects behind the Hetzner origin's global `Referrer-Policy: no-referrer`. The claim POST still requires the form content type and its account/activation-bound expiring HMAC; an `Origin: null` request is accepted only for browser-controlled same-origin document navigation metadata, while missing, cross-site, CORS, and non-document variants remain rejected.
 - 2026-08-25: Locked the optional credit top-up to exactly 1,000 credits for one-time USD $4.99, added the price label to the privacy-safe client pack, rejected mismatched Stripe currency/amount, and routed successful/cancelled top-up Checkout returns to a minimal noindex page instead of the Google-authenticated account page. The feature and pack remain environment-gated; no Production setting, Stripe Price, payment, deployment, or public offer was activated.
 - 2026-08-25: Added the support reliability layer without activating intake: every persisted ticket now commits one unique triage job before webhook acknowledgment; expiring lease tokens, bounded exponential retry, and visible dead letters recover interrupted work. Gate flags/errors now commit a unique notification-outbox row in the same transaction, with privacy-minimal Resend delivery, append-only attempts, exact dead-letter recovery, and a protected bounded processor that always reports `executed:false`. No customer reply, generic shell/SQL, merge, deploy, core-table operation, or public support-link change was added.
 - 2026-08-25: Added an inert-by-default support-email safety foundation for a future dedicated mailbox. Signed Resend intake persists AES-256-GCM-encrypted content before tool-free strict-schema triage; deterministic prompt-injection, HTML/attachment, and systematic-incident signals stop at Gate 1 and send a privacy-minimal exception alert. A separately bearer-protected Gate 2 accepts only bounded PR metadata or registered support-table operations, rejects raw SQL/dependencies/core scope, independently audits product impact, and always reports `executed:false`. Five private ledger tables preserve append-only evidence. No mailbox, DNS, provider setting, migration, public support-link cutover, customer reply, PR, database operation, deployment action, or autonomous executor was activated.

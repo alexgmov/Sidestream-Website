@@ -268,6 +268,35 @@ test("activation, claim, Checkout, and credential invariants execute against Pos
         account_id: owner.accountId,
         status: "restored",
       });
+
+      const noReferrerActivation = await seedActivation(databasePool, {
+        label: "claim-no-referrer",
+        deviceId: "claim-no-referrer-device",
+      });
+      const noReferrerToken = createClaimCsrfToken({
+        activationKey: noReferrerActivation.activationKey,
+        accountId: owner.accountId,
+        expiresAtSeconds: Math.floor(Date.now() / 1000) + 60,
+        secret: TEST_SECRET,
+      });
+      const noReferrerAccepted = await invokeHandler(claimHandler, {
+        method: "POST",
+        url: "/api/activation/claim",
+        headers: requestHeaders({
+          cookie: sessionCookie(owner),
+          origin: "null",
+          contentType: "application/x-www-form-urlencoded",
+          fetchSite: "same-origin",
+          fetchMode: "navigate",
+          fetchDest: "document",
+        }),
+        body: claimForm(noReferrerActivation.activationKey, noReferrerToken),
+      });
+      assert.equal(noReferrerAccepted.statusCode, 303);
+      assert.deepEqual(
+        await activationState(databasePool, noReferrerActivation.activationKey),
+        { account_id: owner.accountId, status: "restored" },
+      );
     });
 
     await t.test("concurrent cross-account claims elect one winner and never overwrite it", async () => {
@@ -1247,6 +1276,9 @@ function requestHeaders(options = {}) {
     ...(options.cookie ? { cookie: options.cookie } : {}),
     ...(options.origin ? { origin: options.origin } : {}),
     ...(options.contentType ? { "content-type": options.contentType } : {}),
+    ...(options.fetchSite ? { "sec-fetch-site": options.fetchSite } : {}),
+    ...(options.fetchMode ? { "sec-fetch-mode": options.fetchMode } : {}),
+    ...(options.fetchDest ? { "sec-fetch-dest": options.fetchDest } : {}),
   };
 }
 

@@ -229,6 +229,28 @@ test("same-origin and CSRF checks bind the one-time POST to activation and accou
     }),
     false,
   );
+  assert.equal(
+    validateActivationClaimPost({
+      requestOrigin: "null",
+      expectedOrigin: "https://sidestream.tv",
+      contentType: "application/x-www-form-urlencoded",
+      fetchSite: "same-origin",
+      fetchMode: "navigate",
+      fetchDest: "document",
+    }),
+    true,
+  );
+  assert.equal(
+    validateActivationClaimPost({
+      requestOrigin: "null",
+      expectedOrigin: "https://sidestream.tv",
+      contentType: "application/x-www-form-urlencoded",
+      fetchSite: "cross-site",
+      fetchMode: "navigate",
+      fetchDest: "document",
+    }),
+    false,
+  );
 
   const nowSeconds = 1_785_139_200;
   const token = createClaimCsrfToken({

@@ -355,6 +355,27 @@ test("restore confirmation has one account-bound HMAC check after origin and for
     expectedOrigin: "https://sidestream.tv",
     contentType: "application/x-www-form-urlencoded; charset=UTF-8",
   }), true);
+  assert.equal(validateActivationClaimPost({
+    requestOrigin: "null",
+    expectedOrigin: "https://sidestream.tv",
+    contentType: "application/x-www-form-urlencoded",
+    fetchSite: "same-origin",
+    fetchMode: "navigate",
+    fetchDest: "document",
+  }), true);
+  for (const headers of [
+    { fetchSite: "cross-site", fetchMode: "navigate", fetchDest: "document" },
+    { fetchSite: "same-origin", fetchMode: "cors", fetchDest: "document" },
+    { fetchSite: "same-origin", fetchMode: "navigate", fetchDest: "empty" },
+    {},
+  ]) {
+    assert.equal(validateActivationClaimPost({
+      requestOrigin: "null",
+      expectedOrigin: "https://sidestream.tv",
+      contentType: "application/x-www-form-urlencoded",
+      ...headers,
+    }), false);
+  }
 });
 
 test("OAuth next paths allow account, Checkout, and activation claim routes", () => {

@@ -3632,6 +3632,9 @@ export function validateActivationClaimRequest(
     requestOrigin: firstHeaderValue(request.headers.origin),
     expectedOrigin: getBaseUrl(request),
     contentType: firstHeaderValue(request.headers["content-type"]),
+    fetchSite: firstHeaderValue(request.headers["sec-fetch-site"]),
+    fetchMode: firstHeaderValue(request.headers["sec-fetch-mode"]),
+    fetchDest: firstHeaderValue(request.headers["sec-fetch-dest"]),
   }) && validateClaimCsrfToken({
     token: options.csrfToken,
     activationKey: options.activationKey,

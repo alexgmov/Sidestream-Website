@@ -1040,19 +1040,30 @@ export function validateActivationClaimPost(options: {
   requestOrigin: string;
   expectedOrigin: string;
   contentType: string;
+  fetchSite?: string;
+  fetchMode?: string;
+  fetchDest?: string;
 }) {
-  let requestOrigin = "";
   let expectedOrigin = "";
   try {
-    requestOrigin = new URL(options.requestOrigin).origin;
     expectedOrigin = new URL(options.expectedOrigin).origin;
   } catch {
     return false;
   }
 
   const mediaType = options.contentType.split(";", 1)[0].trim().toLowerCase();
-  return requestOrigin === expectedOrigin &&
-    mediaType === "application/x-www-form-urlencoded";
+  if (mediaType !== "application/x-www-form-urlencoded") return false;
+
+  try {
+    if (new URL(options.requestOrigin).origin === expectedOrigin) return true;
+  } catch {
+    // A no-referrer document form submits with the literal Origin value "null".
+  }
+
+  return options.requestOrigin.trim().toLowerCase() === "null" &&
+    options.fetchSite?.trim().toLowerCase() === "same-origin" &&
+    options.fetchMode?.trim().toLowerCase() === "navigate" &&
+    options.fetchDest?.trim().toLowerCase() === "document";
 }
 
 export function createClaimCsrfToken(options: {
