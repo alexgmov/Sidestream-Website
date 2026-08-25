@@ -1,9 +1,17 @@
 export const DOWNLOAD_CREDIT_PACK_KEY = "standard";
+export const DOWNLOAD_CREDIT_PACK_CREDITS = 1_000;
+export const DOWNLOAD_CREDIT_PACK_LABEL = "1,000 more credits";
+export const DOWNLOAD_CREDIT_PACK_CURRENCY = "usd";
+export const DOWNLOAD_CREDIT_PACK_UNIT_AMOUNT_MINOR = 499;
+export const DOWNLOAD_CREDIT_PACK_PRICE_LABEL = "$4.99 one-time";
 
 export type DownloadCreditPack = Readonly<{
   key: typeof DOWNLOAD_CREDIT_PACK_KEY;
-  credits: number;
-  label: string;
+  credits: typeof DOWNLOAD_CREDIT_PACK_CREDITS;
+  label: typeof DOWNLOAD_CREDIT_PACK_LABEL;
+  currency: typeof DOWNLOAD_CREDIT_PACK_CURRENCY;
+  unitAmountMinor: typeof DOWNLOAD_CREDIT_PACK_UNIT_AMOUNT_MINOR;
+  priceLabel: typeof DOWNLOAD_CREDIT_PACK_PRICE_LABEL;
   priceId: string;
 }>;
 
@@ -20,21 +28,26 @@ export function getConfiguredDownloadCreditPack(
     ? environment.SIDESTREAM_CREDIT_PACK_PRICE_ID.trim()
     : "";
   const credits = Number(environment.SIDESTREAM_CREDIT_PACK_CREDITS);
-  const configuredLabel = typeof environment.SIDESTREAM_CREDIT_PACK_LABEL === "string"
-    ? environment.SIDESTREAM_CREDIT_PACK_LABEL.trim().slice(0, 80)
-    : "";
   if (!/^price_[A-Za-z0-9]{8,200}$/.test(priceId)) return null;
-  if (!Number.isSafeInteger(credits) || credits < 100 || credits > 1_000_000) return null;
+  if (credits !== DOWNLOAD_CREDIT_PACK_CREDITS) return null;
   return Object.freeze({
     key: DOWNLOAD_CREDIT_PACK_KEY,
-    credits,
-    label: configuredLabel || `${credits.toLocaleString("en-US")} credits`,
+    credits: DOWNLOAD_CREDIT_PACK_CREDITS,
+    label: DOWNLOAD_CREDIT_PACK_LABEL,
+    currency: DOWNLOAD_CREDIT_PACK_CURRENCY,
+    unitAmountMinor: DOWNLOAD_CREDIT_PACK_UNIT_AMOUNT_MINOR,
+    priceLabel: DOWNLOAD_CREDIT_PACK_PRICE_LABEL,
     priceId,
   });
 }
 
 export function serializeDownloadCreditPack(pack: DownloadCreditPack | null) {
   return pack
-    ? { key: pack.key, credits: pack.credits, label: pack.label }
+    ? {
+        key: pack.key,
+        credits: pack.credits,
+        label: pack.label,
+        priceLabel: pack.priceLabel,
+      }
     : null;
 }

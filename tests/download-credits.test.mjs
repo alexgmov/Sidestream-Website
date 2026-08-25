@@ -9,6 +9,7 @@ import {
 
 const files = {
   helper: new URL("../api/_lib/download-credits.ts", import.meta.url),
+  completion: new URL("../credit-complete.html", import.meta.url),
   response: new URL("../api/_lib/download-credit-response.ts", import.meta.url),
   sync: new URL("../api/credits/sync.ts", import.meta.url),
   reserve: new URL("../api/credits/reserve.ts", import.meta.url),
@@ -63,16 +64,26 @@ test("credit pack configuration is explicit and omits Stripe identity from clien
     SIDESTREAM_CREDIT_PACK_CREDITS: "1500",
     SIDESTREAM_CREDIT_PACK_LABEL: "1,500 more credits",
   });
-  assert.deepEqual(pack, {
+  assert.equal(pack, null);
+  const approvedPack = getConfiguredDownloadCreditPack({
+    SIDESTREAM_CREDIT_PACK_PRICE_ID: "price_1234567890",
+    SIDESTREAM_CREDIT_PACK_CREDITS: "1000",
+    SIDESTREAM_CREDIT_PACK_LABEL: "ignored browser-facing override",
+  });
+  assert.deepEqual(approvedPack, {
     key: "standard",
-    credits: 1500,
-    label: "1,500 more credits",
+    credits: 1000,
+    label: "1,000 more credits",
+    currency: "usd",
+    unitAmountMinor: 499,
+    priceLabel: "$4.99 one-time",
     priceId: "price_1234567890",
   });
-  assert.deepEqual(serializeDownloadCreditPack(pack), {
+  assert.deepEqual(serializeDownloadCreditPack(approvedPack), {
     key: "standard",
-    credits: 1500,
-    label: "1,500 more credits",
+    credits: 1000,
+    label: "1,000 more credits",
+    priceLabel: "$4.99 one-time",
   });
 });
 
@@ -115,16 +126,25 @@ test("credit responses expose balances and reservation state without wallet iden
   assert.doesNotMatch(source, /wallet(Id|_id)|account(Id|_id)|device(Id|_id|Hash)/i);
 });
 
-test("credit Checkout is server-configured, rate-limited, and fulfilled only by signed Stripe events", async () => {
-  const [purchase, stripeEvents] = await Promise.all([
+test("credit Checkout is exact-priced, rate-limited, and fulfilled only by signed Stripe events", async () => {
+  const [helper, purchase, stripeEvents, completion] = await Promise.all([
+    readFile(files.helper, "utf8"),
     readFile(files.purchase, "utf8"),
     readFile(files.stripeEvents, "utf8"),
+    readFile(files.completion, "utf8"),
   ]);
+  assert.match(helper, /price\.currency !== pack\.currency/);
+  assert.match(helper, /price\.unit_amount !== pack\.unitAmountMinor/);
   assert.match(purchase, /getConfiguredDownloadCreditPack\(\)/);
   assert.match(purchase, /createDownloadCreditPackCheckout/);
   assert.match(purchase, /scope: "credits:purchase"/);
   assert.match(purchase, /credit_purchases_unavailable/);
+  assert.match(purchase, /credit-complete\.html\?status=success/);
+  assert.match(purchase, /credit-complete\.html\?status=cancelled/);
   assert.doesNotMatch(purchase, /price(Id|_id)\s*:\s*payload/i);
   assert.match(stripeEvents, /fulfillDownloadCreditPackCheckout\(event\.data\.object, environment\)/);
   assert.match(stripeEvents, /credit_pack_purchase_granted/);
+  assert.match(completion, /Credits added/);
+  assert.match(completion, /Purchase cancelled/);
+  assert.match(completion, /return to Sidestream/i);
 });

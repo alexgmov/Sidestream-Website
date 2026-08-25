@@ -82,9 +82,9 @@ test("the checkout contract rejects browser UI and unexpected deployable root pa
       "session.payment_intent",
     ].join("\n"),
     readme: [
-      "1. The user clicks Upgrade.",
+      "1. The user clicks Upgrade and chooses Unlimited.",
       "2. Google authentication establishes the Sidestream account session.",
-      "3. The browser opens Stripe Checkout for payment.",
+      "3. The browser opens Stripe Checkout for the $19.99 one-time Unlimited purchase.",
     ].join("\n"),
     unexpectedRootPages: [],
   };

@@ -23,6 +23,7 @@ export default defineConfig({
           "generated/mobile-paid-prototype.html",
         ),
         account: path.resolve(__dirname, "account.html"),
+        creditComplete: path.resolve(__dirname, "credit-complete.html"),
         paidThankYou: path.resolve(__dirname, "paid-thank-you.html"),
         thankYou: path.resolve(__dirname, "thank-you.html"),
         sidestream: path.resolve(

@@ -71,8 +71,8 @@ export default async function handler(request: AccountRequest, response: ServerR
       environment,
       packKey,
       purchaseRequestKey,
-      successUrl: new URL("/account.html?credits=success", baseUrl).toString(),
-      cancelUrl: new URL("/account.html?credits=cancelled", baseUrl).toString(),
+      successUrl: new URL("/credit-complete.html?status=success", baseUrl).toString(),
+      cancelUrl: new URL("/credit-complete.html?status=cancelled", baseUrl).toString(),
     });
     return sendJson(response, 200, checkout);
   } catch (error) {

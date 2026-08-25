@@ -38,13 +38,20 @@ instead of switching branches or recovering code from another checkout.
 
 ## Checkout contract
 
-The paid Sidestream sequence is exactly:
+The Free-plan Upgrade chooser has two explicit branches:
 
 1. Upgrade
+2. More Credits or Unlimited
+
+More Credits is the installation-wallet path: the panel posts the exact
+server-advertised pack to `/api/credits/purchase`, then opens one-time Stripe
+Checkout. Unlimited preserves the account-owned sequence:
+
+1. Unlimited
 2. Google authentication
 3. Stripe Checkout
 
-`GET /api/checkout/start` owns the sequence. A signed-out request redirects to
+`GET /api/checkout/start` owns the Unlimited sequence. A signed-out request redirects to
 Google authentication. A signed-in Free account creates or reuses the locked
 Checkout intent and redirects to Stripe. Keep every step server-owned by that
 route.

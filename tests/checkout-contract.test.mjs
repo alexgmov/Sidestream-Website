@@ -13,11 +13,11 @@ import {
 } from "../api/_lib/device-policy.ts";
 import { verifyCheckoutContract } from "../scripts/verify-production-source.mjs";
 
-test("ordinary Upgrade remains Google authentication followed by shared Stripe Checkout", async () => {
+test("Unlimited Upgrade remains Google authentication followed by shared Stripe Checkout", async () => {
   assert.deepEqual(await verifyCheckoutContract(), {
     checkoutRoute: "direct",
     zeroTotalStatuses: 2,
-    rootHtmlPages: 4,
+    rootHtmlPages: 5,
   });
 
   const checkoutStart = await source("api/checkout/start.ts");

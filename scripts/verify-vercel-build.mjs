@@ -19,6 +19,7 @@ const REQUIRED_FUNCTIONS = Object.freeze([
 ]);
 const ALLOWED_ROOT_HTML = new Set([
   "account.html",
+  "credit-complete.html",
   "index.html",
   "paid-thank-you.html",
   "thank-you.html",

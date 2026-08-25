@@ -98,8 +98,8 @@ export async function createDownloadCreditPackCheckout(options: {
     price.active !== true ||
     price.recurring ||
     price.livemode !== (options.environment.namespace === "production") ||
-    !Number.isSafeInteger(price.unit_amount) ||
-    (price.unit_amount || 0) <= 0
+    price.currency !== pack.currency ||
+    price.unit_amount !== pack.unitAmountMinor
   ) {
     throw new Error("Configured download credit Price is invalid");
   }
