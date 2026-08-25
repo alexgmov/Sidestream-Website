@@ -608,20 +608,24 @@ After the lifecycle blockers above are fixed and tested, the target production
 endpoint must select exactly the reviewed lifecycle events:
 
 - Checkout completion: `checkout.session.completed`
+- Legacy subscription billing: `invoice.paid`, `invoice.payment_failed`
 - Refund lifecycle: `charge.refunded`, `charge.updated`, `refund.created`,
-  `refund.updated`, `refund.failed`
+  `refund.updated`
 - Dispute lifecycle: `charge.dispute.created`, `charge.dispute.updated`,
   `charge.dispute.closed`
 - Allowlisted legacy subscriptions: `customer.subscription.created`,
   `customer.subscription.updated`, `customer.subscription.deleted`
 
-The current exhaustive switch implements every item above **except**
-`refund.failed`; an unimplemented event is durably recorded and then ignored.
-Do not add that event to the live destination and do not cut over while this gap
-exists. Expanding behavior requires code, tests, endpoint selection, and this
-contract to change together. Stripe's endpoint `enabled_events` is the selection
-for that endpoint, while Workbench Event deliveries show attempts to that
-endpoint; neither is an account-wide event inventory. See the primary
+The current exhaustive switch implements every item above. `refund.failed`
+remains intentionally excluded because an unimplemented event is durably
+recorded and then ignored. Do not add it to the live destination or enable the
+credit wallet until it has a tested wallet and entitlement recovery policy.
+The enabled live destination is `we_1TpKypDFKjeGlioXZNxWQAgN` at
+`https://sidestream.tv/api/stripe/webhook`; it selects exactly the 13 events
+listed above. Expanding behavior requires code, tests, endpoint selection, and
+this contract to change together. Stripe's endpoint `enabled_events` is the
+selection for that endpoint, while Workbench Event deliveries show attempts to
+that endpoint; neither is an account-wide event inventory. See the primary
 [Webhook Endpoint object](https://docs.stripe.com/api/webhook_endpoints/object),
 [Workbench overview](https://docs.stripe.com/workbench/overview), and
 [List Events API](https://docs.stripe.com/api/events/list).
