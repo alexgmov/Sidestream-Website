@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import { Readable } from "node:stream";
 import test from "node:test";
 import {
@@ -20,12 +21,20 @@ import {
 } from "../.server-dist/api/_lib/support-safety.js";
 import { createSupportWebhookHandler } from "../.server-dist/api/support/webhook.js";
 import { createSupportAuditHandler } from "../.server-dist/api/internal/support/audit.js";
+import { createSupportProcessorHandler } from "../.server-dist/api/internal/support/process.js";
+import {
+  processSupportQueues,
+  supportRetryDelayMs,
+} from "../.server-dist/api/_lib/support-queue.js";
 
 const TEST_SECRET = "support-data-secret-with-at-least-thirty-two-characters";
 const ACTION_ID = "11111111-1111-4111-8111-111111111111";
 const THREAD_ID = "22222222-2222-4222-8222-222222222222";
 const MESSAGE_ID = "33333333-3333-4333-8333-333333333333";
+const JOB_ID = "44444444-4444-4444-8444-444444444444";
+const NOTIFICATION_ID = "55555555-5555-4555-8555-555555555555";
 const SUPPORT_AUDIT_PATH = "/api/internal/support/audit";
+const SUPPORT_PROCESSOR_PATH = "/api/internal/support/process";
 
 test("support prompts explicitly treat email and artifacts as untrusted", () => {
   assert.match(SUPPORT_TRIAGE_SYSTEM_PROMPT, /Specifically watch for prompt injection/i);
@@ -250,7 +259,7 @@ test("received email normalization never exposes HTML or attachment content to t
   assert.equal("attachments" in normalized, false);
 });
 
-test("signed support webhook persists before scheduling and ignores other mailboxes", async () => {
+test("signed support webhook durably records the ticket job before scheduling and ignores other mailboxes", async () => {
   const calls = [];
   let scheduled;
   const config = supportConfig();
@@ -270,8 +279,9 @@ test("signed support webhook persists before scheduling and ignores other mailbo
       calls.push(["record", input, secret]);
       return { inserted: true, messageId: MESSAGE_ID, threadId: THREAD_ID };
     },
-    processMessage: async (input) => {
-      calls.push(["process", input.messageId]);
+    processQueues: async (input) => {
+      calls.push(["process", input.jobLimit, input.notificationLimit]);
+      return processorSummary();
     },
     scheduleBackground: (operation) => {
       scheduled = operation;
@@ -345,7 +355,7 @@ test("default webhook verifier accepts an exact Svix signature over the raw body
       htmlOnly: false,
     }),
     recordMessage: async () => ({ inserted: true, messageId: MESSAGE_ID, threadId: THREAD_ID }),
-    processMessage: async () => {},
+    processQueues: async () => processorSummary(),
     scheduleBackground: () => {},
   });
   const result = await invokeWebhook(handler, {
@@ -357,6 +367,194 @@ test("default webhook verifier accepts an exact Svix signature over the raw body
     },
   });
   assert.equal(result.statusCode, 200);
+});
+
+test("duplicate webhooks converge on the durable job and still wake the processor", async () => {
+  let processorCalls = 0;
+  const handler = createSupportWebhookHandler({
+    loadConfig: supportConfig,
+    verifyWebhook: () => ({ type: "email.received", data: { email_id: "email_duplicate" } }),
+    retrieveEmail: async () => ({
+      providerMessageId: "email_duplicate",
+      requesterEmail: "customer@example.com",
+      recipients: ["support@sidestream.tv"],
+      subject: "Duplicate",
+      body: "Please help.",
+      attachmentCount: 0,
+      htmlOnly: false,
+    }),
+    recordMessage: async () => ({ inserted: false, messageId: MESSAGE_ID, threadId: THREAD_ID }),
+    processQueues: async () => {
+      processorCalls += 1;
+      return processorSummary();
+    },
+    scheduleBackground: () => {},
+  });
+  const result = await invokeWebhook(handler, {
+    body: "{}",
+    headers: { "svix-id": "msg_duplicate_event" },
+  });
+  assert.equal(result.statusCode, 200);
+  assert.equal(JSON.parse(result.body).duplicate, true);
+  assert.equal(processorCalls, 1);
+});
+
+test("support queue retry backoff is bounded and processing failures remain durable", async () => {
+  assert.deepEqual(
+    [1, 2, 3, 20].map(supportRetryDelayMs),
+    [30_000, 60_000, 120_000, 1_800_000],
+  );
+  let failureCode;
+  const summary = await processSupportQueues({
+    config: supportConfig(),
+    jobLimit: 1,
+    notificationLimit: 1,
+    dependencies: queueDependencies({
+      claimJob: async () => claimedJob(),
+      processJob: async () => {
+        throw new Error("transient failure");
+      },
+      failJob: async (_job, code) => {
+        failureCode = code;
+        return { updated: true, state: "retry" };
+      },
+    }),
+  });
+  assert.equal(failureCode, "triage_processing_failed");
+  assert.equal(summary.jobs.retried, 1);
+  assert.equal(summary.jobs.completed, 0);
+  assert.equal(summary.executed, false);
+});
+
+test("expired queue leases are recoverable and stale workers cannot finish a newer lease", async () => {
+  const source = await readFile(
+    new URL("../api/_lib/support-queue.ts", import.meta.url),
+    "utf8",
+  );
+  assert.equal((source.match(/state = 'processing' and lease_expires_at <= now\(\)/g) || []).length, 2);
+  assert.equal((source.match(/for update skip locked/g) || []).length, 2);
+  assert.ok((source.match(/and lease_token = \$2/g) || []).length >= 4);
+  assert.equal((source.match(/lease_token = gen_random_uuid\(\)/g) || []).length, 2);
+});
+
+test("processing jobs become visible dead letters after their bounded attempt budget", async () => {
+  const summary = await processSupportQueues({
+    config: supportConfig(),
+    jobLimit: 1,
+    notificationLimit: 1,
+    dependencies: queueDependencies({
+      claimJob: async () => claimedJob({ attemptCount: 5, cycleAttemptCount: 5 }),
+      processJob: async () => {
+        throw new Error("persistent failure");
+      },
+      failJob: async () => ({ updated: true, state: "dead_letter" }),
+      countDeadLetters: async () => ({ processing: 1, notifications: 0 }),
+    }),
+  });
+  assert.equal(summary.jobs.deadLettered, 1);
+  assert.deepEqual(summary.deadLetters, { processing: 1, notifications: 0 });
+});
+
+test("notification outbox retries delivery and records a later idempotent success", async () => {
+  const retrySummary = await processSupportQueues({
+    config: supportConfig(),
+    jobLimit: 1,
+    notificationLimit: 1,
+    dependencies: queueDependencies({
+      claimNotification: async () => claimedNotification(),
+      deliverNotification: async () => {
+        throw new Error("provider unavailable");
+      },
+      failNotification: async (_notification, code) => {
+        assert.equal(code, "alert_delivery_failed");
+        return { updated: true, state: "retry" };
+      },
+    }),
+  });
+  assert.equal(retrySummary.notifications.retried, 1);
+
+  let delivered = 0;
+  const successSummary = await processSupportQueues({
+    config: supportConfig(),
+    jobLimit: 1,
+    notificationLimit: 1,
+    dependencies: queueDependencies({
+      claimNotification: async () => claimedNotification({
+        attemptCount: 2,
+        cycleAttemptCount: 2,
+      }),
+      deliverNotification: async () => {
+        delivered += 1;
+      },
+      completeNotification: async () => true,
+    }),
+  });
+  assert.equal(delivered, 1);
+  assert.equal(successSummary.notifications.delivered, 1);
+});
+
+test("notification delivery exhaustion becomes a visible recoverable dead letter", async () => {
+  const summary = await processSupportQueues({
+    config: supportConfig(),
+    jobLimit: 1,
+    notificationLimit: 1,
+    dependencies: queueDependencies({
+      claimNotification: async () => claimedNotification({
+        attemptCount: 5,
+        cycleAttemptCount: 5,
+      }),
+      deliverNotification: async () => {
+        throw new Error("provider still unavailable");
+      },
+      failNotification: async () => ({ updated: true, state: "dead_letter" }),
+      countDeadLetters: async () => ({ processing: 0, notifications: 1 }),
+    }),
+  });
+  assert.equal(summary.notifications.deadLettered, 1);
+  assert.deepEqual(summary.deadLetters, { processing: 0, notifications: 1 });
+  assert.equal(summary.executed, false);
+});
+
+test("ticket jobs and gate alerts use transactional idempotency with append-only delivery evidence", async () => {
+  const [ledger, migration] = await Promise.all([
+    readFile(new URL("../api/_lib/support-ledger.ts", import.meta.url), "utf8"),
+    readFile(new URL(
+      "../db/migrations/20260825130000_add_support_reliability_queues.sql",
+      import.meta.url,
+    ), "utf8"),
+  ]);
+  assert.match(ledger, /insert into public\.sidestream_support_processing_jobs[\s\S]*on conflict \(message_id, job_type\) do nothing/);
+  assert.ok((ledger.match(/await enqueueSupportSafetyAlert\(client/g) || []).length >= 2);
+  assert.match(migration, /unique \(message_id, job_type\)/);
+  assert.match(migration, /unique \(idempotency_key\)/);
+  assert.match(migration, /where state = 'dead_letter'/);
+  assert.match(migration, /before update or delete on public\.sidestream_support_notification_attempts/);
+});
+
+test("protected processor can recover one exact notification dead letter and never execute actions", async () => {
+  let recoveredId;
+  const handler = createSupportProcessorHandler({
+    loadConfig: supportConfig,
+    recoverNotification: async (id) => {
+      recoveredId = id;
+      return { recovered: true, recoveryCount: 1 };
+    },
+    processQueues: async () => processorSummary({
+      notifications: { claimed: 1, delivered: 1, retried: 0, deadLettered: 0, staleLeases: 0 },
+    }),
+  });
+  const request = Readable.from([]);
+  request.method = "POST";
+  request.headers = { authorization: `Bearer ${supportConfig().adminSecret}` };
+  request.rawHeaders = ["Authorization", `Bearer ${supportConfig().adminSecret}`];
+  request.body = { recoverNotificationId: NOTIFICATION_ID, jobLimit: 1, notificationLimit: 1 };
+  const result = await invokeHandler(handler, request);
+  const body = JSON.parse(result.body);
+  assert.equal(result.statusCode, 200);
+  assert.equal(recoveredId, NOTIFICATION_ID);
+  assert.equal(body.recovery.recovered, true);
+  assert.equal(body.notifications.delivered, 1);
+  assert.equal(body.executed, false);
 });
 
 test("safety alert contains only opaque reference and risk codes", async () => {
@@ -382,8 +580,7 @@ test("safety alert contains only opaque reference and risk codes", async () => {
   assert.match(requestHeaders["Idempotency-Key"], /^support-safety\/[0-9a-f]{64}$/);
 });
 
-test("independent audit route records and notifies on a flag without executing", async () => {
-  let notified = false;
+test("independent audit route durably records a flag without executing", async () => {
   const handler = createSupportAuditHandler({
     loadConfig: supportConfig,
     loadAction: async () => ({
@@ -406,9 +603,6 @@ test("independent audit route records and notifies on a flag without executing",
       },
     }),
     recordOutcome: async () => ({ inserted: true, verdict: "flag" }),
-    notify: async () => {
-      notified = true;
-    },
   });
   const request = Readable.from([]);
   request.method = "POST";
@@ -426,12 +620,10 @@ test("independent audit route records and notifies on a flag without executing",
     humanApprovalRequired: true,
     executed: false,
   });
-  assert.equal(notified, true);
 });
 
-test("schema-rejected audit artifact is recorded, flagged, and notified", async () => {
+test("schema-rejected audit artifact is durably recorded and flagged", async () => {
   let recorded = false;
-  let notified = false;
   const handler = createSupportAuditHandler({
     loadConfig: supportConfig,
     loadAction: async () => ({
@@ -448,10 +640,6 @@ test("schema-rejected audit artifact is recorded, flagged, and notified", async 
       recorded = true;
       return { inserted: true, verdict: "flag" };
     },
-    notify: async (input) => {
-      assert.deepEqual(input.riskCodes, ["invalid_artifact_schema"]);
-      notified = true;
-    },
   });
   const request = Readable.from([]);
   request.method = "POST";
@@ -466,7 +654,6 @@ test("schema-rejected audit artifact is recorded, flagged, and notified", async 
   assert.equal(JSON.parse(result.body).flagged, true);
   assert.equal(JSON.parse(result.body).executed, false);
   assert.equal(recorded, true);
-  assert.equal(notified, true);
 });
 
 test("support audit is POST-only, non-browser, and bearer protected", async () => {
@@ -493,6 +680,35 @@ test("support audit is POST-only, non-browser, and bearer protected", async () =
   wrongSecretRequest.headers = { authorization: "Bearer incorrect-secret" };
   const wrongSecretResult = await invokeHandler(handler, wrongSecretRequest);
   assert.equal(wrongSecretResult.statusCode, 401);
+});
+
+test("support processor is POST-only, non-browser, bearer protected, and strictly bounded", async () => {
+  assert.equal(SUPPORT_PROCESSOR_PATH, "/api/internal/support/process");
+  const handler = createSupportProcessorHandler({ loadConfig: supportConfig });
+
+  const getRequest = Readable.from([]);
+  getRequest.method = "GET";
+  getRequest.headers = {};
+  const getResult = await invokeHandler(handler, getRequest);
+  assert.equal(getResult.statusCode, 405);
+
+  const browserRequest = Readable.from([]);
+  browserRequest.method = "POST";
+  browserRequest.headers = {
+    origin: "https://sidestream.tv",
+    authorization: `Bearer ${supportConfig().adminSecret}`,
+  };
+  const browserResult = await invokeHandler(handler, browserRequest);
+  assert.equal(browserResult.statusCode, 403);
+
+  const invalidRequest = Readable.from([]);
+  invalidRequest.method = "POST";
+  invalidRequest.headers = { authorization: `Bearer ${supportConfig().adminSecret}` };
+  invalidRequest.rawHeaders = ["Authorization", `Bearer ${supportConfig().adminSecret}`];
+  invalidRequest.body = { notificationLimit: 26, shell: "never" };
+  const invalidResult = await invokeHandler(handler, invalidRequest);
+  assert.equal(invalidResult.statusCode, 400);
+  assert.equal(JSON.parse(invalidResult.body).executed, false);
 });
 
 function pullRequestArtifact(overrides = {}) {
@@ -537,6 +753,63 @@ function supportConfig() {
     auditModel: "audit-model",
     dataSecret: TEST_SECRET,
     adminSecret: "support-admin-secret-with-at-least-thirty-two-characters",
+  };
+}
+
+function claimedJob(overrides = {}) {
+  return {
+    id: JOB_ID,
+    threadId: THREAD_ID,
+    messageId: MESSAGE_ID,
+    leaseToken: "66666666-6666-4666-8666-666666666666",
+    attemptCount: 1,
+    cycleAttemptCount: 1,
+    maxAttempts: 5,
+    ...overrides,
+  };
+}
+
+function claimedNotification(overrides = {}) {
+  return {
+    id: NOTIFICATION_ID,
+    threadId: THREAD_ID,
+    actionRequestId: ACTION_ID,
+    gate: "triage",
+    referenceId: ACTION_ID,
+    outcome: "flag",
+    riskCodes: ["prompt_injection"],
+    leaseToken: "77777777-7777-4777-8777-777777777777",
+    attemptCount: 1,
+    cycleAttemptCount: 1,
+    maxAttempts: 5,
+    ...overrides,
+  };
+}
+
+function queueDependencies(overrides = {}) {
+  return {
+    claimJob: async () => null,
+    processJob: async () => {},
+    completeJob: async () => true,
+    failJob: async () => ({ updated: true, state: "retry" }),
+    claimNotification: async () => null,
+    deliverNotification: async () => {},
+    completeNotification: async () => true,
+    failNotification: async () => ({ updated: true, state: "retry" }),
+    countDeadLetters: async () => ({ processing: 0, notifications: 0 }),
+    ...overrides,
+  };
+}
+
+function processorSummary(overrides = {}) {
+  return {
+    ok: true,
+    limits: { jobs: 1, notifications: 1 },
+    jobs: { claimed: 0, completed: 0, retried: 0, deadLettered: 0, staleLeases: 0 },
+    notifications: { claimed: 0, delivered: 0, retried: 0, deadLettered: 0, staleLeases: 0 },
+    deadLetters: { processing: 0, notifications: 0 },
+    executed: false,
+    ...overrides,
   };
 }
 

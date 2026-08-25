@@ -38,7 +38,7 @@ function knownBaselineSnapshot(rowSecurityEnabled = false) {
 
 test("migration files are ordered, checksummed, and append-only baseline files are pinned", async () => {
   const migrations = validateMigrationFiles(await loadMigrationFiles());
-  assert.equal(migrations.length, 34);
+  assert.equal(migrations.length, 35);
   assert.deepEqual(
     migrations.map((migration) => migration.filename),
     [...migrations.map((migration) => migration.filename)].sort(),
@@ -71,6 +71,7 @@ test("migration files are ordered, checksummed, and append-only baseline files a
     "20260812120000_add_upgrade_pricing_experiment.sql",
     "20260814120000_add_server_download_credits.sql",
     "20260825120000_add_support_safety_ledger.sql",
+    "20260825130000_add_support_reliability_queues.sql",
   ]) {
     assert.ok(migrations.some((migration) => migration.filename === filename));
   }
@@ -100,6 +101,33 @@ test("support safety ledger is private, encrypted at the application boundary, a
   assert.match(migration, /sidestream support safety evidence is append-only/);
   assert.equal((migration.match(/before update or delete on public\.sidestream_support_/g) || []).length, 3);
   assert.equal((migration.match(/enable row level security/g) || []).length, 5);
+});
+
+test("support reliability queues are private, leased, idempotent, and dead-letter visible", async () => {
+  const migration = await readFile(new URL(
+    "../db/migrations/20260825130000_add_support_reliability_queues.sql",
+    import.meta.url,
+  ), "utf8");
+  for (const table of [
+    "sidestream_support_processing_jobs",
+    "sidestream_support_notification_outbox",
+    "sidestream_support_notification_attempts",
+  ]) {
+    assert.match(migration, new RegExp(`create table public\\.${table}`));
+    assert.match(migration, new RegExp(`alter table public\\.${table} enable row level security`));
+    assert.match(migration, new RegExp(`revoke all on table public\\.${table} from public`));
+  }
+  assert.match(migration, /unique \(message_id, job_type\)/);
+  assert.match(migration, /unique \(idempotency_key\)/);
+  assert.match(migration, /state in \('pending', 'processing', 'retry', 'completed', 'dead_letter'\)/);
+  assert.match(migration, /state in \('pending', 'processing', 'retry', 'delivered', 'dead_letter'\)/);
+  assert.match(migration, /lease_expires_at timestamptz/);
+  assert.match(migration, /lease_token uuid/);
+  assert.match(migration, /recovery_count between 0 and 3/);
+  assert.match(migration, /sidestream_support_processing_jobs_dead_letter_idx/);
+  assert.match(migration, /sidestream_support_notification_outbox_dead_letter_idx/);
+  assert.match(migration, /before update or delete on public\.sidestream_support_notification_attempts/);
+  assert.equal((migration.match(/enable row level security/g) || []).length, 3);
 });
 
 test("server download credits are private, append-only, and purchase-ready", async () => {

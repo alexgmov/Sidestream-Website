@@ -29,6 +29,7 @@ export async function recordInboundSupportMessage(
 ) {
   return withPostgresTransaction(async (client) => {
     await acquireTransactionAdvisoryLock(client, `support-inbound:${input.providerEventId}`);
+    await acquireTransactionAdvisoryLock(client, `support-message:${input.providerMessageId}`);
     const existing = await client.query<{
       id: string;
       thread_id: string;
@@ -40,6 +41,11 @@ export async function recordInboundSupportMessage(
       [input.providerEventId, input.providerMessageId],
     );
     if (existing.rows[0]) {
+      await ensureSupportProcessingJob(
+        client,
+        existing.rows[0].thread_id,
+        existing.rows[0].id,
+      );
       return Object.freeze({
         inserted: false,
         messageId: existing.rows[0].id,
@@ -90,6 +96,7 @@ export async function recordInboundSupportMessage(
       idempotencyKey: `support_received:${fingerprintSupportValue(input.providerEventId)}`,
       details: { messageId, attachmentCount: input.attachmentCount },
     });
+    await ensureSupportProcessingJob(client, threadId, messageId);
     return Object.freeze({ inserted: true, messageId, threadId });
   });
 }
@@ -140,6 +147,7 @@ export async function recordSupportTriageOutcome(options: {
   messageId: string;
   threadId: string;
   outcome: SupportSafetyOutcome<SupportTriageResult>;
+  notificationOutcome?: "flag" | "error";
 }) {
   return withPostgresTransaction(async (client) => {
     await acquireTransactionAdvisoryLock(client, `support-triage:${options.messageId}`);
@@ -153,6 +161,9 @@ export async function recordSupportTriageOutcome(options: {
     if (existing.rows[0]) return Object.freeze({ actionId: existing.rows[0].id, inserted: false });
 
     const resultForLedger = safeTriageEvidence(options.outcome.result);
+    const gateVerdict = options.notificationOutcome === "error"
+      ? "error"
+      : options.outcome.result.verdict;
     await client.query(
       `insert into public.sidestream_support_gate_runs (
          thread_id,
@@ -167,7 +178,7 @@ export async function recordSupportTriageOutcome(options: {
       [
         options.threadId,
         options.messageId,
-        options.outcome.result.verdict,
+        gateVerdict,
         fingerprintSupportValue(resultForLedger),
         [...options.outcome.riskCodes],
         JSON.stringify(resultForLedger),
@@ -208,6 +219,17 @@ export async function recordSupportTriageOutcome(options: {
       idempotencyKey: `support_triage:${options.messageId}`,
       details: { riskCodes: options.outcome.riskCodes },
     });
+    const notificationOutcome = options.notificationOutcome || (flagged ? "flag" : null);
+    if (notificationOutcome) {
+      await enqueueSupportSafetyAlert(client, {
+        threadId: options.threadId,
+        actionRequestId: actionId,
+        gate: "triage",
+        referenceId: actionId,
+        riskCodes: options.outcome.riskCodes,
+        outcome: notificationOutcome,
+      });
+    }
     return Object.freeze({ actionId, inserted: true });
   });
 }
@@ -236,7 +258,11 @@ export async function recordSupportTriageError(options: {
       }),
     }),
   });
-  return recordSupportTriageOutcome({ ...options, outcome });
+  return recordSupportTriageOutcome({
+    ...options,
+    outcome,
+    notificationOutcome: "error",
+  });
 }
 
 export async function loadSupportActionForAudit(actionId: string) {
@@ -287,6 +313,7 @@ export async function recordSupportAuditOutcome(options: {
   threadId: string;
   artifact: unknown;
   outcome: SupportSafetyOutcome<SupportAuditResult>;
+  notificationOutcome?: "flag" | "error";
 }) {
   return withPostgresTransaction(async (client) => {
     await acquireTransactionAdvisoryLock(client, `support-audit:${options.actionId}`);
@@ -300,6 +327,9 @@ export async function recordSupportAuditOutcome(options: {
     if (existing.rows[0]) {
       return Object.freeze({ inserted: false, verdict: existing.rows[0].verdict });
     }
+    const gateVerdict = options.notificationOutcome === "error"
+      ? "error"
+      : options.outcome.result.verdict;
     await client.query(
       `insert into public.sidestream_support_gate_runs (
          thread_id,
@@ -314,7 +344,7 @@ export async function recordSupportAuditOutcome(options: {
       [
         options.threadId,
         options.actionId,
-        options.outcome.result.verdict,
+        gateVerdict,
         fingerprintSupportValue(options.artifact),
         [...options.outcome.riskCodes],
         JSON.stringify(options.outcome.result),
@@ -341,6 +371,17 @@ export async function recordSupportAuditOutcome(options: {
       idempotencyKey: `support_audit:${options.actionId}`,
       details: { riskCodes: options.outcome.riskCodes },
     });
+    const notificationOutcome = options.notificationOutcome || (flagged ? "flag" : null);
+    if (notificationOutcome) {
+      await enqueueSupportSafetyAlert(client, {
+        threadId: options.threadId,
+        actionRequestId: options.actionId,
+        gate: "safety_audit",
+        referenceId: options.actionId,
+        riskCodes: options.outcome.riskCodes,
+        outcome: notificationOutcome,
+      });
+    }
     return Object.freeze({ inserted: true, verdict: options.outcome.result.verdict });
   });
 }
@@ -363,7 +404,11 @@ export async function recordSupportAuditError(options: {
       recommendation: "Stop automation and request human review.",
     }),
   });
-  return recordSupportAuditOutcome({ ...options, outcome });
+  return recordSupportAuditOutcome({
+    ...options,
+    outcome,
+    notificationOutcome: "error",
+  });
 }
 
 function safeTriageEvidence(result: SupportTriageResult) {
@@ -378,7 +423,68 @@ function safeTriageEvidence(result: SupportTriageResult) {
   };
 }
 
-async function insertAuditEvent(client: PoolClient, input: {
+export async function enqueueSupportSafetyAlert(client: PoolClient, input: {
+  threadId: string;
+  actionRequestId?: string;
+  gate: "triage" | "safety_audit";
+  referenceId: string;
+  riskCodes: readonly string[];
+  outcome: "flag" | "error";
+}) {
+  const riskCodes = [...new Set(input.riskCodes
+    .filter((code) => /^[a-z0-9_:-]{1,100}$/i.test(code)))]
+    .sort()
+    .slice(0, 20);
+  if (riskCodes.length === 0) riskCodes.push("unspecified");
+  const idempotencyKey = fingerprintSupportValue({
+    gate: input.gate,
+    referenceId: input.referenceId,
+    outcome: input.outcome,
+    riskCodes,
+  });
+  const inserted = await client.query<{ id: string }>(
+    `insert into public.sidestream_support_notification_outbox (
+       thread_id,
+       action_request_id,
+       idempotency_key,
+       gate,
+       reference_id,
+       outcome,
+       risk_codes
+     ) values ($1, $2, $3, $4, $5, $6, $7)
+     on conflict (idempotency_key) do nothing
+     returning id`,
+    [
+      input.threadId,
+      input.actionRequestId || null,
+      idempotencyKey,
+      input.gate,
+      input.referenceId,
+      input.outcome,
+      riskCodes,
+    ],
+  );
+  await insertAuditEvent(client, {
+    threadId: input.threadId,
+    actionRequestId: input.actionRequestId,
+    eventType: "support_alert_enqueued",
+    idempotencyKey: `support_alert_enqueued:${idempotencyKey}`,
+    details: {
+      outboxId: inserted.rows[0]?.id || null,
+      gate: input.gate,
+      outcome: input.outcome,
+      referenceId: input.referenceId,
+      riskCodes,
+    },
+  });
+  return Object.freeze({
+    inserted: Boolean(inserted.rows[0]),
+    idempotencyKey,
+    outboxId: inserted.rows[0]?.id || null,
+  });
+}
+
+export async function insertAuditEvent(client: PoolClient, input: {
   threadId: string;
   actionRequestId?: string;
   eventType: string;
@@ -401,6 +507,22 @@ async function insertAuditEvent(client: PoolClient, input: {
       input.idempotencyKey,
       JSON.stringify(input.details),
     ],
+  );
+}
+
+async function ensureSupportProcessingJob(
+  client: PoolClient,
+  threadId: string,
+  messageId: string,
+) {
+  await client.query(
+    `insert into public.sidestream_support_processing_jobs (
+       thread_id,
+       message_id,
+       job_type
+     ) values ($1, $2, 'triage')
+     on conflict (message_id, job_type) do nothing`,
+    [threadId, messageId],
   );
 }
 

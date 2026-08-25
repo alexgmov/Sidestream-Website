@@ -64,6 +64,11 @@ const PROTECTED_ADMIN_ROUTES = Object.freeze([
     source: "api/internal/support/audit.ts",
     testSource: "tests/support-automation.test.mjs",
   },
+  {
+    path: "/api/internal/support/process",
+    source: "api/internal/support/process.ts",
+    testSource: "tests/support-automation.test.mjs",
+  },
 ]);
 
 // One-time operational routes must be removed from this list when their

@@ -15,7 +15,6 @@ import {
   recordSupportAuditError,
   recordSupportAuditOutcome,
 } from "../../_lib/support-ledger.js";
-import { sendSupportSafetyAlert } from "../../_lib/support-notifications.js";
 import {
   runSupportSafetyAudit,
   validateSupportAuditArtifact,
@@ -28,7 +27,6 @@ type SupportAuditDependencies = Readonly<{
   runAudit: typeof runSupportSafetyAudit;
   recordOutcome: typeof recordSupportAuditOutcome;
   recordError: typeof recordSupportAuditError;
-  notify: typeof sendSupportSafetyAlert;
 }>;
 
 const defaultDependencies: SupportAuditDependencies = {
@@ -38,7 +36,6 @@ const defaultDependencies: SupportAuditDependencies = {
   runAudit: runSupportSafetyAudit,
   recordOutcome: recordSupportAuditOutcome,
   recordError: recordSupportAuditError,
-  notify: sendSupportSafetyAlert,
 };
 
 export function createSupportAuditHandler(
@@ -76,21 +73,12 @@ export function createSupportAuditHandler(
       } catch (error) {
         const outcome = invalidArtifactOutcome();
         await dependencies.markPending(action.actionId);
-        const recorded = await dependencies.recordOutcome({
+        await dependencies.recordOutcome({
           actionId: action.actionId,
           threadId: action.threadId,
           artifact: rawArtifact,
           outcome,
         });
-        if (recorded.inserted) {
-          await dependencies.notify({
-            config,
-            gate: "safety_audit",
-            referenceId: action.actionId,
-            riskCodes: outcome.riskCodes,
-            outcome: "flag",
-          });
-        }
         return sendCustomerAdminJson(response, 400, {
           error: error instanceof Error ? error.message : "Invalid support audit artifact",
           code: "invalid_support_audit_artifact",
@@ -108,21 +96,12 @@ export function createSupportAuditHandler(
           SIDESTREAM_SUPPORT_AUDIT_MODEL: config.auditModel,
         },
       });
-      const recorded = await dependencies.recordOutcome({
+      await dependencies.recordOutcome({
         actionId: action.actionId,
         threadId: action.threadId,
         artifact,
         outcome,
       });
-      if (outcome.result.verdict === "flag" && recorded.inserted) {
-        await dependencies.notify({
-          config,
-          gate: "safety_audit",
-          referenceId: action.actionId,
-          riskCodes: outcome.riskCodes,
-          outcome: "flag",
-        });
-      }
       return sendCustomerAdminJson(response, 200, {
         actionId: action.actionId,
         verdict: outcome.result.verdict,
@@ -144,23 +123,14 @@ export function createSupportAuditHandler(
       }
       if (action && rawArtifact !== null) {
         try {
-          const recorded = await dependencies.recordError({
+          await dependencies.recordError({
             actionId: action.actionId,
             threadId: action.threadId,
             artifact: rawArtifact,
             errorCode: "safety_audit_error",
           });
-          if (recorded.inserted) {
-            await dependencies.notify({
-              config,
-              gate: "safety_audit",
-              referenceId: action.actionId,
-              riskCodes: ["safety_audit_error"],
-              outcome: "error",
-            });
-          }
         } catch {
-          // The request still fails closed even if persistence or notification is unavailable.
+          // The request still fails closed if durable error persistence is unavailable.
         }
       }
       return sendCustomerAdminJson(response, 503, {

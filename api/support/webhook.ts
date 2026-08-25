@@ -11,7 +11,7 @@ import {
   type ReceivedSupportEmail,
 } from "../_lib/support-email.js";
 import { recordInboundSupportMessage } from "../_lib/support-ledger.js";
-import { triageSupportMessage } from "../_lib/support-workflow.js";
+import { processSupportQueues } from "../_lib/support-queue.js";
 
 const MAX_WEBHOOK_BODY_BYTES = 64 * 1024;
 
@@ -29,7 +29,7 @@ type SupportWebhookDependencies = Readonly<{
   ) => SupportWebhookEvent;
   retrieveEmail: (emailId: string, config: SupportRuntimeConfig) => Promise<ReceivedSupportEmail>;
   recordMessage: typeof recordInboundSupportMessage;
-  processMessage: typeof triageSupportMessage;
+  processQueues: typeof processSupportQueues;
   scheduleBackground: (operation: Promise<unknown>) => void;
   log: (entry: Record<string, unknown>) => void;
 }>;
@@ -39,7 +39,7 @@ const defaultDependencies: SupportWebhookDependencies = {
   verifyWebhook: verifyResendWebhook,
   retrieveEmail: (emailId, config) => retrieveReceivedSupportEmail({ emailId, config }),
   recordMessage: recordInboundSupportMessage,
-  processMessage: triageSupportMessage,
+  processQueues: processSupportQueues,
   scheduleBackground: waitUntil,
   log: (entry) => console.error(JSON.stringify(entry)),
 };
@@ -118,24 +118,23 @@ export function createSupportWebhookHandler(
       return sendJson(response, 503, { error: "Support intake unavailable" });
     }
 
-    if (recorded.inserted) {
-      const processing = dependencies.processMessage({
+    const processing = dependencies.processQueues({
+      config,
+      jobLimit: 1,
+      notificationLimit: 5,
+    }).catch(() => {
+      dependencies.log({
+        event: "support_background_processing_failed",
         messageId: recorded.messageId,
-        config,
-      }).catch(() => {
-        dependencies.log({
-          event: "support_background_processing_failed",
-          messageId: recorded.messageId,
-        });
       });
-      try {
-        dependencies.scheduleBackground(processing);
-      } catch {
-        dependencies.log({
-          event: "support_background_schedule_failed",
-          messageId: recorded.messageId,
-        });
-      }
+    });
+    try {
+      dependencies.scheduleBackground(processing);
+    } catch {
+      dependencies.log({
+        event: "support_background_schedule_failed",
+        messageId: recorded.messageId,
+      });
     }
     return sendJson(response, 200, {
       received: true,

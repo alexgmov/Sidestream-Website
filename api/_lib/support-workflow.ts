@@ -4,7 +4,6 @@ import {
   recordSupportTriageError,
   recordSupportTriageOutcome,
 } from "./support-ledger.js";
-import { sendSupportSafetyAlert } from "./support-notifications.js";
 import { runSupportTriage } from "./support-safety.js";
 
 export async function triageSupportMessage(options: {
@@ -34,15 +33,6 @@ export async function triageSupportMessage(options: {
       threadId: message.threadId,
       errorCode: "triage_gate_error",
     });
-    if (recorded.inserted) {
-      await sendSupportSafetyAlert({
-        config: options.config,
-        gate: "triage",
-        referenceId: recorded.actionId,
-        riskCodes: ["triage_gate_error"],
-        outcome: "error",
-      });
-    }
     return recorded;
   }
 
@@ -51,14 +41,5 @@ export async function triageSupportMessage(options: {
     threadId: message.threadId,
     outcome,
   });
-  if (outcome.result.verdict === "flag" && recorded.inserted) {
-    await sendSupportSafetyAlert({
-      config: options.config,
-      gate: "triage",
-      referenceId: recorded.actionId,
-      riskCodes: outcome.riskCodes,
-      outcome: "flag",
-    });
-  }
   return recorded;
 }

@@ -40,6 +40,7 @@ const ROUTE_POLICY = Object.freeze({
   "api/internal/maintenance.ts": "operator_job",
   "api/internal/stripe-events/process.ts": "operator_job",
   "api/internal/support/audit.ts": "operator_job",
+  "api/internal/support/process.ts": "operator_job",
   "api/internal/upgrade-pricing-report.ts": "operator_read",
   "api/license/authorize-download.ts": "entitlement_state",
   "api/license/deactivate.ts": "entitlement_state",
