@@ -21,7 +21,11 @@ import {
   getCheckoutSessionIdempotencyKey,
 } from "../api/_lib/entitlement.ts";
 import {
+  verifyBrowserAcquisitionCookie,
+} from "../api/_lib/acquisition-cookie.ts";
+import {
   createManyChatEmailDeliveryHandoff,
+  createServerOwnedDeliveryHandoff,
 } from "../api/_lib/acquisition-handoff.ts";
 import { loadInjectedHandler } from "./helpers/handler-loader.mjs";
 import { invokeHandler } from "./helpers/http.mjs";
@@ -255,7 +259,7 @@ test("database-backed intents serialize retries, rotate deliberately, and fulfil
     await applyMigrations(databasePool);
     configureRuntime(postgres.connectionString);
     runtimeModules = await loadRuntimeModules();
-    const { account } = runtimeModules;
+    const { account, acquisition: acquisitionBrowser } = runtimeModules;
     const stripe = new RecordingStripe();
     account.__setCheckoutAbuseStripeClient(stripe);
 
@@ -266,6 +270,17 @@ test("database-backed intents serialize retries, rotate deliberately, and fulfil
       active: false,
     });
     const acquisition = await createRuntimeAcquisition(account);
+    const directCookie = verifyBrowserAcquisitionCookie(
+      acquisition.browserCookieValue,
+      { secret: TEST_SECRET, now: new Date("2026-08-03T12:00:00.000Z") },
+    );
+    await Promise.all(Array.from({ length: 24 }, (_, index) => index % 2 === 0
+      ? acquisitionBrowser.ensureBrowserAcquisition(directCookie)
+      : account.recordAuthenticatedAccountAcquisition({
+          acquisitionId: acquisition.acquisitionId,
+          accountId: buyer.accountId,
+          occurredAt: new Date("2026-08-03T12:00:30.000Z"),
+        })));
     const deliveryToken = createManyChatEmailDeliveryHandoff({
       intendedIdentity: buyer.email,
     }, {
@@ -282,6 +297,58 @@ test("database-backed intents serialize retries, rotate deliberately, and fulfil
       },
     );
     assert.equal(deliveryAcquisition.origin, "server_delivery_handoff");
+    const delayedDeliveryCookie = verifyBrowserAcquisitionCookie(
+      deliveryAcquisition.browserCookieValue,
+      { secret: TEST_SECRET, now: new Date("2026-08-03T12:01:00.000Z") },
+    );
+    await acquisitionBrowser.ensureBrowserAcquisition(delayedDeliveryCookie);
+    const delayedDeliveryRoot = await databasePool.query(
+      `select first_observed_at, entry_channel, integrity_state
+       from public.sidestream_acquisitions where id = $1`,
+      [deliveryAcquisition.acquisitionId],
+    );
+    assert.deepEqual(delayedDeliveryRoot.rows[0], {
+      first_observed_at: new Date("2026-08-03T12:00:00.000Z"),
+      entry_channel: "manychat_email",
+      integrity_state: "intact",
+    });
+    const delayedDeliveryConflicts = await databasePool.query(
+      `select count(*)::integer as count
+       from public.sidestream_acquisition_conflicts
+       where acquisition_id = $1 and conflict_type = 'root_first_touch'`,
+      [deliveryAcquisition.acquisitionId],
+    );
+    assert.equal(delayedDeliveryConflicts.rows[0].count, 0);
+    const facebookToken = createServerOwnedDeliveryHandoff({
+      entryChannel: "facebook_lead_form",
+      intendedIdentity: buyer.email,
+    }, {
+      secret: TEST_SECRET,
+      now: new Date("2026-08-03T12:05:00.000Z"),
+    });
+    const facebookAcquisition = await account.resolveRequiredCheckoutAcquisition(
+      { headers: {} },
+      createHeaderResponse(),
+      {
+        handoffToken: facebookToken,
+        now: new Date("2026-08-03T12:08:00.000Z"),
+      },
+    );
+    const facebookCookie = verifyBrowserAcquisitionCookie(
+      facebookAcquisition.browserCookieValue,
+      { secret: TEST_SECRET, now: new Date("2026-08-03T12:08:00.000Z") },
+    );
+    await acquisitionBrowser.ensureBrowserAcquisition(facebookCookie);
+    const facebookRoot = await databasePool.query(
+      `select first_observed_at, entry_channel, integrity_state
+       from public.sidestream_acquisitions where id = $1`,
+      [facebookAcquisition.acquisitionId],
+    );
+    assert.deepEqual(facebookRoot.rows[0], {
+      first_observed_at: new Date("2026-08-03T12:05:00.000Z"),
+      entry_channel: "facebook_lead_form",
+      integrity_state: "intact",
+    });
     const forwarded = await account.completeGoogleAuthenticationAcquisition({
       oauthAcquisitionCookieValue: deliveryAcquisition.browserCookieValue,
       nextPath: `/api/checkout/start?handoff=${encodeURIComponent(deliveryToken)}`,
@@ -1456,6 +1523,18 @@ async function loadRuntimeModules() {
         "./postgres.js": imports["./postgres.js"],
       },
     )).href;
+    const acquisitionModulePath = await writeAdaptedModule(
+      temporaryModuleDirectory,
+      "acquisition-browser",
+      join(repositoryRoot, "api", "acquisition", "_lib.ts"),
+      {
+        "../_lib/acquisition-handoff.js": imports["./acquisition-handoff.js"],
+        "../_lib/acquisition-integrity.js": imports["./acquisition-integrity.js"],
+      },
+    );
+    const acquisition = await import(
+      `${pathToFileURL(acquisitionModulePath).href}?checkout-abuse=1`
+    );
     let source = await readFile(
       join(repositoryRoot, "api", "_lib", "account.ts"),
       "utf8",
@@ -1469,7 +1548,7 @@ export function __setCheckoutAbuseStripeClient(value: Stripe | null) {
     const modulePath = join(temporaryModuleDirectory, "account-under-test.ts");
     await writeFile(modulePath, source, { mode: 0o600 });
     const account = await import(`${pathToFileURL(modulePath).href}?checkout-abuse=1`);
-    return { account, temporaryModuleDirectory };
+    return { account, acquisition, temporaryModuleDirectory };
   } catch (error) {
     await rm(temporaryModuleDirectory, { recursive: true, force: true });
     throw error;

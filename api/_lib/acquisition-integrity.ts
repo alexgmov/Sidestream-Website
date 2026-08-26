@@ -403,6 +403,10 @@ async function recordStageWithClient(
     stage: input.stage,
     stableServerReference: input.stableServerReference,
   });
+  // Every acquisition write locks its root before any child stage. Keeping one
+  // hierarchy prevents a landing observation and an authenticated Checkout
+  // replay from waiting on each other's row and advisory locks.
+  await advisoryLock(client, `root:${input.acquisitionId}`);
   await advisoryLock(client, `stage:${namespace}:${input.stage}:${deduplicationKey}`);
   const root = await client.query<StoredAcquisition>(`
     select * from public.sidestream_acquisitions

@@ -51,7 +51,10 @@ if (activePromotionCode) {
 
 const coupon = await getOrCreateFreedevCoupon();
 const promotionCode = await stripe.promotionCodes.create({
-  coupon: coupon.id,
+  promotion: {
+    type: "coupon",
+    coupon: coupon.id,
+  },
   code: PROMO_CODE,
   active: true,
   metadata: {
@@ -140,10 +143,16 @@ async function findPromotionCode(active) {
 }
 
 async function getPromotionCodeCoupon(promotionCode) {
-  if (promotionCode.coupon && typeof promotionCode.coupon !== "string") {
-    return promotionCode.coupon;
+  const coupon = promotionCode.promotion?.type === "coupon"
+    ? promotionCode.promotion.coupon
+    : promotionCode.coupon;
+  if (coupon && typeof coupon !== "string") {
+    return coupon;
   }
-  return stripe.coupons.retrieve(promotionCode.coupon);
+  if (typeof coupon !== "string" || !coupon) {
+    fail(`Promotion code ${promotionCode.id} does not reference a coupon.`);
+  }
+  return stripe.coupons.retrieve(coupon);
 }
 
 async function retrieveCoupon(couponId) {

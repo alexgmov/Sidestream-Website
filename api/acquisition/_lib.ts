@@ -7,6 +7,7 @@ import {
 } from "../_lib/acquisition-handoff.js";
 import {
   createCanonicalAcquisitionRoot,
+  findCanonicalAcquisition,
   generateAcquisitionId,
   recordAcquisitionStage,
 } from "../_lib/acquisition-integrity.js";
@@ -14,6 +15,31 @@ import {
 export async function ensureBrowserAcquisition(cookie: BrowserAcquisitionCookie) {
   const attribution = cookie.attribution;
   const hasExternalReferrer = cookie.externalReferrerCategory !== null;
+  const existing = await findCanonicalAcquisition(cookie.acquisitionId);
+  if (
+    existing?.entryChannel === "manychat_email" ||
+    existing?.entryChannel === "facebook_lead_form"
+  ) {
+    await createCanonicalAcquisitionRoot({
+      acquisitionId: cookie.acquisitionId,
+      firstObservedAt: existing.firstObserved.at,
+      landingDeduplicationReference: `browser-entry:${cookie.acquisitionId}`,
+      source: attribution.source,
+      medium: attribution.medium,
+      campaign: attribution.campaign,
+      contentCreative: attribution.content,
+      entryChannel: existing.entryChannel,
+      externalReferrerCategory: cookie.externalReferrerCategory,
+      experiment: cookie.experiment
+        ? { id: cookie.experiment.experimentId.toLowerCase(), cohort: cookie.experiment.cohort }
+        : null,
+      attributionConfidence: "exact_trusted_delivery",
+      integrityState: "intact",
+      trustedDeliveryEvidence: ["signed_email_handoff"],
+      recordLandingObserved: false,
+    });
+    return;
+  }
   await createCanonicalAcquisitionRoot({
     acquisitionId: cookie.acquisitionId,
     firstObservedAt: new Date(cookie.issuedAt * 1_000),

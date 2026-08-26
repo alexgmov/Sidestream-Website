@@ -9,6 +9,7 @@ import {
   createCanonicalAcquisitionRoot,
   deriveAcquisitionStageDeduplicationKey,
   generateAcquisitionId,
+  recordAcquisitionStage,
 } from "../../api/_lib/acquisition-integrity.ts";
 
 const FIRST_OBSERVED = "2026-08-03T12:00:00.000Z";
@@ -106,6 +107,59 @@ test("canonical creation defaults unknown external origin to truthful Sidestream
   assert.equal(insert.params[2], "website_direct_or_unknown");
   assert.equal(insert.params[6], "website");
   assert.equal(insert.params[11], "exact_sidestream_entry");
+});
+
+test("stage writes acquire the acquisition root before the child-stage lock", async () => {
+  const acquisitionId = "00000000-0000-4000-8000-000000000901";
+  const advisoryLocks = [];
+  const root = {
+    id: acquisitionId,
+    license_namespace: "test",
+    first_observed_source: "website_direct_or_unknown",
+    first_observed_medium: null,
+    first_observed_campaign: null,
+    first_observed_content_creative: null,
+    entry_channel: "website",
+    first_observed_at: FIRST_OBSERVED,
+    external_referrer_category: null,
+    experiment_id: null,
+    experiment_cohort: null,
+    attribution_confidence: "exact_sidestream_entry",
+    integrity_state: "intact",
+    trusted_delivery_evidence: ["website_entry"],
+  };
+  const stage = {
+    id: "10000000-0000-4000-8000-000000000901",
+    acquisition_id: acquisitionId,
+    license_namespace: "test",
+    stage: "authentication_completed",
+    counting_grain: "authentication",
+    deduplication_key: "b".repeat(64),
+    occurred_at: "2026-08-03T12:01:00.000Z",
+    recorded_at: "2026-08-03T12:01:00.000Z",
+  };
+  const transaction = async (callback) => callback({
+    async query(sql, params = []) {
+      if (/pg_advisory_xact_lock/i.test(sql)) advisoryLocks.push(params[0]);
+      if (/select \* from public\.sidestream_acquisitions[\s\S]+for share/i.test(sql)) {
+        return { rows: [root] };
+      }
+      if (/select \* from public\.sidestream_acquisition_stages/i.test(sql)) {
+        return { rows: [stage] };
+      }
+      return { rows: [] };
+    },
+  });
+
+  await recordAcquisitionStage({
+    acquisitionId,
+    stage: "authentication_completed",
+    stableServerReference: `google-account:${acquisitionId}:${acquisitionId}`,
+    occurredAt: "2026-08-03T12:01:00.000Z",
+  }, { transaction, namespace: "test" });
+
+  assert.equal(advisoryLocks[0], `sidestream_acquisition_integrity:root:${acquisitionId}`);
+  assert.match(advisoryLocks[1], /^sidestream_acquisition_integrity:stage:test:authentication_completed:/);
 });
 
 test("untrusted or sensitive request-shaped fields are rejected, not retained", async () => {
