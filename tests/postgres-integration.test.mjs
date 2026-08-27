@@ -562,9 +562,8 @@ test("cross-lane contracts hold in one isolated disposable Postgres schema", {
       assert.ok(completed.batchSize <= 50);
       const retainedExperimentLineage = await pool.query(
         `select count(*)::integer as retained
-         from ${quotedSchema}.sidestream_upgrade_pricing_exposures as exposure
-         join ${quotedSchema}.sidestream_checkout_intents as intent
-           on intent.id = exposure.checkout_intent_id`,
+         from ${quotedSchema}.sidestream_checkout_intents
+         where upgrade_pricing_snapshot_version is not null`,
       );
       assert.equal(retainedExperimentLineage.rows[0].retained, 1);
     });
@@ -795,6 +794,7 @@ export function __setPostgresIntegrationStripeClient(value: Stripe | null) {
     replacements: {
       "./account.js": accountStubUrl,
       "./customer-commerce.js": customerCommerceUrl,
+      "./download-credits.js": downloadCreditsUrl,
       "./license-environment.js": new URL(
         "../api/_lib/license-environment.ts",
         import.meta.url,

@@ -618,7 +618,7 @@ async function lockOrCreateWallet(
       insert into public.sidestream_credit_wallets (
         license_namespace, device_id_hash, available_credits,
         granted_credits, spent_credits, created_at, updated_at
-      ) values ($1, $2, $3 - $4, $3, $4, now(), now())
+      ) values ($1, $2, $3::integer - $4::integer, $3, $4, now(), now())
       returning id, available_credits, granted_credits, spent_credits
     `,
     [namespace, deviceIdHash, STARTER_DOWNLOAD_CREDITS, initialUsedCredits],
