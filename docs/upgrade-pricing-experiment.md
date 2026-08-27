@@ -1,12 +1,12 @@
 # Authenticated Upgrade pricing experiments
 
 This document is the durable contract for the ended `upgrade-pricing-v1` test
-and the dormant `upgrade-pricing-v2` annual test. It separates source behavior,
+and the active Production `upgrade-pricing-v2` annual test. It separates source behavior,
 Stripe Test qualification, Production rollout, provider delivery, and observed
 reporting so that a fixture, Preview, accepted email request, or open Checkout
 page is never reported as a completed purchase or live result.
 
-## v2 annual experiment: dormant until qualified
+## v2 annual experiment
 
 `upgrade-pricing-v2` is a new account-level experiment. It does not rename,
 reuse, or reinterpret the v1 monthly cohort.
@@ -44,6 +44,16 @@ cannot start the new test. A missing v2 rollout also stays at `0`. After
 qualification, increase from `0` to a small canary and inspect integrity before
 using `5000` for a 50/50 assignment of future eligible accounts. Existing
 assignments never change when rollout values change.
+
+Production completed those gates on 2026-08-27 and now runs rollout `5000` for
+future eligible accounts. Qualification included exact Test and live annual
+Prices, a paid initial Test Invoice and paid yearly renewal under Stripe Test
+Clocks, cancel-at-period-end behavior, failed renewal and successful recovery,
+Billing Portal session creation, an owned-mailbox reminder with provider status
+`delivered`, and a signed-in live Checkout canary that was canceled without
+payment. The first protected Production report contained one annual assignment
+and exposure with zero integrity defects. Source defaults and any environment
+missing the explicit Production settings remain disabled at rollout `0`.
 
 The annual Checkout disclosure is part of the locked offer contract:
 
