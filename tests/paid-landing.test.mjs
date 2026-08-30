@@ -48,6 +48,18 @@ test("committed paid landing is the deterministic canonical render", () => {
   );
 });
 
+test("the public Upgrade card does not emphasize the one-time A/B-test control", () => {
+  assert.match(canonicalHtml, /<p class="plan-name">Unlimited<\/p>/);
+  assert.doesNotMatch(
+    canonicalHtml,
+    /<p class="plan-name">Unlimited\s*<span class="pill">One-time<\/span><\/p>/
+  );
+  assert.match(
+    paidLandingHtml,
+    /<p class="plan-name">Sidestream Unlimited <span class="pill">One-time<\/span><\/p>/
+  );
+});
+
 test("paid render is noindex and canonically isolated from the root page", () => {
   assert.match(
     paidLandingHtml,

@@ -270,7 +270,7 @@ export function buildPaidLanding(canonicalHtml) {
   );
   output = replaceOnce(
     output,
-    '<p class="plan-name">Unlimited <span class="pill">One-time</span></p>',
+    '<p class="plan-name">Unlimited</p>',
     '<p class="plan-name">Sidestream Unlimited <span class="pill">One-time</span></p>',
     "Unlimited plan name"
   );
