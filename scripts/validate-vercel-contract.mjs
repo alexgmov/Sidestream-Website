@@ -267,9 +267,13 @@ export async function validateVercelContract(root = REPOSITORY_ROOT) {
     "/api/releases/latest must use the shared release resolver",
   );
   requireCondition(
-    sharedReleaseSource.includes('"release-manifest.json"') &&
-      sharedReleaseSource.includes('"release-manifest.windows.json"'),
-    "The release resolver must include both manifest source files",
+    sharedReleaseSource.includes(
+      'from "../../data/release-manifest.json" with { type: "json" }',
+    ) &&
+      sharedReleaseSource.includes(
+        'from "../../data/release-manifest.windows.json" with { type: "json" }',
+      ),
+    "The release resolver must statically import both manifest source files",
   );
   for (const releaseFunction of ["api/download.ts", "api/releases/latest.ts"]) {
     requireCondition(

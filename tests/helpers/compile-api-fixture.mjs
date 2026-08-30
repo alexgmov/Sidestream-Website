@@ -8,6 +8,7 @@ export function compileApiFixture(entries, outDir, root = process.cwd()) {
     "--lib", "ES2023",
     "--module", "ESNext",
     "--moduleResolution", "Bundler",
+    "--resolveJsonModule",
     "--skipLibCheck",
     "--types", "node",
     "--allowSyntheticDefaultImports",

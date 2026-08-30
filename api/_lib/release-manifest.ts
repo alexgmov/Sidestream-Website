@@ -1,9 +1,11 @@
 import fs from "node:fs";
 import path from "node:path";
+import macosReleaseManifest from "../../data/release-manifest.json" with { type: "json" };
+import windowsReleaseManifest from "../../data/release-manifest.windows.json" with { type: "json" };
 
-const DEFAULT_MANIFEST_PATHS = {
-  macos: path.join(process.cwd(), "data", "release-manifest.json"),
-  windows: path.join(process.cwd(), "data", "release-manifest.windows.json"),
+const DEFAULT_MANIFESTS = {
+  macos: macosReleaseManifest,
+  windows: windowsReleaseManifest,
 } as const;
 const SIDESTREAM_ORIGIN = "https://sidestream.tv";
 
@@ -30,7 +32,7 @@ const PLATFORM_CONTRACTS = {
   },
 } as const;
 
-export type ReleasePlatform = keyof typeof DEFAULT_MANIFEST_PATHS;
+export type ReleasePlatform = keyof typeof DEFAULT_MANIFESTS;
 export type PublicReleasePlatform =
   (typeof PLATFORM_CONTRACTS)[ReleasePlatform]["publicPlatform"];
 
@@ -77,8 +79,10 @@ export function resolveReleasePlatform(
 export function readReleaseManifest(
   platform: ReleasePlatform = "macos",
 ): ReleaseManifest {
-  const manifestPath = getManifestPath(platform);
-  const source = JSON.parse(fs.readFileSync(manifestPath, "utf8")) as unknown;
+  const manifestPath = getManifestOverridePath(platform);
+  const source = manifestPath
+    ? JSON.parse(fs.readFileSync(manifestPath, "utf8")) as unknown
+    : DEFAULT_MANIFESTS[platform] as unknown;
   return parseReleaseManifest(source, platform);
 }
 
@@ -223,14 +227,12 @@ export function toPublicReleaseManifest(manifest: ReleaseManifest) {
   };
 }
 
-function getManifestPath(platform: ReleasePlatform) {
+function getManifestOverridePath(platform: ReleasePlatform) {
   if (platform === "windows") {
-    return process.env.SIDESTREAM_WINDOWS_RELEASE_MANIFEST_PATH ||
-      DEFAULT_MANIFEST_PATHS.windows;
+    return process.env.SIDESTREAM_WINDOWS_RELEASE_MANIFEST_PATH || null;
   }
 
-  return process.env.SIDESTREAM_RELEASE_MANIFEST_PATH ||
-    DEFAULT_MANIFEST_PATHS.macos;
+  return process.env.SIDESTREAM_RELEASE_MANIFEST_PATH || null;
 }
 
 function validateArtifactPathname(

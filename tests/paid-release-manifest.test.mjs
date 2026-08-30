@@ -56,6 +56,14 @@ before(async () => {
     "api/releases/paid-latest.ts",
     "api/releases/paid-latest.ts",
   );
+  copyFixtureFile(
+    "data/release-manifest.json",
+    "data/release-manifest.json",
+  );
+  copyFixtureFile(
+    "data/release-manifest.windows.json",
+    "data/release-manifest.windows.json",
+  );
 
   ({
     getPaidArtifactPathname,
@@ -438,10 +446,19 @@ function copyTypeScriptModule(sourceRelativePath, targetRelativePath) {
     path.join(repoRoot, sourceRelativePath),
     "utf8",
   ).replace(
-    /(paid-release-manifest|installer-delivery|release-manifest)\.js/g,
+    /(paid-release-manifest|installer-delivery|release-manifest)\.js(?=["'])/g,
     "$1.ts",
   );
   writeFileSync(targetPath, source, "utf8");
+}
+
+function copyFixtureFile(sourceRelativePath, targetRelativePath) {
+  const targetPath = path.join(compiledDirectory, targetRelativePath);
+  mkdirSync(path.dirname(targetPath), { recursive: true });
+  writeFileSync(
+    targetPath,
+    readFileSync(path.join(repoRoot, sourceRelativePath)),
+  );
 }
 
 function restoreEnvironment(name, value) {
