@@ -586,7 +586,7 @@ and `s%20table` currently resolve to `stable`, while any other final value retur
 After a tagged Gmail redirect is sent, the bounded writer gets at most one second to save a privacy-limited request event; a missing secret, database failure, or timeout cannot change delivery. Set `SIDESTREAM_INSTALLER_ANALYTICS_HASH_SECRET` to at least 32 characters everywhere that records referrals. `/api/releases/latest` serves the same selected manifest's public update metadata without its storage pathname. Bare and Mac-platform requests use `data/release-manifest.json`; `platform=win32-x64` uses `data/release-manifest.windows.json`; unknown platforms return `404`. Receipt-gated paid delivery uses `data/release-manifest.paid.json` or `data/release-manifest.paid.windows.json`; `/api/releases/paid-latest` exposes only bounded public metadata. The independent paid Mac pointer selects the exact-public-`1.0.17`-baseline paid-onboarding build. Its immediate behavior rollback is the original stable `1.0.17` Mac artifact at `sidestream/1.0.17/Sidestream-1.0.17-Mac-Installer.dmg`. The Mac manifest keeps `1.0.12` as the minimum supported version; clients below that floor are critical-update eligible regardless of rollout, while 1.0.19 is also critical. Future publishing defaults to the same floor unless `--min-supported-version` is supplied. The current public Mac pathname is:
 
 ```text
-sidestream/1.0.19/Sidestream-1.0.19-Mac-Installer.dmg
+sidestream/1.0.20/Sidestream-1.0.20-Mac-Installer.dmg
 ```
 
 The current public Windows pathname is:
@@ -1330,6 +1330,7 @@ Use the narrowest relevant check after edits:
 
 ## Recent Change Log
 
+- 2026-08-29: Published the signed, notarized, and stapled standard Mac `1.0.20` installer to `sidestream/1.0.20/Sidestream-1.0.20-Mac-Installer.dmg` and advanced the shared public download/update manifest at a noncritical 25% rollout; the independently qualified Windows manifest remains unchanged.
 - 2026-08-29: Removed the prominent `One-time` pill from the public `$19.99` Unlimited pricing card so the active annual-versus-one-time Upgrade experiment is not visually biased before authenticated assignment. The price suffix, regional fallback copy, Checkout route, and separate one-time-only paid-acquisition landing remain unchanged.
 - 2026-08-29: Split wallet activation from top-up activation: `SIDESTREAM_DOWNLOAD_CREDITS_ENABLED=1` can enable server-authoritative sync/reserve/finalize while `SIDESTREAM_CREDIT_PURCHASES_ENABLED` remains absent, keeping pack presentation and purchase Checkout unavailable during the staged credit rollout.
 - 2026-08-27: Repaired the disposable-Postgres integration path: its copied Stripe-event processor now resolves schema-scoped credit fulfillment, wallet bootstrap uses explicit integer parameter types, and the maintenance proof checks dormant pricing-snapshot retention without assuming an exposure exists.
