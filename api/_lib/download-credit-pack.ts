@@ -21,6 +21,12 @@ export function isDownloadCreditServiceEnabled(
   return environment.SIDESTREAM_DOWNLOAD_CREDITS_ENABLED === "1";
 }
 
+export function isDownloadCreditPurchaseEnabled(
+  environment: Readonly<Record<string, unknown>> = process.env,
+) {
+  return environment.SIDESTREAM_CREDIT_PURCHASES_ENABLED === "1";
+}
+
 export function getConfiguredDownloadCreditPack(
   environment: Readonly<Record<string, unknown>> = process.env,
 ): DownloadCreditPack | null {

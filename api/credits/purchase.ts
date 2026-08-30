@@ -14,6 +14,7 @@ import {
 } from "../_lib/download-credits.js";
 import {
   getConfiguredDownloadCreditPack,
+  isDownloadCreditPurchaseEnabled,
   isDownloadCreditServiceEnabled,
 } from "../_lib/download-credit-pack.js";
 import {
@@ -34,7 +35,10 @@ export default async function handler(request: AccountRequest, response: ServerR
   }
 
   try {
-    if (!isDownloadCreditServiceEnabled()) return purchaseUnavailable(response);
+    if (
+      !isDownloadCreditServiceEnabled() ||
+      !isDownloadCreditPurchaseEnabled()
+    ) return purchaseUnavailable(response);
     const environment = resolveRequestLicenseEnvironment(request);
     if (!environment) return purchaseUnavailable(response);
     const pack = getConfiguredDownloadCreditPack();

@@ -14,6 +14,7 @@ import {
 } from "../_lib/download-credits.js";
 import {
   getConfiguredDownloadCreditPack,
+  isDownloadCreditPurchaseEnabled,
   isDownloadCreditServiceEnabled,
   serializeDownloadCreditPack,
 } from "../_lib/download-credit-pack.js";
@@ -61,7 +62,9 @@ export default async function handler(request: AccountRequest, response: ServerR
     });
     return sendJson(response, 200, {
       ...serializeDownloadCreditSnapshot(snapshot),
-      creditPack: serializeDownloadCreditPack(getConfiguredDownloadCreditPack()),
+      creditPack: serializeDownloadCreditPack(
+        isDownloadCreditPurchaseEnabled() ? getConfiguredDownloadCreditPack() : null,
+      ),
     });
   } catch {
     console.error("sidestream_credit_sync_unavailable");

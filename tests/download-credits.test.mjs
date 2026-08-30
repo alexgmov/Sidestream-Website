@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import {
   getConfiguredDownloadCreditPack,
+  isDownloadCreditPurchaseEnabled,
   isDownloadCreditServiceEnabled,
   serializeDownloadCreditPack,
 } from "../api/_lib/download-credit-pack.ts";
@@ -53,6 +54,13 @@ test("credit pack configuration is explicit and omits Stripe identity from clien
   }), true);
   assert.equal(isDownloadCreditServiceEnabled({
     SIDESTREAM_DOWNLOAD_CREDITS_ENABLED: "true",
+  }), false);
+  assert.equal(isDownloadCreditPurchaseEnabled({}), false);
+  assert.equal(isDownloadCreditPurchaseEnabled({
+    SIDESTREAM_CREDIT_PURCHASES_ENABLED: "1",
+  }), true);
+  assert.equal(isDownloadCreditPurchaseEnabled({
+    SIDESTREAM_CREDIT_PURCHASES_ENABLED: "true",
   }), false);
   assert.equal(getConfiguredDownloadCreditPack({}), null);
   assert.equal(getConfiguredDownloadCreditPack({
@@ -136,6 +144,7 @@ test("credit Checkout is exact-priced, rate-limited, and fulfilled only by signe
   assert.match(helper, /price\.currency !== pack\.currency/);
   assert.match(helper, /price\.unit_amount !== pack\.unitAmountMinor/);
   assert.match(purchase, /getConfiguredDownloadCreditPack\(\)/);
+  assert.match(purchase, /isDownloadCreditPurchaseEnabled\(\)/);
   assert.match(purchase, /createDownloadCreditPackCheckout/);
   assert.match(purchase, /scope: "credits:purchase"/);
   assert.match(purchase, /credit_purchases_unavailable/);
