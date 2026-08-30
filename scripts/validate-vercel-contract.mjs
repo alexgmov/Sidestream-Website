@@ -271,6 +271,12 @@ export async function validateVercelContract(root = REPOSITORY_ROOT) {
       sharedReleaseSource.includes('"release-manifest.windows.json"'),
     "The release resolver must include both manifest source files",
   );
+  for (const releaseFunction of ["api/download.ts", "api/releases/latest.ts"]) {
+    requireCondition(
+      vercel.functions?.[releaseFunction]?.includeFiles === "data/release-manifest*.json",
+      `${releaseFunction} must include release manifests so manifest-only deployments invalidate cached bundles`,
+    );
+  }
 
   const [macManifest, windowsManifest] = await Promise.all([
     readJson(path.join(root, "data/release-manifest.json")),

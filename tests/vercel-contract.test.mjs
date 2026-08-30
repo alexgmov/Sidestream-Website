@@ -294,6 +294,10 @@ test("the built checkout verifier checks authentication, Stripe creation, fulfil
   assert.match(source, /no_payment_required/u);
   assert.match(source, /Unexpected root HTML|unexpected root HTML/u);
   assert.match(source, /version\.json/u);
+  assert.match(source, /api\/download\.func/u);
+  assert.match(source, /api\/releases\/latest\.func/u);
+  assert.match(source, /filePathMap/u);
+  assert.match(source, /data\/release-manifest\.windows\.json/u);
 });
 
 test("missing and incorrect CRON_SECRET authorization is rejected by every internal route", async () => {

@@ -6,6 +6,12 @@
   "devCommand": "npm run dev -- --host 127.0.0.1 --port $PORT",
   "outputDirectory": "dist",
   "functions": {
+    "api/download.ts": {
+      "includeFiles": "data/release-manifest*.json"
+    },
+    "api/releases/latest.ts": {
+      "includeFiles": "data/release-manifest*.json"
+    },
     "api/paid-acquisition/landing.ts": {
       "includeFiles": "runtime/mobile-paid-prototype.html"
     }

@@ -17,6 +17,14 @@ const REQUIRED_FUNCTIONS = Object.freeze([
   "api/internal/customers/index.func",
   "api/internal/customers/[customerId].func",
 ]);
+const RELEASE_FUNCTIONS = Object.freeze([
+  "api/download.func",
+  "api/releases/latest.func",
+]);
+const RELEASE_MANIFESTS = Object.freeze([
+  "data/release-manifest.json",
+  "data/release-manifest.windows.json",
+]);
 const ALLOWED_ROOT_HTML = new Set([
   "account.html",
   "credit-complete.html",
@@ -97,10 +105,21 @@ export async function verifyVercelBuild(outputRoot = OUTPUT_ROOT) {
     throw new Error("Vercel static output contains no valid Production Git SHA");
   }
 
-  const bundledFiles = await listFiles(path.join(outputRoot, "functions"));
-  for (const manifest of ["release-manifest.json", "release-manifest.windows.json"]) {
-    if (!bundledFiles.some((filename) => path.basename(filename) === manifest)) {
-      throw new Error(`Vercel build omitted ${manifest} from the function bundles`);
+  for (const releaseFunction of RELEASE_FUNCTIONS) {
+    const functionConfigPath = path.join(
+      outputRoot,
+      "functions",
+      releaseFunction,
+      ".vc-config.json",
+    );
+    const functionConfig = JSON.parse(await readFile(functionConfigPath, "utf8"));
+    const filePathMap = functionConfig?.filePathMap;
+    for (const manifest of RELEASE_MANIFESTS) {
+      if (filePathMap?.[manifest] !== manifest) {
+        throw new Error(
+          `Vercel build omitted ${manifest} from ${releaseFunction}`,
+        );
+      }
     }
   }
   return {
