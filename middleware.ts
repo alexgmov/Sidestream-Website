@@ -194,7 +194,10 @@ export function routePaidExperimentForTest(request, overrides) {
       return new Uint8Array(nonceBytes);
     },
     secret: overrides.secret,
-    paidLandingPath: TEST_PAID_LANDING_PATH,
+    paidLandingPath: overrides.paidLandingPath ?? TEST_PAID_LANDING_PATH,
+    databaseCutoverMode: overrides.databaseCutoverMode ?? "source",
+    hetznerOriginUrl: overrides.hetznerOriginUrl,
+    originAuthSecret: overrides.originAuthSecret,
   });
 }
 
@@ -203,7 +206,10 @@ export function routeMetaAdLinkForTest(request, overrides) {
     now: () => overrides.nowMs,
     randomBytes: () => new Uint8Array(overrides.nonceBytes),
     secret: overrides.secret,
-    paidLandingPath: TEST_PAID_LANDING_PATH,
+    paidLandingPath: overrides.paidLandingPath ?? TEST_PAID_LANDING_PATH,
+    databaseCutoverMode: overrides.databaseCutoverMode ?? "source",
+    hetznerOriginUrl: overrides.hetznerOriginUrl,
+    originAuthSecret: overrides.originAuthSecret,
   });
 }
 
@@ -215,8 +221,11 @@ export function routeBrowserAcquisitionForTest(request, overrides) {
     ),
     secret: overrides.paidSecret,
     acquisitionSecret: overrides.acquisitionSecret,
-    paidLandingPath: TEST_PAID_LANDING_PATH,
+    paidLandingPath: overrides.paidLandingPath ?? TEST_PAID_LANDING_PATH,
     acquisitionExperiment: overrides.experiment || null,
+    databaseCutoverMode: overrides.databaseCutoverMode ?? "source",
+    hetznerOriginUrl: overrides.hetznerOriginUrl,
+    originAuthSecret: overrides.originAuthSecret,
   });
 }
 
@@ -581,9 +590,15 @@ async function cohortResponse(cohort, attribution, cookie, runtime) {
   );
   requestHeaders.set(INTERNAL_ATTRIBUTION_HEADER, attributionQuery);
   requestHeaders.set(INTERNAL_PROOF_HEADER, proof);
-  const response = rewrite(destination, {
-    request: { headers: requestHeaders },
-  });
+  const databaseMode = databaseApiDecision(runtime.databaseCutoverMode);
+  if (databaseMode === "fenced") return paidLinkUnavailable();
+  const response = databaseMode === "target"
+    ? routeDatabaseApiRequest(
+        new Request(destination, { headers: requestHeaders }),
+        runtime,
+      )
+    : rewrite(destination, { request: { headers: requestHeaders } });
+  if (response.status === 503) return paidLinkUnavailable();
   response.headers.set("Cache-Control", "private, no-store");
   if (cookie) response.headers.append("Set-Cookie", cookie);
   rememberAcquisitionExperiment(

@@ -244,6 +244,40 @@ test("Meta links preserve one safe creative key and reject malformed or duplicat
   }
 });
 
+test("Meta paid landing follows the origin-authenticated Hetzner API after database cutover", async () => {
+  const originSecret = "hetzner-origin-secret-0123456789abcdef";
+  const response = await middleware.routeBrowserAcquisitionForTest(
+    request("/meta-paid?utm_content=23851234567890123", { userAgent: DESKTOP_UA }),
+    {
+      nowMs: NOW_MS,
+      tokenBytes: Uint8Array.from({ length: 32 }, (_, index) => index + 33),
+      nonceBytes: PAID_NONCE,
+      paidSecret: SECRET,
+      acquisitionSecret: ACQUISITION_SECRET,
+      paidLandingPath: "/api/paid-acquisition/landing",
+      databaseCutoverMode: "target",
+      hetznerOriginUrl: "https://static.example.invalid/sidestream/",
+      originAuthSecret: originSecret,
+    },
+  );
+  assert.equal(
+    response.headers.get("x-test-rewrite"),
+    "https://static.example.invalid/sidestream/api/paid-acquisition/landing",
+  );
+  assert.equal(
+    response.headers.get("x-rewrite-x-sidestream-origin-auth"),
+    originSecret,
+  );
+  assert.equal(
+    response.headers.get("x-rewrite-x-sidestream-original-host"),
+    "sidestream.tv",
+  );
+  assert.equal(
+    response.headers.get("x-rewrite-x-sidestream-paid-acquisition-attribution"),
+    "utm_source=meta&utm_medium=social&utm_campaign=sidestream_direct_offer_test&utm_content=23851234567890123",
+  );
+});
+
 test("Meta journeys stay stable within a variant and restart when the selected ad changes", async () => {
   const first = await middleware.routeBrowserAcquisitionForTest(
     request("/meta-default", { userAgent: DESKTOP_UA }),
