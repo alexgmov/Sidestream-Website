@@ -311,7 +311,7 @@ async function routeMetaAdLink(request, runtime) {
   if (!variant) return next();
   if (request.method !== "GET" && request.method !== "HEAD") return next();
 
-  const attribution = metaAttribution(variant);
+  const attribution = metaAttribution(variant, url.search);
   const nowSeconds = Math.floor(runtime.now() / 1_000);
   if (variant === "default") {
     const response = controlRedirect(attribution);
@@ -399,7 +399,7 @@ async function routeBrowserRequest(request, runtime) {
     paidResponse,
     runtime,
     experiment,
-    isMetaLink ? metaBrowserAttribution(metaVariant) : null,
+    isMetaLink ? metaBrowserAttribution(metaVariant, url.search) : null,
     isMetaLink,
   );
 }
@@ -480,21 +480,27 @@ function normalizeAttribution(rawSearch) {
   return attribution;
 }
 
-function metaAttribution(variant) {
+function metaCreativeKey(variant, rawSearch) {
+  const content = normalizeAttribution(rawSearch)
+    .find(([name]) => name === "utm_content")?.[1];
+  return content || variant;
+}
+
+function metaAttribution(variant, rawSearch = "") {
   return [
     ["utm_source", "meta"],
     ["utm_medium", "social"],
     ["utm_campaign", META_CAMPAIGN],
-    ["utm_content", variant],
+    ["utm_content", metaCreativeKey(variant, rawSearch)],
   ];
 }
 
-function metaBrowserAttribution(variant) {
+function metaBrowserAttribution(variant, rawSearch = "") {
   return {
     source: "meta",
     medium: "social",
     campaign: META_CAMPAIGN,
-    content: variant,
+    content: metaCreativeKey(variant, rawSearch),
   };
 }
 

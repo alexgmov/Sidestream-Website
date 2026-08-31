@@ -11,6 +11,7 @@ import {
   InstallerDeliveryError,
   resolveInstallerProvider,
 } from "../api/_lib/installer-delivery.js";
+import { sortCompiledApiRouteFiles } from "./route-order.js";
 
 type ApiResponse = ServerResponse & {
   status: (statusCode: number) => ApiResponse;
@@ -137,7 +138,9 @@ async function serveSignedInstaller(
 
 async function loadRoutes(root: string) {
   if (!existsSync(root)) throw new Error(`Compiled API directory is missing: ${root}`);
-  const files = recursiveFiles(root).filter((file) => file.endsWith(".js"));
+  const files = sortCompiledApiRouteFiles(
+    recursiveFiles(root).filter((file) => file.endsWith(".js")),
+  );
   const loaded: Route[] = [];
   for (const file of files) {
     const relative = path.relative(root, file).split(path.sep).join("/");

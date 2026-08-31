@@ -209,6 +209,41 @@ test("fixed Meta links select the default and paid experiences without random as
   assert.notEqual(paidAcquisition.acquisitionId, defaultAcquisition.acquisitionId);
 });
 
+test("Meta links preserve one safe creative key and reject malformed or duplicate keys", async () => {
+  const creative = await middleware.routeBrowserAcquisitionForTest(
+    request("/meta-paid?utm_content=23851234567890123", { userAgent: DESKTOP_UA }),
+    {
+      nowMs: NOW_MS,
+      tokenBytes: Uint8Array.from({ length: 32 }, (_, index) => index + 33),
+      nonceBytes: PAID_NONCE,
+      paidSecret: SECRET,
+      acquisitionSecret: ACQUISITION_SECRET,
+    },
+  );
+  assert.match(
+    creative.headers.get("x-rewrite-x-sidestream-paid-acquisition-attribution"),
+    /utm_content=23851234567890123/,
+  );
+  assert.equal(acquisitionPayload(creative).firstTouch[3], "23851234567890123");
+
+  for (const path of [
+    "/meta-paid?utm_content=bad%20value",
+    "/meta-paid?utm_content=1001&utm_content=1002",
+  ]) {
+    const fallback = await middleware.routeBrowserAcquisitionForTest(
+      request(path, { userAgent: DESKTOP_UA }),
+      {
+        nowMs: NOW_MS,
+        tokenBytes: Uint8Array.from({ length: 32 }, (_, index) => index + 65),
+        nonceBytes: PAID_NONCE,
+        paidSecret: SECRET,
+        acquisitionSecret: ACQUISITION_SECRET,
+      },
+    );
+    assert.equal(acquisitionPayload(fallback).firstTouch[3], "paid");
+  }
+});
+
 test("Meta journeys stay stable within a variant and restart when the selected ad changes", async () => {
   const first = await middleware.routeBrowserAcquisitionForTest(
     request("/meta-default", { userAgent: DESKTOP_UA }),
