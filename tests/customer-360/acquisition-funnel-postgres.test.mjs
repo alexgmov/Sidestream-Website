@@ -152,6 +152,11 @@ test("acquisition funnel keeps retention UTC-day based and prefers exact paid bi
       returnEligibleProfiles: "2",
       returnedProfiles: "1",
       oneAndDoneProfiles: "1",
+      firstDayDownloadAttempts: "3",
+      firstDayActivatedProfiles: "2",
+      browseOnlyProfiles: "1",
+      singleDownloadProfiles: "1",
+      multiDownloadProfiles: "1",
     });
     assert.deepEqual(report.firstOpenPercentage, {
       numerator: "3",
@@ -162,6 +167,11 @@ test("acquisition funnel keeps retention UTC-day based and prefers exact paid bi
       numerator: "1",
       denominator: "3",
       percentage: "33.33",
+    });
+    assert.deepEqual(report.productActivationPercentage, {
+      numerator: "2",
+      denominator: "4",
+      percentage: "50.00",
     });
     assert.deepEqual(report.paidCustomerPercentage, {
       numerator: "1",
@@ -213,12 +223,37 @@ test("acquisition funnel keeps retention UTC-day based and prefers exact paid bi
       returnEligibleProfiles: "1",
       returnedProfiles: "1",
       oneAndDoneProfiles: "0",
+      firstDayDownloadAttempts: "2",
+      firstDayActivatedProfiles: "1",
+      browseOnlyProfiles: "0",
+      singleDownloadProfiles: "0",
+      multiDownloadProfiles: "1",
       firstOpenPercentage: {
         numerator: "1",
         denominator: "1",
         percentage: "100.00",
       },
       activationPercentage: {
+        numerator: "1",
+        denominator: "1",
+        percentage: "100.00",
+      },
+      productActivationPercentage: {
+        numerator: "1",
+        denominator: "1",
+        percentage: "100.00",
+      },
+      browseOnlyPercentage: {
+        numerator: "0",
+        denominator: "1",
+        percentage: "0.00",
+      },
+      singleDownloadPercentage: {
+        numerator: "0",
+        denominator: "1",
+        percentage: "0.00",
+      },
+      multiDownloadPercentage: {
         numerator: "1",
         denominator: "1",
         percentage: "100.00",
@@ -1101,6 +1136,7 @@ async function insertUsageDay(pool, schema, {
   day,
   firstOpenAt,
   attempts,
+  successes = attempts,
 }) {
   await pool.query(
     `insert into ${schema}.sidestream_customer_usage_daily (
@@ -1116,10 +1152,17 @@ async function insertUsageDay(pool, schema, {
        'test', $1, $2, $3, $3,
        case when $4::bigint > 0 then $3::timestamptz else null end,
        case when $4::bigint > 0 then $3::timestamptz else null end,
-       1, $4, 0, 0, 0, 0, $4, 0,
-       $3, $5, $3
+       1, $4, $5, $5, 0, 0, $4 - $5, 0,
+       $3, $6, $3
      )`,
-    [installHash(profileId), day, firstOpenAt, attempts, `watermark-${profileId}`],
+    [
+      installHash(profileId),
+      day,
+      firstOpenAt,
+      attempts,
+      successes,
+      `watermark-${profileId}`,
+    ],
   );
 }
 

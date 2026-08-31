@@ -64,6 +64,11 @@ type FunnelGroupRow = QueryResultRow & Readonly<{
   return_eligible_count: string | number | bigint;
   returned_count: string | number | bigint;
   one_and_done_count: string | number | bigint;
+  first_day_download_attempt_count: string | number | bigint;
+  first_day_activated_count: string | number | bigint;
+  browse_only_count: string | number | bigint;
+  single_download_count: string | number | bigint;
+  multi_download_count: string | number | bigint;
 }>;
 
 type FunnelJourneyRow = QueryResultRow & Readonly<{
@@ -188,6 +193,14 @@ const FUNNEL_CTES = (paidTelemetryBindingsRelation: string) => `
         ),
         0
       ) as day_zero_download_attempts,
+      coalesce(
+        sum(usage.download_success_count) filter (
+          where profile_usage.first_open_at is not null
+            and usage.activity_day =
+              (profile_usage.first_open_at at time zone 'UTC')::date
+        ),
+        0
+      ) as day_zero_download_successes,
       coalesce(
         array_agg(
           distinct to_char(usage.activity_day, 'YYYY-MM-DD')
@@ -597,6 +610,7 @@ const FUNNEL_CTES = (paidTelemetryBindingsRelation: string) => `
       activation.activation_at,
       (paid_customer.profile_id is not null) as paid_customer,
       usage.day_zero_download_attempts,
+      usage.day_zero_download_successes,
       usage.later_open_days,
       usage.return_eligible,
       coalesce(attribution.source, 'unknown') as source,
@@ -694,7 +708,21 @@ export async function queryAcquisitionFunnel(
         )::bigint as returned_count,
         count(*) filter (
           where return_eligible and cardinality(later_open_days) = 0
-        )::bigint as one_and_done_count
+        )::bigint as one_and_done_count,
+        coalesce(sum(day_zero_download_attempts), 0)::bigint
+          as first_day_download_attempt_count,
+        count(*) filter (
+          where first_open_at is not null and day_zero_download_successes > 0
+        )::bigint as first_day_activated_count,
+        count(*) filter (
+          where first_open_at is not null and day_zero_download_attempts = 0
+        )::bigint as browse_only_count,
+        count(*) filter (
+          where first_open_at is not null and day_zero_download_attempts = 1
+        )::bigint as single_download_count,
+        count(*) filter (
+          where first_open_at is not null and day_zero_download_attempts >= 2
+        )::bigint as multi_download_count
       from attributed_profiles
       group by
         source, medium, campaign, experiment, cohort, attribution_confidence,
@@ -826,6 +854,10 @@ export async function queryAcquisitionFunnel(
         totals.completedActivations,
         totals.firstOpenedProfiles,
       ),
+      productActivationPercentage: percentageMetric(
+        totals.firstDayActivatedProfiles,
+        totals.profiles,
+      ),
       paidCustomerPercentage: percentageMetric(
         totals.paidCustomers,
         totals.profiles,
@@ -866,6 +898,11 @@ export async function queryAcquisitionFunnel(
         returnEligibleProfiles: totals.returnEligibleProfiles.toString(),
         returnedProfiles: totals.returnedProfiles.toString(),
         oneAndDoneProfiles: totals.oneAndDoneProfiles.toString(),
+        firstDayDownloadAttempts: totals.firstDayDownloadAttempts.toString(),
+        firstDayActivatedProfiles: totals.firstDayActivatedProfiles.toString(),
+        browseOnlyProfiles: totals.browseOnlyProfiles.toString(),
+        singleDownloadProfiles: totals.singleDownloadProfiles.toString(),
+        multiDownloadProfiles: totals.multiDownloadProfiles.toString(),
       },
       groups,
       sourceTotals: sourceTotals.rows,
@@ -887,6 +924,10 @@ export async function queryAcquisitionFunnel(
         stageObservationEndExclusive: input.observationEnd,
         sourceCap: MAX_SOURCE_GROUPS,
         journeyPageCap: MAX_JOURNEY_LIMIT,
+        usageModeObservation: "first_open_utc_day",
+        usageModeCountingGrain: "distinct_live_customer_profile",
+        productActivationDefinition: "first_day_successful_download",
+        multiDownloadThreshold: 2,
         historicalInference: "rejected",
       },
       journeys: journeyRows.map(formatJourney),
@@ -1065,6 +1106,11 @@ function formatGroup(row: FunnelGroupRow) {
   const returnEligibleProfiles = toBigInt(row.return_eligible_count);
   const returnedProfiles = toBigInt(row.returned_count);
   const oneAndDoneProfiles = toBigInt(row.one_and_done_count);
+  const firstDayDownloadAttempts = toBigInt(row.first_day_download_attempt_count);
+  const firstDayActivatedProfiles = toBigInt(row.first_day_activated_count);
+  const browseOnlyProfiles = toBigInt(row.browse_only_count);
+  const singleDownloadProfiles = toBigInt(row.single_download_count);
+  const multiDownloadProfiles = toBigInt(row.multi_download_count);
   return {
     source: row.source,
     medium: row.medium,
@@ -1081,9 +1127,30 @@ function formatGroup(row: FunnelGroupRow) {
     returnEligibleProfiles: returnEligibleProfiles.toString(),
     returnedProfiles: returnedProfiles.toString(),
     oneAndDoneProfiles: oneAndDoneProfiles.toString(),
+    firstDayDownloadAttempts: firstDayDownloadAttempts.toString(),
+    firstDayActivatedProfiles: firstDayActivatedProfiles.toString(),
+    browseOnlyProfiles: browseOnlyProfiles.toString(),
+    singleDownloadProfiles: singleDownloadProfiles.toString(),
+    multiDownloadProfiles: multiDownloadProfiles.toString(),
     firstOpenPercentage: percentageMetric(firstOpenedProfiles, profiles),
     activationPercentage: percentageMetric(
       completedActivations,
+      firstOpenedProfiles,
+    ),
+    productActivationPercentage: percentageMetric(
+      firstDayActivatedProfiles,
+      profiles,
+    ),
+    browseOnlyPercentage: percentageMetric(
+      browseOnlyProfiles,
+      firstOpenedProfiles,
+    ),
+    singleDownloadPercentage: percentageMetric(
+      singleDownloadProfiles,
+      firstOpenedProfiles,
+    ),
+    multiDownloadPercentage: percentageMetric(
+      multiDownloadProfiles,
       firstOpenedProfiles,
     ),
     paidCustomerPercentage: percentageMetric(paidCustomers, profiles),
@@ -1132,10 +1199,34 @@ function formatJourney(row: FunnelJourneyRow) {
 }
 
 function buildSourceTotals(rows: readonly FunnelGroupRow[]) {
-  const totals = new Map<string, { profiles: bigint; paidCustomers: bigint }>();
+  const totals = new Map<string, {
+    profiles: bigint;
+    firstOpenedProfiles: bigint;
+    firstDayDownloadAttempts: bigint;
+    firstDayActivatedProfiles: bigint;
+    browseOnlyProfiles: bigint;
+    singleDownloadProfiles: bigint;
+    multiDownloadProfiles: bigint;
+    paidCustomers: bigint;
+  }>();
   for (const row of rows) {
-    const current = totals.get(row.source) || { profiles: 0n, paidCustomers: 0n };
+    const current = totals.get(row.source) || {
+      profiles: 0n,
+      firstOpenedProfiles: 0n,
+      firstDayDownloadAttempts: 0n,
+      firstDayActivatedProfiles: 0n,
+      browseOnlyProfiles: 0n,
+      singleDownloadProfiles: 0n,
+      multiDownloadProfiles: 0n,
+      paidCustomers: 0n,
+    };
     current.profiles += toBigInt(row.profile_count);
+    current.firstOpenedProfiles += toBigInt(row.first_opened_count);
+    current.firstDayDownloadAttempts += toBigInt(row.first_day_download_attempt_count);
+    current.firstDayActivatedProfiles += toBigInt(row.first_day_activated_count);
+    current.browseOnlyProfiles += toBigInt(row.browse_only_count);
+    current.singleDownloadProfiles += toBigInt(row.single_download_count);
+    current.multiDownloadProfiles += toBigInt(row.multi_download_count);
     current.paidCustomers += toBigInt(row.paid_customer_count);
     totals.set(row.source, current);
   }
@@ -1145,6 +1236,28 @@ function buildSourceTotals(rows: readonly FunnelGroupRow[]) {
     rows: ordered.slice(0, MAX_SOURCE_GROUPS).map(([source, total]) => ({
       source,
       profileCount: total.profiles.toString(),
+      firstOpenedProfiles: total.firstOpenedProfiles.toString(),
+      firstDayDownloadAttempts: total.firstDayDownloadAttempts.toString(),
+      firstDayActivatedProfiles: total.firstDayActivatedProfiles.toString(),
+      browseOnlyProfiles: total.browseOnlyProfiles.toString(),
+      singleDownloadProfiles: total.singleDownloadProfiles.toString(),
+      multiDownloadProfiles: total.multiDownloadProfiles.toString(),
+      productActivationPercentage: percentageMetric(
+        total.firstDayActivatedProfiles,
+        total.profiles,
+      ),
+      browseOnlyPercentage: percentageMetric(
+        total.browseOnlyProfiles,
+        total.firstOpenedProfiles,
+      ),
+      singleDownloadPercentage: percentageMetric(
+        total.singleDownloadProfiles,
+        total.firstOpenedProfiles,
+      ),
+      multiDownloadPercentage: percentageMetric(
+        total.multiDownloadProfiles,
+        total.firstOpenedProfiles,
+      ),
       paidCustomers: total.paidCustomers.toString(),
       paidCustomerPercentage: percentageMetric(total.paidCustomers, total.profiles),
       countingGrain: "distinct_live_customer_profile",
@@ -1249,6 +1362,16 @@ function sumGroupCounts(rows: readonly FunnelGroupRow[]) {
       totals.returnedProfiles + toBigInt(row.returned_count),
     oneAndDoneProfiles:
       totals.oneAndDoneProfiles + toBigInt(row.one_and_done_count),
+    firstDayDownloadAttempts:
+      totals.firstDayDownloadAttempts + toBigInt(row.first_day_download_attempt_count),
+    firstDayActivatedProfiles:
+      totals.firstDayActivatedProfiles + toBigInt(row.first_day_activated_count),
+    browseOnlyProfiles:
+      totals.browseOnlyProfiles + toBigInt(row.browse_only_count),
+    singleDownloadProfiles:
+      totals.singleDownloadProfiles + toBigInt(row.single_download_count),
+    multiDownloadProfiles:
+      totals.multiDownloadProfiles + toBigInt(row.multi_download_count),
   }), {
     profiles: 0n,
     firstOpenedProfiles: 0n,
@@ -1257,6 +1380,11 @@ function sumGroupCounts(rows: readonly FunnelGroupRow[]) {
     returnEligibleProfiles: 0n,
     returnedProfiles: 0n,
     oneAndDoneProfiles: 0n,
+    firstDayDownloadAttempts: 0n,
+    firstDayActivatedProfiles: 0n,
+    browseOnlyProfiles: 0n,
+    singleDownloadProfiles: 0n,
+    multiDownloadProfiles: 0n,
   });
 }
 

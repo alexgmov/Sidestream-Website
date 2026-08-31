@@ -951,6 +951,8 @@ boundary. Cohort selection never expands when an analyst moves
 | Active/open day | UTC calendar day with at least one `session_started`. Installer events, heartbeats, download events, and other telemetry do not create an active/open day. |
 | Download attempt | First accepted, non-speculative `download_requested`, deduplicated by install/session/download identity when present and telemetry event identity otherwise. Speculative requests count only when terminal facts are linked to a real user request. |
 | Day-zero downloads | Accepted download attempts whose UTC activity date equals the first-open UTC date. A download attempt does not itself create an open day. |
+| Product activation | A cohort profile with at least one successful download whose UTC activity date equals the first-open UTC date. The rate denominator is every cohort profile, including unopened profiles; this is separate from account/license activation. |
+| First-day usage mode | Among first-opened profiles only: `browse_only` has zero accepted attempts on the first-open UTC date, `single_download` has exactly one, and `multi_download` has two or more. These mutually exclusive modes describe initial behavior, not a permanent customer persona. |
 | Activation | Earliest non-null `completed_at` before `observationEnd` on a `sidestream_activation_sessions` row reached through the profile's exact `activation_record` identity link. Pending or merely created activation rows do not count. The metric numerator includes only profiles that also have a first open. |
 | Paid customer | A distinct cohort profile with at least one currency total whose verified `first_paid_at` is before `observationEnd` and whose current materialized `net_paid_minor` remains positive after refunds and disputes. This counts customers, not transactions, revenue, entitlements, or paid-attribution matches. |
 | Return eligibility | A first-opened profile with at least one complete later UTC calendar day available before `observationEnd`. If first open occurs on the last completed day before the boundary, the profile is immature and excluded from return and one-and-done denominators. |
@@ -964,6 +966,7 @@ objects:
 | --- | --- | --- |
 | `firstOpenPercentage` | First-opened profiles | All cohort profiles |
 | `activationPercentage` | First-opened profiles with a completed linked activation before `observationEnd` | First-opened profiles |
+| `productActivationPercentage` | Profiles with at least one successful download on their first-open UTC date | All cohort profiles |
 | `paidCustomerPercentage` | Distinct cohort profiles with verified payment before `observationEnd` and current positive net paid | All cohort profiles |
 | `returnPercentage` | Return-eligible profiles with at least one later open day | Return-eligible profiles |
 | `oneAndDonePercentage` | Return-eligible profiles with no later open day | Return-eligible profiles |
@@ -973,9 +976,14 @@ values plus a percentage rounded to two decimal places, or null when the
 denominator is zero. Completed activation numerators are defined as a subset of
 first-opened profiles, so activation percentage cannot exceed 100 percent. It
 is not activations divided by installs, clicks, downloads, attributed profiles,
-or paid customers. `totals` also exposes profiles, first-opened profiles,
-completed activations, paid customers, return-eligible profiles, returned profiles, and
-one-and-done profiles so every ratio can be audited.
+or paid customers. Product activation is the separate first-day successful-download
+metric requested for channel comparison. `totals` also exposes profiles,
+first-opened profiles, completed account activations, first-day product activations,
+first-day accepted attempts, browse-only profiles, single-download profiles,
+multi-download profiles, paid customers, return-eligible profiles, returned profiles,
+and one-and-done profiles so every ratio can be audited. Source totals and full
+attribution groups expose the same first-day counts and ratios, so channel/path
+comparisons never depend on which privacy-safe journey page is visible.
 
 ### Source precedence and experiment dimensions
 

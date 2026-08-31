@@ -158,6 +158,11 @@ test("aggregate and journey output exposes all ratios without raw linkage", asyn
               return_eligible_count: "2",
               returned_count: "1",
               one_and_done_count: "1",
+              first_day_download_attempt_count: "4",
+              first_day_activated_count: "1",
+              browse_only_count: "0",
+              single_download_count: "1",
+              multi_download_count: "1",
             },
             {
               source: "unknown",
@@ -174,6 +179,11 @@ test("aggregate and journey output exposes all ratios without raw linkage", asyn
               return_eligible_count: "0",
               returned_count: "0",
               one_and_done_count: "0",
+              first_day_download_attempt_count: "0",
+              first_day_activated_count: "0",
+              browse_only_count: "0",
+              single_download_count: "0",
+              multi_download_count: "0",
             },
           ],
         };
@@ -230,6 +240,11 @@ test("aggregate and journey output exposes all ratios without raw linkage", asyn
     denominator: "2",
     percentage: "50.00",
   });
+  assert.deepEqual(result.productActivationPercentage, {
+    numerator: "1",
+    denominator: "3",
+    percentage: "33.33",
+  });
   assert.deepEqual(result.paidCustomerPercentage, {
     numerator: "1",
     denominator: "3",
@@ -266,8 +281,13 @@ test("aggregate and journey output exposes all ratios without raw linkage", asyn
     percentage: "33.33",
   });
   assert.equal(result.groups[0].activationPercentage.percentage, "50.00");
+  assert.equal(result.groups[0].firstDayDownloadAttempts, "4");
+  assert.equal(result.groups[0].multiDownloadProfiles, "1");
+  assert.equal(result.groups[0].productActivationPercentage.percentage, "50.00");
   assert.equal(result.groups[0].paidCustomers, "1");
   assert.equal(result.sourceTotals[0].paidCustomers, "1");
+  assert.equal(result.sourceTotals[0].firstDayDownloadAttempts, "4");
+  assert.equal(result.sourceTotals[0].multiDownloadPercentage.percentage, "50.00");
   assert.equal(result.stageCounts.length, 10);
   assert.equal(
     result.stageCounts.find((stage) => stage.stage === "payment_settled").count,
@@ -378,6 +398,11 @@ test("journey cursors are deterministic and bind namespace, basis, limit, and wi
     return_eligible_count: "0",
     returned_count: "0",
     one_and_done_count: "0",
+    first_day_download_attempt_count: "0",
+    first_day_activated_count: "0",
+    browse_only_count: "0",
+    single_download_count: "0",
+    multi_download_count: "0",
   };
   const transaction = async (callback) => callback({
     query: async (sql) => ({
@@ -427,6 +452,11 @@ test("zero first-open denominator returns an explicit null percentage", async ()
           return_eligible_count: "0",
           returned_count: "0",
           one_and_done_count: "0",
+          first_day_download_attempt_count: "0",
+          first_day_activated_count: "0",
+          browse_only_count: "0",
+          single_download_count: "0",
+          multi_download_count: "0",
         }] : [],
       }),
     }),

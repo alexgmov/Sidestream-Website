@@ -251,6 +251,16 @@ test("anonymous acquisition survives download, claim, retention, and later verif
       returnEligibleProfiles: "5",
       returnedProfiles: "1",
       oneAndDoneProfiles: "4",
+      firstDayDownloadAttempts: "5",
+      firstDayActivatedProfiles: "0",
+      browseOnlyProfiles: "0",
+      singleDownloadProfiles: "5",
+      multiDownloadProfiles: "0",
+    });
+    assert.deepEqual(report.productActivationPercentage, {
+      numerator: "0",
+      denominator: "5",
+      percentage: "0.00",
     });
     assert.deepEqual(report.attributionCoverage, {
       numerator: "5",
@@ -268,7 +278,9 @@ test("anonymous acquisition survives download, claim, retention, and later verif
     );
     assert.ok(report.groups.every((group) =>
       group.attributionConfidence === "exact_anonymous_claim" &&
-      group.profileCount === "1"
+      group.profileCount === "1" &&
+      group.singleDownloadProfiles === "1" &&
+      group.singleDownloadPercentage.percentage === "100.00"
     ));
 
     const directJourney = report.journeys.find(
