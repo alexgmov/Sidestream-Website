@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "platform": "macos",
+  "version": "1.0.21",
+  "rolloutPercent": 25,
+  "advancedAt": "2026-08-31T23:51:34.791Z",
+  "artifactSha256": "c7f553f5c4bca0a7314e4f40ff50ac7feb3fd55c5e9eb14657fab54f5cdb26e9",
+  "observation": {
+    "analyticsRefreshedAt": null,
+    "closedDownloadIntents": 0,
+    "intentUsers": 0,
+    "intentSuccessRate": null
+  }
+}

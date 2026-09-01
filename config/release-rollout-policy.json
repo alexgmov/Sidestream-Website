@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "platform": "macos",
+  "profile": "production",
+  "rolloutSteps": [25, 50, 75, 100],
+  "minClosedIntents": 100,
+  "minAdditionalClosedIntents": 100,
+  "minIntentUsers": 20,
+  "minIntentSuccessRate": 0.92,
+  "minHoursAtCurrentRollout": 24,
+  "maxPendingIntentRate": 0.1,
+  "maxLargestUserFailureShare": 0.5,
+  "maxAnalyticsAgeMinutes": 30,
+  "allowedFailureStages": [
+    "downloader_execution"
+  ]
+}
