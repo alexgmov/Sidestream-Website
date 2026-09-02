@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
@@ -13,21 +14,12 @@ const ARTIFACT_SHA = "a".repeat(64);
 const NOW = new Date("2026-09-03T00:00:00.000Z");
 const REPO_ROOT = fileURLToPath(new URL("..", import.meta.url));
 
-const POLICY = {
-  schemaVersion: 1,
-  platform: "macos",
-  profile: "production",
-  rolloutSteps: [25, 50, 75, 100],
-  minClosedIntents: 100,
-  minAdditionalClosedIntents: 100,
-  minIntentUsers: 20,
-  minIntentSuccessRate: 0.92,
-  minHoursAtCurrentRollout: 24,
-  maxPendingIntentRate: 0.1,
-  maxLargestUserFailureShare: 0.5,
-  maxAnalyticsAgeMinutes: 30,
-  allowedFailureStages: ["downloader_execution"],
-};
+const POLICY = JSON.parse(readFileSync(new URL("../config/release-rollout-policy.json", import.meta.url), "utf8"));
+
+test("the authoritative policy requires 20 total and additional closed intents", () => {
+  assert.equal(POLICY.minClosedIntents, 20);
+  assert.equal(POLICY.minAdditionalClosedIntents, 20);
+});
 
 test("a fresh release with no cohort data holds and never proposes a step", () => {
   const evaluation = evaluate({
@@ -48,7 +40,7 @@ test("a fresh release with no cohort data holds and never proposes a step", () =
 });
 
 test("a mature healthy 25 percent cohort advances exactly one step", () => {
-  const evaluation = evaluate({ analytics: analytics({ closed: 100, failed: 7, successful: 93 }) });
+  const evaluation = evaluate({ analytics: analytics({ closed: 20, failed: 1, successful: 19 }) });
 
   assert.equal(evaluation.decision, "advance");
   assert.equal(evaluation.currentRolloutPercent, 25);
@@ -57,18 +49,18 @@ test("a mature healthy 25 percent cohort advances exactly one step", () => {
 
   const nextState = createNextRolloutState({ evaluation, localManifest: manifest() });
   assert.equal(nextState.rolloutPercent, 50);
-  assert.equal(nextState.observation.closedDownloadIntents, 100);
-  assert.equal(nextState.observation.intentSuccessRate, 0.93);
+  assert.equal(nextState.observation.closedDownloadIntents, 20);
+  assert.equal(nextState.observation.intentSuccessRate, 0.95);
   assert.equal(nextState.artifactSha256, ARTIFACT_SHA);
 });
 
 test("an unexpected failure stage blocks advancement even when headline health passes", () => {
   const evaluation = evaluate({
     analytics: analytics({
-      closed: 100,
-      failed: 7,
-      stages: { downloader_execution: 6, postprocess: 1 },
-      successful: 93,
+      closed: 20,
+      failed: 1,
+      stages: { postprocess: 1 },
+      successful: 19,
     }),
   });
 
@@ -77,27 +69,27 @@ test("an unexpected failure stage blocks advancement even when headline health p
   assert.deepEqual(evaluation.metrics.unexpectedFailureStages, [{ stage: "postprocess", count: 1 }]);
 });
 
-test("a later step needs both another 100 closed intents and 24 hours", () => {
+test("a later step needs both another 20 closed intents and 24 hours", () => {
   const evaluation = evaluate({
-    analytics: analytics({ closed: 150, failed: 10, rollout: 50, successful: 140 }),
+    analytics: analytics({ closed: 30, failed: 2, rollout: 50, successful: 28 }),
     localManifest: manifest({ rollout: 50 }),
     publicManifest: manifest({ rollout: 50 }),
-    state: rolloutState({ advancedAt: "2026-09-02T12:00:00.000Z", closed: 100, rollout: 50 }),
+    state: rolloutState({ advancedAt: "2026-09-02T12:00:00.000Z", closed: 20, rollout: 50 }),
   });
 
   assert.equal(evaluation.decision, "hold");
   assert.ok(evaluation.blockers.includes("additional_closed_intents"));
   assert.ok(evaluation.blockers.includes("minimum_time_at_rollout"));
-  assert.equal(evaluation.metrics.additionalClosedDownloadIntents, 50);
+  assert.equal(evaluation.metrics.additionalClosedDownloadIntents, 10);
   assert.equal(evaluation.metrics.hoursAtCurrentRollout, 12);
 });
 
 test("a mature healthy later cohort advances one configured step", () => {
   const evaluation = evaluate({
-    analytics: analytics({ closed: 200, failed: 12, rollout: 50, successful: 188 }),
+    analytics: analytics({ closed: 40, failed: 3, rollout: 50, successful: 37 }),
     localManifest: manifest({ rollout: 50 }),
     publicManifest: manifest({ rollout: 50 }),
-    state: rolloutState({ advancedAt: "2026-09-01T23:00:00.000Z", closed: 100, rollout: 50 }),
+    state: rolloutState({ advancedAt: "2026-09-01T23:00:00.000Z", closed: 20, rollout: 50 }),
   });
 
   assert.equal(evaluation.decision, "advance");
