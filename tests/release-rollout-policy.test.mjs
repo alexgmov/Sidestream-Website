@@ -16,9 +16,10 @@ const REPO_ROOT = fileURLToPath(new URL("..", import.meta.url));
 
 const POLICY = JSON.parse(readFileSync(new URL("../config/release-rollout-policy.json", import.meta.url), "utf8"));
 
-test("the authoritative policy requires 20 total and additional closed intents", () => {
+test("the authoritative policy requires 20 closed intents and 90 percent reliability", () => {
   assert.equal(POLICY.minClosedIntents, 20);
   assert.equal(POLICY.minAdditionalClosedIntents, 20);
+  assert.equal(POLICY.minIntentSuccessRate, 0.9);
 });
 
 test("a fresh release with no cohort data holds and never proposes a step", () => {
@@ -40,7 +41,7 @@ test("a fresh release with no cohort data holds and never proposes a step", () =
 });
 
 test("a mature healthy 25 percent cohort advances exactly one step", () => {
-  const evaluation = evaluate({ analytics: analytics({ closed: 20, failed: 1, successful: 19 }) });
+  const evaluation = evaluate({ analytics: analytics({ closed: 20, failed: 2, successful: 18 }) });
 
   assert.equal(evaluation.decision, "advance");
   assert.equal(evaluation.currentRolloutPercent, 25);
@@ -50,7 +51,7 @@ test("a mature healthy 25 percent cohort advances exactly one step", () => {
   const nextState = createNextRolloutState({ evaluation, localManifest: manifest() });
   assert.equal(nextState.rolloutPercent, 50);
   assert.equal(nextState.observation.closedDownloadIntents, 20);
-  assert.equal(nextState.observation.intentSuccessRate, 0.95);
+  assert.equal(nextState.observation.intentSuccessRate, 0.9);
   assert.equal(nextState.artifactSha256, ARTIFACT_SHA);
 });
 

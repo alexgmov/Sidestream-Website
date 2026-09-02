@@ -6,7 +6,7 @@
   "minClosedIntents": 20,
   "minAdditionalClosedIntents": 20,
   "minIntentUsers": 20,
-  "minIntentSuccessRate": 0.92,
+  "minIntentSuccessRate": 0.9,
   "minHoursAtCurrentRollout": 24,
   "maxPendingIntentRate": 0.1,
   "maxLargestUserFailureShare": 0.5,

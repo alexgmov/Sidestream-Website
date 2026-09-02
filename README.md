@@ -1156,7 +1156,7 @@ npm run release:rollout -- \
   --max-rollout 100
 ```
 
-An `advance` decision requires all configured gates together: the checked-in and public version, rollout, artifact SHA, and size match; the release is noncritical; analytics are live production/Postgres data refreshed within 30 minutes; the current version has at least 20 total and 20 additional closed download intents at this step, 20 intent users, at least 92% closed-intent success, 24 hours at the current percentage, at most 10% pending intents, no user causing more than 50% of failures, and no failure stage outside `downloader_execution`. Missing, stale, inconsistent, or newly shaped data holds the rollout.
+An `advance` decision requires all configured gates together: the checked-in and public version, rollout, artifact SHA, and size match; the release is noncritical; analytics are live production/Postgres data refreshed within 30 minutes; the current version has at least 20 total and 20 additional closed download intents at this step, 20 intent users, at least 90% closed-intent success, 24 hours at the current percentage, at most 10% pending intents, no user causing more than 50% of failures, and no failure stage outside `downloader_execution`. Missing, stale, inconsistent, or newly shaped data holds the rollout.
 
 After reviewing a passing dry run, this explicit form writes only the first allowed increment, here 25% to 50%:
 
@@ -1171,7 +1171,7 @@ npm run release:rollout -- \
   --confirm-rollout 25
 ```
 
-Apply refuses fixtures, a dirty tree, any branch other than `main`, or a local SHA different from `origin/main`. It updates `data/release-manifest.json` and records the exact step time and closed-intent baseline in `data/release-rollout-state.json`; another step therefore needs 24 more hours and 100 more closed intents. The command deliberately stops before commit, push, Vercel deployment, or Hetzner restart. Review the two-file diff, run `npm run test:release-rollout`, `npm run test:installer-delivery`, `npm run test:entitlement`, and `npm run build`, then use the normal pushed-main same-SHA Vercel/Hetzner deployment and canonical manifest verification. Re-run the dry run later with the new `--expected-rollout`; never loop apply calls in one deployment.
+Apply refuses fixtures, a dirty tree, any branch other than `main`, or a local SHA different from `origin/main`. It updates `data/release-manifest.json` and records the exact step time and closed-intent baseline in `data/release-rollout-state.json`; another step therefore needs 24 more hours and 20 more closed intents. The command deliberately stops before commit, push, Vercel deployment, or Hetzner restart. Review the two-file diff, run `npm run test:release-rollout`, `npm run test:installer-delivery`, `npm run test:entitlement`, and `npm run build`, then use the normal pushed-main same-SHA Vercel/Hetzner deployment and canonical manifest verification. Re-run the dry run later with the new `--expected-rollout`; never loop apply calls in one deployment.
 
 `vercel.json` deliberately pins `installCommand`, `buildCommand`, and `devCommand` to npm. The dev command must pass Vercel's `$PORT` into Vite; otherwise `vercel dev` can accept connections on its proxy port and hang. If the Vercel dashboard still has an old package-manager preference, the repo config should win. Vercel's host-based `has` matching works after deployment but not in `vercel dev`, so use a preview/production deployment plus `curl -I` to prove the `www` redirects and the non-API `sidestream-xi.vercel.app` redirects. The old host intentionally continues to serve `/api/*` in place because installed Sidestream 1.0.12 panels POST to that origin and do not follow Vercel's `308` response.
 
@@ -1364,6 +1364,7 @@ Use the narrowest relevant check after edits:
 
 ## Recent Change Log
 
+- 2026-09-01: Lowered the Website-owned rollout controller's closed-intent success floor from 92% to 90%; the 20-total-intent, 20-additional-intent, 20-installation, 24-hour, freshness, pending, concentration, and failure-stage gates remain unchanged.
 - 2026-09-01: Reduced the Website-owned rollout controller's total and per-step minimum evidence from 100 to 20 closed intents; all identity, time, reliability, diversity, pending, concentration, and failure-stage gates remain unchanged.
 - 2026-09-01: Removed the visible `forever` and `once` suffixes from the Free and Unlimited pricing-card amounts without changing regional amount replacement, offer terms, or Checkout routing.
 - 2026-08-31: Added a dry-run-first Mac release rollout controller with explicit version/current-rollout/cap/enable/apply confirmations, one-step `25 → 50 → 75 → 100` progression, fresh live/Postgres analytics and public-artifact checks, 24-hour and per-step intent baselines, minimum cohort/success gates, pending/concentration/failure-stage stops, and fail-closed sidecar state. It writes no commit or deployment; the existing pushed-main Vercel/Hetzner release contract remains mandatory.
