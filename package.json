@@ -37,7 +37,7 @@
     "test:referral-visits": "node --test tests/referral-visits.test.mjs",
     "test:release-rollout": "node --test tests/release-rollout-policy.test.mjs",
     "test:renamed-launcher-attribution": "node --test tests/renamed-launcher-attribution.test.mjs",
-    "test:entitlement": "node --experimental-strip-types --test tests/entitlement.test.mjs",
+    "test:entitlement": "node --experimental-strip-types --test tests/entitlement.test.mjs tests/entitlement-lifecycle.test.mjs",
     "test:migrations": "node --experimental-strip-types --test tests/migrations.test.mjs",
     "test:meta-roas-postgres": "node --experimental-strip-types --test --test-concurrency=1 tests/meta-roas-report-postgres.test.mjs",
     "test:postgres-config": "node --experimental-strip-types --test tests/postgres-config.test.mjs",

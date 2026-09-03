@@ -438,6 +438,7 @@ async function reconcileInheritedEntitlement(
     case "charge.updated":
     case "refund.created":
     case "refund.updated":
+    case "refund.failed":
     case "charge.dispute.created":
     case "charge.dispute.updated":
     case "charge.dispute.closed": {
@@ -463,10 +464,6 @@ async function reconcileInheritedEntitlement(
       };
     }
     default:
-      // refund.failed and the warning_closed/prevented dispute recovery policy
-      // intentionally remain outside this step. The existing production
-      // blocker stays explicit until exact recovery behavior is separately
-      // approved and tested.
       return null;
   }
 }

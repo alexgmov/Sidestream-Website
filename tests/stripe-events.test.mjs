@@ -88,6 +88,14 @@ test("Stripe events use a durable claimed queue with bounded retry and protected
       }]);
       assert.deepEqual(
         runtime.account.getStripeAcquisitionLifecycleStages(
+          "refund.failed",
+          { id: "re_acquisition" },
+          facts,
+        ),
+        [],
+      );
+      assert.deepEqual(
+        runtime.account.getStripeAcquisitionLifecycleStages(
           "charge.refunded",
           { refunds: { data: [{ id: "re_acquisition" }] } },
           facts,
@@ -118,6 +126,42 @@ test("Stripe events use a durable claimed queue with bounded retry and protected
         ),
         [],
       );
+    });
+
+    await t.test("refund.failed enters entitlement reconciliation before commerce", async () => {
+      runtime.stub.reset();
+      runtime.stub.setLifecycleResult({
+        fulfilled: true,
+        applied: true,
+        entitlementStatus: "active",
+      });
+      const failedRefund = stripeEvent(
+        "evt_failed_refund_recovery",
+        "refund.failed",
+        1_700_000_050,
+        {
+          id: "re_failed_refund_recovery",
+          charge: "ch_failed_refund_recovery",
+          payment_intent: "pi_failed_refund_recovery",
+          status: "failed",
+          amount: 999,
+          currency: "usd",
+        },
+      );
+      const result = await runtime.stripeEvents.reconcileStripeEvent(
+        failedRefund,
+        async () => ({ rows: [{ result: { applied: 1, stale: 0 } }] }),
+      );
+      assert.deepEqual(result, {
+        status: "processed",
+        outcome: "lifecycle_active",
+      });
+      assert.deepEqual(runtime.stub.calls, [[
+        "lifecycle",
+        failedRefund.type,
+        failedRefund.data.object,
+        { eventId: failedRefund.id, created: failedRefund.created },
+      ]]);
     });
 
     await t.test("migration models every state and exposes a partial pending index", async () => {
@@ -1302,6 +1346,7 @@ async function loadRuntimeModules() {
     await writeFile(stubPath, `
 let stripeClient = null;
 let subscriptionResult = { fulfilled: true, applied: true };
+let lifecycleResult = { fulfilled: true, applied: true, entitlementStatus: "active" };
 let experimentSubscriptionResult = {
   fulfilled: false,
   reason: "not_upgrade_pricing_subscription",
@@ -1312,6 +1357,7 @@ export function reset() {
   calls.length = 0;
   stripeClient = null;
   subscriptionResult = { fulfilled: true, applied: true };
+  lifecycleResult = { fulfilled: true, applied: true, entitlementStatus: "active" };
   experimentSubscriptionResult = {
     fulfilled: false,
     reason: "not_upgrade_pricing_subscription",
@@ -1323,6 +1369,7 @@ export function setExperimentSubscriptionResult(value) {
   experimentSubscriptionResult = value;
 }
 export function setCheckoutResult(value) { checkoutResult = value; }
+export function setLifecycleResult(value) { lifecycleResult = value; }
 export function getStripe() {
   if (!stripeClient) throw new Error("Stripe test client is not configured");
   return stripeClient;
@@ -1342,6 +1389,10 @@ export async function upsertLicenseFromSubscription(...args) {
 export async function reconcileUpgradePricingSubscription(...args) {
   calls.push(["experiment-subscription", ...args]);
   return experimentSubscriptionResult;
+}
+export async function reconcileOneTimePaymentLifecycle(...args) {
+  calls.push(["lifecycle", ...args]);
+  return lifecycleResult;
 }
 export function getStripeWebhookSecret() { return "webhook-secret"; }
 export function methodNotAllowed(response, allowed) {

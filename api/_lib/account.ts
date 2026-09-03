@@ -16,6 +16,8 @@ import {
   deriveRefreshRotationTokens,
   getCheckoutSessionIdempotencyKey,
   getCheckoutParametersFingerprint,
+  getCanonicalOneTimeDisputeStatus,
+  getOneTimeDisputeDisposition,
   getStripeCustomerIdempotencyKey,
   getStripeCheckoutWindow,
   getStripePriceIdempotencyKey,
@@ -6066,12 +6068,10 @@ function canonicalDisputeStatus(
   disputes: readonly Stripe.Dispute[],
   disputedWithoutFinalProof: boolean,
 ) {
-  const statuses = disputes.map((dispute) => cleanString(dispute.status, 80).toLowerCase());
-  if (statuses.includes("lost")) return "lost";
-  const open = statuses.find((status) => status && status !== "won");
-  if (open) return open;
-  if (statuses.includes("won")) return "won";
-  return disputedWithoutFinalProof ? "unknown" : "none";
+  return getCanonicalOneTimeDisputeStatus(
+    disputes.map((dispute) => dispute.status),
+    disputedWithoutFinalProof,
+  );
 }
 
 export async function reconcileOneTimePaymentLifecycle(
@@ -6083,6 +6083,7 @@ export async function reconcileOneTimePaymentLifecycle(
   const eventWatermark = normalizeStripeEventWatermark(stripeEvent);
   let chargeId = "";
   let canonicalDispute: Stripe.Dispute | undefined;
+  let canonicalRefund: Stripe.Refund | undefined;
   if (eventType.startsWith("charge.dispute.")) {
     const disputeId = normalizeStripeId(payload.id);
     if (!disputeId) {
@@ -6102,10 +6103,39 @@ export async function reconcileOneTimePaymentLifecycle(
       return { fulfilled: false as const, reason: "event_charge_mismatch" };
     }
   } else if (eventType.startsWith("refund.")) {
-    if (!normalizeStripeId(payload.id)) {
+    const refundId = normalizeStripeId(payload.id);
+    if (!refundId) {
       return { fulfilled: false as const, reason: "missing_refund_id" };
     }
-    chargeId = normalizeStripeId(payload.charge);
+    if (eventType === "refund.failed") {
+      canonicalRefund = await getStripe().refunds.retrieve(
+        refundId,
+        {},
+        getStripeRequestOptions(),
+      );
+      if (canonicalRefund.id !== refundId) {
+        return { fulfilled: false as const, reason: "refund_identity_mismatch" };
+      }
+      if (canonicalRefund.status !== "failed") {
+        return { fulfilled: false as const, reason: "refund_not_failed" };
+      }
+      const payloadChargeId = normalizeStripeId(payload.charge);
+      chargeId = normalizeStripeId(canonicalRefund.charge);
+      if (payloadChargeId && payloadChargeId !== chargeId) {
+        return { fulfilled: false as const, reason: "event_charge_mismatch" };
+      }
+      const payloadPaymentIntentId = normalizeStripeId(payload.payment_intent);
+      const refundPaymentIntentId = normalizeStripeId(canonicalRefund.payment_intent);
+      if (
+        payloadPaymentIntentId &&
+        refundPaymentIntentId &&
+        payloadPaymentIntentId !== refundPaymentIntentId
+      ) {
+        return { fulfilled: false as const, reason: "event_payment_intent_mismatch" };
+      }
+    } else {
+      chargeId = normalizeStripeId(payload.charge);
+    }
   } else if (eventType === "charge.refunded" || eventType === "charge.updated") {
     chargeId = normalizeStripeId(payload.id);
   } else {
@@ -6113,7 +6143,9 @@ export async function reconcileOneTimePaymentLifecycle(
   }
   if (!chargeId) return { fulfilled: false as const, reason: "missing_charge_id" };
 
-  const expectedPaymentIntentId = normalizeStripeId(payload.payment_intent);
+  const expectedPaymentIntentId = normalizeStripeId(
+    canonicalRefund?.payment_intent || payload.payment_intent,
+  );
   const canonical = await retrieveCanonicalPaymentFacts({
     chargeId,
     expectedPaymentIntentId: expectedPaymentIntentId || undefined,
@@ -6183,6 +6215,7 @@ export async function reconcileOneTimePaymentLifecycle(
         noPaymentRequired: false,
         currency: canonical.facts.currency,
         eventWatermark,
+        lifecycleEventType: eventType,
       }, client);
       if (!result.fulfilled) {
         await client.query("rollback");
@@ -6232,8 +6265,9 @@ export async function reconcileOneTimePaymentLifecycle(
         canonicalPaymentRef: canonical.facts.paymentIntentId,
         entitlementStatus: reconciliation.entitlementStatus,
         reason:
-          canonical.facts.disputeStatus !== "none" &&
-          canonical.facts.disputeStatus !== "won"
+          ["open", "lost", "unknown"].includes(
+            getOneTimeDisputeDisposition(canonical.facts.disputeStatus),
+          )
             ? "dispute"
             : canonical.facts.amountRefunded >= canonical.facts.amountPaid
               ? "full_refund"
@@ -6252,6 +6286,7 @@ export function getStripeAcquisitionLifecycleStages(
   facts: Pick<CanonicalOneTimePaymentFacts, "chargeId" | "amountRefunded">,
 ) {
   const payload = eventPayload as Record<string, unknown>;
+  if (eventType === "refund.failed") return Object.freeze([]);
   if (eventType.startsWith("charge.dispute.")) {
     const disputeId = normalizeStripeId(payload?.id);
     return Object.freeze(disputeId
@@ -6293,6 +6328,7 @@ async function upsertLicenseFromOneTimeCheckoutSession(options: {
   noPaymentRequired: boolean;
   currency: string;
   eventWatermark: ReturnType<typeof normalizeStripeEventWatermark>;
+  lifecycleEventType?: string;
 }, runner: Pool | PoolClient) {
   const selected = await runner.query<{
     id: string;
@@ -6357,8 +6393,9 @@ async function upsertLicenseFromOneTimeCheckoutSession(options: {
         ? {
             createdAtMs: options.eventWatermark.createdAtMs,
             eventId: options.eventWatermark.eventId,
-          }
+        }
         : null,
+      eventType: options.lifecycleEventType,
     });
     if (!transition.apply) {
       if (transition.reason !== "stale_event") {
@@ -6446,7 +6483,10 @@ async function upsertLicenseFromOneTimeCheckoutSession(options: {
         set stripe_payment_intent_id = coalesce(stripe_payment_intent_id, $2),
             stripe_charge_id = coalesce(stripe_charge_id, $3),
             amount_paid = greatest(coalesce(amount_paid, 0), $4),
-            amount_refunded = greatest(coalesce(amount_refunded, 0), $5),
+            amount_refunded = case
+              when $8 and $14::boolean then $5
+              else greatest(coalesce(amount_refunded, 0), $5)
+            end,
             currency = coalesce(currency, $6),
             plan_key = $7,
             status = case when $8 then $9 else status end,
@@ -6495,6 +6535,7 @@ async function upsertLicenseFromOneTimeCheckoutSession(options: {
         options.eventWatermark?.createdAtIso || null,
         options.eventWatermark?.eventId || null,
         active,
+        options.lifecycleEventType === "refund.failed",
       ],
     );
     licenseId = updated.rows[0]?.id || "";

@@ -49,8 +49,7 @@ history or tickets.
   exact lookup owner, and funnel root are accepted.
 - The repository does not currently contain a production maintenance rule,
   operator WAF bypass, per-job cron kill switch, Stripe dead-letter reset/replay
-  tool, qualified runtime-distinct rollback artifact, failed-refund recovery
-  transition, complete current-dispute-status mapping, a claim-side total-attempt
+  tool, qualified runtime-distinct rollback artifact, a claim-side total-attempt
   cap, authenticated-transport support in the remaining legacy/device/reporting
   tools, or historical lifecycle repair tool.
   Every one remains an explicit Production blocker, never an existing
@@ -416,20 +415,22 @@ rules.
 ### Current entitlement transitions and unresolved blockers
 
 Only `entitlement_status=active` with plan `sidestream_pro` or the compatible
-`sidestream_unlimited` is paid access.
-
-The following table describes current code; it is not yet complete canonical
-Stripe truth and must not be used to approve production cutover:
+`sidestream_unlimited` is paid access. The following table describes the
+current-event mapper; historical reconciliation and live webhook selection are
+separate gates and this table alone must not be used to approve Production
+cutover:
 
 | Stripe fact | Current result | Credential effect / limitation |
 | --- | --- | --- |
 | Exact one-time payment paid | `active / payment_paid` | May issue credentials |
 | Partial refund | `active / partial_refund` | Remains active |
-| Full refund | `revoked / full_refund` | Irreversible in current code; later Checkout or a failed-refund update cannot restore access |
+| Full refund | `revoked / full_refund` | Later Checkout or ordinary Charge updates cannot restore access |
+| Exact failed refund with canonical refunded amount below paid amount | `active / refund_failed_recovered` | Re-fetches the exact failed Refund plus canonical Charge and PaymentIntent, lowers the persisted refunded amount to current Stripe truth, and permits new credentials |
 | `warning_needs_response`, `warning_under_review`, `needs_response`, or `under_review` dispute | `suspended / dispute_open` | Conservative suspension while inquiry/dispute is open |
-| `warning_closed` or `prevented` dispute | **Incorrectly** `suspended / dispute_open` | Stripe defines these as non-open terminal outcomes, but current code treats every nonempty status other than `won` as open |
+| `warning_closed` or `prevented` dispute | `active / dispute_warning_closed` or `active / dispute_prevented` | Favorable terminal outcomes restore only canonical paid truth |
 | Dispute won | `active / dispute_won` | May reactivate only when the stored reason is not already irreversible `dispute_lost` |
-| Dispute lost | `revoked / dispute_lost` | Irreversible in current code, including if later canonical Stripe truth reports `won` |
+| Dispute lost | `revoked / dispute_lost` | Deliberately irreversible; later events cannot resurrect a customer-favor resolution |
+| Unknown future Dispute status | `suspended / dispute_open` | Fails closed until the status is reviewed and mapped |
 | Payment not paid | `revoked / payment_not_paid` | No credentials |
 | Unknown or unallowlisted legacy subscription | `unknown` or quarantined `revoked` | No paid access |
 
@@ -437,20 +438,15 @@ The `(stripe_created_at, event_id)` watermark makes lifecycle application
 deterministic under duplicate or out-of-order delivery. Never edit entitlement
 state by hand to jump ahead of that watermark.
 
-Two implementation gaps block production. First, Stripe returns failed refund
-funds to the merchant balance and emits `refund.failed`, but
-`reconcileStripeEvent()` neither subscribes to nor handles that type. The current
-`full_refund` transition and persisted maximum refunded amount are irreversible,
-so later canonical recovery cannot restore access. A separate code-owned change
-must add `refund.failed` handling, tests, and a reviewed recovery transition (or
-obtain explicit business approval for permanent refund-intent revocation plus a
-tested manual customer-recovery procedure). No such approval or procedure exists
-today. Second, Stripe's current Dispute object includes `warning_closed` and
-`prevented` as non-open outcomes, while the current mapper suspends both; it also
-makes `lost` irreversible. A separate change must explicitly map and test every
-current status, or obtain documented approval for a conservative anti-abuse
-policy and its recovery consequences. Until both gaps are resolved and proved in
-Preview/Test, this runbook is not executable in production. Primary contracts:
+The current-event implementation now handles Stripe's `refund.failed`, including
+provider retrieval and exact identity/status checks before recovery, and maps
+every current Dispute status. Open and unknown states suspend; favorable terminal
+states restore canonical paid truth; `lost` remains deliberately irreversible.
+Focused regression coverage is part of `npm run test:entitlement`. This closes
+the two code gaps but does not repair events already terminalized under the old
+mapper and does not prove the live webhook destination selects `refund.failed`.
+The historical blocker below and a deployed-provider selection check remain
+mandatory. Primary contracts:
 [Stripe refunds](https://docs.stripe.com/refunds) and the
 [Stripe Dispute object](https://docs.stripe.com/api/disputes/object).
 
@@ -604,26 +600,28 @@ evidence.
 
 ### Required Stripe webhook subscriptions
 
-After the lifecycle blockers above are fixed and tested, the target production
-endpoint must select exactly the reviewed lifecycle events:
+After the historical lifecycle gate is closed and the deployed artifact is
+qualified, the target Production endpoint must select exactly the reviewed
+lifecycle events:
 
 - Checkout completion: `checkout.session.completed`
 - Legacy subscription billing: `invoice.paid`, `invoice.payment_failed`
 - Refund lifecycle: `charge.refunded`, `charge.updated`, `refund.created`,
-  `refund.updated`
+  `refund.updated`, `refund.failed`
 - Dispute lifecycle: `charge.dispute.created`, `charge.dispute.updated`,
   `charge.dispute.closed`
 - Allowlisted legacy subscriptions: `customer.subscription.created`,
   `customer.subscription.updated`, `customer.subscription.deleted`
 
-The current exhaustive switch implements every item above. `refund.failed`
-remains intentionally excluded because an unimplemented event is durably
-recorded and then ignored. Do not add it to the live destination or enable the
-credit wallet until it has a tested wallet and entitlement recovery policy.
+The current exhaustive switch implements every item above. Do not add
+`refund.failed` to the live destination until this artifact is deployed and the
+historical lifecycle gate has produced its required final reconciliation
+evidence.
 The enabled live destination is `we_1TpKypDFKjeGlioXZNxWQAgN` at
-`https://sidestream.tv/api/stripe/webhook`; it selects exactly the 13 events
-listed above. Expanding behavior requires code, tests, endpoint selection, and
-this contract to change together. Stripe's endpoint `enabled_events` is the
+`https://sidestream.tv/api/stripe/webhook`; the last verified configuration
+selected the prior 13-event set without `refund.failed`. Expanding behavior
+requires code, tests, endpoint selection, and this contract to change together.
+Stripe's endpoint `enabled_events` is the
 selection for that endpoint, while Workbench Event deliveries show attempts to
 that endpoint; neither is an account-wide event inventory. See the primary
 [Webhook Endpoint object](https://docs.stripe.com/api/webhook_endpoints/object),
@@ -1184,10 +1182,9 @@ the Preview/Test-first evidence and separate human approvals in
 entitlement, WAF, scheduler, or release changes. No Production action was
 performed by this documentation change.
 
-The existing blockers remain open: unresolved refund/dispute policy and tested
-customer recovery, Stripe dead-letter recovery, a total crash/reclaim attempt
-cap, safe device support/backfill,
-historical lifecycle repair, license-secret continuity, a runtime-distinct
+The existing blockers remain open: Stripe dead-letter recovery, a total
+crash/reclaim attempt cap, safe device support/backfill, historical lifecycle
+repair, license-secret continuity, a runtime-distinct
 qualified fallback, reviewed WAF maintenance controls, and safe cron control.
 
 The removed recipe also failed independent review because its provider output

@@ -145,6 +145,49 @@ export type StripeLifecycleEventWatermark = Readonly<{
   eventId: string;
 }>;
 
+export type OneTimeDisputeDisposition =
+  | "none"
+  | "open"
+  | "favorable_terminal"
+  | "lost"
+  | "unknown";
+
+export function getOneTimeDisputeDisposition(
+  value: unknown,
+): OneTimeDisputeDisposition {
+  const status = typeof value === "string" ? value.trim().toLowerCase() : "";
+  if (!status || status === "none") return "none";
+  if (status === "lost") return "lost";
+  if (["won", "warning_closed", "prevented"].includes(status)) {
+    return "favorable_terminal";
+  }
+  if ([
+    "warning_needs_response",
+    "warning_under_review",
+    "needs_response",
+    "under_review",
+  ].includes(status)) {
+    return "open";
+  }
+  return "unknown";
+}
+
+export function getCanonicalOneTimeDisputeStatus(
+  values: readonly unknown[],
+  disputedWithoutFinalProof: boolean,
+) {
+  const statuses = values.map((value) =>
+    typeof value === "string" ? value.trim().toLowerCase().slice(0, 80) : ""
+  ).filter(Boolean);
+  for (const disposition of ["lost", "open", "unknown", "favorable_terminal"] as const) {
+    const status = statuses.find((value) =>
+      getOneTimeDisputeDisposition(value) === disposition
+    );
+    if (status) return status;
+  }
+  return disputedWithoutFinalProof ? "unknown" : "none";
+}
+
 export type OneTimeEntitlementTransition =
   | Readonly<{ apply: false; reason: string }>
   | Readonly<{
@@ -879,6 +922,7 @@ export function planOneTimeEntitlementTransition(options: {
   stored: StoredOneTimeEntitlementState;
   facts: CanonicalOneTimePaymentFacts;
   event: StripeLifecycleEventWatermark | null;
+  eventType?: string | null;
 }): OneTimeEntitlementTransition {
   const paymentIntentId = options.facts.paymentIntentId.trim();
   const chargeId = options.facts.chargeId.trim();
@@ -927,7 +971,12 @@ export function planOneTimeEntitlementTransition(options: {
   if (previousReason === "dispute_lost") {
     return inactiveOneTimeTransition("dispute_lost", "revoked");
   }
-  if (previousReason === "full_refund") {
+  const eventType = typeof options.eventType === "string"
+    ? options.eventType.trim().toLowerCase()
+    : "";
+  const failedRefundRecovery = eventType === "refund.failed" &&
+    options.facts.amountRefunded < options.facts.amountPaid;
+  if (previousReason === "full_refund" && !failedRefundRecovery) {
     return inactiveOneTimeTransition("full_refund", "revoked");
   }
   if (
@@ -938,21 +987,27 @@ export function planOneTimeEntitlementTransition(options: {
   }
 
   const disputeStatus = options.facts.disputeStatus.trim().toLowerCase();
-  if (disputeStatus === "lost") {
+  const disputeDisposition = getOneTimeDisputeDisposition(disputeStatus);
+  if (disputeDisposition === "lost") {
     return inactiveOneTimeTransition("dispute_lost", "revoked");
   }
-  if (disputeStatus && disputeStatus !== "won" && disputeStatus !== "none") {
+  if (disputeDisposition === "open" || disputeDisposition === "unknown") {
     return inactiveOneTimeTransition("dispute_open", "suspended");
   }
-  if (previousReason === "dispute_open" && disputeStatus !== "won") {
+  if (
+    previousReason === "dispute_open" &&
+    disputeDisposition !== "favorable_terminal"
+  ) {
     return inactiveOneTimeTransition("dispute_open", "suspended");
   }
   if (!options.facts.paymentProven) {
     return inactiveOneTimeTransition("payment_not_paid", "revoked");
   }
 
-  const statusReason = disputeStatus === "won"
-    ? "dispute_won"
+  const statusReason = disputeDisposition === "favorable_terminal"
+    ? `dispute_${disputeStatus}`
+    : failedRefundRecovery
+    ? "refund_failed_recovered"
     : options.facts.amountRefunded > 0
     ? "partial_refund"
     : "payment_paid";

@@ -3,6 +3,8 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import {
   canonicalLicenseEntitlementRank,
+  getCanonicalOneTimeDisputeStatus,
+  getOneTimeDisputeDisposition,
   isCanonicalLicenseEntitlementUsable,
   parseStripeIdAllowlist,
   planOneTimeEntitlementTransition,
@@ -76,6 +78,40 @@ test("partial refunds stay active while full and cumulative refunds revoke", () 
   assert.equal(cumulative.entitlementStatus, "revoked");
   assert.equal(cumulative.statusReason, "full_refund");
   assert.equal(cumulative.revokeCredentials, true);
+
+  const failedRefundRecovery = planOneTimeEntitlementTransition({
+    stored: {
+      ...activeStored,
+      entitlementStatus: "revoked",
+      statusReason: "full_refund",
+      stripeEventCreatedAtMs: 3_000,
+      stripeEventId: "evt_full",
+    },
+    facts: paidFacts,
+    event: event(4_000, "evt_refund_failed"),
+    eventType: "refund.failed",
+  });
+  assert.deepEqual(failedRefundRecovery, {
+    apply: true,
+    entitlementStatus: "active",
+    statusReason: "refund_failed_recovered",
+    revokeCredentials: false,
+  });
+
+  const ordinaryUpdateCannotRecover = planOneTimeEntitlementTransition({
+    stored: {
+      ...activeStored,
+      entitlementStatus: "revoked",
+      statusReason: "full_refund",
+      stripeEventCreatedAtMs: 3_000,
+      stripeEventId: "evt_full",
+    },
+    facts: paidFacts,
+    event: event(4_000, "evt_charge_update"),
+    eventType: "charge.updated",
+  });
+  assert.equal(ordinaryUpdateCannotRecover.entitlementStatus, "revoked");
+  assert.equal(ordinaryUpdateCannotRecover.statusReason, "full_refund");
 });
 
 test("disputes suspend immediately, lost stays revoked, and won restores only paid truth", () => {
@@ -155,6 +191,63 @@ test("disputes suspend immediately, lost stays revoked, and won restores only pa
   });
   assert.equal(lostCannotResurrect.entitlementStatus, "revoked");
   assert.equal(lostCannotResurrect.statusReason, "dispute_lost");
+
+  for (const status of ["warning_closed", "prevented"]) {
+    const resolved = planOneTimeEntitlementTransition({
+      stored: {
+        ...activeStored,
+        entitlementStatus: "suspended",
+        statusReason: "dispute_open",
+        stripeEventCreatedAtMs: 2_000,
+        stripeEventId: "evt_dispute_open",
+      },
+      facts: { ...paidFacts, disputeStatus: status },
+      event: event(3_000, `evt_${status}`),
+    });
+    assert.equal(resolved.entitlementStatus, "active", status);
+    assert.equal(resolved.statusReason, `dispute_${status}`, status);
+    assert.equal(resolved.revokeCredentials, false, status);
+  }
+
+  const unknownStatus = planOneTimeEntitlementTransition({
+    stored: activeStored,
+    facts: { ...paidFacts, disputeStatus: "future_status" },
+    event: event(3_000, "evt_future_status"),
+  });
+  assert.equal(unknownStatus.entitlementStatus, "suspended");
+  assert.equal(unknownStatus.statusReason, "dispute_open");
+});
+
+test("every current Stripe dispute status has an explicit disposition", () => {
+  for (const status of [
+    "warning_needs_response",
+    "warning_under_review",
+    "needs_response",
+    "under_review",
+  ]) {
+    assert.equal(getOneTimeDisputeDisposition(status), "open", status);
+  }
+  for (const status of ["won", "warning_closed", "prevented"]) {
+    assert.equal(
+      getOneTimeDisputeDisposition(status),
+      "favorable_terminal",
+      status,
+    );
+  }
+  assert.equal(getOneTimeDisputeDisposition("lost"), "lost");
+  assert.equal(getOneTimeDisputeDisposition("none"), "none");
+  assert.equal(getOneTimeDisputeDisposition("future_status"), "unknown");
+  assert.equal(
+    getCanonicalOneTimeDisputeStatus(["warning_closed", "under_review"], true),
+    "under_review",
+  );
+  assert.equal(
+    getCanonicalOneTimeDisputeStatus(["won", "future_status"], true),
+    "future_status",
+  );
+  assert.equal(getCanonicalOneTimeDisputeStatus(["won"], true), "won");
+  assert.equal(getCanonicalOneTimeDisputeStatus([], true), "unknown");
+  assert.equal(getCanonicalOneTimeDisputeStatus([], false), "none");
 });
 
 test("duplicate and out-of-order events no-op and delayed Checkout cannot resurrect", () => {
@@ -372,11 +465,15 @@ test("runtime wiring persists lifecycle facts and atomically clears both credent
   assert.match(eventsSource, /materializeCustomerCommerceEvent/);
   for (const eventType of [
     "charge.refunded",
+    "refund.failed",
     "charge.dispute.created",
     "charge.dispute.closed",
   ]) {
     assert.match(eventsSource, new RegExp(eventType.replaceAll(".", "\\.")));
   }
+  assert.match(accountSource, /refunds\.retrieve/);
+  assert.match(accountSource, /canonicalRefund\.status !== "failed"/);
+  assert.match(accountSource, /when \$8 and \$14::boolean then \$5/);
   assert.match(entitlementSqlSource, /to_jsonb\(l\) \? 'entitlement_status'/);
   assert.match(
     entitlementSqlSource,
