@@ -1,12 +1,12 @@
 # Authenticated Upgrade pricing experiments
 
 This document is the durable contract for the ended `upgrade-pricing-v1` test
-and the active Production `upgrade-pricing-v2` annual test. It separates source behavior,
+and the concluded Production `upgrade-pricing-v2` annual test. It separates source behavior,
 Stripe Test qualification, Production rollout, provider delivery, and observed
 reporting so that a fixture, Preview, accepted email request, or open Checkout
 page is never reported as a completed purchase or live result.
 
-## v2 annual experiment
+## v2 annual decision
 
 `upgrade-pricing-v2` is a new account-level experiment. It does not rename,
 reuse, or reinterpret the v1 monthly cohort.
@@ -16,12 +16,19 @@ reuse, or reinterpret the v1 monthly cohort.
 | `control_one_time` | Stripe `mode=payment` | `$19.99` once | Existing global one-time Unlimited offer |
 | `annual_same_price` | Stripe `mode=subscription` | `$19.99` per year | Renews yearly until canceled; email reminder before renewal; cancel in Account; access continues through the paid year |
 
-The hypothesis is that annual billing at the same initial price may improve
+The experiment tested whether annual billing at the same initial price may improve
 long-run realized revenue without reducing activated paid accounts. The primary
 early comparison is entitlement activations per exposed account and realized
 net revenue per exposed account. Annual renewal value is not observed until a
 second annual Invoice settles; it must not be projected as realized revenue or
 described as improved LTV before that anniversary.
+
+Alex concluded the 50/50 assignment on 2026-09-04 and selected
+`annual_same_price` for every future eligible global-USD account. The observed
+sample was directionally close and not statistically conclusive; the decision
+is an expected-value product choice because both variants collect the same
+initial `$19.99` while annual retains renewal upside. Existing assignments and
+all historical evidence remain immutable.
 
 The v2 contract is deliberately narrow:
 
@@ -36,24 +43,27 @@ The v2 contract is deliberately narrow:
   assignment failure falls back to one-time without entering v2 exposure or
   analysis denominators.
 
-Source defaults are `enabled=false` and rollout `0`. V2 uses the separate
+Before conclusion, source defaults were `enabled=false` and rollout `0`. V2 uses the separate
 `SIDESTREAM_UPGRADE_PRICING_V2_ENABLED`,
 `SIDESTREAM_UPGRADE_PRICING_V2_ROLLOUT_BPS`, and
 `SIDESTREAM_UPGRADE_PRICING_V2_SECRET` settings so stale v1 environment values
-cannot start the new test. A missing v2 rollout also stays at `0`. After
+cannot start the new test. A missing v2 rollout also stayed at `0`. After
 qualification, increase from `0` to a small canary and inspect integrity before
 using `5000` for a 50/50 assignment of future eligible accounts. Existing
 assignments never change when rollout values change.
 
-Production completed those gates on 2026-08-27 and now runs rollout `5000` for
-future eligible accounts. Qualification included exact Test and live annual
+Production completed those gates on 2026-08-27 and ran rollout `5000` until
+the 2026-09-04 conclusion. The source-level conclusion now forces rollout
+`10000` for future eligible accounts even if stale environment values still
+request `5000`, `0`, or disabled. A missing/invalid assignment secret, annual
+Price, provider response, or unsupported regional offer still fails closed to
+the existing one-time path without creating an annual assignment. Qualification included exact Test and live annual
 Prices, a paid initial Test Invoice and paid yearly renewal under Stripe Test
 Clocks, cancel-at-period-end behavior, failed renewal and successful recovery,
 Billing Portal session creation, an owned-mailbox reminder with provider status
 `delivered`, and a signed-in live Checkout canary that was canceled without
 payment. The first protected Production report contained one annual assignment
-and exposure with zero integrity defects. Source defaults and any environment
-missing the explicit Production settings remain disabled at rollout `0`.
+and exposure with zero integrity defects.
 
 The annual Checkout disclosure is part of the locked offer contract:
 
@@ -312,8 +322,9 @@ The conservative policy is:
 - rollback or kill-switch changes never delete financial/acquisition history,
   revoke a valid paid entitlement, or strand an existing subscriber.
 
-One-time `refund.failed` and terminal dispute blockers remain unchanged. This
-experiment does not claim to resolve or weaken those separate lifecycle rules.
+One-time `refund.failed` recovery and terminal dispute handling remain separate
+from this experiment. They continue to require exact current provider truth and
+the conservative lifecycle rules documented in `docs/api-hardening-runbook.md`.
 
 ## Observed report and metric definitions
 

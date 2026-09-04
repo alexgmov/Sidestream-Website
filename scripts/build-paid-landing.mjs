@@ -276,6 +276,24 @@ export function buildPaidLanding(canonicalHtml) {
   );
   output = replaceOnce(
     output,
+    '<span class="per" data-checkout-offer-cadence>per year</span>',
+    '<span class="per">one-time</span>',
+    "Unlimited billing cadence"
+  );
+  output = replaceOnce(
+    output,
+    '                <li data-checkout-offer-annual-term>Renews automatically every year with a 30-day email reminder</li>\n',
+    "",
+    "annual renewal term"
+  );
+  output = replaceOnce(
+    output,
+    '                <li data-checkout-offer-annual-term>Cancel anytime from your Sidestream account</li>\n',
+    "",
+    "annual cancellation term"
+  );
+  output = replaceOnce(
+    output,
     '<a class="btn btn-primary" href="/api/checkout/start">Upgrade to Unlimited</a>',
     '<button class="btn btn-primary" type="button" data-paid-checkout-button aria-label="Buy Sidestream Unlimited, one-time purchase">Buy Now</button>',
     "Unlimited purchase action"

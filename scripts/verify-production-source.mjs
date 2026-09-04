@@ -78,7 +78,7 @@ export function assertCheckoutSourceContract(input) {
   for (const step of [
     "1. The user clicks Upgrade and chooses Unlimited.",
     "2. Google authentication establishes the Sidestream account session.",
-    "3. The browser opens Stripe Checkout for the $19.99 one-time Unlimited purchase.",
+    "3. The browser opens the server-selected Stripe Checkout: $19.99/year for a new eligible global-USD account, or the preserved assigned/regional one-time offer.",
   ]) {
     if (!readme.includes(step)) {
       throw new Error(`README is missing the canonical checkout step: ${step}`);

@@ -73,7 +73,8 @@ export function getCheckoutOfferPresentation(
   const { entry } = selectCheckoutOffer(countryValue, environment);
   const currency = entry.currency.toUpperCase();
   const formattedPrice = formatOfferPrice(entry);
-  return Object.freeze({ formattedPrice, currency });
+  const billingCadence = entry.annualPriceSource ? "year" : "one_time";
+  return Object.freeze({ formattedPrice, currency, billingCadence });
 }
 
 /**

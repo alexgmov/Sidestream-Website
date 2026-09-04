@@ -464,11 +464,19 @@ test("runtime keeps experiment subscriptions separate and preserves activation b
   assert.match(eventsSource, /attempt_limit_exhausted/);
 });
 
-test("unrelated refund and terminal dispute blockers remain explicit", async () => {
-  const eventsSource = await readFile(
-    new URL("../api/_lib/stripe-events.ts", import.meta.url),
-    "utf8",
+test("verified refund failure recovery and terminal dispute handling remain explicit", async () => {
+  const [accountSource, entitlementSource, eventsSource] = await Promise.all([
+    readFile(new URL("../api/_lib/account.ts", import.meta.url), "utf8"),
+    readFile(new URL("../api/_lib/entitlement.ts", import.meta.url), "utf8"),
+    readFile(new URL("../api/_lib/stripe-events.ts", import.meta.url), "utf8"),
+  ]);
+  assert.match(eventsSource, /case "refund\.failed"/);
+  assert.match(
+    accountSource,
+    /eventType === "refund\.failed"[\s\S]*refunds\.retrieve[\s\S]*refund_not_failed/,
   );
-  assert.doesNotMatch(eventsSource, /case "refund\.failed"/);
-  assert.match(eventsSource, /refund\.failed[\s\S]*warning_closed\/prevented[\s\S]*blocker/);
+  assert.match(
+    entitlementSource,
+    /\["won", "warning_closed", "prevented"\]\.includes\(status\)/,
+  );
 });

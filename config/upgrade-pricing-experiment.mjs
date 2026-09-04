@@ -14,7 +14,8 @@ export const UPGRADE_PRICING_EXPERIMENT_CONFIG = Object.freeze({
   defaultEnabled: false,
   defaultRolloutBasisPoints: 0,
   openedAt: null,
-  closedAt: null,
+  closedAt: "2026-09-04T21:14:08.000Z",
+  postExperimentVariant: UPGRADE_PRICING_ANNUAL_VARIANT,
   variants: Object.freeze([
     UPGRADE_PRICING_CONTROL_VARIANT,
     UPGRADE_PRICING_ANNUAL_VARIANT,
@@ -27,6 +28,16 @@ export const UPGRADE_PRICING_EXPERIMENT_CONFIG = Object.freeze({
  */
 export function readUpgradePricingRollout(environment = process.env) {
   if (UPGRADE_PRICING_EXPERIMENT_CONFIG.closedAt) {
+    if (
+      UPGRADE_PRICING_EXPERIMENT_CONFIG.postExperimentVariant ===
+      UPGRADE_PRICING_ANNUAL_VARIANT
+    ) {
+      return Object.freeze({
+        enabled: true,
+        rolloutBasisPoints: UPGRADE_PRICING_EXPERIMENT_CONFIG.bucketCount,
+        reason: "concluded_annual",
+      });
+    }
     return Object.freeze({
       enabled: false,
       rolloutBasisPoints: 0,

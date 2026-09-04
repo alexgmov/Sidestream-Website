@@ -51,6 +51,7 @@ test("the public offer presentation uses only the trusted country header", async
     assert.deepEqual(india.response.json, {
       formattedPrice: "₹499",
       currency: "INR",
+      billingCadence: "one_time",
     });
     assert.equal(
       india.response.getHeader("cache-control"),
@@ -66,6 +67,7 @@ test("the public offer presentation uses only the trusted country header", async
     assert.deepEqual(forged.response.json, {
       formattedPrice: "$19.99",
       currency: "USD",
+      billingCadence: "year",
     });
 
     const brazil = await invokeHandler(handler, {
@@ -75,6 +77,7 @@ test("the public offer presentation uses only the trusted country header", async
     assert.deepEqual(brazil.response.json, {
       formattedPrice: "R$ 25",
       currency: "BRL",
+      billingCadence: "one_time",
     });
     assert.doesNotMatch(brazil.response.body, /price_brazil|sidestream-unlimited-brazil/);
 
@@ -85,6 +88,7 @@ test("the public offer presentation uses only the trusted country header", async
     assert.deepEqual(southKorea.response.json, {
       formattedPrice: "₩24,900",
       currency: "KRW",
+      billingCadence: "one_time",
     });
     assert.doesNotMatch(
       southKorea.response.body,
@@ -107,6 +111,7 @@ test("India safely receives the global presentation without its approved Price",
     assert.deepEqual(result.response.json, {
       formattedPrice: "$19.99",
       currency: "USD",
+      billingCadence: "year",
     });
   } finally {
     restoreEnvironment(previous);
@@ -136,11 +141,16 @@ test("the landing page renders a global fallback and updates text only", async (
     html,
     /data-checkout-offer-price aria-live="polite">\$19\.99<\/span>/,
   );
+  assert.match(html, /data-checkout-offer-cadence>per year<\/span>/);
+  assert.match(html, /Renews automatically every year with a 30-day email reminder/);
+  assert.match(html, /Cancel anytime from your Sidestream account/);
   assert.match(html, /fetch\("\/api\/checkout\/offer"/);
   assert.match(
     html,
     /checkoutOfferPrices\.forEach\(\(price\) => \{\s*price\.textContent = offer\.formattedPrice/,
   );
+  assert.match(html, /offer\.billingCadence === "year" \? "per year" : "one-time"/);
+  assert.match(html, /term\.hidden = offer\.billingCadence !== "year"/);
   assert.doesNotMatch(
     html,
     /checkout\/start[^"'`\n]*(?:country|currency|amount|offer|price)/i,

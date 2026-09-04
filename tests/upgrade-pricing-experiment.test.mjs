@@ -35,49 +35,64 @@ function decide(index, overrides = {}) {
   });
 }
 
-test("v2 is dormant by default and supports an explicit 50/50 one-time versus annual rollout", () => {
+test("v2 is concluded to annual and stale environment values cannot restore the split", () => {
   assert.equal(UPGRADE_PRICING_EXPERIMENT_ID, "upgrade-pricing-v2");
   assert.equal(UPGRADE_PRICING_EXPERIMENT_CONFIG.assignmentVersion, 2);
   assert.deepEqual(UPGRADE_PRICING_EXPERIMENT_CONFIG.variants, [
     "control_one_time",
     "annual_same_price",
   ]);
-  assert.equal(UPGRADE_PRICING_EXPERIMENT_CONFIG.closedAt, null);
+  assert.equal(UPGRADE_PRICING_EXPERIMENT_CONFIG.closedAt, "2026-09-04T21:14:08.000Z");
+  assert.equal(UPGRADE_PRICING_EXPERIMENT_CONFIG.postExperimentVariant, "annual_same_price");
   assert.deepEqual(readUpgradePricingRollout({}), {
-    enabled: false,
-    rolloutBasisPoints: 0,
-    reason: "kill_switch",
+    enabled: true,
+    rolloutBasisPoints: 10_000,
+    reason: "concluded_annual",
   });
   assert.deepEqual(readUpgradePricingRollout({
     SIDESTREAM_UPGRADE_PRICING_EXPERIMENT_ENABLED: "true",
     SIDESTREAM_UPGRADE_PRICING_EXPERIMENT_ROLLOUT_BPS: "5000",
   }), {
-    enabled: false,
-    rolloutBasisPoints: 0,
-    reason: "kill_switch",
+    enabled: true,
+    rolloutBasisPoints: 10_000,
+    reason: "concluded_annual",
   });
   assert.deepEqual(readUpgradePricingRollout({
     SIDESTREAM_UPGRADE_PRICING_V2_ENABLED: "false",
+    SIDESTREAM_UPGRADE_PRICING_V2_ROLLOUT_BPS: "0",
   }), {
-    enabled: false,
-    rolloutBasisPoints: 0,
-    reason: "kill_switch",
+    enabled: true,
+    rolloutBasisPoints: 10_000,
+    reason: "concluded_annual",
   });
   assert.deepEqual(readUpgradePricingRollout({
     SIDESTREAM_UPGRADE_PRICING_V2_ENABLED: "true",
+    SIDESTREAM_UPGRADE_PRICING_V2_ROLLOUT_BPS: "5000",
   }), {
     enabled: true,
-    rolloutBasisPoints: 0,
-    reason: "source_default",
+    rolloutBasisPoints: 10_000,
+    reason: "concluded_annual",
   });
-  assert.deepEqual(readUpgradePricingRollout({
-    SIDESTREAM_UPGRADE_PRICING_V2_ENABLED: "true",
-    SIDESTREAM_UPGRADE_PRICING_V2_ROLLOUT_BPS: "125",
-  }), {
-    enabled: true,
-    rolloutBasisPoints: 125,
-    reason: "configured",
-  });
+});
+
+test("the concluded source contract assigns every new eligible global USD account to annual", () => {
+  for (let index = 0; index < 100; index += 1) {
+    const decision = decideUpgradePricing({
+      accountId: accountId(index),
+      currency: "usd",
+      oneTimeAmountMinor: 1999,
+      environment: {
+        SIDESTREAM_UPGRADE_PRICING_V2_ENABLED: "true",
+        SIDESTREAM_UPGRADE_PRICING_V2_ROLLOUT_BPS: "5000",
+        SIDESTREAM_UPGRADE_PRICING_V2_SECRET: SECRET,
+      },
+    });
+    assert.equal(decision.variant, UPGRADE_PRICING_ANNUAL_VARIANT);
+    assert.equal(decision.billingModel, "subscription");
+    assert.equal(decision.rolloutBasisPoints, 10_000);
+    assert.equal(decision.reason, "rollout_annual");
+    assert.equal(decision.shouldPersistAssignment, true);
+  }
 });
 
 test("annual treatment is exactly $19.99 and deliberately global USD only", () => {
@@ -172,6 +187,36 @@ test("a persisted v2 annual assignment is permanent across rollout changes", () 
   assert.equal(retry.recurringAmountMinor, 1999);
   assert.equal(retry.recurringInterval, "year");
   assert.equal(retry.assignmentId, existingAssignment.assignmentId);
+  assert.equal(retry.shouldPersistAssignment, false);
+});
+
+test("a persisted v2 one-time assignment remains permanent after annual becomes the default", () => {
+  const existingAssignment = {
+    assignmentId: "20000000-0000-4000-8000-000000000003",
+    assignmentVersion: 2,
+    experimentId: "upgrade-pricing-v2",
+    accountId: accountId(44),
+    variant: "control_one_time",
+    billingModel: "one_time",
+    bucket: 8_500,
+    rolloutBasisPoints: 5_000,
+    assignedAt: "2026-08-27T00:00:00.000Z",
+  };
+  const retry = decideUpgradePricing({
+    accountId: accountId(44),
+    currency: "usd",
+    oneTimeAmountMinor: 1999,
+    existingAssignment,
+    environment: {
+      SIDESTREAM_UPGRADE_PRICING_V2_ENABLED: "true",
+      SIDESTREAM_UPGRADE_PRICING_V2_ROLLOUT_BPS: "5000",
+      SIDESTREAM_UPGRADE_PRICING_V2_SECRET: SECRET,
+    },
+  });
+  assert.equal(retry.variant, UPGRADE_PRICING_CONTROL_VARIANT);
+  assert.equal(retry.billingModel, "one_time");
+  assert.equal(retry.assignmentId, existingAssignment.assignmentId);
+  assert.equal(retry.usedExistingAssignment, true);
   assert.equal(retry.shouldPersistAssignment, false);
 });
 

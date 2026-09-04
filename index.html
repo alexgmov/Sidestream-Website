@@ -995,6 +995,7 @@
     font-family: var(--sans); font-style: normal; font-weight: 600;
     font-size: 52px; line-height: 1; letter-spacing: -0.04em;
   }
+  .price .per { font-size: 15px; color: var(--ink-faint); }
   .plan-sub { font-size: 14.5px; color: var(--ink-faint); margin: 0 0 28px; }
   .plan ul { list-style: none; padding: 0; margin: 0 0 32px; display: grid; gap: 13px; }
   .plan li {
@@ -1368,15 +1369,17 @@
               <a class="btn btn-secondary" href="https://sidestream.tv/api/download?platform=win32-x64" data-windows-download aria-label="Download Sidestream for Windows">Download</a>
             </div>
           </div>
-          <div class="plan featured reveal" role="group" aria-label="Sidestream Unlimited one-time purchase">
+          <div class="plan featured reveal" role="group" aria-label="Sidestream Unlimited plan">
             <div class="plan-beta-content">
               <p class="plan-name">Unlimited</p>
-              <div class="price"><span class="amt" data-checkout-offer-price aria-live="polite">$19.99</span></div>
+              <div class="price"><span class="amt" data-checkout-offer-price aria-live="polite">$19.99</span><span class="per" data-checkout-offer-cadence>per year</span></div>
               <ul>
                 <li>Unlimited downloads</li>
                 <li>Full video and audio downloads</li>
                 <li>Maximum audio and video quality</li>
                 <li>Use Unlimited on up to two devices</li>
+                <li data-checkout-offer-annual-term>Renews automatically every year with a 30-day email reminder</li>
+                <li data-checkout-offer-annual-term>Cancel anytime from your Sidestream account</li>
               </ul>
               <a class="btn btn-primary" href="/api/checkout/start">Upgrade to Unlimited</a>
             </div>
@@ -1752,6 +1755,12 @@
     const checkoutOfferPrices = Array.from(
       document.querySelectorAll("[data-checkout-offer-price]")
     );
+    const checkoutOfferCadences = Array.from(
+      document.querySelectorAll("[data-checkout-offer-cadence]")
+    );
+    const checkoutOfferAnnualTerms = Array.from(
+      document.querySelectorAll("[data-checkout-offer-annual-term]")
+    );
     if (checkoutOfferPrices.length) {
       fetch("/api/checkout/offer", {
         method: "GET",
@@ -1767,12 +1776,19 @@
             offer.formattedPrice.length < 1 ||
             offer.formattedPrice.length > 32 ||
             typeof offer.currency !== "string" ||
-            !/^[A-Z]{3}$/.test(offer.currency)
+            !/^[A-Z]{3}$/.test(offer.currency) ||
+            !["year", "one_time"].includes(offer.billingCadence)
           ) {
             return;
           }
           checkoutOfferPrices.forEach((price) => {
             price.textContent = offer.formattedPrice;
+          });
+          checkoutOfferCadences.forEach((cadence) => {
+            cadence.textContent = offer.billingCadence === "year" ? "per year" : "one-time";
+          });
+          checkoutOfferAnnualTerms.forEach((term) => {
+            term.hidden = offer.billingCadence !== "year";
           });
         })
         .catch(() => {
