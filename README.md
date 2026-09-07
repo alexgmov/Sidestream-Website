@@ -2,6 +2,14 @@
 
 ## Product Overview
 
+### Legacy Neon isolation — verified September 7, 2026
+
+- The canonical site served `875bfd09ad29b6bbb02bea9b9f7f1b55e837a7b7`, whose middleware routes API requests to Hetzner (`DATABASE_CUTOVER_MODE=target`).
+- In the Vercel-managed Neon project `neon-purple-island` (`dark-butterfly-59697025`), **Allow traffic via the public internet** was turned off and verified off after reopening project settings. VPC access and logical replication were also off. Preserve this isolation; do not reconnect legacy Neon credentials or enable its network access for routine operations.
+- All seven branches were idle before the change; `main` and `sidestream-c360-production-target-20260801` were last active 12 days earlier. Neon displayed zero compute and network transfer since September 1, with its caveat that inactive-project metrics are not updated. No database scans, exports, or migration/parity transfers were run for this check.
+- After isolation, the canonical homepage and `/api/checkout/offer` returned 200; `GET /api/checkout/start` returned the expected 302 Google-authentication handoff. Direct Hetzner service, timer, and database inspection was blocked by SSH authentication, so these checks are not a full infrastructure audit.
+- The September 6 Neon invoice was **$96.63 for August 1–September 1**: $84.61 compute, $4.50 combined storage, and $7.52 tax, with no egress line item. Vercel displayed $1.32 for the current September period. The Launch subscription and stored data remain; network isolation is not cancellation or a zero-cost guarantee. Permanent provider retirement still requires separately verified backup/recovery readiness.
+
 Sidestream is an HTML-first landing page for a Premiere Pro panel that lets editors search, preview, and download YouTube videos, songs, overlays, b-roll, references, tutorials, or audio without leaving Premiere. The main page remains a single canonical HTML document with embedded layout CSS and vanilla JavaScript, plus a small React/Tailwind layer mounted only for the full-page Paper shader background.
 
 This repository owns the whole Sidestream web service: the public/account frontend, Vercel middleware and APIs, website database migrations, release manifests, tests, and deployment scripts. Keeping the frontend and server together preserves one deployable web contract. The Premiere extension/app remains separately owned by `/Users/alexgarrett/alexg.mov/nle-plugins/FlowState` because it has a different runtime, build, signing, installation, and release lifecycle.
