@@ -2,6 +2,14 @@
 
 ## Product Overview
 
+### Telemetry recovery — September 7, 2026
+
+- Missing download activity was a telemetry ingestion outage, not proof that customers stopped downloading. `POST https://alexg.mov/api/plugin-telemetry` returned 503 (`Telemetry database is not configured`) because the portfolio's active manual deployment omitted its API-forwarding middleware. Telemetry stopped before the Neon network isolation below. Sidestream's homepage, Google sign-in handoff, and installer redirect remained available.
+- The portfolio Vercel project now has an exact-path recovery rewrite, `Sidestream telemetry through canonical main collector` (route `58fa58be-82cf-4a74-b764-1c64102be129`, published version `14bd4620-7428-409b-b97d-491a93abfbb8`). It forwards only `/api/plugin-telemetry` (optional trailing slash) to the existing Git-linked portfolio **main** deployment `dpl_8DdRJKtrFbzqshCapuXmZhMA6VbM` (`adc4c40a86c7985e8e77f1879e4642413bc1aed3`), whose middleware authenticates to the Linux collector. The destination hostname is excluded from the rule to prevent recursion. The existing Vercel automation-bypass credential is supplied only as an upstream request header; never copy its value into documentation or source.
+- A valid synthetic operator event returned HTTP 200 with `recorded: 1` and `collector: postgres` through both the staged route and the canonical public endpoint; the event was subsequently visible in Linux analytics. It has no installation/session identity and is not a synthetic download. Homepage, sign-in handoff, and installer redirect checks still passed. Neon remains disconnected; no database credentials were added to Vercel and no Linux services were restarted.
+- This is a recovery bridge, with a dependency on that retained main deployment and the existing automation credential. Preserve both until the portfolio's normal production source includes its existing main-branch `middleware.ts` again. After that deployment, verify a real-shaped public telemetry POST and its persistence on Linux before disabling the bridge. Do not redeploy the dirty portfolio checkout or roll back its current frontend to repair telemetry. Rollback of this bridge is to disable that exact project route and publish the route version; doing so while middleware is still missing restores the ingestion outage.
+- The dashboard refreshes on a 15-minute cadence. Clients may retry queued events, but activity lost beyond client queue retention cannot be assumed recoverable. Missing-period counts remain incomplete until separately reconciled.
+
 ### Legacy Neon isolation — verified September 7, 2026
 
 - The canonical site served `875bfd09ad29b6bbb02bea9b9f7f1b55e837a7b7`, whose middleware routes API requests to Hetzner (`DATABASE_CUTOVER_MODE=target`).
