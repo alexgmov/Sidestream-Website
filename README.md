@@ -2,6 +2,17 @@
 
 ## Product Overview
 
+### Direct telemetry ingress — prepared, not deployed
+
+`docs/direct-telemetry-ingress.md` defines the migration to
+`https://telemetry.sidestream.tv/v1/events` directly on Linux, reusing the
+existing private collector/database and retaining a narrow proxy for old
+installed clients. `ops/nginx/telemetry.sidestream.tv*.conf` and
+`ops/nginx/sidestream-telemetry-limits.conf` are inactive templates; authenticated
+server access, live service attestation, TLS, Nginx validation, and persisted
+event proof are required before activation. The current recovery route below
+remains in place. No shipped client endpoint or production ingress has changed.
+
 ### Telemetry recovery — September 7, 2026
 
 - Missing download activity was a telemetry ingestion outage, not proof that customers stopped downloading. `POST https://alexg.mov/api/plugin-telemetry` returned 503 (`Telemetry database is not configured`) because the portfolio's active manual deployment omitted its API-forwarding middleware. Telemetry stopped before the Neon network isolation below. Sidestream's homepage, Google sign-in handoff, and installer redirect remained available.
