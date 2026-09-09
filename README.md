@@ -2,6 +2,22 @@
 
 ## Product Overview
 
+### Cost scope — September 8, 2026 PDT
+
+Alex narrowed the objective to reducing recurring charges; the full backend
+migration below is deferred, not an active implementation mandate. Vercel
+Observability Plus was disabled with explicit approval and its off setting
+verified after reloading Billing. Basic included Vercel diagnostics and the
+separate Linux Sidestream telemetry/dashboard remain; accrued charges remain.
+The August 25–September 25 usage snapshot showed $14.83 Observability events,
+$5.55 origin transfer, and $0 website/Blob transfer. Origin transfer was 97.8%
+`alexg.mov` (24.71 GB), 2.2% `sidestream` (547.51 MB), and 94.5% incoming across
+the team. These are cycle-to-date figures, not a monthly forecast or proof of
+which route generated the bytes. Direct telemetry is a narrower candidate,
+subject to route attribution, Linux access and live qualification; authentication,
+payment, storage and scheduler migration are not required just to pursue this
+cost saving. No traffic routing or client endpoint changed with this setting.
+
 ### Direct Linux backend migration — audited, activation blocked
 
 [`docs/linux-backend-migration.md`](docs/linux-backend-migration.md) is the
