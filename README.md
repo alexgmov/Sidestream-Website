@@ -2,6 +2,19 @@
 
 ## Product Overview
 
+### Direct Linux backend migration — audited, activation blocked
+
+[`docs/linux-backend-migration.md`](docs/linux-backend-migration.md) is the
+cross-repository migration map: live versus source inventory, browser session
+continuity, Blob reconciliation, five-job ownership handover, provider callbacks,
+old-client compatibility, validation and rollback. September 8 PDT audit found
+SSH authentication still blocked and API/telemetry DNS absent. Existing public
+Mac/Windows installer bytes passed full hash/size and range checks; live Stripe
+and Vercel settings still use the current webhook and five enabled schedules.
+Neon public networking remains off. No application traffic or client defaults
+were switched. Read this before executing older database-cutover recipes;
+rollback must keep the current Linux databases and Neon disconnected.
+
 ### Direct telemetry ingress — prepared, not deployed
 
 `docs/direct-telemetry-ingress.md` defines the migration to

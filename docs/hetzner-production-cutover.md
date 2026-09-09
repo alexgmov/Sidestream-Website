@@ -1,5 +1,12 @@
 # Hetzner production database cutover
 
+> Historical database-transfer runbook. For current direct-ingress work use
+> [Linux backend migration](linux-backend-migration.md). Neon public networking
+> is disabled and must remain disabled. The source-mode and copy-back recipes
+> below describe the original transfer only; they are not authorized rollback
+> actions for the current migration. Retain databases/backups and keep Linux
+> as the sole active data store.
+
 ## Current architecture and cutover states
 
 The public sites stay on Vercel. PostgreSQL never leaves the Hetzner host: the
