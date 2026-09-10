@@ -47,11 +47,17 @@ Both public legacy URL forms passed POST/OPTIONS and persisted-event checks.
 Old clients still traverse Vercel; their compiled endpoint has not changed.
 
 See `docs/direct-telemetry-ingress.md` for live evidence, rollback, and remaining
-client qualification. FlowState has unrelated dirty logger/analytics changes;
-no client default, Test package, or Production extension was changed. The
-analytics service also reports a failed background refresh and a stale snapshot;
-a fresh bounded query and independent database reads work. Ingestion proof
-must not be presented as dashboard-refresh recovery or historical gap repair.
+client qualification. With approval to preserve unrelated FlowState edits, its
+CEP and future Production native-installer defaults now use the direct endpoint.
+Test and Production stages were rebuilt locally; the staged Test uploader's
+probe was independently confirmed as one database row. Loaded-Premiere testing,
+shared-IP queue drains, and public extension/installer release remain separate
+gates. The dashboard's failed refresh was separately traced to PostgreSQL
+temporary-disk exhaustion. A narrow scalar-projection and query-memory repair
+returned 21,352 live user-day rows in 365 seconds; the dashboard service was
+restarted with that repair. Verify a fresh shared live snapshot after every
+restart; ingestion proof alone is insufficient.
+Neither repair reconciles missing historical events.
 
 For administration, the existing key `~/.ssh/sidestream_hetzner_ed25519` works
 with `root@2.29.9.121` after local unlock; `sidestream-server` selects

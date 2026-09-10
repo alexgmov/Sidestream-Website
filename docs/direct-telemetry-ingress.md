@@ -3,7 +3,7 @@
 ## Status and scope
 
 Server ingress and legacy compatibility proxy activated September 10, 2026.
-Client-default rollout remains pending. The existing encrypted key works for
+Client defaults and local stages are updated; public client release remains pending. The existing encrypted key works for
 `root@2.29.9.121` after local unlock; the `sidestream-server` alias uses the
 non-administrative `sidestream-dev` account. Do not add privileges to that account
 or create replacement credentials merely to administer Nginx.
@@ -15,8 +15,8 @@ or create replacement credentials merely to administer Nginx.
   2026; Certbot renewal is configured, with the scoped deploy hook from
   `ops/nginx/telemetry-cert-renewal.sh` installed and manually tested.
 - Nginx 1.28.3 passed `nginx -t` before each graceful reload. Existing
-  proxy-header hash warnings remain; application/database services were not
-  restarted. Full pre-change Nginx configuration is backed up under
+  proxy-header hash warnings remain; the ingress cutover did not restart application/database services.
+  The separate dashboard repair below restarted analytics only. Full pre-change Nginx configuration is backed up under
   `/root/telemetry-ingress-20260910T173012Z/nginx` (root-only parent).
 - Direct ingress: OPTIONS 204 with wildcard CORS; GET 405; private path 404;
   malformed JSON 400; body over 512 KiB 413. A valid event carrying a forged
@@ -37,12 +37,25 @@ or create replacement credentials merely to administer Nginx.
   Probes have no install/session identity and are not customer downloads.
 - An isolated loopback Nginx fixture with an unavailable upstream returned 502,
   not a successful acknowledgement; the production collector stayed running.
-- FlowState's current checkout contains unrelated logger, analytics and UI edits.
-  Client defaults and packages remain unchanged pending coordination and loaded
-  Test qualification. Shared-IP queue-drain qualification remains a client gate.
-- Dashboard background refresh reports failure with an older snapshot. Fresh
-  date-bounded live reads succeed. This cutover does not repair the dashboard
-  code, reconcile missing historical events, or prove complete customer metrics.
+- Alex approved scoped FlowState changes while preserving unrelated edits.
+  `js/logger.js` and the future Production native-installer default now use the
+  direct endpoint; overrides remain supported and Test installer telemetry stays
+  disabled by default. Both package stages were rebuilt. The staged Test uploader
+  posted `operator-test-client-c0063861-6a4f-47d9-8010-1b534bae05b4`; a separate
+  database query confirmed exactly one row. This is executable staged-uploader
+  proof, not loaded-Premiere or public-release proof. Shared-IP queue-drain
+  qualification remains a client gate; the existing system-wide Production
+  extension still shadows the user-level Production staging link.
+- Dashboard refresh separately failed with PostgreSQL temporary-disk exhaustion.
+  A scalar-only Overview projection plus private `work_mem=64MB` and ten-minute
+  timeout returned 21,352 live user-day rows in 365 seconds. Only the analytics
+  service was restarted with this surgical source patch; the collector and
+  database stayed running. Original dashboard source is backed up at
+  `/root/telemetry-dashboard-20260910/source.mjs`. After every restart, verify
+  health, Overview, installs, and sessions share a current live snapshot. Cold
+  rebuild can exceed the gateway's 180-second request timeout; wait for loopback
+  readiness before checking the public page. Missing historical events remain
+  unreconciled.
 
 The first migration removes Vercel and the portfolio frontend from **new
 telemetry traffic**. It reuses the existing Linux collector and telemetry
