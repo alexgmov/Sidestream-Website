@@ -31,18 +31,40 @@ Neon public networking remains off. No application traffic or client defaults
 were switched. Read this before executing older database-cutover recipes;
 rollback must keep the current Linux databases and Neon disconnected.
 
-### Direct telemetry ingress — prepared, not deployed
+### Direct telemetry ingress — server cutover verified September 10, 2026
 
-`docs/direct-telemetry-ingress.md` defines the migration to
-`https://telemetry.sidestream.tv/v1/events` directly on Linux, reusing the
-existing private collector/database and retaining a narrow proxy for old
-installed clients. `ops/nginx/telemetry.sidestream.tv*.conf` and
-`ops/nginx/sidestream-telemetry-limits.conf` are inactive templates; authenticated
-server access, live service attestation, TLS, Nginx validation, and persisted
-event proof are required before activation. The current recovery route below
-remains in place. No shipped client endpoint or production ingress has changed.
+`https://telemetry.sidestream.tv/v1/events` now resolves directly to Linux
+(`2.29.9.121`, GoDaddy A record, TTL 600) and forwards only POST/OPTIONS to the
+existing loopback collector on 3102. TLS, Nginx validation, CORS, strict
+acknowledgements, malformed/oversized rejection, private-path isolation, and
+one-row persistence after duplicate retries passed. The database was not moved.
 
-### Telemetry recovery — September 7, 2026
+The portfolio project route `58fa58be-82cf-4a74-b764-1c64102be129` was published
+September 10 at 17:33 UTC as **Sidestream telemetry direct Linux compatibility
+proxy**. It matches only `^/api/plugin-telemetry/?$` and rewrites directly to
+the new endpoint, with no deployment-specific destination or bypass header.
+Both public legacy URL forms passed POST/OPTIONS and persisted-event checks.
+Old clients still traverse Vercel; their compiled endpoint has not changed.
+
+See `docs/direct-telemetry-ingress.md` for live evidence, rollback, and remaining
+client qualification. FlowState has unrelated dirty logger/analytics changes;
+no client default, Test package, or Production extension was changed. The
+analytics service also reports a failed background refresh and a stale snapshot;
+a fresh bounded query and independent database reads work. Ingestion proof
+must not be presented as dashboard-refresh recovery or historical gap repair.
+
+For administration, the existing key `~/.ssh/sidestream_hetzner_ed25519` works
+with `root@2.29.9.121` after local unlock; `sidestream-server` selects
+`sidestream-dev`, which has no sudo. No new account or privilege was added.
+The Nginx backup is `/root/telemetry-ingress-20260910T173012Z/nginx`.
+`ops/nginx/telemetry-cert-renewal.sh` is installed as a certificate deploy hook
+and validates Nginx before reload for this certificate only.
+
+### Telemetry recovery — September 7, 2026 (historical bridge, superseded above)
+
+The following records the September 7 incident and recovery. Its bridge
+destination and credential dependency were replaced by the September 10
+exact-path Linux proxy described above.
 
 - Missing download activity was a telemetry ingestion outage, not proof that customers stopped downloading. `POST https://alexg.mov/api/plugin-telemetry` returned 503 (`Telemetry database is not configured`) because the portfolio's active manual deployment omitted its API-forwarding middleware. Telemetry stopped before the Neon network isolation below. Sidestream's homepage, Google sign-in handoff, and installer redirect remained available.
 - The portfolio Vercel project now has an exact-path recovery rewrite, `Sidestream telemetry through canonical main collector` (route `58fa58be-82cf-4a74-b764-1c64102be129`, published version `14bd4620-7428-409b-b97d-491a93abfbb8`). It forwards only `/api/plugin-telemetry` (optional trailing slash) to the existing Git-linked portfolio **main** deployment `dpl_8DdRJKtrFbzqshCapuXmZhMA6VbM` (`adc4c40a86c7985e8e77f1879e4642413bc1aed3`), whose middleware authenticates to the Linux collector. The destination hostname is excluded from the rule to prevent recursion. The existing Vercel automation-bypass credential is supplied only as an upstream request header; never copy its value into documentation or source.

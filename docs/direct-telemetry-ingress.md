@@ -2,11 +2,47 @@
 
 ## Status and scope
 
-Prepared September 7, 2026; **not deployed**. SSH to `sidestream-server` still
-fails authentication. The production recovery route documented in the README
-remains active. DNS, certificates, Nginx, the collector service, and shipped
-clients have not changed. Nginx is not installed locally and the local Docker
-daemon is unavailable, so the prepared configuration has not passed `nginx -t`.
+Server ingress and legacy compatibility proxy activated September 10, 2026.
+Client-default rollout remains pending. The existing encrypted key works for
+`root@2.29.9.121` after local unlock; the `sidestream-server` alias uses the
+non-administrative `sidestream-dev` account. Do not add privileges to that account
+or create replacement credentials merely to administer Nginx.
+
+### Live evidence and remaining work
+
+- GoDaddy A `telemetry` → `2.29.9.121`, TTL 600; both authoritative nameservers
+  confirmed it. No AAAA record was added. HTTPS certificate expires December 9,
+  2026; Certbot renewal is configured, with the scoped deploy hook from
+  `ops/nginx/telemetry-cert-renewal.sh` installed and manually tested.
+- Nginx 1.28.3 passed `nginx -t` before each graceful reload. Existing
+  proxy-header hash warnings remain; application/database services were not
+  restarted. Full pre-change Nginx configuration is backed up under
+  `/root/telemetry-ingress-20260910T173012Z/nginx` (root-only parent).
+- Direct ingress: OPTIONS 204 with wildcard CORS; GET 405; private path 404;
+  malformed JSON 400; body over 512 KiB 413. A valid event carrying a forged
+  internal-auth header returned 200 and `recorded:1, collector:postgres`.
+  Repeating it produced exactly one row in `sidestream_telemetry`:
+  `operator-direct-check-f101064b-5881-481b-ab10-bb800f00bd28`.
+- Vercel route `58fa58be-82cf-4a74-b764-1c64102be129`, published at 17:33 UTC,
+  retains exact regex `^/api/plugin-telemetry/?$`, now rewriting directly to
+  `https://telemetry.sidestream.tv/v1/events`. Its name is **Sidestream telemetry
+  direct Linux compatibility proxy**. The destination-host exclusion and
+  automation-bypass request header were removed. The authenticated staging
+  GET reached Nginx; anonymous staging POST was blocked by Vercel preview
+  protection, so POST persistence was verified immediately after publication.
+- Canonical legacy POST and OPTIONS passed with and without the trailing slash;
+  retries acknowledged successfully and each probe had exactly one database row:
+  `operator-legacy-live-00381015-0b49-47dd-813d-49f129151fee` and
+  `operator-legacy-live-023615b6-5a47-4300-a039-3f511b11e11a`.
+  Probes have no install/session identity and are not customer downloads.
+- An isolated loopback Nginx fixture with an unavailable upstream returned 502,
+  not a successful acknowledgement; the production collector stayed running.
+- FlowState's current checkout contains unrelated logger, analytics and UI edits.
+  Client defaults and packages remain unchanged pending coordination and loaded
+  Test qualification. Shared-IP queue-drain qualification remains a client gate.
+- Dashboard background refresh reports failure with an older snapshot. Fresh
+  date-bounded live reads succeed. This cutover does not repair the dashboard
+  code, reconcile missing historical events, or prove complete customer metrics.
 
 The first migration removes Vercel and the portfolio frontend from **new
 telemetry traffic**. It reuses the existing Linux collector and telemetry
@@ -26,9 +62,9 @@ flowchart LR
 
 The old URL necessarily stays available for installed versions with that URL
 compiled into them. DNS cannot route only one path of `alexg.mov` to another
-server. Initially that URL still passes through Vercel, but its exact-path
-project rewrite should go directly to this new public ingress, with no database
-handler, deployment-specific bridge, or automation-bypass credential. Removing
+server. That URL still passes through Vercel; its exact-path project rewrite now goes
+directly to this public ingress, with no database handler, deployment-specific
+bridge, or automation-bypass credential. Removing
 Vercel from those old requests entirely would require moving the whole
 `alexg.mov` hostname or updating those clients; neither is needed for this step.
 
@@ -111,8 +147,10 @@ existing origin-authentication gate remains enabled for other APIs.
 
 ## Rollback
 
-Before client rollout, restore the saved legacy project route if the new
-ingress fails. Preserve the current working deployment and its automation
+Before client rollout, restore the September 7 Vercel route version
+`14bd4620-7428-409b-b97d-491a93abfbb8` if the new ingress fails, then verify a
+legacy canary and its persistence. Do not disable the route: that restores the
+original broken Vercel handler. Preserve the current working deployment and its automation
 credential until that bridge is retired after verification. Revert only the new
 virtual host if needed, validate Nginx, and reload; leave the database and other
 virtual hosts alone. Once clients use the new hostname, keep that hostname and

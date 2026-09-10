@@ -1,5 +1,15 @@
 # Direct Linux backend migration
 
+## September 10 telemetry-only update
+
+The narrower telemetry server ingress and legacy compatibility proxy are now
+live; see `direct-telemetry-ingress.md`. Existing root SSH access was recovered
+using the same locally unlocked key; the non-root alias still has no sudo.
+The audit below is historical for SSH/telemetry DNS. The broader backend
+migration remains deferred, and client-default qualification plus dashboard
+refresh recovery remain outstanding. No account, payment, storage, or scheduler
+migration was performed.
+
 ## Status: blocked before activation
 
 Audit: September 8, 2026 PDT (September 9 UTC). This is an operational plan,
