@@ -64,7 +64,8 @@ the webroot authenticator. The scoped `alexg-reload` deploy hook validates
 Nginx and gracefully reloads it. Other certificate hooks are unchanged.
 
 HTTP ACME requests first serve local tokens, then fall back to the Vercel
-upstream for Vercel's own domain validation. All `/.well-known/vercel/*`
+upstream on port 80 for Vercel's own HTTP-01 domain validation. This explicit
+challenge-only upstream preserves HTTP end to end. All `/.well-known/vercel/*`
 requests remain uncached through the website proxy. Keep upstream certificates
 valid as well as the public Linux certificate; never disable TLS verification.
 The two temporary `_acme-challenge` TXT records were removed after issuance
@@ -95,6 +96,7 @@ except the explicit content type, user agent and Origin; trusted forwarding
 headers are reconstructed and the existing root-only origin-auth snippet is
 included. Client-supplied origin-auth is never trusted. Cache and upstream
 retries are off. Collector errors are passed through, never rewritten to success.
+Legacy HSTS, no-sniff, no-referrer and no-store response headers are retained.
 
 Other website requests retain method, raw body, path/query, cookies,
 authorization, content type, response cookies, redirects and cache headers.

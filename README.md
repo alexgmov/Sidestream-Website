@@ -10,6 +10,8 @@ and `/api/plugin-telemetry/` to the existing local collector on 3102.
 Other requests use the existing Vercel Production website via Vercel's assigned
 DNS ingress, retaining canonical Host/SNI with verified TLS. Old cached DNS
 answers remain supported by the unchanged Vercel compatibility rewrite.
+The challenge-only HTTP upstream preserves Vercel certificate validation;
+legacy telemetry retains its existing security and no-store response headers.
 
 The runbook [`docs/alexg-legacy-telemetry-cutover.md`](docs/alexg-legacy-telemetry-cutover.md)
 owns source provenance, validation, certificate renewal, privacy-safe evidence,
