@@ -1,5 +1,15 @@
 # Direct Linux backend migration
 
+## September 15 legacy hostname cutover
+
+The separately authorized staged migration of `alexg.mov` ingress is now live:
+exact legacy telemetry goes to loopback collector 3102; the remaining website
+requests proxy to the retained Vercel Production website. Read
+[the cutover record](alexg-legacy-telemetry-cutover.md) before making DNS or Nginx
+changes. The earlier SSH blocker is resolved. Broader backend, database,
+storage, provider callback, and scheduler migration remain deferred. The
+September 8 audit and its blocked-status tables below are historical evidence.
+
 ## September 10 telemetry-only update
 
 The narrower telemetry server ingress and legacy compatibility proxy are now

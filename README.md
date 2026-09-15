@@ -2,6 +2,26 @@
 
 ## Product Overview
 
+### Legacy telemetry hostname cutover — September 15, 2026
+
+`alexg.mov` now has GoDaddy A `2.29.9.121` (TTL 600); `www` aliases
+`alexg.mov` (TTL 3600). Linux Nginx sends exactly `/api/plugin-telemetry`
+and `/api/plugin-telemetry/` to the existing local collector on 3102.
+Other requests use the existing Vercel Production website via Vercel's assigned
+DNS ingress, retaining canonical Host/SNI with verified TLS. Old cached DNS
+answers remain supported by the unchanged Vercel compatibility rewrite.
+
+The runbook [`docs/alexg-legacy-telemetry-cutover.md`](docs/alexg-legacy-telemetry-cutover.md)
+owns source provenance, validation, certificate renewal, privacy-safe evidence,
+and rollback. Configuration lives in `ops/nginx/alexg.mov.conf`,
+`alexg-vercel-upstream.conf`, `alexg-vercel-proxy.conf`,
+`alexg-legacy-telemetry.conf`, and `alexg-cert-renewal.sh` in that same directory.
+No portfolio/app checkout was deployed, and no database, client package,
+payment/email provider, or scheduled job was migrated. Vercel still serves the
+website and its APIs; website traffic retains Vercel usage and now appears there
+with the proxy IP. Do not promise a particular saving from historical transfer
+totals. The September 8 broader-backend audit below is historical.
+
 ### Cost scope — September 8, 2026 PDT
 
 Alex narrowed the objective to reducing recurring charges; the full backend

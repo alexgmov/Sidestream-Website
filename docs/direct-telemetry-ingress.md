@@ -2,6 +2,13 @@
 
 ## Status and scope
 
+**September 15 update:** the legacy `alexg.mov` hostname now resolves to Linux,
+with both exact telemetry paths reaching the existing collector locally.
+See [the hostname cutover record](alexg-legacy-telemetry-cutover.md) for current
+routing, evidence, TLS renewal, and rollback. The September 10 compatibility
+rewrite remains active for cached DNS and rollback. Statements below about old
+clients traversing Vercel describe the prior migration stage.
+
 Server ingress and legacy compatibility proxy activated September 10, 2026.
 Client defaults and local stages are updated; public client release remains pending. The existing encrypted key works for
 `root@2.29.9.121` after local unlock; the `sidestream-server` alias uses the
