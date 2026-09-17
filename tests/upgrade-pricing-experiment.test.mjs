@@ -35,7 +35,7 @@ function decide(index, overrides = {}) {
   });
 }
 
-test("v2 is concluded to annual and stale environment values cannot restore the split", () => {
+test("v2 restores one-time pricing and stale environment values cannot restore the split", () => {
   assert.equal(UPGRADE_PRICING_EXPERIMENT_ID, "upgrade-pricing-v2");
   assert.equal(UPGRADE_PRICING_EXPERIMENT_CONFIG.assignmentVersion, 2);
   assert.deepEqual(UPGRADE_PRICING_EXPERIMENT_CONFIG.variants, [
@@ -43,39 +43,39 @@ test("v2 is concluded to annual and stale environment values cannot restore the 
     "annual_same_price",
   ]);
   assert.equal(UPGRADE_PRICING_EXPERIMENT_CONFIG.closedAt, "2026-09-04T21:14:08.000Z");
-  assert.equal(UPGRADE_PRICING_EXPERIMENT_CONFIG.postExperimentVariant, "annual_same_price");
+  assert.equal(UPGRADE_PRICING_EXPERIMENT_CONFIG.postExperimentVariant, "control_one_time");
   assert.deepEqual(readUpgradePricingRollout({}), {
-    enabled: true,
-    rolloutBasisPoints: 10_000,
-    reason: "concluded_annual",
+    enabled: false,
+    rolloutBasisPoints: 0,
+    reason: "kill_switch",
   });
   assert.deepEqual(readUpgradePricingRollout({
     SIDESTREAM_UPGRADE_PRICING_EXPERIMENT_ENABLED: "true",
     SIDESTREAM_UPGRADE_PRICING_EXPERIMENT_ROLLOUT_BPS: "5000",
   }), {
-    enabled: true,
-    rolloutBasisPoints: 10_000,
-    reason: "concluded_annual",
+    enabled: false,
+    rolloutBasisPoints: 0,
+    reason: "kill_switch",
   });
   assert.deepEqual(readUpgradePricingRollout({
     SIDESTREAM_UPGRADE_PRICING_V2_ENABLED: "false",
     SIDESTREAM_UPGRADE_PRICING_V2_ROLLOUT_BPS: "0",
   }), {
-    enabled: true,
-    rolloutBasisPoints: 10_000,
-    reason: "concluded_annual",
+    enabled: false,
+    rolloutBasisPoints: 0,
+    reason: "kill_switch",
   });
   assert.deepEqual(readUpgradePricingRollout({
     SIDESTREAM_UPGRADE_PRICING_V2_ENABLED: "true",
     SIDESTREAM_UPGRADE_PRICING_V2_ROLLOUT_BPS: "5000",
   }), {
-    enabled: true,
-    rolloutBasisPoints: 10_000,
-    reason: "concluded_annual",
+    enabled: false,
+    rolloutBasisPoints: 0,
+    reason: "kill_switch",
   });
 });
 
-test("the concluded source contract assigns every new eligible global USD account to annual", () => {
+test("the concluded source contract restores one-time for every new eligible global USD account", () => {
   for (let index = 0; index < 100; index += 1) {
     const decision = decideUpgradePricing({
       accountId: accountId(index),
@@ -87,11 +87,11 @@ test("the concluded source contract assigns every new eligible global USD accoun
         SIDESTREAM_UPGRADE_PRICING_V2_SECRET: SECRET,
       },
     });
-    assert.equal(decision.variant, UPGRADE_PRICING_ANNUAL_VARIANT);
-    assert.equal(decision.billingModel, "subscription");
-    assert.equal(decision.rolloutBasisPoints, 10_000);
-    assert.equal(decision.reason, "rollout_annual");
-    assert.equal(decision.shouldPersistAssignment, true);
+    assert.equal(decision.variant, UPGRADE_PRICING_CONTROL_VARIANT);
+    assert.equal(decision.billingModel, "one_time");
+    assert.equal(decision.rolloutBasisPoints, 0);
+    assert.equal(decision.reason, "kill_switch");
+    assert.equal(decision.shouldPersistAssignment, false);
   }
 });
 

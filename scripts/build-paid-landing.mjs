@@ -276,19 +276,19 @@ export function buildPaidLanding(canonicalHtml) {
   );
   output = replaceOnce(
     output,
-    '<span class="per" data-checkout-offer-cadence>per year</span>',
+    '<span class="per" data-checkout-offer-cadence>one-time</span>',
     '<span class="per">one-time</span>',
     "Unlimited billing cadence"
   );
   output = replaceOnce(
     output,
-    '                <li data-checkout-offer-annual-term>Renews automatically every year with a 30-day email reminder</li>\n',
+    '                <li data-checkout-offer-annual-term hidden>Renews automatically every year with a 30-day email reminder</li>\n',
     "",
     "annual renewal term"
   );
   output = replaceOnce(
     output,
-    '                <li data-checkout-offer-annual-term>Cancel anytime from your Sidestream account</li>\n',
+    '                <li data-checkout-offer-annual-term hidden>Cancel anytime from your Sidestream account</li>\n',
     "",
     "annual cancellation term"
   );

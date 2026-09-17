@@ -6,7 +6,16 @@ Stripe Test qualification, Production rollout, provider delivery, and observed
 reporting so that a fixture, Preview, accepted email request, or open Checkout
 page is never reported as a completed purchase or live result.
 
-## v2 annual decision
+## Current default — September 16, 2026
+
+Alex restored the previous $19.99 one-time default for new unassigned accounts.
+The closed experiment now selects `control_one_time`, disabling new assignment
+regardless of stale rollout environment settings. Existing assignments, locked
+intents, paid subscriptions and annual renewal reminders remain unchanged.
+The public offer endpoint and homepage advertise one-time pricing. The annual
+decision and qualification below are historical.
+
+## v2 annual decision (historical)
 
 `upgrade-pricing-v2` is a new account-level experiment. It does not rename,
 reuse, or reinterpret the v1 monthly cohort.
@@ -53,7 +62,7 @@ using `5000` for a 50/50 assignment of future eligible accounts. Existing
 assignments never change when rollout values change.
 
 Production completed those gates on 2026-08-27 and ran rollout `5000` until
-the 2026-09-04 conclusion. The source-level conclusion now forces rollout
+the 2026-09-04 conclusion. The September 4 source-level conclusion forced rollout
 `10000` for future eligible accounts even if stale environment values still
 request `5000`, `0`, or disabled. A missing/invalid assignment secret, annual
 Price, provider response, or unsupported regional offer still fails closed to

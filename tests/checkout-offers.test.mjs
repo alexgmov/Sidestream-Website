@@ -116,23 +116,23 @@ test("the server-owned catalog selects regional offers only from configured trus
     getCheckoutOfferPresentation("IN", {
       SIDESTREAM_PRO_INDIA_PRICE_ID: "price_india",
     }),
-    { formattedPrice: "₹499", currency: "INR" },
+    { formattedPrice: "₹499", currency: "INR", billingCadence: "one_time" },
   );
   assert.deepEqual(
     getCheckoutOfferPresentation("BR", {
       SIDESTREAM_PRO_BRAZIL_PRICE_ID: "price_brazil",
     }),
-    { formattedPrice: "R$ 25", currency: "BRL" },
+    { formattedPrice: "R$ 25", currency: "BRL", billingCadence: "one_time" },
   );
   assert.deepEqual(
     getCheckoutOfferPresentation("KR", {
       SIDESTREAM_PRO_SOUTH_KOREA_PRICE_ID: "price_south_korea",
     }),
-    { formattedPrice: "₩24,900", currency: "KRW" },
+    { formattedPrice: "₩24,900", currency: "KRW", billingCadence: "one_time" },
   );
   assert.deepEqual(
     getCheckoutOfferPresentation("IN", {}),
-    { formattedPrice: "$19.99", currency: "USD" },
+    { formattedPrice: "$19.99", currency: "USD", billingCadence: "one_time" },
   );
 });
 
@@ -322,3 +322,9 @@ function checkoutSession(offer) {
     },
   };
 }
+
+test("public global pricing advertises the restored one-time default", () => {
+  assert.deepEqual(getCheckoutOfferPresentation("US", {}), {
+    formattedPrice: "$19.99", currency: "USD", billingCadence: "one_time",
+  });
+});

@@ -15,7 +15,7 @@ export const UPGRADE_PRICING_EXPERIMENT_CONFIG = Object.freeze({
   defaultRolloutBasisPoints: 0,
   openedAt: null,
   closedAt: "2026-09-04T21:14:08.000Z",
-  postExperimentVariant: UPGRADE_PRICING_ANNUAL_VARIANT,
+  postExperimentVariant: UPGRADE_PRICING_CONTROL_VARIANT,
   variants: Object.freeze([
     UPGRADE_PRICING_CONTROL_VARIANT,
     UPGRADE_PRICING_ANNUAL_VARIANT,
