@@ -10,7 +10,9 @@ stale rollout settings; public pricing and `/api/checkout/offer` match. Existing
 experiment assignments, locked Checkout intents, paid subscriptions and renewal
 reminders retain their original contracts. Regional one-time prices are unchanged.
 Deploy the pushed main commit to both Vercel and the Linux Website API; a frontend
-deployment alone does not update checkout behavior.
+deployment alone does not update checkout behavior. Pricing checks include
+`tests/checkout-offer-presentation.test.mjs` and `tests/paid-landing.test.mjs`
+for the one-time fallback and hidden renewal terms.
 
 
 ### Legacy telemetry hostname cutover — September 15, 2026

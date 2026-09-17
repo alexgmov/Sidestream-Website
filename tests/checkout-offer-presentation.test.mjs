@@ -67,7 +67,7 @@ test("the public offer presentation uses only the trusted country header", async
     assert.deepEqual(forged.response.json, {
       formattedPrice: "$19.99",
       currency: "USD",
-      billingCadence: "year",
+      billingCadence: "one_time",
     });
 
     const brazil = await invokeHandler(handler, {
@@ -111,7 +111,7 @@ test("India safely receives the global presentation without its approved Price",
     assert.deepEqual(result.response.json, {
       formattedPrice: "$19.99",
       currency: "USD",
-      billingCadence: "year",
+      billingCadence: "one_time",
     });
   } finally {
     restoreEnvironment(previous);
@@ -141,8 +141,9 @@ test("the landing page renders a global fallback and updates text only", async (
     html,
     /data-checkout-offer-price aria-live="polite">\$19\.99<\/span>/,
   );
-  assert.match(html, /data-checkout-offer-cadence>per year<\/span>/);
-  assert.match(html, /Renews automatically every year with a 30-day email reminder/);
+  assert.match(html, /data-checkout-offer-cadence>one-time<\/span>/);
+  assert.match(html, /data-checkout-offer-annual-term hidden>Renews automatically/);
+  assert.match(html, /\.plan li\[hidden\] \{ display: none; \}/);
   assert.match(html, /Cancel anytime from your Sidestream account/);
   assert.match(html, /fetch\("\/api\/checkout\/offer"/);
   assert.match(

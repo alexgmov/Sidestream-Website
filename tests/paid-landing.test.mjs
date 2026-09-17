@@ -50,7 +50,7 @@ test("committed paid landing is the deterministic canonical render", () => {
 
 test("the annual public card and one-time paid landing stay distinct", () => {
   assert.match(canonicalHtml, /<p class="plan-name">Unlimited<\/p>/);
-  assert.match(canonicalHtml, /data-checkout-offer-cadence>per year<\/span>/);
+  assert.match(canonicalHtml, /data-checkout-offer-cadence>one-time<\/span>/);
   assert.doesNotMatch(
     canonicalHtml,
     /<p class="plan-name">Unlimited\s*<span class="pill">One-time<\/span><\/p>/
@@ -60,7 +60,7 @@ test("the annual public card and one-time paid landing stay distinct", () => {
     /<p class="plan-name">Sidestream Unlimited <span class="pill">One-time<\/span><\/p>/
   );
   assert.match(paidLandingHtml, /<span class="per">one-time<\/span>/);
-  assert.doesNotMatch(paidLandingHtml, /<li data-checkout-offer-annual-term>/);
+  assert.doesNotMatch(paidLandingHtml, /<li data-checkout-offer-annual-term/);
 });
 
 test("paid render is noindex and canonically isolated from the root page", () => {
