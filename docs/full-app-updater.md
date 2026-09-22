@@ -170,3 +170,13 @@ operator authentication, durable database adapter and key-management deployment
 requires a separately reviewed release decision. No policy becomes public merely
 because a local candidate or test passes. Current native v2/self-update results
 must be read from the evidence report separately from the proven v1 mechanism.
+
+The signed native mechanism-06 has loaded A with its bridge ready and Adobe debug
+modes 0. A held B download retained 19 verified chunks through an authority outage
+and an OS-restarted helper, then completed without redownloading that prefix.
+Exact B approval still waits for the empty proof host to close. Its stuck native
+accessibility menu is recorded separately; no v2 B load, live rollback or companion
+exchange has been claimed. Signed/notarized companion-07 contains the subsequent
+bounded-transfer fix and preserves the same authority, keys and service identity.
+The private evidence report records precise source/artifact hashes and unpassed
+gates; these results do not authorize a remote deployment or customer migration.
