@@ -235,8 +235,6 @@ This repository owns the whole Sidestream web service: the public/account fronte
 
 ## Feature Map
 
-- Full-app staged updates (Test only, default off): `api/_lib/staged-updates.ts` owns the signed contract, `api/_lib/staged-update-handler.ts` owns policy leases/private artifact delivery, `api/releases/staged.ts` and `staged-artifact.ts` are the GET/HEAD endpoints, and `data/staged-update-catalog.json` holds signed operator controls. `scripts/manage-staged-updates.mjs` is dry-run first; `scripts/publish-staged-update-artifact.mjs` refuses mutable/corrupt bytes and overwrites. Run `npm run test:staged-updates`; follow [docs/staged-updates.md](docs/staged-updates.md) for scope, keys, controls, lock recovery, local/native proof, release gates and offline revocation. Legacy notice percentages, customer download pointers and commerce are independent.
-
 - Header/nav - `header`, `.nav`, `.brand`, `.nav-links`; the desktop header exposes Features and Account as compact glass pill links without Pricing or download CTAs
 - Shader background - `#shader-background-root`, `src/main.tsx`, `components/ui/demo.tsx`, the active Paper `MeshGradient`, `components/ui/background-paper-shaders.tsx`, and `src/paper-shaders-compat.d.ts`
 - Vercel Analytics - `src/main.tsx` imports `Analytics` from `@vercel/analytics/react` and renders it alongside the shader component
@@ -1484,8 +1482,6 @@ Use the narrowest relevant check after edits:
 - `llms.txt` is useful as an AI-readable summary, but it is not a substitute for crawlable HTML, normal metadata, structured data, sitemap hygiene, or external citations/backlinks.
 
 ## Recent Change Log
-
-- 2026-09-21: Added default-off Test full-app policy/artifact endpoints, signed exact-release controls, independent stable cohorts, dry-run operator/audit tooling and loopback qualification server. Production activation is hard-disabled; no foundational customer installer or server publication is implied.
 
 - 2026-09-03: Closed the current-event Stripe entitlement gap: `refund.failed` now re-fetches the exact failed Refund and canonical Charge/PaymentIntent before a watermark-safe recovery can lower persisted refunded amount and reactivate paid access; all current Dispute statuses have explicit open/favorable/lost mappings, unknown future statuses fail closed, failed refunds never create false refunded acquisition stages, and the required entitlement gate now includes the lifecycle regression suite. Historical-event reconciliation and live webhook selection remain separate Production gates.
 - 2026-09-04: Concluded `upgrade-pricing-v2` and selected `$19.99/year` for every future eligible global-USD Upgrade. The source-level `10000` rollout overrides stale 50/50, zero, or disabled environment values while preserving existing assignments, open Checkout snapshots, paid access, annual lifecycle/reminders, regional one-time fallbacks, and fail-closed provider validation. The public card now shows the global annual cadence and renewal/reminder/cancellation terms; approved regional offers remain visibly one-time.

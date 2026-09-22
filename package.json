@@ -64,11 +64,7 @@
     "pricing:check": "node scripts/sync-pricing-contract.mjs --check && node scripts/build-paid-landing.mjs --check && node --test tests/pricing-contract.test.mjs",
     "reconcile:paid-telemetry-handoff": "node --experimental-strip-types scripts/reconcile-paid-telemetry-handoff.mjs",
     "replay:paid-telemetry-handoff": "node --experimental-strip-types scripts/replay-paid-telemetry-handoff.mjs",
-    "launcher-attribution:server": "node scripts/run-renamed-launcher-proof-server.mjs",
-    "test:staged-updates": "node --experimental-strip-types --test tests/staged-updates.test.mjs",
-    "release:staged-policy": "node --experimental-strip-types scripts/manage-staged-updates.mjs",
-    "release:staged-artifact": "node --experimental-strip-types scripts/publish-staged-update-artifact.mjs",
-    "dev:staged-updates": "node scripts/serve-staged-update-test.mjs"
+    "launcher-attribution:server": "node scripts/run-renamed-launcher-proof-server.mjs"
   },
   "dependencies": {
     "@paper-design/shaders-react": "^0.0.76",
