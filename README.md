@@ -235,6 +235,8 @@ This repository owns the whole Sidestream web service: the public/account fronte
 
 ## Feature Map
 
+- Full-app updater replacement: [docs/full-app-updater.md](docs/full-app-updater.md) records the privileged experiment rollback, per-user mechanism gate and unchanged public/paid release boundary. Replacement server implementation is held until real signed Test A-to-B Premiere proof.
+
 - Header/nav - `header`, `.nav`, `.brand`, `.nav-links`; the desktop header exposes Features and Account as compact glass pill links without Pricing or download CTAs
 - Shader background - `#shader-background-root`, `src/main.tsx`, `components/ui/demo.tsx`, the active Paper `MeshGradient`, `components/ui/background-paper-shaders.tsx`, and `src/paper-shaders-compat.d.ts`
 - Vercel Analytics - `src/main.tsx` imports `Analytics` from `@vercel/analytics/react` and renders it alongside the shader component
