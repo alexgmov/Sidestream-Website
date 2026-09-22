@@ -235,7 +235,7 @@ This repository owns the whole Sidestream web service: the public/account fronte
 
 ## Feature Map
 
-- Full-app updater replacement: [docs/full-app-updater.md](docs/full-app-updater.md) records the privileged experiment rollback, per-user mechanism gate and unchanged public/paid release boundary. The Mac v1 mechanism passed real signed A-to-B Premiere qualification. Isolated v2 controls add independent cohorts, exact rollback, expiring range delivery and companion policy. Signed v2 resume survived a helper restart; its activation/self-update gates remain pending. Deployed routes remain absent.
+- Full-app updater replacement: [docs/full-app-updater.md](docs/full-app-updater.md) records the privileged experiment rollback, per-user mechanism gate and unchanged public/paid release boundary. The Mac v1 mechanism passed real signed A-to-B Premiere qualification. Isolated v2 controls add independent cohorts, exact rollback, expiring range delivery and companion policy. Signed v2 resume survived a helper restart; a reproduced companion-publication defect requires a corrected native Test install before self-update qualification. All local targets are held; deployed routes remain absent.
 
 - Header/nav - `header`, `.nav`, `.brand`, `.nav-links`; the desktop header exposes Features and Account as compact glass pill links without Pricing or download CTAs
 - Shader background - `#shader-background-root`, `src/main.tsx`, `components/ui/demo.tsx`, the active Paper `MeshGradient`, `components/ui/background-paper-shaders.tsx`, and `src/paper-shaders-compat.d.ts`

@@ -180,3 +180,15 @@ exchange has been claimed. Signed/notarized companion-07 contains the subsequent
 bounded-transfer fix and preserves the same authority, keys and service identity.
 The private evidence report records precise source/artifact hashes and unpassed
 gates; these results do not authorize a remote deployment or customer migration.
+
+Companion-07 subsequently downloaded completely with its exact full hash, but the
+installed native extractor refused publication because it tried to seal a CEP-only
+metadata file inside the native app. FlowState fixed this and added a real extraction
+regression that fails before the correction and passes afterward. This installed
+extractor cannot deliver its own repair; the next gate needs a normal explicit
+replacement with the corrected signed Test app, preserving the current evidence.
+The corrected candidate-08 build stopped before signing because the Mac exhausted
+disk space. Only verified reproducible task copies were reclaimed; signed archives,
+streams and installed stores remain. All download/activation targets are held and
+the loopback service is stopped. No companion swap or new-build acknowledgment
+has occurred. Native qualification needs host closure and adequate build space.
