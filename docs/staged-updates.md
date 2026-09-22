@@ -117,6 +117,17 @@ a remote control panel. FlowState's candidate qualification command uses a dispo
 store, accelerated transfer and simulated host timing, then returns activation to
 hold. No OS service or real Adobe launch is implied.
 
+## Installed Mac Test observation — September 22, 2026
+
+The isolated `review-04` Mac helper is OS-approved and running. Real Premiere
+loaded A 1.0.23; the installed helper downloaded and verified complete B 1.0.24
+with activation held, then obeyed exact Test revision 4 approval by waiting while
+Premiere remained open. Revision 5 restored hold and 0% activation. A stays
+selected. B selection/load is still unverified because Premiere's project-picker
+modal disabled normal Open/Quit controls; no host was force-quit. FlowState's
+`docs/staged-updater.md` owns the native evidence and remaining gates. This local
+loopback result is not a hosted Test deployment or a customer update.
+
 ## Checks and publication gates
 
 `npm run test:staged-updates` covers signatures, wrong roles, strict scope, hashes,
