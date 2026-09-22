@@ -12,6 +12,12 @@
     "api/releases/latest.ts": {
       "includeFiles": "data/release-manifest*.json"
     },
+    "api/releases/staged.ts": {
+      "includeFiles": "data/staged-update-catalog.json"
+    },
+    "api/releases/staged-artifact.ts": {
+      "includeFiles": "data/staged-update-catalog.json"
+    },
     "api/paid-acquisition/landing.ts": {
       "includeFiles": "runtime/mobile-paid-prototype.html"
     }
