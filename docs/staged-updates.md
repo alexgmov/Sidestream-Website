@@ -101,7 +101,7 @@ the signature and complete hash regardless of provider metadata or URL changes.
 Policy apply locks the local catalog, checks the original revision/content again,
 fsyncs an immutable signed audit entry before atomic catalog replacement, then
 syncs its parent directory. Retrying the identical interrupted operation is safe;
-conflicting revision reuse fails. Preserve the catalog, identity history and audit
+conflicting revision reuse fails. A process crash can leave `CATALOG.json.lock`: after confirming no other operator is running, remove only that stale lock and retry the identical reviewed operation. Never remove audit/history files to bypass a conflict. Preserve the catalog, identity history and audit
 together. Concurrent operators or a stale manual edit must not replace them.
 This command does not deploy or update a remote server.
 
