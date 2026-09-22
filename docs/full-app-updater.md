@@ -5,7 +5,7 @@ Settings enrollment does not meet the customer experience. Local rollback commit
 `4dd084a` reverses implementation `77076c3` and documentation `aa2863f` / `5e7873f`.
 The resulting source tree exactly matched canonical `origin/main`
 `f8a5526bdf77acf2f49ef31fc73fad30a36acb72` before this documentation was added.
-There are no replacement updater API routes or enabled server keys/flags yet.
+There are no deployed replacement updater API routes or enabled server keys/flags.
 Do not recover the old routes as the replacement baseline.
 
 ## Boundaries and next gate
@@ -60,12 +60,36 @@ update-continuity chain without weakening existing receipt/activation checks.
 Rollback evidence and private local snapshots are under
 `/Users/alexgarrett/Documents/Codex/Plans/sidestream-user-updater-20260922`.
 The old loopback service on 8894 was stopped after verifying its process ownership.
-The old Mac service was unregistered; installed app/shell removal is separately
-pending normal host closure and the signed maintenance package. Its store and
-older helper are preserved. None of this modifies hosted state.
+The old Mac service was unregistered; the reviewed signed maintenance package removed the installed app and shell
+after Alex force-quit the stuck Mac host and the reopened empty instance quit
+normally. Its store and older helper are preserved. None of this modifies hosted state.
 
 After server work, run focused policy tests, existing release/rollout regressions,
 API typecheck and build; retain the required entitlement and checkout contract
 checks if those shared surfaces change. A later explicit release decision must
 follow synchronized main-only Git deployment and verify canonical source and
 checkout behavior. No direct Vercel deployment.
+
+
+## Local mechanism proof authority
+
+`scripts/user-update-proof-authority.mjs` is a standalone loopback-only authority
+for the native FlowState mechanism proof. It creates separate Test Ed25519 release
+and policy keys outside the repository, serves immutable local payload/manifest
+files, and issues 60-second policies with durable increasing revisions. It has no
+write HTTP endpoint, customer identities, deployed routes or Production keys.
+Policy changes are explicit local operations. Activation must name both the exact
+catalog release ID and archive hash; held download has no activation authority.
+
+```sh
+node scripts/user-update-proof-authority.mjs --keygen --state /private/proof-keys
+node scripts/user-update-proof-authority.mjs --set --state /private/proof-keys --catalog /private/proof/catalog.json --download mechanism-01-b --activate hold
+node scripts/user-update-proof-authority.mjs --serve --state /private/proof-keys --catalog /private/proof/catalog.json
+node --test tests/user-update-proof.test.mjs
+```
+
+To approve, repeat `--set` with `--activate mechanism-01-b --activate-hash <exact
+catalog SHA-256>`; download and activation stay separate. This local Test harness
+is not the future authenticated remote operator UI or durable release database.
+The narrow policy tests cover held download, exact approval, scope/revisions and
+signature tampering. They do not establish native installation or Premiere proof.
