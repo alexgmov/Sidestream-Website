@@ -7,6 +7,7 @@ import http from 'node:http';
 import {fileURLToPath} from 'node:url';
 import {envelope} from './user-update-proof-authority.mjs';
 import {testScope,validateControl,makePolicy,rangeFor,target} from './user-update-test-control.mjs';
+import {authorizeRequest,controlSnapshot,keyId} from './user-update-test-operator.mjs';
 const sha=bytes=>crypto.createHash('sha256').update(bytes).digest('hex');
 function atomic(file,value) {
  const temp=file+'.'+crypto.randomUUID(),fd=fs.openSync(temp,'wx',0o600);
@@ -30,6 +31,22 @@ export function verifyCatalog(catalog) {
   const t=target(item.target);if(id!==t.id||!path.isAbsolute(item.manifest)||!path.isAbsolute(item.payload))throw Error('Invalid local artifact');
   if(fs.statSync(item.payload).size!==t.bytes||digestFile(item.payload)!==t.sha256||digestFile(item.manifest)!==t.manifestSha256)throw Error('Artifact differs from immutable catalog');
  }
+}
+export function applyControl({catalog,state,control,request,operators,now=Date.now()/1000}) {
+ const lock=path.join(state,'operator-v2.lock'),fd=fs.openSync(lock,'wx',0o600);
+ try {
+  const file=path.join(state,'control-v2.json'),previous=fs.existsSync(file)?read(file):null;
+  const snapshot=controlSnapshot(previous);
+  if((previous?.history.length||0)>=1024)throw Error('Archive Test control history before further changes');
+  let authorization=null;
+  if(request)({control,authorization}=authorizeRequest({envelope:request,operators,previous,catalog,now}));
+  validateControl(catalog,control);
+  const revision=snapshot.revision+1;
+  const history=[...(previous?.history||[]),{at:new Date(now*1000).toISOString(),revision,control,
+   digest:sha(Buffer.from(JSON.stringify(control))),...(authorization?{authorization}:{})}];
+  atomic(file,{revision,control,history});
+  return controlSnapshot({revision,control,history});
+ }finally{fs.closeSync(fd);fs.unlinkSync(lock);}
 }
 export function createServer({catalog,state,key,ticketKey,clock=()=>Date.now()/1000}) {
  let revision=fs.existsSync(path.join(state,'counter-v2.json'))?read(path.join(state,'counter-v2.json')).revision:0;
@@ -83,16 +100,28 @@ export function main(args) {
  fs.mkdirSync(state,{recursive:true,mode:0o700});
  const stat=fs.lstatSync(state);if(!stat.isDirectory()||stat.uid!==process.getuid()||(stat.mode&0o077)||fs.realpathSync(state)!==state)throw Error('Private mode-0700 state required');
  const catalog=read(get('--catalog'));verifyCatalog(catalog);
- const lock=path.join(state,'operator-v2.lock');
+ const modes=['--set','--set-request','--snapshot','--serve'].filter(mode=>args.includes(mode));
+ if(modes.length!==1)throw Error('Choose exactly one control mode');
+ if(args.includes('--snapshot')) {
+  const file=path.join(state,'control-v2.json');
+  console.log(JSON.stringify(controlSnapshot(fs.existsSync(file)?read(file):null)));return;
+ }
+ if(args.includes('--set-request')) {
+  // Only locally provisioned public keys authorize remote requests. Requests cannot
+  // provide their own allowlist, trust keys or Production identity.
+  const allowlist=path.join(state,'operators-v2.json');regular(allowlist);
+  if(fs.statSync(allowlist).mode&0o077)throw Error('Private operator allowlist required');
+  const operators=read(allowlist);
+  const signingIds=['policy.pem','release.pem'].filter(name=>fs.existsSync(path.join(state,name))).map(name=>{
+   regular(path.join(state,name));return keyId(crypto.createPrivateKey(fs.readFileSync(path.join(state,name))));
+  });
+  if(!Array.isArray(operators.keys)||operators.keys.some(entry=>signingIds.includes(entry.id)))throw Error('Separate operator and service signing keys required');
+  applyControl({catalog,state,request:read(get('--request')),operators});
+  console.log('Applied authenticated Test control with durable audit.');return;
+ }
  if(args.includes('--set')) {
-  const fd=fs.openSync(lock,'wx',0o600);
-  try{
-   const control=read(get('--control'));validateControl(catalog,control);
-   const file=path.join(state,'control-v2.json'),previous=fs.existsSync(file)?read(file):{history:[]};
-   if(previous.history.length>=1024)throw Error('Archive Test control history before further changes');
-   const history=[...previous.history,{at:new Date().toISOString(),control,digest:sha(Buffer.from(JSON.stringify(control)))}];
-   atomic(file,{control,history});console.log('Saved reviewed Test control with durable audit.');
-  }finally{fs.closeSync(fd);fs.unlinkSync(lock);}return;
+  applyControl({catalog,state,control:read(get('--control'))});
+  console.log('Saved reviewed Test control with durable audit.');return;
  }
  if(!args.includes('--serve'))throw Error('Choose --set or --serve');
  const serverLock=path.join(state,'server-v2.lock'),fd=fs.openSync(serverLock,'wx',0o600);

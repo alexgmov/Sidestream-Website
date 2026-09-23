@@ -166,12 +166,64 @@ only for exact Test loopback and redirects are refused. The service can remain a
 loopback origin behind a separately reviewed TLS ingress, with remote operators
 using authenticated host access for the CLI. No such ingress is deployed here.
 
-The service is an implemented local Test surface, not an authenticated remote
-operator dashboard or deployed release database. Any remote transport, ingress,
-operator authentication, durable database adapter and key-management deployment
-requires a separately reviewed release decision. No policy becomes public merely
+The service is an implemented local Test surface with signed operator requests
+(below), not a deployed remote dashboard or release database. Remote host access,
+TLS ingress, durable database and key-management deployment
+require a separately reviewed release decision. No policy becomes public merely
 because a local candidate or test passes. Current native v2/self-update results
 must be read from the evidence report separately from the proven v1 mechanism.
+
+### Authenticated Test operator requests
+
+`scripts/user-update-test-operator.mjs` signs an exact private control request with
+an Ed25519 operator key separate from policy/release keys. The server's private
+`operators-v2.json` is provisioned locally, never supplied by the request:
+
+```json
+{"schema":"sidestream.user-operators.v1","keys":[{"id":"<SHA-256 of public SPKI DER>","publicKey":"<Ed25519 public PEM>"}]}
+```
+
+The server accepts only those exact fingerprints, rejects service-signing keys,
+and permits no request-driven key enrollment. The allowlist is same-user mode 0600
+inside the existing mode-0700 state directory. Keep the private operator key on
+the operator's machine, outside repositories and server artifact catalogs.
+
+```sh
+umask 077
+node scripts/user-update-test-server.mjs --snapshot --state /private/test-keys --catalog /private/catalog.json > /private/control-snapshot.json
+node scripts/user-update-test-operator.mjs --key /private/operator.pem --snapshot /private/control-snapshot.json --control /private/control.json --out /private/request.json
+node scripts/user-update-test-server.mjs --set-request --state /private/test-keys --catalog /private/catalog.json --request /private/request.json
+node --test tests/user-update-test-operator.test.mjs
+```
+
+Snapshot retrieval and application can run through an existing authenticated SSH
+session. This change adds no SSH account, firewall rule, public listener or HTTP
+mutation. Requests bind Test scope, exact targets/cohorts, a random nonce, the
+previous control digest/revision and a maximum five-minute signature lifetime.
+The request lifetime authorizes the control write; the resulting control remains
+in force until a subsequent hold/revocation, with fresh 60-second client policies.
+Under the existing operator lock, application rejects stale or replayed requests,
+revalidates immutable catalog bytes, then atomically persists the control and its
+authorization audit. A later local hold also advances the revision, so an earlier
+signed approval cannot undo it. Local `--set` remains explicit host-owner authority.
+Do not reset the revision when archiving bounded history.
+
+```mermaid
+flowchart LR
+  O[Operator signs exact Test control] --> R[Private request over authenticated host access]
+  R --> V{Allowlisted key, unexpired signature and current revision?}
+  V -- yes --> A[Atomic control and authorization audit]
+  V -- no --> H[Preserve prior control]
+  A --> P[Fresh client-bound policy]
+  P --> C{Exact staged release and hosts closed?}
+  C -- yes --> N[Next Premiere loads selected release]
+```
+
+Tests cover forged/unknown keys, modified hashes, scope and field injection,
+expiry, revision conflicts, nonce reuse, local holds, concurrent writers and real
+sign/apply CLI execution. A local signed hold was also applied against the exact
+mechanism-07 catalog; targets stayed held and the installed updater stayed disabled.
+This is authenticated local command evidence, not a remote TLS/SSH deployment.
 
 The signed native mechanism-06 loaded A with its bridge ready and Adobe debug
 modes 0, then resumed a held B download from 19 verified chunks after an authority
