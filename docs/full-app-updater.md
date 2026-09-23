@@ -171,24 +171,36 @@ requires a separately reviewed release decision. No policy becomes public merely
 because a local candidate or test passes. Current native v2/self-update results
 must be read from the evidence report separately from the proven v1 mechanism.
 
-The signed native mechanism-06 has loaded A with its bridge ready and Adobe debug
-modes 0. A held B download retained 19 verified chunks through an authority outage
-and an OS-restarted helper, then completed without redownloading that prefix.
-Exact B approval still waits for the empty proof host to close. Its stuck native
-accessibility menu is recorded separately; no v2 B load, live rollback or companion
-exchange has been claimed. Signed/notarized companion-07 contains the subsequent
-bounded-transfer fix and preserves the same authority, keys and service identity.
-The private evidence report records precise source/artifact hashes and unpassed
-gates; these results do not authorize a remote deployment or customer migration.
+The signed native mechanism-06 loaded A with its bridge ready and Adobe debug
+modes 0, then resumed a held B download from 19 verified chunks after an authority
+outage and OS helper restart. A native companion-publication defect was reproduced
+and corrected with a real extraction regression. The corrected signed companion-09
+then passed actual v2 A-to-B, explicit rollback to A and restore to B, with matching
+fresh loaded-version/root/bridge evidence and debug modes 0. Exact approval held
+while the host was open; normal closure activated B even while an independently
+approved companion download remained incomplete. The sequence high-water mark
+survived rollback. Shell repair and helper survival through host closure passed.
 
-Companion-07 subsequently downloaded completely with its exact full hash, but the
-installed native extractor refused publication because it tried to seal a CEP-only
-metadata file inside the native app. FlowState fixed this and added a real extraction
-regression that fails before the correction and passes afterward. This installed
-extractor cannot deliver its own repair; the next gate needs a normal explicit
-replacement with the corrected signed Test app, preserving the current evidence.
-The corrected candidate-08 build stopped before signing because the Mac exhausted
-disk space. Only verified reproducible task copies were reclaimed; signed archives,
-streams and installed stores remain. All download/activation targets are held and
-the loopback service is stopped. No companion swap or new-build acknowledgment
-has occurred. Native qualification needs host closure and adequate build space.
+Companion-10 downloaded and verified while activation stayed held, then exact
+approval remained blocked until normal host closure. The first whole-root app
+exchange could not launch the new build because macOS resolved the retained old
+bundle. Safe recovery restored the previous signed agent with B unchanged.
+FlowState's subsequent correction preserves the registered outer app directory
+and observes post-swap authorization from the installed image. Signed build 5→6 subsequently passed the held download, host-open approval hold,
+normal closure, complete contents exchange and acknowledgment by a new OS-launched
+registered agent. The installed signature remained valid and the selected CEP
+release was unchanged. Offline actual panel loading and idempotent explicit
+disablement passed; final maintenance records are retained in the private report.
+Earlier storage/menu blockers were resolved; they are historical failed attempts,
+not the current qualification status. No remote deployment or customer migration
+is authorized by these Test results.
+
+The final native explicit disable/uninstall checks passed, including repeated
+disablement, no re-enrollment on an actual panel load, store-preserving uninstall,
+and preservation of the older helper. One disabled/offline rapid relaunch produced
+fresh A/bridge evidence but a black panel capture, so its visible-render result is
+not passed. The next retry stopped at Premiere's startup recovery dialog before
+CEP loaded; the empty process was force-quit under Alex's explicit instruction.
+The Test app/shell/service are now uninstalled, their store/archive is retained,
+all operator targets are held, and the loopback authority is stopped. This does
+not establish clean-machine, Windows, customer migration or paid-continuity proof.
