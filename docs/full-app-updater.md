@@ -19,6 +19,15 @@ merge `5175732`.
 Read its `docs/user-updater.md` for the enrollment probe, Sparkle evaluation,
 filesystem trust, migration and the complete validation gates.
 
+September 23 Windows handoff: fresh Azure portal sign-in with MFA succeeded, but
+the publisher identity is still Action Required and no certificate profiles
+exist. Existing Microsoft support case `2609230010000211` remains Open. The
+FlowState private employee baseline uses the ordinary isolated Windows Test
+installer; it is not a Windows background-updater implementation or signed A-to-B
+proof. Employee x64/Premiere testing and Microsoft signature verification remain
+separate gates. No Website delivery route, release manifest or deployment changes
+are implied by a locally prepared handoff.
+
 The first gate requires a signed isolated Test A-to-B update: normal installation with
 no required Settings step, background survival, held download with A usable,
 exact signed approval, safe selection while Adobe hosts are closed, real Premiere
