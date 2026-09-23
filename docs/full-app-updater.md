@@ -13,7 +13,9 @@ Do not recover the old routes as the replacement baseline.
 Website owns signed policy, immutable artifact delivery and operator controls.
 FlowState owns CEP, native user companions, installers and local lifecycle health.
 Its new clean checkout is `/Users/alexgarrett/.codex/worktrees/flowstate-user-updater-20260922`,
-from canonical FlowState `55602785f6fa629a8a4f91f608d6a46c8ea4d93e`.
+from canonical FlowState `55602785f6fa629a8a4f91f608d6a46c8ea4d93e`, subsequently
+integrating canonical `e6905daec608c11bc18eb9d1b9a6891c95425a69` in reviewed local
+merge `5175732`.
 Read its `docs/user-updater.md` for the enrollment probe, Sparkle evaluation,
 filesystem trust, migration and the complete validation gates.
 
@@ -195,12 +197,53 @@ Earlier storage/menu blockers were resolved; they are historical failed attempts
 not the current qualification status. No remote deployment or customer migration
 is authorized by these Test results.
 
-The final native explicit disable/uninstall checks passed, including repeated
+At the earlier checkpoint, native explicit disable/uninstall checks passed, including repeated
 disablement, no re-enrollment on an actual panel load, store-preserving uninstall,
 and preservation of the older helper. One disabled/offline rapid relaunch produced
 fresh A/bridge evidence but a black panel capture, so its visible-render result is
 not passed. The next retry stopped at Premiere's startup recovery dialog before
 CEP loaded; the empty process was force-quit under Alex's explicit instruction.
-The Test app/shell/service are now uninstalled, their store/archive is retained,
-all operator targets are held, and the loopback authority is stopped. This does
+The Test app/shell/service were then uninstalled, their store/archive retained,
+all operator targets held, and the loopback authority stopped. This does
 not establish clean-machine, Windows, customer migration or paid-continuity proof.
+
+## Continuation on integrated source
+
+Under the continued Test authorization, the exact signed companion-12 build 6 was
+reinstalled with its earlier disabled store preserved separately. Its original A
+rendered online/enabled and twice offline/disabled, with fresh matching bridge
+health, visible green footer and no service re-enrollment. The second repeat
+followed measured normal all-host closure and immediate relaunch. No rendering
+code changed; the earlier black capture has not reproduced and its cause is not
+established.
+
+Fresh `mechanism-07` is signed/notarized from clean FlowState
+`e44f1a19c8df3eba154286ba1f9d2ca663117dba`, including reviewed current main. It
+uses native build 7 (0.3.4), A 1.0.26 and B 1.0.27, with new immutable hashes.
+The builder refuses dirty source before creating output and accepts explicit
+versions/builds. Exact artifacts and further real Premiere evidence are recorded
+in the private `continuation` evidence folder. This is still isolated Test.
+
+Current readiness evidence locates Windows SDK 10.0.26100.0 SignTool and NSIS in
+the ARM64 VM. Azure has a cached enabled account; that does not prove current
+Artifact Signing authorization. No .NET SDK or Windows x64 machine is available
+in that VM. Existing Windows Premiere PID 9980 and its project were preserved.
+Mac account `sidestreamtest` exists but has no graphical session; credentials
+were not created, changed or bypassed. Login/reboot and clean-account qualification
+remain separate gates.
+
+Read-only Mac inventory found existing duplicate Production and Test CEP
+identities across system/user roots. Their manifests and the system acquisition
+receipt were hashed and preserved. The unique updater Test identity did not
+replace any of them. Actual customer migration and paid update continuity remain
+unqualified; a Test local-Unlimited proof cannot satisfy paid receipt validation.
+
+Fresh `mechanism-07` subsequently passed the actual signed Mac update: A 1.0.26
+searched while complete B 1.0.27 downloaded held; exact approval was observed with
+hosts open while A stayed selected. Normal closure selected B and preserved the
+original helper PID. Actual B visibly loaded with matching root/bridge evidence
+offline, then again after deliberate disablement and a rapid normal relaunch.
+Adobe debug modes were 0 throughout those proofs and restored afterward. The new
+Test installation remains available but disabled/unregistered; the local authority
+is stopped and all targets are held. No public pointer or remote deployment changed.
+The exact native source is unchanged from the earlier measured companion self-update.
