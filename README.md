@@ -2,6 +2,11 @@
 
 ## Product Overview
 
+The Free plan includes **10 free downloads total**, with no daily reset. The
+public pricing card (`index.html`) and crawler summary (`public/llms.txt`) match
+the one-time 1,000-credit starter grant and 100-credit video/audio cost in
+`api/_lib/download-credits.ts`; customer-facing copy uses download counts.
+
 ### One-time pricing restored — September 16, 2026
 
 New unassigned global-USD customers receive Unlimited for **$19.99 one-time**.
@@ -1485,6 +1490,7 @@ Use the narrowest relevant check after edits:
 
 ## Recent Change Log
 
+- 2026-09-24: Corrected the Free pricing card and crawler summary from 3 downloads every day to 10 free downloads total. Updated the existing paid-landing exclusion check to reject any numbered free-download offer. Download limits and Checkout behavior are unchanged; validate with `node --test tests/paid-landing.test.mjs` and `npm run build`.
 - 2026-09-03: Closed the current-event Stripe entitlement gap: `refund.failed` now re-fetches the exact failed Refund and canonical Charge/PaymentIntent before a watermark-safe recovery can lower persisted refunded amount and reactivate paid access; all current Dispute statuses have explicit open/favorable/lost mappings, unknown future statuses fail closed, failed refunds never create false refunded acquisition stages, and the required entitlement gate now includes the lifecycle regression suite. Historical-event reconciliation and live webhook selection remain separate Production gates.
 - 2026-09-04: Concluded `upgrade-pricing-v2` and selected `$19.99/year` for every future eligible global-USD Upgrade. The source-level `10000` rollout overrides stale 50/50, zero, or disabled environment values while preserving existing assignments, open Checkout snapshots, paid access, annual lifecycle/reminders, regional one-time fallbacks, and fail-closed provider validation. The public card now shows the global annual cadence and renewal/reminder/cancellation terms; approved regional offers remain visibly one-time.
 - 2026-09-01: Lowered the Website-owned rollout controller's closed-intent success floor from 92% to 90%; the 20-total-intent, 20-additional-intent, 20-installation, 24-hour, freshness, pending, concentration, and failure-stage gates remain unchanged.
