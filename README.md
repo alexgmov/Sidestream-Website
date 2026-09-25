@@ -1317,12 +1317,24 @@ The project is linked to Vercel project `alex-3685s-projects/sidestream`. `.verc
 
 ### Guarded Mac rollout progression
 
+On September 25, 2026, Alex explicitly approved a one-release override advancing
+Mac `1.0.21` directly from 25% to 100%. The live production evaluation at
+`2026-09-25T21:48:38.534Z` returned `hold`: 376 of 434 closed download intents
+succeeded (86.6%) across 76 installations, below the 90% floor, and one failure
+was classified `premiere_import`. The manifest and observation sidecar record
+the approved 100% step and the real analytics baseline; this is an owner override,
+not a passing health evaluation. The controller policy and future release gates
+are unchanged. The existing installer bytes, version, publication date, minimum
+supported version, critical flag, Windows release, and paid pointers are unchanged.
+Rollout controls in-panel update eligibility, not proof that customers installed
+the update.
+
 The rollout controller is an operator, not a background deployment service. It defaults to a read-only decision and advances at most one configured step per invocation. This dry run checks the current public Mac release against a cap of 100%:
 
 ```sh
 npm run release:rollout -- \
   --version 1.0.21 \
-  --expected-rollout 25 \
+  --expected-rollout 100 \
   --max-rollout 100
 ```
 
@@ -1534,6 +1546,7 @@ Use the narrowest relevant check after edits:
 
 ## Recent Change Log
 
+- 2026-09-25: Advanced the existing Mac `1.0.21` release from 25% to 100% with Alex's explicit override of the failed 90% success and failure-stage gates and the normal staged progression. Recorded the actual 434-closed-intent observation baseline in the rollout sidecar; installer bytes and the shared controller policy remain unchanged.
 - 2026-09-25: Added the protected Channels report for tracked first visits, first positive-paying customers, exact visit-cohort conversion, complete channel aggregates and bounded UTM detail. Existing tracking and payment fulfillment are unchanged.
 
 - 2026-09-24: Corrected the Free pricing card and crawler summary from 3 downloads every day to 10 free downloads total. Updated the existing paid-landing exclusion check to reject any numbered free-download offer. Download limits and Checkout behavior are unchanged; validate with `node --test tests/paid-landing.test.mjs` and `npm run build`.
