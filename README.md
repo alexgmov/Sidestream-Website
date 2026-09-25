@@ -132,6 +132,8 @@ This repository owns the whole Sidestream web service: the public/account fronte
 
 ## File Map
 
+- `api/_lib/channel-report.ts` and `api/internal/channel-report.ts` - Read-only cross-channel first visits and first positive-payment reporting for the FlowState dashboard Channels tab. Groups all stored UTM source/medium/campaign/content combinations, preserves unspecified referrer categories, and resolves purchases only through exact Checkout payment aliases.
+
 - `AGENTS.md` - Durable repository instructions for the exact Upgrade, Google authentication, and Stripe sequence plus the only supported Production deployment command.
 - `Sidestream front end 2/Sidestream.html` - Inert `noindex` fallback document for the old exported page URL. Production requests never serve it because `vercel.json` sends the legacy path to `https://sidestream.tv/` with a server-side `308`.
 - `index.html` - Canonical page implementation served at `/`. Contains the shader mount root, header, hero, desktop Mac/Windows download CTAs in the hero and Free pricing card, optional mobile email handoff plus no-email secure computer-link sharing, dormant historical waitlist modal, feature sections, pricing, final CTA, footer, styles, rotating-word script, toast behavior, crawler metadata, and structured data.
@@ -486,6 +488,48 @@ real-product smoke, four-job scheduler review, and signed release. The
 evidence, and canonical-surface verification. Vercel cron control remains
 project-wide across all five declared jobs; Customer 360 usage sync is scheduled
 once daily at `05:27` UTC.
+
+#### Channels and paid conversion report
+
+`POST /api/internal/channel-report` uses the existing Customer admin bearer,
+POST-only/no-browser-origin/no-store boundary. Its exact body is
+`licenseNamespace`, `from`, `through`, and `asOf` (UTC timestamps). The inclusive
+start/exclusive end window is capped at 366 days; observation through `asOf`
+is capped at 730 days from start. The read-only repeatable-read query has a
+20-second timeout and returns only grouped counts, never customer identifiers.
+
+The Channels dashboard lives in FlowState `analytics/src/channels-view.jsx`;
+its server-only `channel-source.mjs` proxy caches up to 32 reports for 15 minutes,
+deduplicates concurrent reads, and supports manual refresh. It does not poll or
+scan raw telemetry. No new database columns, migrations, or tracking writes are
+needed. Complete channel totals include every stored combination; campaign
+detail shows at most the top 100 combinations with explicit truncation.
+
+- Visitor pie: distinct canonical acquisition journeys with `landing_observed`,
+  selected by immutable first-touch date. These are tracked first visits, not
+  pageviews or cross-device unique people. Quarantined roots are excluded.
+- Paid pie: distinct live customer profiles selected by their first verified
+  positive payment date. Zero-cost upgrades and inferred legacy payments are
+  excluded; subsequent refunds do not erase the historical fact of payment.
+  First-payment selection happens before date filtering. Exact Checkout aliases
+  link to one intact acquisition; missing or conflicting links stay unattributed.
+- Conversion: first-visit journeys in the selected dates with an exactly linked
+  first positive payment by `asOf`, divided by all selected first visits. This
+  numerator uses journey grain; the separate cohort-paid count uses people.
+  The paid pie can include earlier visits, so it is not the conversion numerator.
+- Instagram aliases aggregate for chart display; original UTM values remain in
+  detail. Untagged historical search referrals remain Search (unspecified),
+  not Google. Direct/unknown external origin and missing purchase linkage are
+  separate buckets. No old source is inferred or rewritten.
+
+Checks: `node --experimental-strip-types --test tests/channel-report.test.mjs`;
+`SIDESTREAM_TEST_POSTGRES_URL=<disposable-url> node --experimental-strip-types
+--test tests/channel-report-postgres.test.mjs`. The Postgres suite is classified
+in the API/integration runners and covers duplicate provider facts, repeat
+purchases, zero-cost upgrades, delayed conversion, earlier visits, namespace
+isolation, and ambiguous/missing source links. Build and deploy the pushed main
+commit to the Linux Website API as well as Git-linked Vercel; the dashboard
+requires the new API before its Channels proxy can succeed.
 
 #### Measurable acquisition and retention funnel
 
@@ -1489,6 +1533,8 @@ Use the narrowest relevant check after edits:
 - `llms.txt` is useful as an AI-readable summary, but it is not a substitute for crawlable HTML, normal metadata, structured data, sitemap hygiene, or external citations/backlinks.
 
 ## Recent Change Log
+
+- 2026-09-25: Added the protected Channels report for tracked first visits, first positive-paying customers, exact visit-cohort conversion, complete channel aggregates and bounded UTM detail. Existing tracking and payment fulfillment are unchanged.
 
 - 2026-09-24: Corrected the Free pricing card and crawler summary from 3 downloads every day to 10 free downloads total. Updated the existing paid-landing exclusion check to reject any numbered free-download offer. Download limits and Checkout behavior are unchanged; validate with `node --test tests/paid-landing.test.mjs` and `npm run build`.
 - 2026-09-03: Closed the current-event Stripe entitlement gap: `refund.failed` now re-fetches the exact failed Refund and canonical Charge/PaymentIntent before a watermark-safe recovery can lower persisted refunded amount and reactivate paid access; all current Dispute statuses have explicit open/favorable/lost mappings, unknown future statuses fail closed, failed refunds never create false refunded acquisition stages, and the required entitlement gate now includes the lifecycle regression suite. Historical-event reconciliation and live webhook selection remain separate Production gates.
