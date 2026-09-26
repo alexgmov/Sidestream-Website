@@ -2,6 +2,25 @@
 
 ## Product Overview
 
+### Download friend rewards — v30 implementation (default off)
+
+[Download friend rewards](docs/download-friend-rewards.md) owns the Free-account
+invitation/claim API, original-wallet connection, successful-download qualification,
+30-day grants, expiry, client examples, tests, migration and rollout/rollback.
+Start with `api/_lib/download-referrals.ts`, `api/download-referrals*`,
+`api/_lib/download-credits.ts`, and
+`db/migrations/20260925120000_add_download_friend_rewards.sql`.
+This is separate from marketing/installer referral attribution and Stripe.
+`SIDESTREAM_DOWNLOAD_REFERRALS_MODE` is `off` by default; `active` enables new
+claims and `paused` preserves existing rewards/reconnects while stopping new
+claims. The additive migration must precede activation. Local PostgreSQL and
+client-controller evidence does not ship v30; Test OAuth/native-installer/Premiere,
+Linux API deployment, Production rollout and signed release gates remain explicit.
+Run `npm run test:download-friend-rewards` with an isolated localhost
+`SIDESTREAM_TEST_POSTGRES_URL`; normal credits, entitlement and checkout checks
+remain required. FlowState owns the approved UI and client wiring.
+
+
 The Free plan includes **10 free downloads total**, with no daily reset. The
 public pricing card (`index.html`) and crawler summary (`public/llms.txt`) match
 the one-time 1,000-credit starter grant and 100-credit video/audio cost in

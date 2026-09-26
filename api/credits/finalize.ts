@@ -1,3 +1,5 @@
+import { DownloadReferralError, referralPool } from "../_lib/download-referrals.js";
+import { referralFailure } from "../_lib/download-referral-http.js";
 import type { ServerResponse } from "node:http";
 import {
   cleanString,
@@ -23,6 +25,7 @@ import {
 
 type CreditFinalizationPayload = {
   deviceId?: unknown;
+  referralToken?: unknown;
   reservationKey?: unknown;
   outcome?: unknown;
 };
@@ -54,6 +57,7 @@ export default async function handler(request: AccountRequest, response: ServerR
         { name: "ip", value: getClientIp(request) || "unknown-client", limit: 700 },
       ],
       windowSeconds: 15 * 60,
+      runner: referralPool(environment),
     });
     if (!rateLimit.allowed) return sendRateLimitExceeded(response, rateLimit);
     applyRateLimitHeaders(response, rateLimit);
@@ -61,11 +65,13 @@ export default async function handler(request: AccountRequest, response: ServerR
     const result = await finalizeDownloadCredits({
       deviceId,
       environment,
+      referralToken: cleanString(payload.referralToken, 100) || undefined,
       reservationKey,
       outcome,
     });
     return sendJson(response, 200, serializeDownloadCreditFinalization(result));
-  } catch {
+  } catch (error) {
+    if (error instanceof DownloadReferralError) return referralFailure(response, error);
     console.error("sidestream_credit_finalization_unavailable");
     return creditServiceUnavailable(response);
   }

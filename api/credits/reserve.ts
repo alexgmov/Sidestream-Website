@@ -1,5 +1,8 @@
+import { DownloadReferralError, referralPool } from "../_lib/download-referrals.js";
+import { referralFailure } from "../_lib/download-referral-http.js";
 import type { ServerResponse } from "node:http";
 import {
+  authorizeLicenseDownload,
   cleanString,
   getClientIp,
   methodNotAllowed,
@@ -23,8 +26,10 @@ import {
 
 type CreditReservationPayload = {
   deviceId?: unknown;
+  referralToken?: unknown;
   reservationKey?: unknown;
   formatType?: unknown;
+  licenseToken?: unknown;
 };
 
 export default async function handler(request: AccountRequest, response: ServerResponse) {
@@ -54,18 +59,24 @@ export default async function handler(request: AccountRequest, response: ServerR
         { name: "ip", value: getClientIp(request) || "unknown-client", limit: 500 },
       ],
       windowSeconds: 15 * 60,
+      runner: referralPool(environment),
     });
     if (!rateLimit.allowed) return sendRateLimitExceeded(response, rateLimit);
     applyRateLimitHeaders(response, rateLimit);
 
+    const paid = payload.referralToken && cleanString(payload.licenseToken, 500)
+      ? await authorizeLicenseDownload({ licenseToken: cleanString(payload.licenseToken, 500), deviceId, environment }) : null;
     const result = await reserveDownloadCredits({
       deviceId,
       environment,
+      referralToken: cleanString(payload.referralToken, 100) || undefined,
       reservationKey,
       formatType,
+      paidAuthorized: paid?.active === true,
     });
     return sendJson(response, 200, serializeDownloadCreditReservation(result));
-  } catch {
+  } catch (error) {
+    if (error instanceof DownloadReferralError) return referralFailure(response, error);
     console.error("sidestream_credit_reservation_unavailable");
     return creditServiceUnavailable(response);
   }

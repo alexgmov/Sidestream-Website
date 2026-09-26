@@ -1,3 +1,5 @@
+import { DownloadReferralError, referralPool } from "../_lib/download-referrals.js";
+import { referralFailure } from "../_lib/download-referral-http.js";
 import type { ServerResponse } from "node:http";
 import {
   cleanString,
@@ -26,6 +28,7 @@ import {
 
 type CreditSyncPayload = {
   deviceId?: unknown;
+  referralToken?: unknown;
   legacyUsedCredits?: unknown;
 };
 
@@ -51,6 +54,7 @@ export default async function handler(request: AccountRequest, response: ServerR
         { name: "ip", value: getClientIp(request) || "unknown-client", limit: 300 },
       ],
       windowSeconds: 15 * 60,
+      runner: referralPool(environment),
     });
     if (!rateLimit.allowed) return sendRateLimitExceeded(response, rateLimit);
     applyRateLimitHeaders(response, rateLimit);
@@ -58,6 +62,7 @@ export default async function handler(request: AccountRequest, response: ServerR
     const snapshot = await synchronizeDownloadCredits({
       deviceId,
       environment,
+      referralToken: cleanString(payload.referralToken, 100) || undefined,
       legacyUsedCredits: Number(payload.legacyUsedCredits),
     });
     return sendJson(response, 200, {
@@ -66,7 +71,8 @@ export default async function handler(request: AccountRequest, response: ServerR
         isDownloadCreditPurchaseEnabled() ? getConfiguredDownloadCreditPack() : null,
       ),
     });
-  } catch {
+  } catch (error) {
+    if (error instanceof DownloadReferralError) return referralFailure(response, error);
     console.error("sidestream_credit_sync_unavailable");
     return creditServiceUnavailable(response);
   }

@@ -39,6 +39,7 @@
     }
   ],
   "redirects": [
+    { "source": "/r/:code", "destination": "/api/download-referrals/invite?code=:code", "permanent": false },
     {
       "source": "/manychat-instagram",
       "destination": "https://sidestream.tv/?utm_source=manychat-instagram&utm_medium=dm&utm_campaign=organic-instagram",

@@ -1,5 +1,9 @@
 import type { PoolClient } from "pg";
 import {
+  DownloadReferralError, lockDownloadReferrals, qualifyDownloadReferral,
+  readReferralIdentity, referralMode, type ReferralIdentity,
+} from "./download-referrals.js";
+import {
   getStripe,
   getStripeRequestOptions,
   hashPrivateIdentifier,
@@ -35,6 +39,7 @@ type CreditReservationRow = {
   credit_cost: number;
   status: "reserved" | "committed" | "released" | "expired";
   expires_at: Date | string;
+  referral_account_id?: string | null;
 };
 
 export type DownloadCreditSnapshot = Readonly<{
@@ -44,6 +49,7 @@ export type DownloadCreditSnapshot = Readonly<{
   spent: number;
   starterGrant: number;
   costs: typeof DOWNLOAD_CREDIT_COSTS;
+  referralReward?: { active: boolean; expiresAt: string | null };
 }>;
 
 export type DownloadCreditReservationResult = DownloadCreditSnapshot & Readonly<{
@@ -202,39 +208,53 @@ export async function fulfillDownloadCreditPackCheckout(
 
 export async function synchronizeDownloadCredits(options: {
   deviceId: string;
+  referralToken?: string;
   environment: ResolvedLicenseEnvironment;
   legacyUsedCredits?: number;
 }) {
   const legacyUsedCredits = normalizeLegacyUsedCredits(options.legacyUsedCredits);
   return withCreditTransaction(options.environment, async (client) => {
-    const wallet = await lockOrCreateWallet(
+    const identity = await readReferralIdentity(client, options.environment, options.deviceId, options.referralToken);
+    const wallet = identity ? await getLockedWallet(client, identity.walletId) : await lockOrCreateWallet(
       client,
       options.environment.namespace,
       options.deviceId,
       legacyUsedCredits,
     );
     await releaseExpiredReservations(client, wallet);
-    return getWalletSnapshot(client, wallet.id);
+    return getWalletSnapshot(client, wallet.id, identity);
   });
 }
 
 export async function reserveDownloadCredits(options: {
   deviceId: string;
+  referralToken?: string;
   environment: ResolvedLicenseEnvironment;
   reservationKey: string;
   formatType: DownloadCreditFormat;
+  paidAuthorized?: boolean;
 }): Promise<DownloadCreditReservationResult> {
   const reservationKey = normalizeCreditReservationKey(options.reservationKey);
   if (!reservationKey) throw new TypeError("Credit reservation key is invalid");
   const creditCost = getDownloadCreditCost(options.formatType);
 
   return withCreditTransaction(options.environment, async (client) => {
-    const wallet = await lockOrCreateWallet(
+    const identity = await readReferralIdentity(client, options.environment, options.deviceId, options.referralToken);
+    const wallet = identity ? await getLockedWallet(client, identity.walletId) : await lockOrCreateWallet(
       client,
       options.environment.namespace,
       options.deviceId,
     );
     await releaseExpiredReservations(client, wallet);
+
+    if (identity) {
+      const covered = await client.query(`select status from public.sidestream_download_referral_downloads
+        where wallet_id = $1 and reservation_key = $2`, [wallet.id, reservationKey]);
+      if (covered.rows[0]) {
+        return { ...(await getWalletSnapshot(client, wallet.id, identity)), allowed: covered.rows[0].status === "reserved",
+          reservationKey, status: covered.rows[0].status, creditCost: 0 };
+      }
+    }
 
     const existingResult = await client.query<CreditReservationRow>(
       `
@@ -248,7 +268,7 @@ export async function reserveDownloadCredits(options: {
     );
     const existing = existingResult.rows[0];
     if (existing) {
-      const snapshot = await getWalletSnapshot(client, wallet.id);
+      const snapshot = await getWalletSnapshot(client, wallet.id, identity);
       return {
         ...snapshot,
         allowed: existing.status === "reserved",
@@ -258,10 +278,18 @@ export async function reserveDownloadCredits(options: {
       };
     }
 
+    if (identity && (identity.active || options.paidAuthorized === true)) {
+      await client.query(`insert into public.sidestream_download_referral_downloads
+        (license_namespace, wallet_id, reservation_key, account_id, access_source) values ($1, $2, $3, $4, $5)`,
+      [options.environment.namespace, wallet.id, reservationKey, identity.accountId, options.paidAuthorized ? "paid" : "referral"]);
+      return { ...(await getWalletSnapshot(client, wallet.id, identity)), allowed: true,
+        reservationKey, status: "reserved", creditCost: 0 };
+    }
+
     const latestWallet = await getLockedWallet(client, wallet.id);
     if (latestWallet.available_credits < creditCost) {
       return {
-        ...(await getWalletSnapshot(client, wallet.id)),
+        ...(await getWalletSnapshot(client, wallet.id, identity)),
         allowed: false,
         reservationKey,
         status: "insufficient",
@@ -304,6 +332,8 @@ export async function reserveDownloadCredits(options: {
     );
     const reservationId = reservationResult.rows[0]?.id;
     if (!reservationId) throw new Error("Credit reservation was not created");
+    if (identity) await client.query(`update public.sidestream_credit_reservations
+      set referral_account_id = $2 where id = $1`, [reservationId, identity.accountId]);
 
     await client.query(
       `
@@ -327,7 +357,7 @@ export async function reserveDownloadCredits(options: {
     );
 
     return {
-      ...(await getWalletSnapshot(client, wallet.id)),
+      ...(await getWalletSnapshot(client, wallet.id, identity)),
       allowed: true,
       reservationKey,
       status: "reserved",
@@ -338,6 +368,7 @@ export async function reserveDownloadCredits(options: {
 
 export async function finalizeDownloadCredits(options: {
   deviceId: string;
+  referralToken?: string;
   environment: ResolvedLicenseEnvironment;
   reservationKey: string;
   outcome: DownloadCreditOutcome;
@@ -346,7 +377,8 @@ export async function finalizeDownloadCredits(options: {
   if (!reservationKey) throw new TypeError("Credit reservation key is invalid");
 
   return withCreditTransaction(options.environment, async (client) => {
-    const wallet = await lockExistingWallet(
+    const identity = await readReferralIdentity(client, options.environment, options.deviceId, options.referralToken);
+    const wallet = identity ? await getLockedWallet(client, identity.walletId) : await lockExistingWallet(
       client,
       options.environment.namespace,
       options.deviceId,
@@ -356,9 +388,28 @@ export async function finalizeDownloadCredits(options: {
     }
     await releaseExpiredReservations(client, wallet);
 
+    if (referralMode() !== "off") {
+      const covered = (await client.query(`select * from public.sidestream_download_referral_downloads
+        where wallet_id = $1 and reservation_key = $2 for update`, [wallet.id, reservationKey])).rows[0];
+      if (covered) {
+        if (!identity || identity.accountId !== covered.account_id) throw new DownloadReferralError("referral_reconnect_required", 401);
+        let status = covered.status;
+        if (status === "reserved") {
+          const updated = (await client.query(`update public.sidestream_download_referral_downloads
+            set status = case when expires_at <= now() then 'expired' else $3 end, finalized_at = now()
+            where wallet_id = $1 and reservation_key = $2 returning status`, [wallet.id, reservationKey, options.outcome])).rows[0];
+          status = updated.status;
+          if (status === "committed") await qualifyDownloadReferral(client, options.environment, identity, reservationKey);
+        }
+        return { ...(await getWalletSnapshot(client, wallet.id, identity)), found: true,
+          reservationKey, status, creditCost: 0 };
+      }
+    }
+
     const reservationResult = await client.query<CreditReservationRow>(
       `
-        select id, reservation_key, format_type, credit_cost, status, expires_at
+        select id, reservation_key, format_type, credit_cost, status, expires_at,
+          to_jsonb(sidestream_credit_reservations)->>'referral_account_id' as referral_account_id
         from public.sidestream_credit_reservations
         where wallet_id = $1 and reservation_key = $2
         limit 1
@@ -369,7 +420,7 @@ export async function finalizeDownloadCredits(options: {
     const reservation = reservationResult.rows[0];
     if (!reservation) {
       return {
-        ...(await getWalletSnapshot(client, wallet.id)),
+        ...(await getWalletSnapshot(client, wallet.id, identity)),
         found: false,
         reservationKey,
         status: "not_found",
@@ -377,9 +428,13 @@ export async function finalizeDownloadCredits(options: {
       };
     }
 
+    if (reservation.referral_account_id && (!identity || identity.accountId !== reservation.referral_account_id)) {
+      throw new DownloadReferralError("referral_reconnect_required", 401);
+    }
+
     if (reservation.status !== "reserved") {
       return {
-        ...(await getWalletSnapshot(client, wallet.id)),
+        ...(await getWalletSnapshot(client, wallet.id, identity)),
         found: true,
         reservationKey,
         status: reservation.status,
@@ -456,8 +511,12 @@ export async function finalizeDownloadCredits(options: {
       );
     }
 
+    if (options.outcome === "committed" && reservation.referral_account_id) {
+      await qualifyDownloadReferral(client, options.environment, identity, reservationKey);
+    }
+
     return {
-      ...(await getWalletSnapshot(client, wallet.id)),
+      ...(await getWalletSnapshot(client, wallet.id, identity)),
       found: true,
       reservationKey,
       status: options.outcome,
@@ -587,6 +646,7 @@ async function withCreditTransaction<T>(
   const client = await pool.connect();
   try {
     await client.query("begin");
+    await lockDownloadReferrals(client, environment);
     const result = await callback(client);
     await client.query("commit");
     return result;
@@ -704,6 +764,9 @@ async function getLockedWallet(client: PoolClient, walletId: string) {
 }
 
 async function releaseExpiredReservations(client: PoolClient, wallet: CreditWalletRow) {
+  if (referralMode() !== "off") await client.query(`update public.sidestream_download_referral_downloads
+    set status = 'expired', finalized_at = now()
+    where wallet_id = $1 and status = 'reserved' and expires_at <= now()`, [wallet.id]);
   const expiredResult = await client.query<CreditReservationRow>(
     `
       select id, reservation_key, format_type, credit_cost, status, expires_at
@@ -755,6 +818,7 @@ async function releaseExpiredReservations(client: PoolClient, wallet: CreditWall
 async function getWalletSnapshot(
   client: PoolClient,
   walletId: string,
+  identity?: ReferralIdentity | null,
 ): Promise<DownloadCreditSnapshot> {
   const result = await client.query<CreditWalletRow & { reserved_credits: number }>(
     `
@@ -776,6 +840,10 @@ async function getWalletSnapshot(
   );
   const wallet = result.rows[0];
   if (!wallet) throw new Error("Credit wallet snapshot is unavailable");
+  const reward = identity ? (await client.query(`select reward_expires_at,
+    coalesce(reward_expires_at > now(), false) as active
+    from public.sidestream_download_referral_members where wallet_id = $1 and account_id = $2`,
+  [walletId, identity.accountId])).rows[0] : null;
   return Object.freeze({
     balance: wallet.available_credits,
     reserved: wallet.reserved_credits,
@@ -783,6 +851,7 @@ async function getWalletSnapshot(
     spent: wallet.spent_credits,
     starterGrant: STARTER_DOWNLOAD_CREDITS,
     costs: DOWNLOAD_CREDIT_COSTS,
+    ...(reward ? { referralReward: { active: reward.active, expiresAt: reward.reward_expires_at?.toISOString() || null } } : {}),
   });
 }
 

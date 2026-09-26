@@ -12,6 +12,7 @@ export function serializeDownloadCreditSnapshot(snapshot: DownloadCreditSnapshot
     totalSpentCredits: snapshot.spent,
     starterCredits: snapshot.starterGrant,
     costs: snapshot.costs,
+    ...(snapshot.referralReward ? { referralReward: snapshot.referralReward } : {}),
   };
 }
 

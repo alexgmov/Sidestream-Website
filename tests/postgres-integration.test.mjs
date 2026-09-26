@@ -768,6 +768,10 @@ export function __setPostgresIntegrationStripeClient(value: Stripe | null) {
     name: "download-credit-pack",
     source: "api/_lib/download-credit-pack.ts",
   });
+  const downloadReferralsUrl = await writeSchemaModule({
+    schema, temporaryDirectory, name: "download-referrals", source: "api/_lib/download-referrals.ts",
+    replacements: { "./account.js": accountUrl, "./postgres.js": postgresStubUrl },
+  });
   const downloadCreditsUrl = await writeSchemaModule({
     schema,
     temporaryDirectory,
@@ -777,6 +781,7 @@ export function __setPostgresIntegrationStripeClient(value: Stripe | null) {
       "./account.js": accountUrl,
       "./postgres.js": postgresStubUrl,
       "./download-credit-pack.js": downloadCreditPackUrl,
+      "./download-referrals.js": downloadReferralsUrl,
     },
   });
   const authSessionUrl = await writeSchemaModule({
