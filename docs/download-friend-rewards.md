@@ -65,7 +65,8 @@ revoked public/anon/authenticated access:
 
 Free credit reservations gain nullable `referral_account_id`; existing rows and
 ledger balances are retained. Reconnecting/reinstalling under the same account
-resolves the original wallet. Connecting never grants starter credits. Paid
+resolves the original wallet. Every connection, including an existing member
+reconnecting, rejects device history belonging to another paid account. Connecting never grants starter credits. Paid
 licenses, activation sessions, license credentials and Stripe state are untouched.
 Active referral jobs have a separate zero-cost reservation and spend no Free
 credits. The qualifying Free download spends its ordinary one download; subsequent

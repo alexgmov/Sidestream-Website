@@ -213,6 +213,15 @@ test("v30 download friend rewards: HTTP + durable PostgreSQL acceptance", { time
         (account_id, license_id, device_id_hash, token_hash, expires_at, refresh_token_hash, refresh_expires_at)
         values ($1, $2, $3, $4, now() + interval '1 hour', $5, now() + interval '30 days')`,
       [friend.id, license.id, account.hashPrivateIdentifier(friend.deviceId), createHash("sha256").update(paidToken).digest("hex"), randomBytes(32).toString("hex")]);
+      const otherPaidDevice = "other-paid-account-device";
+      const otherPaidAccount = await user("other-paid-account");
+      await db.query(`insert into public.sidestream_account_devices (account_id, license_namespace, device_id_hash, platform)
+        values ($1, 'test', $2, 'macos')`, [otherPaidAccount.id, account.hashPrivateIdentifier(otherPaidDevice)]);
+      await call(syncHandler, { deviceId: otherPaidDevice });
+      const reconnect = await call(statusHandler, { action: "connect", deviceId: otherPaidDevice });
+      const reconnectUrl = new URL(reconnect.json.connectUrl);
+      const conflict = await call(connectHandler, {}, { url: reconnectUrl.pathname + reconnectUrl.search, cookie: friend.cookie });
+      assert.equal(conflict.json.code, "installation_already_linked", "existing referral members cannot reuse another paid account's installation");
       const paidBefore = (await db.query("select * from public.sidestream_licenses where id = $1", [license.id])).rows[0];
       assert.equal((await account.authorizeLicenseDownload({ environment: env, deviceId: friend.deviceId, licenseToken: paidToken })).active, true);
       const paidKey = key();

@@ -5,7 +5,8 @@
 ### Download friend rewards — v30 implementation (default off)
 
 [Download friend rewards](docs/download-friend-rewards.md) owns the Free-account
-invitation/claim API, original-wallet connection, successful-download qualification,
+invitation/claim API, original-wallet connection with cross-account reconnect
+protection, successful-download qualification,
 30-day grants, expiry, client examples, tests, migration and rollout/rollback.
 Start with `api/_lib/download-referrals.ts`, `api/download-referrals*`,
 `api/_lib/download-credits.ts`, and

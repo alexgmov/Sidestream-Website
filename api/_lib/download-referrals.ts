@@ -96,6 +96,12 @@ export async function completeReferralConnection(environment: Environment, brows
     // The ordinary credits sync owns starter creation. Never manufacture a wallet.
     if (!wallet) throw new DownloadReferralError("wallet_sync_required", 409, true);
     if (wallet.account_id && wallet.account_id !== accountId) throw new DownloadReferralError("installation_already_linked");
+    // Existing license-device history is a stronger identity edge than an
+    // unbound wallet. Do not allow another verified account to recycle it.
+    const existingDevice = await client.query(`select 1 from public.sidestream_account_devices
+      where license_namespace = $1 and device_id_hash = $2 and account_id <> $3 limit 1`,
+    [environment.namespace, connection.device_id_hash, accountId]);
+    if (existingDevice.rowCount) throw new DownloadReferralError("installation_already_linked");
     if (!member) {
       requireOpen();
       const claim = (await client.query(`select c.*, v.created_at as visited_at from public.sidestream_download_referral_claims c
@@ -105,12 +111,6 @@ export async function completeReferralConnection(environment: Environment, brows
         (await client.query(`select 1 from public.sidestream_credit_reservations where wallet_id = $1 and status = 'committed' limit 1`, [wallet.id])).rowCount)) {
         throw new DownloadReferralError("recipient_not_new");
       }
-      // Existing license-device history is a stronger identity edge than an
-      // unbound wallet. Do not allow another verified account to recycle it.
-      const existingDevice = await client.query(`select 1 from public.sidestream_account_devices
-        where license_namespace = $1 and device_id_hash = $2 and account_id <> $3 limit 1`,
-      [environment.namespace, connection.device_id_hash, accountId]);
-      if (existingDevice.rowCount) throw new DownloadReferralError("installation_already_linked");
       await client.query(`insert into public.sidestream_download_referral_members
         (license_namespace, account_id, wallet_id, invite_code) values ($1, $2, $3, $4)`,
       [environment.namespace, accountId, wallet.id, randomBytes(24).toString("base64url")]);
