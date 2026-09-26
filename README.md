@@ -39,6 +39,8 @@ intents, paid subscriptions and renewal reminders retain their original contract
 Regional one-time prices are unchanged. An account access reset does not erase
 pricing history or cancel provider billing; verify the actual authenticated
 Checkout Session's mode and amount when testing, not only the public offer.
+Resuming an older activation can return its still-open historical Session; the
+new intent must retain its own offer and stay unbound when those terms differ.
 Deploy the pushed main commit to both Vercel and the Linux Website API; a frontend
 deployment alone does not update checkout behavior. Pricing checks include
 `tests/checkout-offer-presentation.test.mjs` and `tests/paid-landing.test.mjs`

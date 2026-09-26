@@ -2123,6 +2123,20 @@ export async function createOrReuseCheckoutSession(options: {
               candidateSession.url &&
               candidateSession.allow_promotion_codes === true
             ) {
+              // This activation may predate today's new-intent pricing. Keep
+              // its open Session, but never overwrite the new immutable offer
+              // with different historical terms or bind mismatched metadata.
+              if (upgradePricingSnapshot && (
+                attachedOffer!.currency !== checkoutOffer.currency ||
+                attachedOffer!.amountMinor !== checkoutOffer.amountMinor ||
+                attachedOffer!.productId !== checkoutOffer.productId ||
+                attachedOffer!.priceId !== checkoutOffer.priceId ||
+                candidateSession.mode !== (upgradePricingSnapshot.billingModel === "subscription" ? "subscription" : "payment")
+              )) {
+                return commitCheckoutIntentResult(client, {
+                  ok: true, url: candidateSession.url, reused: true,
+                });
+              }
               checkoutOffer = attachedOffer!;
               stripePriceId = checkoutOffer.priceId;
               stripeProductId = checkoutOffer.productId;
@@ -2192,6 +2206,17 @@ export async function createOrReuseCheckoutSession(options: {
                 attachedOffer.productId
               ) === attachedOffer.productId
             ) {
+              if (upgradePricingSnapshot && (
+                attachedOffer.currency !== checkoutOffer.currency ||
+                attachedOffer.amountMinor !== checkoutOffer.amountMinor ||
+                attachedOffer.productId !== checkoutOffer.productId ||
+                attachedOffer.priceId !== checkoutOffer.priceId ||
+                stripeSession.mode !== (upgradePricingSnapshot.billingModel === "subscription" ? "subscription" : "payment")
+              )) {
+                return commitCheckoutIntentResult(client, {
+                  ok: true, url: stripeSession.url, reused: true,
+                });
+              }
               checkoutOffer = attachedOffer;
               stripePriceId = checkoutOffer.priceId;
               stripeProductId = checkoutOffer.productId;

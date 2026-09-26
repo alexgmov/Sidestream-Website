@@ -935,7 +935,10 @@ test("database-backed intents serialize retries, rotate deliberately, and fulfil
       email: annualBuyer.email,
       active: false,
     });
+    const historicalActivationKey = "historical-annual-checkout";
+    await seedActivation(databasePool, historicalActivationKey);
     const annualIntent = await account.createCheckoutIntent({
+      activationKey: historicalActivationKey,
       acquisitionId: acquisition.acquisitionId,
       buyerCountry: "US",
       session: annualBuyerSession,
@@ -1007,6 +1010,23 @@ test("database-backed intents serialize retries, rotate deliberately, and fulfil
 
     process.env.SIDESTREAM_PRO_ANNUAL_PRICE_ID = "price_checkout_annual_v2";
     runtimeModules.pricingFixture.setHistoricalExperiment(false);
+    const currentActivationIntent = await account.createCheckoutIntent({
+      acquisitionId: acquisition.acquisitionId, activationKey: historicalActivationKey,
+      buyerCountry: "US", session: annualBuyerSession,
+    });
+    const originalOffer = async () => (await databasePool.query(`select offer_amount_minor,
+      offer_stripe_price_id, upgrade_pricing_billing_model, stripe_checkout_session_id
+      from public.sidestream_checkout_intents where id = $1`, [currentActivationIntent.intentId])).rows[0];
+    const currentOfferBeforeReuse = await originalOffer();
+    const resumedHistorical = await account.createOrReuseCheckoutSession({
+      intentId: currentActivationIntent.intentId, browserToken: currentActivationIntent.browserToken,
+      session: annualBuyerSession, baseUrl: BASE_URL,
+    });
+    assert.equal(resumedHistorical.url, annualCheckout.url);
+    assert.equal(currentOfferBeforeReuse.upgrade_pricing_billing_model, "one_time");
+    assert.equal(currentOfferBeforeReuse.stripe_checkout_session_id, null);
+    assert.deepEqual(await originalOffer(), currentOfferBeforeReuse,
+      "resuming historical Checkout must not overwrite or bind today's one-time snapshot");
     const preservedAnnual = await account.createOrReuseCheckoutSession({
       intentId: annualIntent.intentId,
       browserToken: annualIntent.browserToken,
