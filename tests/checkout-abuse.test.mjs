@@ -890,6 +890,41 @@ test("database-backed intents serialize retries, rotate deliberately, and fulfil
       { fulfilled: true, activationBound: false, paidAcquisition: false },
     );
 
+    // New purchases after the experiment use today's offer even for old cohorts.
+    for (const [version, variant] of [[1, "monthly_half"], [2, "annual_same_price"]]) {
+      const returning = await seedFreeAccount(databasePool, `returning-${variant}`);
+      const returningSession = accountSession({ accountId: returning.accountId, email: returning.email });
+      await databasePool.query(`insert into public.sidestream_upgrade_pricing_assignments
+        (assignment_version, experiment_id, account_id, variant, billing_model, assignment_bucket, rollout_basis_points)
+        values ($1, $2, $3, $4, 'subscription', 17, 5000)`,
+        [version, `upgrade-pricing-v${version}`, returning.accountId, variant]);
+      const history = async () => (await databasePool.query(
+        'select * from public.sidestream_upgrade_pricing_assignments where account_id = $1',
+        [returning.accountId])).rows;
+      const before = await history();
+      const currentIntent = await account.createCheckoutIntent({
+        acquisitionId: acquisition.acquisitionId, buyerCountry: "US", session: returningSession,
+      });
+      const currentCheckout = await account.createOrReuseCheckoutSession({
+        intentId: currentIntent.intentId, browserToken: currentIntent.browserToken,
+        session: returningSession, baseUrl: BASE_URL,
+      });
+      assert.equal(currentCheckout.ok, true);
+      const write = stripe.sessionCreateWrites.at(-1);
+      assert.equal(write.params.mode, "payment");
+      assert.equal(write.params.metadata.sidestream_offer_amount_minor, "1999");
+      assert.match(write.params.custom_text.submit.message, /One-time payment/);
+      assert.equal(write.params.allow_promotion_codes, true);
+      assert.equal(write.params.subscription_data, undefined);
+      assert.deepEqual(await history(), before);
+      const exposures = await databasePool.query(`select count(*)::integer as count
+        from public.sidestream_upgrade_pricing_exposures where account_id = $1`, [returning.accountId]);
+      assert.equal(exposures.rows[0].count, 0);
+    }
+
+    // Exercise historical recurring terms explicitly; environment flags cannot
+    // re-enable an ended experiment in the real new-purchase policy.
+    runtimeModules.pricingFixture.setHistoricalExperiment(true);
     process.env.SIDESTREAM_UPGRADE_PRICING_V2_ENABLED = "true";
     process.env.SIDESTREAM_UPGRADE_PRICING_V2_ROLLOUT_BPS = "10000";
     process.env.SIDESTREAM_UPGRADE_PRICING_V2_SECRET = TEST_SECRET;
@@ -971,6 +1006,7 @@ test("database-backed intents serialize retries, rotate deliberately, and fulfil
     );
 
     process.env.SIDESTREAM_PRO_ANNUAL_PRICE_ID = "price_checkout_annual_v2";
+    runtimeModules.pricingFixture.setHistoricalExperiment(false);
     const preservedAnnual = await account.createOrReuseCheckoutSession({
       intentId: annualIntent.intentId,
       browserToken: annualIntent.browserToken,
@@ -988,6 +1024,7 @@ test("database-backed intents serialize retries, rotate deliberately, and fulfil
     );
     assert.equal(annualExposure.rows[0].count, 1);
 
+    runtimeModules.pricingFixture.setHistoricalExperiment(true);
     const travelingAnnualIntent = await account.createCheckoutIntent({
       acquisitionId: acquisition.acquisitionId,
       buyerCountry: "IN",
@@ -1080,6 +1117,7 @@ test("database-backed intents serialize retries, rotate deliberately, and fulfil
     assert.equal(fallbackCheckout.ok, true);
     assert.equal(stripe.sessionCreateWrites.at(-1).params.mode, "payment");
 
+    runtimeModules.pricingFixture.setHistoricalExperiment(false);
     const stages = await databasePool.query(
       `
         select stage, count(*)::integer as count
@@ -1093,7 +1131,7 @@ test("database-backed intents serialize retries, rotate deliberately, and fulfil
     );
     assert.deepEqual(stages.rows, [
       { stage: "checkout_completed", count: 4 },
-      { stage: "checkout_started", count: 9 },
+      { stage: "checkout_started", count: 11 },
       { stage: "payment_settled", count: 4 },
     ]);
 
@@ -1502,6 +1540,21 @@ async function loadRuntimeModules() {
         join(repositoryRoot, "api", "_lib", "postgres.ts"),
       ).href,
     };
+    const pricingSourceUrl = imports["./upgrade-pricing-experiment.js"];
+    const pricingFixturePath = join(temporaryModuleDirectory, "pricing-fixture.mjs");
+    await writeFile(pricingFixturePath, `
+export * from ${JSON.stringify(pricingSourceUrl)};
+import * as pricing from ${JSON.stringify(pricingSourceUrl)};
+let historical = false;
+export function setHistoricalExperiment(value) { historical = value; }
+export function decideNewCheckoutPricing(options) {
+  return historical
+    ? pricing.decideUpgradePricing({ ...options, enabled: true, rolloutBasisPoints: 10000 })
+    : pricing.decideNewCheckoutPricing(options);
+}
+`);
+    imports["./upgrade-pricing-experiment.js"] = pathToFileURL(pricingFixturePath).href;
+    const pricingFixture = await import(imports["./upgrade-pricing-experiment.js"]);
     imports["./maintenance.js"] = pathToFileURL(await writeAdaptedModule(
       temporaryModuleDirectory,
       "maintenance",
@@ -1548,7 +1601,7 @@ export function __setCheckoutAbuseStripeClient(value: Stripe | null) {
     const modulePath = join(temporaryModuleDirectory, "account-under-test.ts");
     await writeFile(modulePath, source, { mode: 0o600 });
     const account = await import(`${pathToFileURL(modulePath).href}?checkout-abuse=1`);
-    return { account, acquisition, temporaryModuleDirectory };
+    return { account, acquisition, pricingFixture, temporaryModuleDirectory };
   } catch (error) {
     await rm(temporaryModuleDirectory, { recursive: true, force: true });
     throw error;

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   decideUpgradePricing,
+  decideNewCheckoutPricing,
   deriveAnnualOfferAmount,
   deriveMonthlyHalfAmount,
   UPGRADE_PRICING_ANNUAL_VARIANT,
@@ -92,6 +93,39 @@ test("the concluded source contract restores one-time for every new eligible glo
     assert.equal(decision.rolloutBasisPoints, 0);
     assert.equal(decision.reason, "kill_switch");
     assert.equal(decision.shouldPersistAssignment, false);
+  }
+});
+
+test("new purchases use current one-time pricing without rewriting monthly or annual history", () => {
+  for (const [version, variant] of [[1, "monthly_half"], [2, "annual_same_price"], [2, "control_one_time"]]) {
+    const existingAssignment = Object.freeze({
+      assignmentId: "20000000-0000-4000-8000-000000000001",
+      assignmentVersion: version,
+      experimentId: `upgrade-pricing-v${version}`,
+      accountId: accountId(42),
+      variant,
+      billingModel: variant === "control_one_time" ? "one_time" : "subscription",
+      bucket: 17,
+      rolloutBasisPoints: 5000,
+      assignedAt: "2026-08-27T00:00:00.000Z",
+    });
+    const before = JSON.stringify(existingAssignment);
+    for (const [currency, amount] of [["usd", 1999], ["inr", 49900], ["brl", 2500]]) {
+      const decision = decideNewCheckoutPricing({
+        accountId: accountId(42), currency, oneTimeAmountMinor: amount,
+        existingAssignment, enabled: true, rolloutBasisPoints: 10000, secret: SECRET,
+      });
+      assert.equal(decision.billingModel, "one_time");
+      assert.equal(decision.variant, "control_one_time");
+      assert.equal(decision.assignmentId, null);
+      assert.equal(decision.recurringAmountMinor, null);
+      assert.equal(decision.shouldPersistAssignment, false);
+      assert.equal(decision.recurringCohortEligible, false);
+    }
+    assert.equal(JSON.stringify(existingAssignment), before);
+    const historical = decide(42, { existingAssignment });
+    assert.equal(historical.variant, variant);
+    assert.equal(historical.assignmentId, existingAssignment.assignmentId);
   }
 });
 

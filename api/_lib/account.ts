@@ -51,7 +51,7 @@ import {
   selectCheckoutOffer,
 } from "./checkout-offers.js";
 import {
-  decideUpgradePricing,
+  decideNewCheckoutPricing,
   UPGRADE_PRICING_ANNUAL_VARIANT,
   UPGRADE_PRICING_EXPERIMENT_ID,
   UPGRADE_PRICING_LEGACY_EXPERIMENT_ID,
@@ -1432,7 +1432,7 @@ async function resolveUpgradePricingCheckout(options: {
     options.oneTimeOffer,
     existingAssignment,
   );
-  let decision = decideUpgradePricing({
+  let decision = decideNewCheckoutPricing({
     accountId: options.accountId,
     currency: decisionOffer.currency,
     oneTimeAmountMinor: decisionOffer.amountMinor,
@@ -1461,7 +1461,7 @@ async function resolveUpgradePricingCheckout(options: {
     decision = persisted.assignment
       ? persisted.inserted
         ? attachUpgradePricingAssignment(decision, persisted.assignment)
-        : decideUpgradePricing({
+        : decideNewCheckoutPricing({
           accountId: options.accountId,
           currency: upgradePricingOfferForAssignment(
             options.oneTimeOffer,

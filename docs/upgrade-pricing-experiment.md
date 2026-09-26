@@ -6,14 +6,23 @@ Stripe Test qualification, Production rollout, provider delivery, and observed
 reporting so that a fixture, Preview, accepted email request, or open Checkout
 page is never reported as a completed purchase or live result.
 
-## Current default — September 16, 2026
+## Current new-purchase policy — September 25, 2026
 
-Alex restored the previous $19.99 one-time default for new unassigned accounts.
-The closed experiment now selects `control_one_time`, disabling new assignment
-regardless of stale rollout environment settings. Existing assignments, locked
-intents, paid subscriptions and annual renewal reminders remain unchanged.
-The public offer endpoint and homepage advertise one-time pricing. The annual
-decision and qualification below are historical.
+Alex restored $19.99 one-time on September 16 and requested current-decision
+alignment after his reset test account still received its old $4.99/month offer.
+New intents now use `decideNewCheckoutPricing`: while the experiment is closed
+with `control_one_time`, all new purchases use the current one-time catalog,
+including accounts with historical monthly or annual assignments. Regional offers
+remain unchanged. No assignment is deleted, rewritten, or counted as a new cohort
+exposure. `decideUpgradePricing` retains the historical experiment contract.
+
+Already-locked intents, completed purchases, existing subscriptions, fulfillment,
+renewals and annual reminders continue using their original immutable snapshots.
+This does not cancel or migrate subscriptions. Expire unwanted QA Checkout Sessions
+and start a fresh activation to test the new offer; do not mutate locked terms.
+The unauthenticated public offer is presentation, not proof of an account's locked
+Checkout. Verify its actual Stripe mode, amount, cadence and coupon-adjusted total.
+The annual decision and qualification below are historical.
 
 ## v2 annual decision (historical)
 

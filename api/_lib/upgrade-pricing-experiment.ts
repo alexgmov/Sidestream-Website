@@ -337,6 +337,25 @@ export function decideUpgradePricing(options: {
 
 export const decideUpgradePricingAssignment = decideUpgradePricing;
 
+/** New purchases follow the concluded offer; historical assignments stay immutable. */
+export function decideNewCheckoutPricing(
+  options: Parameters<typeof decideUpgradePricing>[0],
+): UpgradePricingDecision {
+  if (
+    UPGRADE_PRICING_EXPERIMENT_CONFIG.closedAt &&
+    UPGRADE_PRICING_EXPERIMENT_CONFIG.postExperimentVariant ===
+      UPGRADE_PRICING_CONTROL_VARIANT
+  ) {
+    return decideUpgradePricing({
+      ...options,
+      existingAssignment: null,
+      enabled: false,
+      rolloutBasisPoints: 0,
+    });
+  }
+  return decideUpgradePricing(options);
+}
+
 function explicitOrEnvironmentRollout(options: {
   enabled?: boolean;
   rolloutBasisPoints?: number;

@@ -127,7 +127,7 @@ test("authenticated Upgrade owns assignment, immutable lineage, and active-owner
 
   assert.match(account, /sidestream_upgrade_pricing_assignments/);
   assert.match(account, /on conflict \(experiment_id, account_id\) do nothing/);
-  assert.match(account, /decideUpgradePricing\(\{/);
+  assert.match(account, /decideNewCheckoutPricing\(\{/);
   assert.match(account, /if \(options\.session\.license\.active\) return null/);
   assert.match(account, /if \(options\.session\?\.license\.active\)/);
   for (const column of [
