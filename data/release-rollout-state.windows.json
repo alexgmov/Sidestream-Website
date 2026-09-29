@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "platform": "win32-x64",
+  "profile": "production",
+  "mode": "manual_pilot",
+  "status": "pending_release",
+  "approvedRolloutPercent": 1,
+  "approvedAt": "2026-09-29T21:23:57.000Z",
+  "baselineVersion": "1.0.16",
+  "version": null,
+  "artifactSha256": null,
+  "startedAt": null
+}
