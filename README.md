@@ -98,6 +98,25 @@ Neon public networking remains off. No application traffic or client defaults
 were switched. Read this before executing older database-cutover recipes;
 rollback must keep the current Linux databases and Neon disconnected.
 
+### Restore-check database retirement — September 28, 2026 PDT
+
+With explicit owner approval, the unused migration copies
+`sidestream_telemetry_restore_check` and `sidestream_website_restore_check`
+were removed on September 29 at 04:46 UTC, reclaiming 13.71 GiB. Live runtime
+configuration and connection checks confirmed that services use
+`sidestream_telemetry` and `sidestream_website`; both live databases, shared
+roles, telemetry events, indexes, and existing server backups were preserved.
+Fresh PostgreSQL 17 custom/Zstandard archives total 425.3 MiB on Alex's Mac at
+`~/Documents/Codex/telemetry-storage-audit-2026-09-28/private/`. Both archives
+fully decoded and their source/received SHA-256 hashes matched; this is not a
+full restore rehearsal. The sibling `Audit.md` and archive manifests contain
+the preservation evidence. The historical transfer environment still names the
+retired verification targets; recreate isolated copies deliberately for any
+future restore rehearsal. This approval covers only these two old copies.
+After storage recovery, require complete live/Postgres health, Overview,
+installs, and sessions responses with one fresh snapshot timestamp and a
+rendered dashboard; disk headroom or a service restart alone is not recovery.
+
 ### Direct telemetry ingress — server cutover verified September 10, 2026
 
 `https://telemetry.sidestream.tv/v1/events` now resolves directly to Linux
