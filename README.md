@@ -197,7 +197,7 @@ This repository owns the whole Sidestream web service: the public/account fronte
 - `thank-you.html` - Minimal noindex Checkout success page on a solid black background. Stripe success URLs land here after purchase with a direct return-to-Premiere instruction and one concise recovery path if the panel still shows Free.
 - `paid-thank-you.html` - Phone-first noindex success page used only by verified paid-acquisition Checkout. Its primary “Send download to your computer” action opens the native share sheet, or copies a secure fallback link, for the receipt-gated Sidestream Unlimited installer; the numbered fallback steps still cover the separate setup email, installation, and same-Google-email authentication. The original `thank-you.html` remains the ordinary Upgrade/Restore destination.
 - `data/release-manifest.json` and `data/release-manifest.windows.json` - Sidestream-owned stable release manifests. The default file keeps the public Mac artifact; the Windows file is selected by the explicit `win32-x64` platform query used by the public Windows download CTA. Private Blob pathnames are never returned by the public manifest API.
-- `data/release-rollout-state.windows.json` records the separately approved 1% Windows pilot. `pending_release` is approval only: it does not change updater eligibility or downloads. Activation requires a new verified Production installer, an exact version/SHA binding and `startedAt`, plus a matching noncritical Windows manifest at 1%. FlowState's Windows Release Rollout view checks that binding and never expands the pilot automatically. Do not reduce the existing 1.0.16 manifest to 1% and call that a new update. September 29 preparation is blocked on the Windows candidate; Parallels also requires about 10 GB additional free host space before the build VM can start.
+- `data/release-rollout-state.windows.json` records the separately approved 1% Windows pilot. `pending_release` is approval only; `active` requires an exact new version/SHA binding and `startedAt`, plus a matching noncritical Windows manifest at 1%. FlowState's Windows Release Rollout view checks that binding and never expands the pilot automatically. September 30 activates the owner-approved `1.0.21` beta described below; existing-version activity and direct installs must not be reported as pilot adoption.
 - `config/release-rollout-policy.json`, `data/release-rollout-state.json`, `scripts/release-rollout-policy.mjs`, and `scripts/advance-release-rollout.mjs` - Dry-run-first Mac rollout controller. It compares the checked-in and public release, requires fresh live/Postgres production analytics, and can write only the next `25 → 50 → 75 → 100` manifest step plus its observation baseline after explicit version, rollout, cap, enable, apply, and confirmation flags. It never commits, pushes, deploys, or restarts an origin.
 - `api/download.ts` and `api/_lib/installer-delivery.ts` - Provider-neutral installer fulfillment. `HEAD` returns manifest-bound attachment metadata; `GET` validates the selected artifact and redirects to a five-minute provider URL. `SIDESTREAM_INSTALLER_PROVIDER=hetzner` signs the immutable pathname for `downloads.sidestream.tv`; `blob` is the explicit rollback. Anonymous acquisition and Gmail attribution still happen only after a successful redirect and cannot block delivery. Bare requests remain Mac; `?platform=win32-x64` selects Windows.
 - `api/_lib/installer-referral.ts` - Server-only Gmail installer-request attribution. It validates bounded UTM tags, accepts only `pilot` or `main` batch content, creates a campaign/day-scoped HMAC from request identity, discards the raw IP and user agent, flags likely link scanners, and inserts the privacy-limited event into Postgres without delaying installer delivery.
@@ -1362,6 +1362,32 @@ The generated MacBook mockup video in `mockups/mockup1_2.webm` is tracked. Raw m
 
 The project is linked to Vercel project `alex-3685s-projects/sidestream`. `.vercel/`, `.env.local`, and other `.env*` files are ignored. A release must first run `npm run release:upload-hetzner -- --artifact <local file> --pathname sidestream/<version>/<filename>`; the root-only finalizer hashes the uploaded temporary file, verifies size/SHA, atomically renames it, and refuses different bytes at an existing immutable pathname. Only then run `npm run release:publish-manifest` with the normal platform/version/signing gates. Publishing defaults to `--provider hetzner` and machine-verifies the remote filename, size, and SHA before changing the manifest; the explicit Blob rollback path additionally requires `--provider blob --uploaded`. Never lie by passing `--signed` for an unsigned Windows build. Agent releases fast-forward verified commits onto `origin/main` and rely on the Git-linked Production deployment; `npm run deploy:production` is owner-only emergency recovery after deliberate human reauthentication. Keep bare `/api/download` on the native/base Mac DMG and keep `.vercelignore` aligned with tracked publishable media.
 
+### Windows 1% beta pilot — September 30, 2026
+
+Alex approved retaining the first-open browser connection and publishing the
+tested Production-identity Windows `1.0.21` beta at exactly 1%. The immutable
+artifact is `sidestream/1.0.21/Sidestream-1.0.21-Windows-Beta-Installer.exe`,
+61,341,479 bytes, SHA-256
+`eefbee05be820c22dbc495004d31af2a8a3f58589b56319bdbacaa099416c037`, built from
+clean FlowState main `b6978f2853bfde922afc58b08ee78ad779981138`.
+
+The Adobe CEP payload is signed and verified; the outer EXE is `NotSigned`.
+Publication uses the existing explicit `--unsigned-beta-approved` path, never
+`--signed`. Windows 11 ARM64 Parallels evidence covers the official 1.0.16 to
+1.0.21 upgrade with receipt continuity, exact installed payload hashes, absent
+`PlayerDebugMode`, panel load, search, audio download and Premiere timeline
+import. Video import, restart and real Intel/AMD x64 qualification are not
+claimed. This is a bounded owner-approved beta, not full Windows qualification.
+
+The Windows manifest remains noncritical with minimum version `1.0.12`.
+Rollout gates approximately 1% of in-panel update notices; direct Windows
+downloads also receive this artifact. The pilot record binds the exact version,
+SHA and observation start. Hold at 1%; distinguish prompt/click counts from
+running installations and imports, and do not attribute direct installs to the
+pilot without supporting evidence. Mac and paid release pointers are unchanged.
+The previous immutable Windows 1.0.16 artifact remains available for a deliberate
+rollback; never overwrite either artifact or label old activity as this pilot.
+
 ### Guarded Mac rollout progression
 
 On September 25, 2026, Alex explicitly approved a one-release override advancing
@@ -1593,6 +1619,7 @@ Use the narrowest relevant check after edits:
 
 ## Recent Change Log
 
+- 2026-09-30: Activated Alex's approved noncritical Windows 1.0.21 beta at 1%, binding the pilot to the verified immutable installer SHA. Retained the browser connection behavior and documented the Adobe signature, unsigned EXE, ARM64 audio-import evidence, remaining qualification gaps and direct-download boundary.
 - 2026-09-25: Advanced the existing Mac `1.0.21` release from 25% to 100% with Alex's explicit override of the failed 90% success and failure-stage gates and the normal staged progression. Recorded the actual 434-closed-intent observation baseline in the rollout sidecar; installer bytes and the shared controller policy remain unchanged.
 - 2026-09-25: Added the protected Channels report for tracked first visits, first positive-paying customers, exact visit-cohort conversion, complete channel aggregates and bounded UTM detail. Existing tracking and payment fulfillment are unchanged.
 

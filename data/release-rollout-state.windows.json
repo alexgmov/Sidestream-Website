@@ -3,11 +3,11 @@
   "platform": "win32-x64",
   "profile": "production",
   "mode": "manual_pilot",
-  "status": "pending_release",
+  "status": "active",
   "approvedRolloutPercent": 1,
   "approvedAt": "2026-09-29T21:23:57.000Z",
   "baselineVersion": "1.0.16",
-  "version": null,
-  "artifactSha256": null,
-  "startedAt": null
+  "version": "1.0.21",
+  "artifactSha256": "eefbee05be820c22dbc495004d31af2a8a3f58589b56319bdbacaa099416c037",
+  "startedAt": "2026-09-30T20:59:54.463Z"
 }
