@@ -536,6 +536,31 @@ evidence, and canonical-surface verification. Vercel cron control remains
 project-wide across all five declared jobs; Customer 360 usage sync is scheduled
 once daily at `05:27` UTC.
 
+#### Purchase-level revenue attribution
+
+`POST /api/internal/purchase-attribution` is a read-only Customer-admin endpoint
+for FlowState's Revenue purchase table. `api/_lib/purchase-attribution.ts`
+accepts a namespace and up to 100 exact Stripe Charge/PaymentIntent pairs. It
+returns one ordered, identifier-free row per input, including missing links.
+Exact payment aliases and Checkout intents resolve that purchase's acquisition;
+repeat purchases never borrow a profile's older acquisition. Conflicting payment
+owners or acquisition roots remain unattributed. No tracking writes or migration
+are needed; fulfillment and entitlement behavior are unchanged.
+
+The first website visit is the earliest `landing_observed` stage on that exact
+journey, not an earlier email handoff. First recorded install is the earliest
+`sidestream_customer_installs.first_seen_at` for the verified payment owner; it
+can follow purchase and is not a guaranteed installer-completion time. Sources
+use existing channel labels and bounded campaign tags. Missing values remain null.
+The endpoint retains the POST-only, admin-bearer, no-browser-origin, no-store
+boundary and a 20-second read-only transaction timeout. Stripe identifiers enter
+only in the authenticated server request and are never returned.
+
+Checks: `node --experimental-strip-types --test tests/purchase-attribution.test.mjs`
+and the isolated `tests/purchase-attribution-postgres.test.mjs` with
+`SIDESTREAM_TEST_POSTGRES_URL`. Deploy the pushed main API to Linux before the
+FlowState table; an unavailable attribution API must not hide Stripe purchases.
+
 #### Channels and paid conversion report
 
 `POST /api/internal/channel-report` uses the existing Customer admin bearer,
