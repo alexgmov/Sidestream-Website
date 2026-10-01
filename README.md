@@ -560,6 +560,11 @@ Checks: `node --experimental-strip-types --test tests/purchase-attribution.test.
 and the isolated `tests/purchase-attribution-postgres.test.mjs` with
 `SIDESTREAM_TEST_POSTGRES_URL`. Deploy the pushed main API to Linux before the
 FlowState table; an unavailable attribution API must not hide Stripe purchases.
+For Mac-to-Linux build transfers use `COPYFILE_DISABLE=1 tar --no-xattrs` and
+verify the extracted bundle has no `._*` AppleDouble files before restarting.
+The API loader discovers route files recursively, so metadata files such as
+`._callback.js` cause startup failure. Verify `/healthz` and the canonical
+Checkout redirect immediately after an API restart.
 
 #### Channels and paid conversion report
 
