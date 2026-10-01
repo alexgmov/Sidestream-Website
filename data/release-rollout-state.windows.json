@@ -4,11 +4,11 @@
   "profile": "production",
   "mode": "manual_pilot",
   "status": "active",
-  "approvedRolloutPercent": 5,
+  "approvedRolloutPercent": 10,
   "approvedAt": "2026-09-29T21:23:57.000Z",
   "baselineVersion": "1.0.16",
   "version": "1.0.21",
   "artifactSha256": "eefbee05be820c22dbc495004d31af2a8a3f58589b56319bdbacaa099416c037",
   "startedAt": "2026-09-30T20:59:54.463Z",
-  "rolloutApprovedAt": "2026-09-30T23:26:47.000Z"
+  "rolloutApprovedAt": "2026-10-01T17:34:57.772Z"
 }
