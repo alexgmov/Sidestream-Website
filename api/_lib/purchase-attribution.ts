@@ -1,5 +1,6 @@
 import type { QueryResult, QueryResultRow } from "pg";
 import { withPostgresTransaction } from "./postgres.js";
+import { queryPreUpgradeDownloads } from "./pre-upgrade-downloads.js";
 import { channelLabel } from "./channel-report.js";
 
 type Payment = { chargeId: string; paymentIntentId: string | null };
@@ -87,6 +88,17 @@ with requested as (
   from edges group by position
 )
 select r.position,
+  owner.payment_key = (select f.payment_key from public.sidestream_customer_commerce_materializations f
+    where f.license_namespace=$1 and f.profile_id=owner.profile_id and not f.identity_conflict
+      and f.source_confidence='verified' and f.gross_paid_minor > 0 and f.first_upgraded_at is not null
+    order by f.first_upgraded_at,f.payment_key limit 1)
+    and r.charge_id = (select min(alias.alias_id) from public.sidestream_customer_commerce_aliases alias
+      where alias.license_namespace=$1 and alias.payment_key=owner.payment_key and alias.alias_type='charge') as first_paid_upgrade,
+  (select min(f.first_upgraded_at) from public.sidestream_customer_commerce_materializations f
+    where f.license_namespace=$1 and f.profile_id=owner.profile_id and not f.identity_conflict
+      and f.source_confidence='verified' and f.gross_paid_minor > 0) as first_paid_upgrade_at,
+  (select array_agg(distinct i.install_id_hash) from public.sidestream_customer_installs i
+    where i.license_namespace=$1 and i.profile_id=owner.profile_id) as install_hashes,
   case when o.payment_count > 1 or o.owner_count > 1 or o.conflicted or resolution.valid = false then 'conflict'
        when a.id is not null then 'matched' else 'unattributed' end as link_status,
   a.first_observed_source as source, a.first_observed_medium as medium,
@@ -113,10 +125,17 @@ export async function queryPurchaseAttribution(request: unknown, overrides: { tr
     await client.query("set local statement_timeout = '20s'");
     const result = await client.query(PURCHASE_ATTRIBUTION_SQL, [input.licenseNamespace, JSON.stringify(input.payments)]);
     if (result.rows.length !== input.payments.length) throw new Error("purchase_attribution_incomplete");
-    return { schemaVersion: 1, namespace: input.licenseNamespace, generatedAt: new Date().toISOString(), rows: result.rows.map((row, index) => {
+    let counts = new Map<number, number | null>();
+    try {
+      counts = await queryPreUpgradeDownloads(result.rows.filter(row => row.first_paid_upgrade && row.link_status !== "conflict").map(row => ({
+        position: row.position, installs: row.install_hashes || [], upgradedAt: iso(row.first_paid_upgrade_at)!,
+      })), input.licenseNamespace);
+    } catch { /* Missing telemetry must not hide purchases or imply zero downloads. */ }
+    return { schemaVersion: 2, namespace: input.licenseNamespace, generatedAt: new Date().toISOString(), rows: result.rows.map((row, index) => {
       if (row.position !== index || !["matched", "unattributed", "conflict"].includes(row.link_status)) throw new Error("purchase_attribution_invalid");
       const matched = row.link_status === "matched", source = matched ? tag(row.source) : null;
-      return { position: index, linkStatus: row.link_status,
+      return { position: index, firstPaidUpgrade: Boolean(row.first_paid_upgrade) && row.link_status !== "conflict",
+        completedDownloadsBeforeUpgrade: counts.get(index) ?? null, linkStatus: row.link_status,
         channel: source ? channelLabel(source, tag(row.referrer)) : "Unattributed",
         source, medium: matched ? tag(row.medium) : null, campaign: matched ? tag(row.campaign) : null,
         content: matched ? tag(row.content) : null,

@@ -2079,3 +2079,22 @@ Use the narrowest relevant check after edits:
 - Added a dependency-free Aurora/light-ray background behind the hero and documented that it is a static CSS translation of the pasted React/Tailwind component.
 - Restored the hero to the numbered screenshot state: serif headline, plugin eyebrow, two hero CTAs, title-case brand, and wider right-side mock window.
 - Added this README as the routing layer for future coding sessions.
+
+### Conversion means — October 1, 2026
+
+`api/_lib/pre-upgrade-downloads.ts` supplies v2 purchase attribution's
+`firstPaidUpgrade` and `completedDownloadsBeforeUpgrade` fields. Verified,
+positive commerce facts select each customer's first paid upgrade; repeat or
+unrelated purchases do not enter the download-count mean. The private request
+uses exactly owned installation hashes, but only counts leave the API. Completion
+events are read from the existing separate telemetry database and deduplicated
+by install/session/download. Finalized cancellation/import failure overrides
+legacy completion; speculative IDs are excluded. Completion time must strictly
+precede upgrade, including same-day cases. Request-day usage aggregates are
+unsuitable for this cutoff. Missing telemetry or pre-upgrade app history remains
+null; observed pre-upgrade app activity with no completions yields recorded zero.
+Recorded counts do not prove complete lifetime telemetry. FlowState owns both
+mean cards and exclusions; purchase dates select rows without trimming history.
+No migrations, backfill or tracking changes. Checks: purchase attribution tests,
+`tests/pre-upgrade-downloads-postgres.test.mjs` on an isolated Postgres database,
+entitlement, API build and website build.

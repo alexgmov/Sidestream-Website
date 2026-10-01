@@ -5,6 +5,7 @@ import { Pool } from 'pg';
 import { loadInjectedModule } from './helpers/handler-loader.mjs';
 import { requireSafeTestDatabaseUrl, createTestPoolOptions } from '../scripts/run-postgres-integration.mjs';
 const mod = await loadInjectedModule(new URL('../api/_lib/purchase-attribution.ts', import.meta.url), {
+  './pre-upgrade-downloads.js': { queryPreUpgradeDownloads: async () => new Map() },
   './postgres.js': { withPostgresTransaction: async () => { throw new Error('inject isolated transaction'); } }, './channel-report.js': { channelLabel: x => x },
 });
 test('each Stripe payment keeps its own exact journey; ambiguous and missing links never borrow profile attribution', async () => {
@@ -14,17 +15,17 @@ test('each Stripe payment keeps its own exact journey; ambiguous and missing lin
     await pool.query(`create schema ${schema}`);
     await pool.query(sql(`
       create table public.sidestream_customer_profiles(id uuid primary key, license_namespace text, merged_into uuid);
-      create table public.sidestream_customer_commerce_materializations(profile_id uuid, license_namespace text, payment_key text, first_paid_at timestamptz, gross_paid_minor bigint, source_confidence text default 'verified', identity_conflict boolean default false);
+      create table public.sidestream_customer_commerce_materializations(profile_id uuid, license_namespace text, payment_key text, first_paid_at timestamptz, gross_paid_minor bigint, source_confidence text default 'verified', identity_conflict boolean default false, first_upgraded_at timestamptz);
       create table public.sidestream_customer_commerce_aliases(license_namespace text, payment_key text, alias_type text, alias_id text);
       create table public.sidestream_checkout_intents(acquisition_id uuid, stripe_checkout_session_id text, account_id uuid, activation_session_id uuid);
       create table public.sidestream_customer_identity_links(license_namespace text, profile_id uuid, link_type text, link_value text);
       create table public.sidestream_acquisitions(id uuid primary key, license_namespace text, first_observed_source text, first_observed_medium text, first_observed_campaign text, first_observed_content_creative text, external_referrer_category text, first_observed_at timestamptz, integrity_state text default 'intact');
       create table public.sidestream_acquisition_stages(acquisition_id uuid, license_namespace text, stage text, occurred_at timestamptz);
-      create table public.sidestream_customer_installs(profile_id uuid, license_namespace text, first_seen_at timestamptz);
+      create table public.sidestream_customer_installs(profile_id uuid, license_namespace text, first_seen_at timestamptz, install_id_hash text);
     `));
     const profile = randomUUID();
     await pool.query(sql(`insert into public.sidestream_customer_profiles values($1,'production',null);`), [profile]);
-    await pool.query(sql(`insert into public.sidestream_customer_installs values($1,'production','2026-09-12'),($1,'test','2020-01-01')`), [profile]);
+    await pool.query(sql(`insert into public.sidestream_customer_installs(profile_id,license_namespace,first_seen_at) values($1,'production','2026-09-12'),($1,'test','2020-01-01')`), [profile]);
     async function acquisition(source, namespace = 'production', integrity = 'intact') {
       const id = randomUUID();
       await pool.query(sql(`insert into public.sidestream_acquisitions(id,license_namespace,first_observed_source,first_observed_at,integrity_state) values($1,$2,$3,'2026-09-01',$4)`), [id,namespace,source,integrity]);
@@ -45,8 +46,12 @@ test('each Stripe payment keeps its own exact journey; ambiguous and missing lin
     }
     const reddit=await acquisition('reddit'), google=await acquisition('google');
     const payments = [await payment('first',[reddit]), await payment('repeat',[google]), await payment('unlinked',[]), await payment('ambiguous',[reddit,google]), await payment('quarantined',[await acquisition('bad','production','quarantined')]), await payment('conflict',[reddit],true), await payment('namespace',[await acquisition('testonly','test')]), {chargeId:'ch_missing',paymentIntentId:null}];
+    await pool.query(sql(`update public.sidestream_customer_commerce_materializations set first_upgraded_at='2026-09-10' where payment_key='payment-first'; update public.sidestream_customer_commerce_materializations set first_upgraded_at='2026-09-20' where payment_key='payment-repeat'`));
     const result=await mod.queryPurchaseAttribution({licenseNamespace:'production',payments},{transaction:async cb=>cb({query:(q,v)=>pool.query(sql(q),v)})});
     assert.equal(result.rows.length,8);
+    assert.equal(result.rows[0].firstPaidUpgrade,true);
+    assert.equal(result.rows[1].firstPaidUpgrade,false);
+    assert.equal(result.rows[0].completedDownloadsBeforeUpgrade,null);
     assert.deepEqual(result.rows.map(r=>r.source),['reddit','google',null,null,null,null,null,null]);
     assert.deepEqual(result.rows.map(r=>r.linkStatus),['matched','matched','unattributed','conflict','conflict','conflict','unattributed','unattributed']);
     assert.equal(result.rows[0].firstVisitAt,'2026-09-02T00:00:00.000Z');

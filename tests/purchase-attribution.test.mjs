@@ -3,6 +3,7 @@ import { EventEmitter } from 'node:events';
 import test from 'node:test';
 import { loadInjectedModule } from './helpers/handler-loader.mjs';
 const mod = await loadInjectedModule(new URL('../api/_lib/purchase-attribution.ts', import.meta.url), {
+  './pre-upgrade-downloads.js': { queryPreUpgradeDownloads: async () => new Map() },
   './postgres.js': { withPostgresTransaction: async () => { throw new Error('unexpected database'); } },
   './channel-report.js': { channelLabel: source => source === 'reddit' ? 'Reddit' : source },
 });
