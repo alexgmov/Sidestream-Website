@@ -2095,7 +2095,10 @@ legacy completion; speculative IDs are excluded. Completion time must strictly
 precede upgrade, including same-day cases. Request-day usage aggregates are
 unsuitable for this cutoff. Missing telemetry or pre-upgrade app history remains
 null; observed pre-upgrade app activity with no completions yields recorded zero.
-Recorded counts do not prove complete lifetime telemetry. FlowState owns both
+Recorded counts do not prove complete lifetime telemetry. A separate read-only
+connection bounds completion queries at 30 seconds without changing daily sync.
+`downloadHistoryStatus` explicitly distinguishes a failed read from missing
+history; FlowState does not cache that failure for 15 minutes. FlowState owns both
 mean cards and exclusions; purchase dates select rows without trimming history.
 No migrations, backfill or tracking changes. Checks: purchase attribution tests,
 `tests/pre-upgrade-downloads-postgres.test.mjs` on an isolated Postgres database,

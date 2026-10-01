@@ -125,12 +125,13 @@ export async function queryPurchaseAttribution(request: unknown, overrides: { tr
     const result = await client.query(PURCHASE_ATTRIBUTION_SQL, [input.licenseNamespace, JSON.stringify(input.payments)]);
     if (result.rows.length !== input.payments.length) throw new Error("purchase_attribution_incomplete");
     let counts = new Map<number, number | null>();
+    let downloadHistoryStatus: "complete" | "unavailable" = "complete";
     try {
       counts = await queryPreUpgradeDownloads(result.rows.filter(row => row.first_paid_upgrade && row.link_status !== "conflict").map(row => ({
         position: row.position, installs: row.install_hashes || [], upgradedAt: iso(row.first_paid_upgrade_at)!,
       })), input.licenseNamespace);
-    } catch { /* Missing telemetry must not hide purchases or imply zero downloads. */ }
-    return { schemaVersion: 2, namespace: input.licenseNamespace, generatedAt: new Date().toISOString(), rows: result.rows.map((row, index) => {
+    } catch { downloadHistoryStatus = "unavailable"; /* Never imply zero downloads or hide purchases. */ }
+    return { schemaVersion: 2, downloadHistoryStatus, namespace: input.licenseNamespace, generatedAt: new Date().toISOString(), rows: result.rows.map((row, index) => {
       if (row.position !== index || !["matched", "unattributed", "conflict"].includes(row.link_status)) throw new Error("purchase_attribution_invalid");
       const matched = row.link_status === "matched", source = matched ? tag(row.source) : null;
       return { position: index, firstPaidUpgrade: Boolean(row.first_paid_upgrade) && row.link_status !== "conflict",

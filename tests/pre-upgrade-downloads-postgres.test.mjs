@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { Pool } from 'pg';
 import { loadInjectedModule } from './helpers/handler-loader.mjs';
 import { requireSafeTestDatabaseUrl,createTestPoolOptions } from '../scripts/run-postgres-integration.mjs';
-const mod=await loadInjectedModule(new URL('../api/_lib/pre-upgrade-downloads.ts',import.meta.url),{'./customer-usage.js':{getCustomerUsageTelemetryPool:()=>{throw new Error('isolated query only')},loadCustomerUsageSyncConfiguration:()=>{throw new Error('isolated query only')}}});
+const mod=await loadInjectedModule(new URL('../api/_lib/pre-upgrade-downloads.ts',import.meta.url),{'./customer-usage.js':{buildTelemetryPoolOptions:()=>{throw new Error('isolated query only')},loadCustomerUsageSyncConfiguration:()=>{throw new Error('isolated query only')}}});
 test('completion cutoff, duplicate terminals, finalization precedence, namespace and customer isolation; observed zero versus missing',async()=>{
  const pool=new Pool(createTestPoolOptions(requireSafeTestDatabaseUrl(process.env))),schema='upgrade_'+randomUUID().replaceAll('-','');
  try {

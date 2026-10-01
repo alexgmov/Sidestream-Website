@@ -1,4 +1,8 @@
-import { getCustomerUsageTelemetryPool, loadCustomerUsageSyncConfiguration } from "./customer-usage.js";
+import { Pool } from "pg";
+import { buildTelemetryPoolOptions, loadCustomerUsageSyncConfiguration } from "./customer-usage.js";
+
+let pool: Pool | null = null;
+let poolIdentity = "";
 
 type Cohort = { position: number; installs: string[]; upgradedAt: string };
 // Completion timestamps, never request-day aggregates. Scalar projection only;
@@ -47,7 +51,11 @@ from observed o left join counts c using(position)
 export async function queryPreUpgradeDownloads(cohort: Cohort[], namespace: "production" | "test") {
   if (!cohort.length) return new Map<number, number | null>();
   const config = loadCustomerUsageSyncConfiguration(process.env);
-  const pool = getCustomerUsageTelemetryPool(config.telemetryConnectionString);
+  if (!pool || poolIdentity !== config.telemetryConnectionString) {
+    if (pool) await pool.end();
+    pool = new Pool({ ...buildTelemetryPoolOptions(config.telemetryConnectionString), query_timeout: 30_000, statement_timeout: 30_000 });
+    poolIdentity = config.telemetryConnectionString;
+  }
   const result = await pool.query(PRE_UPGRADE_DOWNLOADS_SQL, [JSON.stringify(cohort), namespace === "production" ? ["production", "prod"] : ["test"], [...new Set(cohort.flatMap(row => row.installs))]]);
   return new Map<number, number | null>(result.rows.map(row => [row.position, row.completed]));
 }
