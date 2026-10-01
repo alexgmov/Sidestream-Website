@@ -21,7 +21,7 @@ test('completion cutoff, duplicate terminals, finalization precedence, namespace
   await event('one','download_attempt_finalized','2026-09-01','delivered',{file_delivered:true});
   await event('one','download_completed','2026-09-01','speculative-123');await event('other','download_completed','2026-09-01','other');await event('one','download_completed','2026-09-01','test',{},'test');
   const cohort=['one','zero','missing'].map((i,position)=>({position,installs:[i],upgradedAt:'2026-09-02T00:00:00Z'}));
-  const r=await pool.query(mod.PRE_UPGRADE_DOWNLOADS_SQL.replaceAll('public.',schema+'.'),[JSON.stringify(cohort),['production','prod']]);
+  const r=await pool.query(mod.PRE_UPGRADE_DOWNLOADS_SQL.replaceAll('public.',schema+'.'),[JSON.stringify(cohort),['production','prod'],['one','zero','missing']]);
   assert.deepEqual(r.rows.sort((a,b)=>a.position-b.position),[{position:0,completed:2},{position:1,completed:0}]);
  } finally {await pool.query(`drop schema ${schema} cascade`);await pool.end();}
 });

@@ -16,7 +16,7 @@ with cohort as (
     lower(coalesce(e.payload->>'import_result',e.data_points#>>'{details,importResult}',e.data_points#>>'{details,import_result}','')) as import_result,
     lower(coalesce(e.payload->>'failure_stage',e.data_points#>>'{details,failureStage}',e.data_points#>>'{details,failure_stage}','')) as failure_stage
   from cohort c join public.sidestream_telemetry_events e on e.install_id_hash=c.install_id_hash
-  where e.event_name in ('session_started','download_completed','download_attempt_finalized','premiere_import_failed','premiere_import_completed')
+  where e.install_id_hash = any($3::text[]) and e.event_name in ('session_started','download_completed','download_attempt_finalized','premiere_import_failed','premiere_import_completed')
     and e.schema_version='0.2.0' and coalesce(nullif(e.build_channel,''),'production') = any($2::text[])
 ), observed as (
   select position,bool_or(event_name='session_started' and occurred_at < upgraded_at) as observed
@@ -48,6 +48,6 @@ export async function queryPreUpgradeDownloads(cohort: Cohort[], namespace: "pro
   if (!cohort.length) return new Map<number, number | null>();
   const config = loadCustomerUsageSyncConfiguration(process.env);
   const pool = getCustomerUsageTelemetryPool(config.telemetryConnectionString);
-  const result = await pool.query(PRE_UPGRADE_DOWNLOADS_SQL, [JSON.stringify(cohort), namespace === "production" ? ["production", "prod"] : ["test"]]);
+  const result = await pool.query(PRE_UPGRADE_DOWNLOADS_SQL, [JSON.stringify(cohort), namespace === "production" ? ["production", "prod"] : ["test"], [...new Set(cohort.flatMap(row => row.installs))]]);
   return new Map<number, number | null>(result.rows.map(row => [row.position, row.completed]));
 }

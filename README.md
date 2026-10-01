@@ -2088,7 +2088,9 @@ positive commerce facts select each customer's first paid upgrade; repeat or
 unrelated purchases do not enter the download-count mean. The private request
 uses exactly owned installation hashes, but only counts leave the API. Completion
 events are read from the existing separate telemetry database and deduplicated
-by install/session/download. Finalized cancellation/import failure overrides
+by install/session/download. An explicit installation-array filter uses the
+existing telemetry install index instead of allowing JSON cohort-size estimates
+to turn a bounded read into a whole-ledger scan. Finalized cancellation/import failure overrides
 legacy completion; speculative IDs are excluded. Completion time must strictly
 precede upgrade, including same-day cases. Request-day usage aggregates are
 unsuitable for this cutoff. Missing telemetry or pre-upgrade app history remains
