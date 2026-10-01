@@ -38,7 +38,7 @@ with requested as (
   select a.position, count(distinct a.payment_key) as payment_count,
     count(distinct f.profile_id) as owner_count,
     min(f.profile_id::text)::uuid as profile_id,
-    min(a.payment_key) as payment_key, min(f.first_paid_at) as paid_at,
+    min(a.payment_key) as payment_key, min(f.first_paid_at) as paid_at, min(f.first_upgraded_at) as upgraded_at,
     bool_or(f.identity_conflict) as conflicted,
     bool_or(f.source_confidence = 'verified' and f.gross_paid_minor > 0) as verified
   from aliases a left join public.sidestream_customer_commerce_materializations f
@@ -88,12 +88,11 @@ with requested as (
   from edges group by position
 )
 select r.position,
-  owner.payment_key = (select f.payment_key from public.sidestream_customer_commerce_materializations f
+  owner.upgraded_at = (select min(f.first_upgraded_at) from public.sidestream_customer_commerce_materializations f
     where f.license_namespace=$1 and f.profile_id=owner.profile_id and not f.identity_conflict
-      and f.source_confidence='verified' and f.gross_paid_minor > 0 and f.first_upgraded_at is not null
-    order by f.first_upgraded_at,f.payment_key limit 1)
-    and r.charge_id = (select min(alias.alias_id) from public.sidestream_customer_commerce_aliases alias
-      where alias.license_namespace=$1 and alias.payment_key=owner.payment_key and alias.alias_type='charge') as first_paid_upgrade,
+      and f.source_confidence='verified' and f.gross_paid_minor > 0)
+    and r.charge_id = coalesce((select min(alias.alias_id) from public.sidestream_customer_commerce_aliases alias
+      where alias.license_namespace=$1 and alias.payment_key=owner.payment_key and alias.alias_type='charge'), r.charge_id) as first_paid_upgrade,
   (select min(f.first_upgraded_at) from public.sidestream_customer_commerce_materializations f
     where f.license_namespace=$1 and f.profile_id=owner.profile_id and not f.identity_conflict
       and f.source_confidence='verified' and f.gross_paid_minor > 0) as first_paid_upgrade_at,
