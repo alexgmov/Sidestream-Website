@@ -54,6 +54,33 @@ with requested as (
     on alias.license_namespace = $1 and alias.payment_key = o.payment_key and alias.alias_type = 'checkout_session'
   join public.sidestream_checkout_intents intent on intent.stripe_checkout_session_id = alias.alias_id
   join public.sidestream_acquisitions a on a.id = intent.acquisition_id and a.license_namespace = $1
+), customer_edges as (
+  -- Use the same exact account/activation/Checkout identity edges as the
+  -- acquisition funnel, without its cohort/observation-window restrictions.
+  select intent.acquisition_id, link.profile_id
+  from public.sidestream_checkout_intents intent
+  join public.sidestream_customer_identity_links link on link.license_namespace = $1 and (
+    (link.link_type = 'account_identity' and link.link_value = intent.account_id::text) or
+    (link.link_type = 'activation_record' and link.link_value = intent.activation_session_id::text) or
+    (link.link_type = 'stripe_checkout_session' and link.link_value = intent.stripe_checkout_session_id))
+  union
+  select intent.acquisition_id, fact.profile_id
+  from public.sidestream_checkout_intents intent
+  join public.sidestream_customer_commerce_aliases alias
+    on alias.license_namespace = $1 and alias.alias_type = 'checkout_session'
+    and alias.alias_id = intent.stripe_checkout_session_id
+  join public.sidestream_customer_commerce_materializations fact
+    on fact.license_namespace = $1 and fact.payment_key = alias.payment_key
+    and fact.profile_id is not null and not fact.identity_conflict
+), customer_roots as (
+  -- Shared/conflicting roots cannot establish a customer's visit history.
+  select edge.acquisition_id, min(edge.profile_id::text)::uuid as profile_id
+  from customer_edges edge
+  join public.sidestream_customer_profiles profile on profile.id = edge.profile_id
+    and profile.license_namespace = $1 and profile.merged_into is null
+  join public.sidestream_acquisitions root on root.id = edge.acquisition_id
+    and root.license_namespace = $1 and root.integrity_state = 'intact'
+  group by edge.acquisition_id having count(distinct edge.profile_id) = 1
 ), resolutions as (
   select position, min(id::text)::uuid as acquisition_id,
     count(*) = 1 and bool_and(integrity_state = 'intact' and first_observed_at <= paid_at) as valid
@@ -66,7 +93,8 @@ select r.position,
   a.first_observed_campaign as campaign, a.first_observed_content_creative as content,
   a.external_referrer_category as referrer,
   (select min(s.occurred_at) from public.sidestream_acquisition_stages s
-   where s.license_namespace = $1 and s.acquisition_id = a.id and s.stage = 'landing_observed') as first_visit_at,
+   join customer_roots root on root.acquisition_id = s.acquisition_id
+   where s.license_namespace = $1 and root.profile_id = owner.profile_id and s.stage = 'landing_observed') as first_visit_at,
   (select min(i.first_seen_at) from public.sidestream_customer_installs i
    where i.license_namespace = $1 and i.profile_id = owner.profile_id) as first_install_at
 from requested r left join owners o on o.position = r.position
@@ -92,7 +120,7 @@ export async function queryPurchaseAttribution(request: unknown, overrides: { tr
         channel: source ? channelLabel(source, tag(row.referrer)) : "Unattributed",
         source, medium: matched ? tag(row.medium) : null, campaign: matched ? tag(row.campaign) : null,
         content: matched ? tag(row.content) : null,
-        firstVisitAt: matched ? iso(row.first_visit_at) : null,
+        firstVisitAt: row.link_status === "conflict" ? null : iso(row.first_visit_at),
         firstInstallAt: row.link_status === "conflict" ? null : iso(row.first_install_at) };
     }) };
   });

@@ -16,7 +16,8 @@ test('each Stripe payment keeps its own exact journey; ambiguous and missing lin
       create table public.sidestream_customer_profiles(id uuid primary key, license_namespace text, merged_into uuid);
       create table public.sidestream_customer_commerce_materializations(profile_id uuid, license_namespace text, payment_key text, first_paid_at timestamptz, gross_paid_minor bigint, source_confidence text default 'verified', identity_conflict boolean default false);
       create table public.sidestream_customer_commerce_aliases(license_namespace text, payment_key text, alias_type text, alias_id text);
-      create table public.sidestream_checkout_intents(acquisition_id uuid, stripe_checkout_session_id text);
+      create table public.sidestream_checkout_intents(acquisition_id uuid, stripe_checkout_session_id text, account_id uuid, activation_session_id uuid);
+      create table public.sidestream_customer_identity_links(license_namespace text, profile_id uuid, link_type text, link_value text);
       create table public.sidestream_acquisitions(id uuid primary key, license_namespace text, first_observed_source text, first_observed_medium text, first_observed_campaign text, first_observed_content_creative text, external_referrer_category text, first_observed_at timestamptz, integrity_state text default 'intact');
       create table public.sidestream_acquisition_stages(acquisition_id uuid, license_namespace text, stage text, occurred_at timestamptz);
       create table public.sidestream_customer_installs(profile_id uuid, license_namespace text, first_seen_at timestamptz);
@@ -38,7 +39,7 @@ test('each Stripe payment keeps its own exact journey; ambiguous and missing lin
       for (const id of acquisitions) {
         const cs=`cs_${randomUUID()}`;
         await pool.query(sql(`insert into public.sidestream_customer_commerce_aliases values('production',$1,'checkout_session',$2)`), [key,cs]);
-        await pool.query(sql(`insert into public.sidestream_checkout_intents values($1,$2)`), [id,cs]);
+        await pool.query(sql(`insert into public.sidestream_checkout_intents(acquisition_id,stripe_checkout_session_id) values($1,$2)`), [id,cs]);
       }
       return { chargeId:`ch_${name}`,paymentIntentId:`pi_${name}` };
     }
@@ -54,5 +55,40 @@ test('each Stripe payment keeps its own exact journey; ambiguous and missing lin
     assert.equal(result.rows[3].firstInstallAt,null);
     assert.equal(result.rows[7].firstVisitAt,null);
     assert.doesNotMatch(JSON.stringify(result),/ch_|pi_|payment-|profile_id/);
+    // A report selects September purchases; full-history visits remain August.
+    const early = await acquisition('older-source');
+    const account = randomUUID();
+    await pool.query(sql(`insert into public.sidestream_customer_identity_links values('production',$1,'account_identity',$2)`), [profile, account]);
+    await pool.query(sql(`insert into public.sidestream_checkout_intents(acquisition_id,account_id) values($1,$2)`), [early,account]);
+    await pool.query(sql(`update public.sidestream_acquisitions set first_observed_at='2026-08-01' where id=$1`), [early]);
+    await pool.query(sql(`insert into public.sidestream_acquisition_stages values($1,'production','landing_observed','2026-08-10'),($1,'production','landing_observed','2026-09-20')`), [early]);
+    const read = () => mod.queryPurchaseAttribution({licenseNamespace:'production',payments},{transaction:async cb=>cb({query:(q,v)=>pool.query(sql(q),v)})});
+    let history = await read();
+    assert.equal(history.rows[0].firstVisitAt,'2026-08-10T00:00:00.000Z');
+    assert.equal(history.rows[1].firstVisitAt,history.rows[0].firstVisitAt);
+    assert.equal(history.rows[2].firstVisitAt,history.rows[0].firstVisitAt); // verified owner, unknown purchase source
+    assert.equal(history.rows[1].source,'google'); // never borrow historical source
+    // Arrival order does not determine first visit, and later visits do not overwrite it.
+    await pool.query(sql(`insert into public.sidestream_acquisition_stages values($1,'production','landing_observed','2026-08-05')`), [early]);
+    history = await read();
+    assert.equal(history.rows[0].firstVisitAt,'2026-08-05T00:00:00.000Z');
+    await pool.query(sql(`insert into public.sidestream_acquisition_stages values($1,'production','landing_observed','2026-10-01')`), [early]);
+    assert.equal((await read()).rows[0].firstVisitAt,history.rows[0].firstVisitAt);
+    // Other customers, shared roots and namespaces cannot lower this customer's date.
+    const other = randomUUID(), isolated = await acquisition('other'), shared = await acquisition('shared');
+    await pool.query(sql(`insert into public.sidestream_customer_profiles values($1,'production',null)`),[other]);
+    await pool.query(sql(`insert into public.sidestream_checkout_intents(acquisition_id,stripe_checkout_session_id) values($1,'cs_isolated'),($2,'cs_shared')`),[isolated,shared]);
+    await pool.query(sql(`insert into public.sidestream_customer_identity_links values('production',$1,'stripe_checkout_session','cs_isolated'),('production',$1,'stripe_checkout_session','cs_shared'),('production',$2,'stripe_checkout_session','cs_shared')`),[other,profile]);
+    await pool.query(sql(`insert into public.sidestream_acquisition_stages values($1,'production','landing_observed','2020-01-01'),($2,'production','landing_observed','2020-01-01'),($3,'test','landing_observed','2020-01-01')`),[isolated,shared,early]);
+    assert.equal((await read()).rows[0].firstVisitAt,'2026-08-05T00:00:00.000Z');
+    // Installation can genuinely precede all observed website history.
+    await pool.query(sql(`update public.sidestream_customer_installs set first_seen_at='2026-07-27' where license_namespace='production'`));
+    history = await read();
+    assert.ok(Date.parse(history.rows[0].firstInstallAt) < Date.parse(history.rows[0].firstVisitAt));
+    await pool.query(sql(`delete from public.sidestream_acquisition_stages where license_namespace='production' and stage='landing_observed'`));
+    history = await read();
+    assert.equal(history.rows[0].firstVisitAt,null);
+    assert.equal(history.rows[0].firstInstallAt,'2026-07-27T00:00:00.000Z');
+
   } finally { await pool.query(`drop schema if exists ${schema} cascade`); await pool.end(); }
 });

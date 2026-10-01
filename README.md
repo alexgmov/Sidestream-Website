@@ -547,8 +547,22 @@ repeat purchases never borrow a profile's older acquisition. Conflicting payment
 owners or acquisition roots remain unattributed. No tracking writes or migration
 are needed; fulfillment and entitlement behavior are unchanged.
 
-The first website visit is the earliest `landing_observed` stage on that exact
-journey, not an earlier email handoff. First recorded install is the earliest
+The first website visit is the earliest retained `landing_observed` stage across
+all intact acquisition roots uniquely linked to the verified payment owner, using
+the funnel's exact account, activation and Checkout identity rules. Purchase-source
+attribution still uses that purchase's own journey. Purchase-date filters select
+rows only; no date window limits visit history. Shared roots, quarantined roots,
+other namespaces and email handoffs cannot establish first visits. A verified
+owner may have visit/install timing even without purchase-source attribution.
+The report computes MIN from retained stages, so later visits cannot overwrite it
+and valid earlier arrivals on other linked roots are picked up on the next read.
+No persisted customer-first-visit field or backfill is required. Read-only October
+1 evidence for the supplied August 31 22:19:51 UTC example found equal earliest
+and latest retained candidate landings, not a latest-visit overwrite. Its root
+has two profile owners and cannot safely establish customer-specific visit timing. Acquisition
+first-touch is immutable; same-root stages predating its first observation are
+rejected by the existing ingestion contract. Missing/unlinked or never-retained
+history cannot be recovered or inferred from install dates. First recorded install is the earliest
 `sidestream_customer_installs.first_seen_at` for the verified payment owner; it
 can follow purchase and is not a guaranteed installer-completion time. Sources
 use existing channel labels and bounded campaign tags. Missing values remain null.
@@ -1662,6 +1676,7 @@ Use the narrowest relevant check after edits:
 - 2026-10-01: Ramped the explicitly approved Windows 1.0.21 pilot to 10%, preserving the immutable installer and original observation window; hold for 24 hours and review live outcomes before another manual step.
 - 2026-09-30: Activated Alex's approved noncritical Windows 1.0.21 beta at 1%, binding the pilot to the verified immutable installer SHA. Retained the browser connection behavior and documented the Adobe signature, unsigned EXE, ARM64 audio-import evidence, remaining qualification gaps and direct-download boundary.
 - 2026-09-25: Advanced the existing Mac `1.0.21` release from 25% to 100% with Alex's explicit override of the failed 90% success and failure-stage gates and the normal staged progression. Recorded the actual 434-closed-intent observation baseline in the rollout sidecar; installer bytes and the shared controller policy remain unchanged.
+- 2026-10-01: Corrected purchase-table first visits from purchase-journey scope to full, uniquely linked customer history, preserving exact purchase-source attribution and signed chronology. Added isolated Postgres regressions for earlier visits, late arrivals, missing history and customer isolation.
 - 2026-09-25: Added the protected Channels report for tracked first visits, first positive-paying customers, exact visit-cohort conversion, complete channel aggregates and bounded UTM detail. Existing tracking and payment fulfillment are unchanged.
 
 - 2026-09-24: Corrected the Free pricing card and crawler summary from 3 downloads every day to 10 free downloads total. Updated the existing paid-landing exclusion check to reject any numbered free-download offer. Download limits and Checkout behavior are unchanged; validate with `node --test tests/paid-landing.test.mjs` and `npm run build`.
