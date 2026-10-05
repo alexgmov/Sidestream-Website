@@ -17,8 +17,10 @@ updates silently. Mac and paid installer manifests are independent.
 Save runs serially against clean synchronized `main` in
 `/srv/sidestream/website-backend`. It verifies Production source before editing,
 updates only the Windows manifest/approval sidecar and README, runs rollout and
-entitlement tests, builds both Website and Linux API, commits on `main`, and
-pushes only `main:main`. The existing Vercel Git integration publishes Production.
+entitlement tests, builds the Website and checks Linux API types, commits on
+`main`, and pushes only `main:main`. It builds the Linux runtime output only
+after the push succeeds, so a failed pre-publication check cannot leave compiled
+unpublished manifest data for a later restart. The existing Vercel Git integration publishes Production.
 The control restarts only the Linux Website API and verifies the exact public
 version/digest/percentage, canonical website commit marker, and direct Checkout
 redirect before reporting success. No Vercel CLI deployment is used.

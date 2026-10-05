@@ -32,7 +32,8 @@ manifest.rolloutPercent = change.rolloutPercent;
 pilot.approvedRolloutPercent = change.rolloutPercent;
 pilot.rolloutApprovedAt = new Date().toISOString();
 const date = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Los_Angeles", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
-const readme = original[2].replace(/Windows pilot \(owner-approved \d+%\)/, `Windows pilot (owner-approved ${change.rolloutPercent}%)`)
+const updatedReadme = original[2].replace(/Windows pilot \(owner-approved \d+%\)/, `Windows pilot (owner-approved ${change.rolloutPercent}%)`);
+const readme = updatedReadme + (updatedReadme.includes("## Dashboard rollout saves") ? "" : "\n## Dashboard rollout saves\n")
   + `\n- ${date}: Owner dashboard Save changed Windows ${change.version} update notices from ${change.expectedPercent}% to ${change.rolloutPercent}%. Installer bytes and cumulative observation start are unchanged. Public release and Production SHA verification are required before Save reports success.\n`;
 let committed = false;
 try {
@@ -42,7 +43,9 @@ try {
   await command("npm", ["run", "test:release-rollout"]);
   await command("npm", ["run", "test:entitlement"]);
   await command("npm", ["run", "build"]);
-  await command("npm", ["run", "build:hetzner-api"]);
+  // Validate before publication without replacing the live service's compiled
+  // files. Runtime output is built only from the successfully pushed commit.
+  await command("node", ["node_modules/typescript/bin/tsc", "-p", "tsconfig.server.json", "--noEmit"]);
   await command("git", ["diff", "--check"]);
   const changed = (await command("git", ["diff", "--name-only"])).split("\n").sort();
   if (changed.join() !== [...names].sort().join()) throw new Error("Unexpected changed files.");
@@ -51,6 +54,7 @@ try {
   await command("git", ["-c", "user.name=Sidestream Dashboard", "-c", `user.email=${ownerEmail}`, "commit", "-m", `Owner dashboard: Windows ${change.version} update notices ${change.rolloutPercent}%`]);
   committed = true;
   await command("git", ["push", "origin", "main:main"]);
+  await command("npm", ["run", "build:hetzner-api"]);
   console.log(await command("git", ["rev-parse", "HEAD"]));
 } catch (error) {
   // Only restore this operation's exact files before its commit. A committed
