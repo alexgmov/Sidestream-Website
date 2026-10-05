@@ -115,7 +115,7 @@ test("authenticated Upgrade owns assignment, immutable lineage, and active-owner
     source("api/_lib/account.ts"),
   ]);
   const sessionIndex = route.indexOf("const session = await getSession(request)");
-  const ownerIndex = route.indexOf("if (session.license.active)");
+  const ownerIndex = route.indexOf("if (session?.license.active)");
   const intentIndex = route.indexOf("createCheckoutIntent({");
   assert.ok(sessionIndex >= 0 && ownerIndex > sessionIndex && intentIndex > ownerIndex);
   assert.match(route, /\/api\/auth\/google\/start/);

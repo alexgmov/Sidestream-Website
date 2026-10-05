@@ -57,13 +57,15 @@ test("Checkout authenticates first and then invokes the locked Stripe worker", a
   const sessionRead = source.indexOf("const session = await getSession(request)");
   const authRedirect = source.indexOf("/api/auth/google/start", sessionRead);
   const activeOwnerRedirect = source.indexOf("/api/activation/claim", sessionRead);
+  const acquisition = source.indexOf("await resolveRequiredCheckoutAcquisition", sessionRead);
   const rateLimit = source.indexOf("await consumeRateLimit", activeOwnerRedirect);
   const intent = source.indexOf("await createCheckoutIntent", rateLimit);
   const checkout = source.indexOf("await createOrReuseCheckoutSession", intent);
 
   assert.ok(legacyHostGuard >= 0 && canonicalRedirect > legacyHostGuard);
   assert.ok(sessionRead > canonicalRedirect && authRedirect > sessionRead);
-  assert.ok(activeOwnerRedirect > authRedirect && rateLimit > activeOwnerRedirect);
+  assert.ok(activeOwnerRedirect > sessionRead && acquisition > activeOwnerRedirect);
+  assert.ok(authRedirect > acquisition && rateLimit > authRedirect);
   assert.ok(intent > rateLimit && checkout > intent);
   assert.match(source, /if \(method !== "GET"\)/);
   assert.match(source, /return redirect\(response, result\.url\)/);

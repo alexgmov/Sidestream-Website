@@ -35,6 +35,21 @@ const INTERNAL_CRONS = Object.freeze([
 
 const PROTECTED_ADMIN_ROUTES = Object.freeze([
   {
+    path: "/api/internal/channel-report",
+    source: "api/internal/channel-report.ts",
+    testSource: "tests/channel-report.test.mjs",
+  },
+  {
+    path: "/api/internal/meta-roas-report",
+    source: "api/internal/meta-roas-report.ts",
+    testSource: "tests/meta-roas-report.test.mjs",
+  },
+  {
+    path: "/api/internal/purchase-attribution",
+    source: "api/internal/purchase-attribution.ts",
+    testSource: "tests/purchase-attribution.test.mjs",
+  },
+  {
     path: "/api/internal/upgrade-pricing-report",
     source: "api/internal/upgrade-pricing-report.ts",
     testSource: "tests/upgrade-pricing-report.test.mjs",

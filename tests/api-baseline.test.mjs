@@ -534,35 +534,32 @@ test("OAuth start preserves the resolved acquisition cookie through Google sign-
   assert.match(result.response.getHeader("set-cookie").join(";"), /sidestream_oauth_state/);
 });
 
-test("OAuth start keeps acquisition-resolution failures on the generic unavailable page", async (t) => {
+test("OAuth start continues without attribution when acquisition storage fails", async (t) => {
   const harness = createApiContractHarness();
   const acquisitionError = new Error("test acquisition storage failure");
   harness.dependencies.resolveRequiredCheckoutAcquisition = async () => {
     throw acquisitionError;
   };
   const start = await loadAccountHandler("../api/auth/google/start.ts", harness);
-  const originalConsoleError = console.error;
+  const originalConsoleWarn = console.warn;
   const logged = [];
   t.after(() => {
-    console.error = originalConsoleError;
+    console.warn = originalConsoleWarn;
   });
-  console.error = (...values) => logged.push(values);
+  console.warn = (...values) => logged.push(values);
 
   const result = await invokeHandler(start, {
     method: "GET",
     url: "/api/auth/google/start?next=%2Fapi%2Fcheckout%2Fstart",
   });
 
-  assert.equal(result.response.statusCode, 503);
-  assert.equal(result.response.getHeader("content-type"), "text/html; charset=utf-8");
-  assert.equal(result.response.getHeader("set-cookie"), undefined);
-  assert.match(result.response.body, /<p>unavailable<\/p>/);
-  assert.doesNotMatch(result.response.body, /acquisition_unavailable/);
+  assert.equal(result.response.statusCode, 302);
+  assert.equal(new URL(result.response.getHeader("location")).hostname, "accounts.google.test");
+  assert.equal(harness.oauth.acquisitionCookieValue, "");
   assert.deepEqual(logged, [[
-    "[sidestream auth] acquisition resolution failed",
-    acquisitionError,
+    "[sidestream auth] acquisition resolution skipped",
   ]]);
-  assert.equal(harness.oauth.state, "");
+  assert.ok(harness.oauth.state);
 });
 
 test("OAuth start fails before setting state cookies when callback configuration is invalid", async (t) => {

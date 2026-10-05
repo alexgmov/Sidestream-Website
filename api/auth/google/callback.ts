@@ -37,17 +37,25 @@ export default async function handler(
   try {
     const profile = await exchangeGoogleCode(request, code);
     const accountId = await upsertGoogleAccount(profile);
-    const acquisition = await completeGoogleAuthenticationAcquisition({
-      oauthAcquisitionCookieValue,
-      nextPath,
-      exactVerifiedEmail: profile.email,
-      accountId,
-      response,
-    });
-    if (acquisition.possibleForwardedHandoff) {
-      console.warn("[sidestream auth] possible forwarded acquisition handoff", {
-        acquisitionId: acquisition.acquisitionId,
-      });
+    if (oauthAcquisitionCookieValue) {
+      try {
+        const acquisition = await completeGoogleAuthenticationAcquisition({
+          oauthAcquisitionCookieValue,
+          nextPath,
+          exactVerifiedEmail: profile.email,
+          accountId,
+          response,
+        });
+        if (acquisition.possibleForwardedHandoff) {
+          console.warn("[sidestream auth] possible forwarded acquisition handoff", {
+            acquisitionId: acquisition.acquisitionId,
+          });
+        }
+      } catch {
+        // State and Google identity verification above remain mandatory.
+        // Failed attribution must not strand an authenticated account owner.
+        console.warn("[sidestream auth] acquisition completion skipped");
+      }
     }
     await createWebSession(request, response, accountId);
     return redirect(response, nextPath, 303);

@@ -124,7 +124,8 @@ test("Upgrade routing preserves auth, acquisition, restore, device, mobile, and 
     "middleware.ts",
   ]);
   const checkout = sources["api/checkout/start.ts"];
-  assert.ok(checkout.indexOf("resolveRequiredCheckoutAcquisition") < checkout.indexOf("getSession(request)"));
+  assert.ok(checkout.indexOf("session?.license.active") < checkout.indexOf("await resolveRequiredCheckoutAcquisition("));
+  assert.ok(checkout.indexOf("await resolveRequiredCheckoutAcquisition(") < checkout.indexOf("createCheckoutIntent({"));
   assert.ok(checkout.indexOf("getSession(request)") < checkout.indexOf("createCheckoutIntent({"));
   assert.match(checkout, /\/api\/auth\/google\/start/);
   assert.match(checkout, /\/api\/activation\/claim/);

@@ -43,6 +43,19 @@ export default async function handler(
     }
   }
 
+  const session = await getSession(request);
+  // Existing access recovery does not create a purchase or new attribution.
+  if (session?.license.active) {
+    if (activationKey) {
+      const restoreUrl = new URL("/api/activation/claim", baseUrl);
+      restoreUrl.searchParams.set("activation", activationKey);
+      return redirect(response, restoreUrl.toString(), 302);
+    }
+    const accountUrl = new URL("/account.html", baseUrl);
+    accountUrl.searchParams.set("checkout", "already_owned");
+    return redirect(response, accountUrl.toString(), 302);
+  }
+
   let acquisition;
   try {
     acquisition = await resolveRequiredCheckoutAcquisition(request, response, {
@@ -56,7 +69,6 @@ export default async function handler(
     });
   }
 
-  const session = await getSession(request);
   if (!session) {
     const nextUrl = new URL("/api/checkout/start", baseUrl);
     if (activationKey) nextUrl.searchParams.set("activation", activationKey);
@@ -79,17 +91,6 @@ export default async function handler(
       error: "Checkout acquisition unavailable",
       code: "acquisition_unavailable",
     });
-  }
-
-  if (session.license.active) {
-    if (activationKey) {
-      const restoreUrl = new URL("/api/activation/claim", baseUrl);
-      restoreUrl.searchParams.set("activation", activationKey);
-      return redirect(response, restoreUrl.toString(), 302);
-    }
-    const accountUrl = new URL("/account.html", baseUrl);
-    accountUrl.searchParams.set("checkout", "already_owned");
-    return redirect(response, accountUrl.toString(), 302);
   }
 
   const rateLimit = await consumeRateLimit({

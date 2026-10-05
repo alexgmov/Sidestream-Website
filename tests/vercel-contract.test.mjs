@@ -39,16 +39,16 @@ test("the static Vercel contract includes every protected cron and both release 
   const result = await validateVercelContract();
   assert.deepEqual(result, {
     crons: 5,
-    adminRoutes: 8,
+    adminRoutes: 11,
     operationalRoutes: 0,
-    internalRoutes: 13,
+    internalRoutes: 16,
     releaseEndpoints: 2,
   });
 });
 
 test("every Customer 360 and experiment read is a protected on-demand admin route", async () => {
   const result = await validateVercelContract();
-  assert.equal(result.adminRoutes, 8);
+  assert.equal(result.adminRoutes, 11);
   assert.equal(result.crons, 5);
 });
 
@@ -85,7 +85,7 @@ test("the checkout contract rejects browser UI and unexpected deployable root pa
     readme: [
       "1. The user clicks Upgrade and chooses Unlimited.",
       "2. Google authentication establishes the Sidestream account session.",
-      "3. The browser opens the server-selected Stripe Checkout: $19.99/year for a new eligible global-USD account, or the preserved assigned/regional one-time offer.",
+      "3. The browser opens the server-selected Stripe Checkout: $19.99 one-time for a new eligible global-USD account, or the preserved historical assignment/regional offer.",
     ].join("\n"),
     unexpectedRootPages: [],
   };

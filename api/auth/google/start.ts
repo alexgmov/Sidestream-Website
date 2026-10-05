@@ -36,9 +36,10 @@ export default async function handler(
     acquisition = await resolveRequiredCheckoutAcquisition(request, response, {
       handoffToken: handoffs.length === 1 ? handoffs[0] : "",
     });
-  } catch (error) {
-    console.error("[sidestream auth] acquisition resolution failed", error);
-    return sendGoogleSignInError(response, 503, "unavailable");
+  } catch {
+    // Marketing continuity must not prevent authentication. Leave the saved
+    // acquisition untouched; Checkout still validates it at its own boundary.
+    console.warn("[sidestream auth] acquisition resolution skipped");
   }
 
   const state = randomToken(24);
@@ -54,7 +55,7 @@ export default async function handler(
   setOAuthCookies(request, response, {
     state,
     nextPath,
-    acquisitionCookieValue: acquisition.browserCookieValue,
+    acquisitionCookieValue: acquisition?.browserCookieValue || "",
   });
   return redirect(response, authUrl, 302);
 }

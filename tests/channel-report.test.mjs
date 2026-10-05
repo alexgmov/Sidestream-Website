@@ -38,7 +38,7 @@ test('read uses bounded read-only transaction and sanitized grouped projection',
   assert.deepEqual(calls[1][1], Object.values(input));
   assert.equal(result.totals.buyers, 0);
 });
-test('route rejects unauthenticated, browser-origin and wrong-method calls; errors do not leak internals', async () => {
+test('POST-only route rejects unauthenticated and browser-origin calls; errors do not leak internals', async () => {
   const secret = 'channel-test-secret-long-enough';
   const handler = route.createChannelReportHandler({ getAdminSecret: () => secret, queryReport: async body => mod.buildChannelReport(mod.parseChannelReportRequest(body), []) });
   async function call(headers = {}, method = 'POST', body = input, target = handler) {

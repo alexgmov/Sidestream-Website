@@ -24,7 +24,7 @@ test('projection preserves unknown dates and omits identifiers and raw data', as
   assert.match(calls[0][0], /statement_timeout/);
   assert.deepEqual(calls[1][1], ['production', JSON.stringify(input.payments)]);
 });
-test('protected route rejects browser calls and sanitizes internal failures', async () => {
+test('POST-only protected route rejects browser calls and sanitizes internal failures', async () => {
   const secret = 'test-purchase-admin-secret';
   const handler = route.createPurchaseAttributionHandler({ getAdminSecret: () => secret, queryReport: async body => ({ schemaVersion: 1, ...mod.parsePurchaseAttributionRequest(body) }) });
   async function call(headers = {}, method = 'POST', body = input, target = handler) {

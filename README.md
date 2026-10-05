@@ -2,6 +2,31 @@
 
 ## Product Overview
 
+### Google sign-in and damaged tracking records — October 5, 2026
+
+`api/auth/google/start.ts` and `api/auth/google/callback.ts` treat acquisition
+tracking as optional for authentication. A valid saved cookie whose canonical
+record is quarantined or otherwise not intact must not strand account sign-in
+or Restore Purchase. OAuth state, callback-origin configuration, Google identity
+verification, account persistence and web-session creation remain mandatory.
+Attribution failures emit a generic warning without cookie, token or identity
+values; they do not clear the saved browser attribution or repair historical data.
+
+`api/checkout/start.ts` recognizes an authenticated active Unlimited owner before
+resolving purchase attribution, sending them to the account page or the existing
+activation confirmation route. Recovery still requires valid entitlement,
+activation ownership/expiry, same-origin CSRF and explicit device-transfer
+confirmation. Signed-out/Free Checkout, intent creation and fulfillment retain
+the strict acquisition checks in `api/_lib/account.ts`; damaged records still
+block a new purchase. Valid attribution continues through OAuth normally.
+
+Focused routing: `tests/checkout-abuse.test.mjs` uses disposable local PostgreSQL
+and real acquisition/session helpers to cover a signed cookie linked to a damaged
+row, callback completion (including damage during OAuth), ordinary sign-in,
+existing owner recovery, unchanged historical rows and strict Checkout refusal.
+`tests/api-baseline.test.mjs` covers authentication and restore security failures;
+`tests/single-device-transfer-flow.test.mjs` covers transfer confirmation.
+
 ### Download friend rewards — v30 implementation (default off)
 
 [Download friend rewards](docs/download-friend-rewards.md) owns the Free-account
@@ -1397,6 +1422,23 @@ The build copies the valid undated sitemap template, then `scripts/generate-site
 
 ## Git / Publishing
 
+Authentication/API changes must update the actual Linux Website API as well as
+the Git-linked Vercel deployment. The current Linux service is
+`sidestream-website.service`, working directory `/srv/sidestream/website-backend`;
+its launcher reads the protected `/etc/sidestream/website-runtime.json` through
+systemd credentials and starts `.server-dist/server/hetzner-api.js`. Inspect its
+current source/status and retain a rollback copy before updating from the clean,
+pushed `origin/main` commit. Build with `npm run build:hetzner-api`, preserve all
+runtime settings except the release SHA, then restart only this service. Verify
+its loopback `/healthz` reports the pushed SHA and reachable database, along with
+the canonical Vercel `/version.json` and public route behavior. Never print the
+runtime credential file. A frontend build alone does not update this API.
+For this sign-in regression, compare the same valid signed acquisition cookie
+linked to an existing damaged root before/after deployment: Google start must
+redirect successfully while signed-out Checkout remains blocked and the root
+remains unchanged. Keep the diagnostic cookie private. This probe does not prove
+that the reporting customer completed Google sign-in or recovered their device.
+
 This folder is a git repository for `git@github.com:alexgmov/Sidestream-Website.git`.
 
 `origin/main` is the only canonical branch and the default source for all work. Existing `codex/*`, `orch/*`, release, detached, and worktree branches are historical/non-canonical: ignore them unless Alex explicitly names one. Agents must not search those branches for newer code, start from them, merge them, create another branch/worktree, push them, or deploy them by default. Start every task by fetching `origin/main`, checking out local `main`, fast-forwarding it with `git pull --ff-only origin main`, and reporting `git status --short --branch`. Work directly on synchronized local `main`, commit there, and push only `main:main`. If `main` cannot fast-forward or unrelated local changes are present, stop and ask Alex rather than switching branches.
@@ -1489,6 +1531,10 @@ Apply refuses fixtures, a dirty tree, any branch other than `main`, or a local S
 - Run `npm run test:renamed-launcher-attribution` after changing the local claim ledger or proof server. It proves exact acquisition-to-claim-to-binding-to-receipt/install continuity, idempotent same-attempt retries, raw-claim exclusion from the ledger, durable expiry, and fail-closed reuse/filename/release/platform/receipt/install mismatches. Then run FlowState's `npm run proof:renamed-launcher-attribution` for the signed launcher, Gatekeeper, stapling, byte-identity, handoff, isolated package-postinstall, and first-open transport boundaries. Neither harness proves a privileged system install, a Premiere-loaded panel, public delivery, or Production.
 
 Use the narrowest relevant check after edits:
+
+- For Google sign-in/acquisition isolation or owner recovery, run `node --experimental-strip-types --test tests/api-baseline.test.mjs tests/checkout-abuse.test.mjs tests/upgrade-pricing-integration.test.mjs tests/single-device-transfer-flow.test.mjs`, then `npm run verify:checkout-contract`, `npm run test:entitlement`, `npm run test:api`, `npm run typecheck`, `npm run build`, and `npm run build:hetzner-api`. The Checkout suite starts disposable loopback PostgreSQL; never target Production for its fixtures.
+- `scripts/run-api-tests.mjs` explicitly excludes standalone Postgres suites from the ordinary API aggregate, including download-friend rewards, Meta ROAS and pre-upgrade downloads. Run those separately against an isolated localhost test database when changing their features.
+- The Vercel validator inventories 5 scheduled jobs and 11 protected admin routes (including Channels, Meta ROAS and purchase attribution), with 16 internal routes total. Its fixtures follow the current one-time Checkout offer.
 
 - Open the HTML page and check that the first fold intentionally places the hero copy lower than the older `Sidestream front end 2/screenshots/01-scan.png` reference.
 - Run `npm run test:api` after any API, shared helper, migration, cron, or handler-contract change. Run `npm run test:postgres-integration` with a disposable `SIDESTREAM_TEST_POSTGRES_URL` after any database/concurrency change; it must never target production or a deployed Test database.
@@ -1671,6 +1717,8 @@ Use the narrowest relevant check after edits:
 - `llms.txt` is useful as an AI-readable summary, but it is not a substitute for crawlable HTML, normal metadata, structured data, sitemap hygiene, or external citations/backlinks.
 
 ## Recent Change Log
+
+- 2026-10-05: Made acquisition tracking optional during Google authentication and moved verified Unlimited-owner recovery ahead of new-purchase attribution checks. Preserved damaged historical records, strict Free-account Checkout/fulfillment validation and existing restore/device protections; added saved-cookie, callback, owner-recovery and Checkout regression coverage.
 
 - 2026-09-30: Alex approved an immediate Windows 1.0.21 ramp from 1% to 5% and stopped the scheduled monitor. Installer bytes, identity, browser behavior and the original cumulative observation window are preserved; FlowState now validates and displays the approved 5% step.
 

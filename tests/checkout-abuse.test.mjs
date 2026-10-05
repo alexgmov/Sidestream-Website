@@ -21,6 +21,7 @@ import {
   getCheckoutSessionIdempotencyKey,
 } from "../api/_lib/entitlement.ts";
 import {
+  ACQUISITION_COOKIE_NAME,
   verifyBrowserAcquisitionCookie,
 } from "../api/_lib/acquisition-cookie.ts";
 import {
@@ -29,6 +30,7 @@ import {
 } from "../api/_lib/acquisition-handoff.ts";
 import { loadInjectedHandler } from "./helpers/handler-loader.mjs";
 import { invokeHandler } from "./helpers/http.mjs";
+import { createApiContractHarness } from "./helpers/api-contract-harness.mjs";
 
 const repositoryRoot = fileURLToPath(new URL("..", import.meta.url));
 const migrationsDirectory = join(repositoryRoot, "db", "migrations");
@@ -264,6 +266,7 @@ test("database-backed intents serialize retries, rotate deliberately, and fulfil
     account.__setCheckoutAbuseStripeClient(stripe);
 
     const buyer = await seedFreeAccount(databasePool, "concurrent-buyer");
+    await assertDamagedAcquisitionRecovery(account, databasePool, buyer);
     const buyerSession = accountSession({
       accountId: buyer.accountId,
       email: buyer.email,
@@ -1168,6 +1171,166 @@ test("database-backed intents serialize retries, rotate deliberately, and fulfil
     await postgres.stop();
   }
 });
+
+async function assertDamagedAcquisitionRecovery(account, databasePool, buyer) {
+  const created = await account.resolveRequiredCheckoutAcquisition(
+    { headers: {} }, createHeaderResponse(),
+  );
+  const signedCookie = `${ACQUISITION_COOKIE_NAME}=${created.browserCookieValue}`;
+  await databasePool.query(
+    "update public.sidestream_acquisitions set integrity_state = 'quarantined' where id = $1",
+    [created.acquisitionId],
+  );
+  const before = await databasePool.query(
+    "select * from public.sidestream_acquisitions where id = $1", [created.acquisitionId],
+  );
+  const headers = { host: "sidestream.test", "x-forwarded-proto": "https", cookie: signedCookie };
+  const start = await loadInjectedHandler(new URL("../api/auth/google/start.ts", import.meta.url), {
+    "../../_lib/account.js": {
+      ...account,
+      getGoogleAuthUrl: (_request, { state }) => `https://accounts.google.test/auth?state=${state}`,
+    },
+  });
+  const started = await invokeHandler(start, {
+    url: "/api/auth/google/start?next=%2Faccount.html", headers,
+  });
+  assert.equal(started.response.statusCode, 302);
+  const oauthCookies = started.response.getHeader("set-cookie");
+  assert.ok(oauthCookies.some((value) => value.startsWith("sidestream_oauth_state=")));
+  assert.ok(oauthCookies.some((value) => value.startsWith("sidestream_oauth_acquisition=;")));
+  assert.ok(oauthCookies.every((value) => !value.startsWith(`${ACQUISITION_COOKIE_NAME}=`)),
+    "do not clear or replace the damaged attribution cookie");
+
+  let sessionsCreated = 0;
+  let providerFailure = false;
+  const callback = await loadInjectedHandler(new URL("../api/auth/google/callback.ts", import.meta.url), {
+    "../../_lib/account.js": {
+      ...account,
+      exchangeGoogleCode: async () => {
+        if (providerFailure) throw new Error("provider verification rejected");
+        return { email: buyer.email };
+      },
+      upsertGoogleAccount: async () => buyer.accountId,
+      createWebSession: async (...args) => {
+        sessionsCreated += 1;
+        return account.createWebSession(...args);
+      },
+    },
+  });
+  const state = new URL(started.response.getHeader("location")).searchParams.get("state");
+  const cookieHeader = oauthCookies.map((value) => value.split(";", 1)[0]).join("; ");
+  const completed = await invokeHandler(callback, {
+    url: `/api/auth/google/callback?state=${state}&code=verified-fixture`,
+    headers: { ...headers, cookie: `${signedCookie}; ${cookieHeader}` },
+  });
+  assert.equal(completed.response.statusCode, 303);
+  assert.equal(completed.response.getHeader("location"), "/account.html");
+  const sessionCookie = completed.response.getHeader("set-cookie")
+    .find((value) => value.startsWith("sidestream_session=")).split(";", 1)[0];
+  const authenticated = await account.getSession({ headers: { ...headers, cookie: sessionCookie } });
+  assert.equal(authenticated.accountId, buyer.accountId);
+
+  // Covers an in-flight OAuth round trip whose root was damaged after start,
+  // as well as a callback carrying an invalid attribution signature.
+  for (const attribution of [created.browserCookieValue, "forged-attribution"]) {
+    const completed = await invokeHandler(callback, {
+      url: "/api/auth/google/callback?state=fixture-state&code=verified-fixture",
+      headers: { ...headers, cookie: `sidestream_oauth_state=fixture-state; sidestream_oauth_acquisition=${attribution}` },
+    });
+    assert.equal(completed.response.statusCode, 303);
+  }
+  assert.equal(sessionsCreated, 3);
+
+  providerFailure = false;
+  const ordinary = await invokeHandler(start, {
+    url: "/api/auth/google/start?next=%2Faccount.html",
+    headers: { host: "sidestream.test", "x-forwarded-proto": "https" },
+  });
+  const ordinaryState = new URL(ordinary.response.getHeader("location")).searchParams.get("state");
+  const ordinaryCookie = ordinary.response.getHeader("set-cookie").map(value => value.split(";", 1)[0]).join("; ");
+  const ordinaryCompleted = await invokeHandler(callback, {
+    url: `/api/auth/google/callback?state=${ordinaryState}&code=verified-fixture`,
+    headers: { ...headers, cookie: ordinaryCookie },
+  });
+  assert.equal(ordinaryCompleted.response.statusCode, 303);
+  assert.equal(sessionsCreated, 4);
+  const rejectedState = await invokeHandler(callback, {
+    url: "/api/auth/google/callback?state=wrong&code=unused", headers,
+  });
+  assert.equal(rejectedState.response.statusCode, 400);
+  providerFailure = true;
+  const rejectedGoogle = await invokeHandler(callback, {
+    url: "/api/auth/google/callback?state=fixture-state&code=invalid",
+    headers: { ...headers, cookie: "sidestream_oauth_state=fixture-state" },
+  });
+  assert.equal(rejectedGoogle.response.statusCode, 502);
+  assert.equal(sessionsCreated, 4);
+
+  let session = null;
+  const checkout = await loadInjectedHandler(new URL("../api/checkout/start.ts", import.meta.url), {
+    "../_lib/account.js": {
+      ...account,
+      getSession: async () => session,
+      createCheckoutIntent: async () => assert.fail("damaged attribution must never create Checkout"),
+      createOrReuseCheckoutSession: async () => assert.fail("no Stripe call is allowed"),
+    },
+    "../_lib/rate-limit.js": {
+      applyRateLimitHeaders,
+      consumeRateLimit: async () => assert.fail("no purchase may start"),
+      sendRateLimitExceeded,
+    },
+  });
+  for (const active of [null, false, true]) {
+    session = active === null ? null : accountSession({ accountId: buyer.accountId, active });
+    for (const activation of ["", "?activation=existing-owner-restore"]) {
+      const result = await invokeHandler(checkout, { url: `/api/checkout/start${activation}`, headers });
+      assert.equal(result.response.statusCode, active ? 302 : 503);
+      if (active) {
+        const destination = new URL(result.response.getHeader("location"));
+        assert.equal(destination.pathname, activation ? "/api/activation/claim" : "/account.html");
+        if (activation) assert.equal(destination.searchParams.get("activation"), "existing-owner-restore");
+      } else assert.equal(result.response.json.code, "acquisition_unavailable");
+    }
+  }
+  await assert.rejects(account.createCheckoutIntent({
+    acquisitionId: created.acquisitionId,
+    session: accountSession({ accountId: buyer.accountId, active: false }),
+  }), { code: "acquisition_integrity_invalid" });
+  const after = await databasePool.query(
+    "select * from public.sidestream_acquisitions where id = $1", [created.acquisitionId],
+  );
+  assert.deepEqual(after.rows, before.rows, "authentication must not repair or rewrite attribution");
+  const stages = await databasePool.query(
+    "select count(*)::integer as count from public.sidestream_acquisition_stages where acquisition_id = $1 and stage = 'authentication_completed'",
+    [created.acquisitionId],
+  );
+  assert.equal(stages.rows[0].count, 0);
+
+  const harness = createApiContractHarness();
+  const activation = harness.store.seedActivation({ activationKey: "damaged-cookie-restore", deviceId: "owner-device" });
+  const claim = await loadInjectedHandler(new URL("../api/activation/claim.ts", import.meta.url), {
+    "../_lib/account.js": harness.dependencies,
+    "../_lib/paid-acquisition.js": {
+      PAID_ACQUISITION_SOURCE: "paid-acquisition-mc-v1",
+      associatePaidAcquisitionActivationWithOutcome: async () => ({ outcome: "installation_claimed_recorded" }),
+    },
+  });
+  const owner = harness.activeSession("existing-owner");
+  const confirmation = await invokeHandler(claim, {
+    url: "/api/activation/claim?activation=damaged-cookie-restore", headers, session: owner,
+  });
+  assert.equal(confirmation.response.statusCode, 200);
+  assert.equal(activation.accountId, null, "GET must not bind or transfer a device");
+  const csrf = confirmation.response.body.match(/name="csrf" value="([^"]+)"/)[1];
+  const form = { method: "POST", url: "/api/activation/claim", session: owner,
+    headers: { ...headers, origin: BASE_URL, "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ activation: "damaged-cookie-restore", csrf, intent: "restore" }).toString() };
+  const wrongOwner = await invokeHandler(claim, { ...form, session: harness.activeSession("other-owner") });
+  assert.equal(wrongOwner.response.statusCode, 403);
+  const restored = await invokeHandler(claim, form);
+  assert.equal(restored.response.statusCode, 303);
+  assert.equal(activation.accountId, owner.accountId);
+}
 
 class RecordingStripe {
   #customersByKey = new Map();
