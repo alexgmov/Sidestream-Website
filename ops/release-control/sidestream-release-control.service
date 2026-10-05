@@ -1,0 +1,21 @@
+[Unit]
+Description=Sidestream owner-only Windows rollout control
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/srv/sidestream/website-backend
+ExecStart=/usr/bin/node /usr/local/lib/sidestream-release-control/server.mjs
+Restart=on-failure
+RestartSec=3
+UMask=0077
+PrivateTmp=true
+PrivateDevices=true
+ProtectHome=read-only
+ProtectSystem=full
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target
