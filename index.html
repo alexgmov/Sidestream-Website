@@ -583,6 +583,7 @@
     cursor: wait;
     opacity: 0.6;
   }
+  .mobile-download-handoff-copy-link[hidden] { display: none; }
   .mobile-download-handoff-status {
     min-height: 19px;
     margin: 10px 0 0;
@@ -1303,7 +1304,12 @@
                 <input class="mobile-download-handoff-input" id="mobile-download-email" name="email" type="email" inputmode="email" autocomplete="email" enterkeyhint="send" placeholder="you@email.com" required>
                 <button class="btn btn-primary mobile-download-handoff-submit" id="mobile-download-submit" type="submit">Email it to me</button>
               </div>
-              <button class="btn btn-secondary mobile-download-handoff-copy-link" id="mobile-download-copy-link" type="button">Send it directly to your computer</button>
+              <button class="btn btn-secondary mobile-download-handoff-copy-link" id="mobile-download-copy-link" type="button" aria-controls="mobile-download-link-fields" aria-expanded="false">Send it directly to your computer</button>
+              <div class="mobile-download-handoff-fields" id="mobile-download-link-fields" hidden>
+                <label class="mobile-download-handoff-label" for="mobile-download-link">Your computer download link</label>
+                <input class="mobile-download-handoff-input" id="mobile-download-link" type="text" readonly inputmode="none" autocomplete="off" spellcheck="false">
+                <button class="btn btn-secondary mobile-download-handoff-copy-link" id="mobile-download-copy-ready-link" type="button">Copy link</button>
+              </div>
             </div>
             <p class="mobile-download-handoff-status" id="mobile-download-status" aria-live="polite"></p>
           </form>
@@ -1819,6 +1825,9 @@
     const mobileDownloadInput = document.getElementById("mobile-download-email");
     const mobileDownloadSubmit = document.getElementById("mobile-download-submit");
     const mobileDownloadCopyLink = document.getElementById("mobile-download-copy-link");
+    const mobileDownloadLinkFields = document.getElementById("mobile-download-link-fields");
+    const mobileDownloadLink = document.getElementById("mobile-download-link");
+    const mobileDownloadCopyReadyLink = document.getElementById("mobile-download-copy-ready-link");
     const mobileDownloadStatus = document.getElementById("mobile-download-status");
     const mobileDownloadMedia = window.matchMedia("(max-width: 900px)");
     const downloadEmailStorageKey = "sidestream.download.email";
@@ -2145,45 +2154,96 @@
           window.clearTimeout(timeout);
         }
       });
-      if (mobileDownloadCopyLink) {
-        mobileDownloadCopyLink.addEventListener("click", async () => {
+      if (mobileDownloadCopyLink && mobileDownloadLinkFields && mobileDownloadLink && mobileDownloadCopyReadyLink) {
+        let computerLink = "";
+        const canShareComputerLink = typeof navigator.share === "function";
+        const readyLabel = canShareComputerLink ? "Share link" : "Copy link";
+        const readyMessage = "Link ready. Share or copy it, then open it on your computer.";
+
+        function clearComputerLinkStatus() {
           mobileDownloadStatus.classList.remove("is-error", "is-success");
           mobileDownloadStatus.textContent = "";
+        }
+
+        async function copyComputerLink(button) {
+          if (!computerLink || button.disabled) return;
+          clearComputerLinkStatus();
+          button.disabled = true;
+          try {
+            // Called directly by a tap, before any network request or other await.
+            await navigator.clipboard.writeText(computerLink);
+            button.textContent = "Secure link copied";
+          } catch {
+            mobileDownloadLink.focus();
+            mobileDownloadLink.select();
+            mobileDownloadLink.setSelectionRange(0, computerLink.length);
+            mobileDownloadStatus.textContent = "Touch and hold the link to copy it, then open it on your computer.";
+            button.textContent = "Copy link";
+          } finally {
+            button.disabled = false;
+          }
+        }
+
+        mobileDownloadCopyReadyLink.addEventListener("click", () => copyComputerLink(mobileDownloadCopyReadyLink));
+        mobileDownloadCopyLink.addEventListener("click", async () => {
+          if (mobileDownloadCopyLink.disabled) return;
+          clearComputerLinkStatus();
+          if (computerLink) {
+            if (!canShareComputerLink) return copyComputerLink(mobileDownloadCopyLink);
+            mobileDownloadCopyLink.disabled = true;
+            try {
+              // The link is already prepared, so sharing retains this tap's activation.
+              await navigator.share({
+                title: "Download Sidestream",
+                text: "Open this secure Sidestream download link on your computer.",
+                url: computerLink
+              });
+              mobileDownloadCopyLink.textContent = "Link shared";
+            } catch (error) {
+              mobileDownloadCopyLink.textContent = readyLabel;
+              mobileDownloadStatus.textContent = error && error.name === "AbortError"
+                ? readyMessage
+                : "Sharing isn't available in this browser. Copy the link below or enter your email.";
+            } finally {
+              mobileDownloadCopyLink.disabled = false;
+            }
+            return;
+          }
+
           mobileDownloadCopyLink.disabled = true;
-          mobileDownloadCopyLink.textContent = "Opening share options...";
+          mobileDownloadCopyLink.textContent = "Preparing your link...";
+          const controller = new AbortController();
+          const timeout = window.setTimeout(() => controller.abort(), 10_000);
           try {
             const response = await fetch("/api/send-download-links", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ handoffOnly: true })
+              body: JSON.stringify({ handoffOnly: true }),
+              signal: controller.signal
             });
             if (!response.ok) throw new Error("Computer handoff returned " + response.status);
             const result = await response.json();
             if (!result || typeof result.handoffUrl !== "string") {
               throw new Error("Computer handoff response was invalid");
             }
-            if (navigator.share) {
-              await navigator.share({
-                title: "Download Sidestream",
-                text: "Open this secure Sidestream download link on your computer.",
-                url: result.handoffUrl
-              });
-              mobileDownloadCopyLink.textContent = "Sent to your computer";
-            } else {
-              await navigator.clipboard.writeText(result.handoffUrl);
-              mobileDownloadCopyLink.textContent = "Secure link copied";
+            const url = new URL(result.handoffUrl);
+            if (url.origin !== "https://sidestream.tv" || url.pathname !== "/api/send-download-links" ||
+                url.searchParams.size !== 1 || !url.searchParams.get("handoff") || url.hash || url.username || url.password) {
+              throw new Error("Computer handoff URL was invalid");
             }
-          } catch (error) {
-            if (error && error.name === "AbortError") {
-              mobileDownloadStatus.textContent = "";
-              mobileDownloadCopyLink.textContent = "Send it directly to your computer";
-            } else {
-              console.warn("Sidestream computer handoff failed", error);
-              mobileDownloadStatus.textContent = "Could not create the computer link. Try again.";
-              mobileDownloadStatus.classList.add("is-error");
-              mobileDownloadCopyLink.textContent = "Send it directly to your computer";
-            }
+            computerLink = result.handoffUrl;
+            mobileDownloadLink.value = computerLink;
+            mobileDownloadLinkFields.hidden = false;
+            mobileDownloadCopyReadyLink.hidden = !canShareComputerLink;
+            mobileDownloadCopyLink.setAttribute("aria-expanded", "true");
+            mobileDownloadCopyLink.textContent = readyLabel;
+            mobileDownloadStatus.textContent = readyMessage;
+          } catch {
+            mobileDownloadStatus.textContent = "Could not create the computer link. Try again or enter your email.";
+            mobileDownloadStatus.classList.add("is-error");
+            mobileDownloadCopyLink.textContent = "Send it directly to your computer";
           } finally {
+            window.clearTimeout(timeout);
             mobileDownloadCopyLink.disabled = false;
           }
         });
