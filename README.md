@@ -1720,7 +1720,7 @@ Use the narrowest relevant check after edits:
 
 ## Recent Change Log
 
-- 2026-10-12: Added the production Mac update authority, separate production trust and hosted signed continuation for later paid updates. Deployment starts held; original acquisition receipts and account entitlement rules are preserved. See `docs/production-updater.md` for service operations and separate installer qualification gates.
+- 2026-10-12: Added the production Mac update authority, separate production trust and hosted signed continuation for later paid updates. Deployment starts held; original acquisition receipts and account entitlement rules are preserved. See `docs/production-updater.md` for service operations, systemd credential ACL handling and separate installer qualification gates.
 
 - 2026-10-09: Repaired the mobile computer-link flow for restricted in-app browsers. Link creation now precedes a fresh Share/Copy tap; the prepared opaque link stays selectable when either browser API is missing or blocked. Added bounded creation timeout, distinct creation/share feedback and controller regression coverage. The server handoff, attribution, email delivery and desktop installer routes are unchanged.
 

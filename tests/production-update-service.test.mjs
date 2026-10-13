@@ -141,6 +141,8 @@ test('startup rejects altered, unsigned, private-scope, symlinked artifacts and 
   for(const [name,key]of [['policy',f.policy.privateKey],['continuation',f.continuation.privateKey]])fs.writeFileSync(path.join(keysDir,name+'.pem'),key.export({type:'pkcs8',format:'pem'}),{mode:0o600});
   fs.writeFileSync(path.join(keysDir,'ticket.key'),f.keys.ticket,{mode:0o600});
   assert.equal(loadKeys(keysDir,f.trust).ticket.length,32);
+  fs.chmodSync(path.join(keysDir,'policy.pem'),0o440);assert.throws(()=>loadKeys(keysDir,f.trust));
+  fs.chmodSync(path.join(keysDir,'policy.pem'),0o600);
   fs.writeFileSync(path.join(keysDir,'release.pem'),'forbidden',{mode:0o600});assert.throws(()=>loadKeys(keysDir,f.trust));
   fs.renameSync(item.payload,item.payload+'.real');fs.symlinkSync(item.payload+'.real',item.payload);assert.throws(()=>verifyCatalog(f.unchecked,f.keys.release,f.artifacts));
   fs.unlinkSync(item.payload);fs.renameSync(item.payload+'.real',item.payload);fs.appendFileSync(item.payload,'changed');assert.throws(()=>verifyCatalog(f.unchecked,f.keys.release,f.artifacts));

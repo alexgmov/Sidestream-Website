@@ -84,7 +84,19 @@ export function loadTrust(value) {
 }
 export function loadKeys(directory, trust) {
   if (fs.existsSync(path.join(directory,'release.pem'))) throw Error('Offline release private key must not be on the service');
-  const secret = name => read(path.join(directory,name), {privateFile:true,max:8192});
+  const secret = name => {
+    const file=path.join(directory,name);
+    // systemd's credential ACL grants this service read access through a 0440
+    // mask on root-owned files. Permit that only in this unit's protected mount;
+    // ordinary disk key files still require private 0600/0400 permissions.
+    if (process.platform !== 'linux' || directory !== '/run/credentials/sidestream-updater.service' ||
+        directory !== process.env.CREDENTIALS_DIRECTORY) return read(file,{privateFile:true,max:8192});
+    const {fd,stat}=regular(file,{rootOwned:true,max:8192});
+    try {
+      if (![0o400,0o440].includes(stat.mode & 0o777)) throw Error('Read-only systemd credential required');
+      return fs.readFileSync(fd);
+    } finally {fs.closeSync(fd);}
+  };
   const policy = crypto.createPrivateKey(secret('policy.pem'));
   const continuation = crypto.createPrivateKey(secret('continuation.pem'));
   const release = trust.release;

@@ -107,6 +107,14 @@ the service. Never copy `release.pem` to that directory. Public `trust.json`,
 Key rotation requires an intentionally qualified client trust update; replacing
 keys or state as a way to recover a failed signature is not supported.
 
+systemd credentials may appear as root-owned `0440` files because of their
+service-specific read ACL. The service accepts that read-only mode only beneath
+its exact `/run/credentials/sidestream-updater.service` mount, matching
+`CREDENTIALS_DIRECTORY`, with protected root-owned parents. Ordinary key files
+remain private `0600`/`0400`; making an on-disk key group-readable fails startup.
+Keep updater code/trust/artifacts under root-owned `/srv/sidestream-updates`,
+not inside the account API user's writable `/srv/sidestream` directory.
+
 Deploy only a clean, pushed Website `origin/main` commit, after
 `npm run verify:production-source`, `npm run test:entitlement`, `npm run build`
 and `npm run test:production-updater`. Transfer that commit's scripts and ops
