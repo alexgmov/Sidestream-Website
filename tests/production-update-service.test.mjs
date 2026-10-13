@@ -156,6 +156,17 @@ test('real production signing CLI uses production scope and keeps output private
     '--control',file('hold.json',hold),'--snapshot',file('snapshot.json',f.snapshot()),'--out',out],{encoding:'utf8'});
   assert.equal(result.status,0,result.stderr);assert.equal(fs.statSync(out).mode&0o077,0);
   const request=verified(json(out),[f.operator.publicKey]);assert.equal(request.scope,scope);
+  const link=path.join(f.root,'operator-cli.mjs'),linkedOutput=path.join(f.root,'signed-via-link.json');
+  fs.symlinkSync(path.resolve('scripts/production-update-operator.mjs'),link);
+  const linked=spawnSync(process.execPath,[link,'--key',path.join(f.root,'operator.pem'),'--control',path.join(f.root,'hold.json'),
+    '--snapshot',path.join(f.root,'snapshot.json'),'--out',linkedOutput],{encoding:'utf8'});
+  assert.equal(linked.status,0,linked.stderr);assert.equal(verified(json(linkedOutput),[f.operator.publicKey]).scope,scope);
+  const serviceLink=path.join(f.root,'service-cli.mjs');fs.symlinkSync(path.resolve('scripts/production-update-service.mjs'),serviceLink);
+  const service=spawnSync(process.execPath,[serviceLink],{encoding:'utf8'});
+  assert.notEqual(service.status,0);assert.match(service.stderr,/Missing --state|unprivileged service user required/);
+  const imported=spawnSync(process.execPath,['--input-type=module','-'],{encoding:'utf8',
+    input:'await import('+JSON.stringify('file://'+path.resolve('scripts/production-update-service.mjs'))+');'});
+  assert.equal(imported.status,0,imported.stderr);
 });
 
 test('Linux administrative flock excludes concurrent writers and recovers automatically after SIGKILL', {skip:process.platform!=='linux'}, async t=>{

@@ -12,6 +12,12 @@ or require database credentials. Initial deployment is held with an empty
 catalog. Deployment of this service does not publish a new installer or change
 `/api/download`, `/api/releases/latest`, paid-acquisition fulfillment or Windows.
 
+Live HTTPS health, signature verification against provisioned production pins,
+revisions across a systemd restart, rejected forged/unapproved requests and the
+64 KiB body limit passed on October 12, 2026. The linked Website deployment and
+Checkout redirect were also verified. This is held-service evidence, not an
+installed Production updater or customer release qualification.
+
 ## Source map and routes
 
 | Source | Responsibility |
@@ -174,7 +180,8 @@ To apply a reviewed control:
    regular file. Within five minutes, run `--apply --request <request.json>
    --operators /srv/sidestream-updates/operators.json` as `sidestream-updater`,
    with the same state/trust/catalog/artifact arguments. No private service keys
-   are needed for administrative CLI modes.
+   are needed for administrative CLI modes. Both production CLIs resolve their
+   entrypoint through the deployed `current` symlink before dispatching.
 4. Read back snapshot and signed policy. A hold sets both download/activate to
    null (and companion choices null); revocation additionally denies artifact
    access. Previously issued payload tickets may remain valid for 60 seconds

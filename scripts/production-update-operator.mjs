@@ -15,4 +15,4 @@ export function main(args) {
   fs.writeFileSync(get('--out'),JSON.stringify(request),{flag:'wx',mode:0o600});
   console.log('Signed production control request, valid for five minutes. Apply through authenticated SSH.');
 }
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) main(process.argv.slice(2));
+if (process.argv[1] && fs.existsSync(process.argv[1]) && fs.realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) main(process.argv.slice(2));
