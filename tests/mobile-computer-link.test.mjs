@@ -28,13 +28,15 @@ function element() {
   };
 }
 
-function fixture({ share, copy, fetchImpl } = {}) {
+function fixture({ share, copy, fetchImpl, mobile = true } = {}) {
   const main = element();
   const fields = element();
   fields.hidden = true;
   const input = element();
   const copyButton = element();
   const status = element();
+  const media = element();
+  media.matches = mobile;
   const requests = [];
   const shares = [];
   const copies = [];
@@ -58,6 +60,7 @@ function fixture({ share, copy, fetchImpl } = {}) {
     mobileDownloadLink: input,
     mobileDownloadCopyReadyLink: copyButton,
     mobileDownloadStatus: status,
+    mobileDownloadMedia: media,
     navigator, URL, AbortController,
     window: {
       setTimeout(callback, delay) { assert.equal(delay, 10_000); timers.set(++timerId, callback); return timerId; },
@@ -73,6 +76,11 @@ function fixture({ share, copy, fetchImpl } = {}) {
   });
   return {
     main, fields, input, copyButton, status, requests, shares, copies, timers,
+    ready: () => new Promise(setImmediate),
+    resize(matches) {
+      media.matches = matches;
+      media.listeners.change();
+    },
     click(button = main) {
       userGesture = true;
       try { return button.listeners.click(); }
@@ -81,17 +89,22 @@ function fixture({ share, copy, fetchImpl } = {}) {
   };
 }
 
-test("prepares once, then shares the same opaque link on a fresh tap", async () => {
+test("prepares in the background, then the first tap opens native sharing without a link box", async () => {
   const f = fixture();
-  await f.click();
-  assert.equal(f.fields.hidden, false);
+  assert.equal(f.requests.length, 1, "Prepare without a preliminary tap");
+  assert.equal(f.main.disabled, true);
+  await f.ready();
+  assert.equal(f.fields.hidden, true);
   assert.equal(f.input.value, handoffUrl);
-  assert.equal(f.main.attributes["aria-expanded"], "true");
+  assert.notEqual(f.main.attributes["aria-expanded"], "true");
+  assert.equal(f.main.attributes["aria-busy"], "false");
   assert.equal(f.main.textContent, "Share link");
+  assert.equal(f.status.textContent, "");
   assert.equal(f.shares.length, 0);
   assert.equal(f.copies.length, 0);
   assert.equal(f.timers.size, 0);
   await f.click();
+  assert.equal(f.fields.hidden, true);
   assert.equal(f.shares[0].url, handoffUrl);
   assert.equal(f.requests.length, 1);
   assert.equal(f.main.textContent, "Link shared");
@@ -101,7 +114,7 @@ test("prepares once, then shares the same opaque link on a fresh tap", async () 
 
 test("a blocked Instagram-style share keeps the link available for a separate copy tap", async () => {
   const f = fixture({ share: () => Promise.reject({ name: "NotAllowedError" }) });
-  await f.click();
+  await f.ready();
   await f.click();
   assert.match(f.status.textContent, /Sharing isn't available/);
   assert.equal(f.status.classes.has("is-error"), false);
@@ -117,9 +130,11 @@ test("a blocked Instagram-style share keeps the link available for a separate co
 test("cancelling sharing stays retryable without claiming a creation failure", async () => {
   let cancelled = true;
   const f = fixture({ share: () => cancelled ? Promise.reject({ name: "AbortError" }) : Promise.resolve() });
+  await f.ready();
   await f.click();
-  await f.click();
-  assert.match(f.status.textContent, /Link ready/);
+  assert.equal(f.status.textContent, "");
+  assert.equal(f.fields.hidden, true);
+  assert.equal(f.copies.length, 0);
   assert.equal(f.main.textContent, "Share link");
   assert.equal(f.status.classes.has("is-error"), false);
   cancelled = false;
@@ -128,23 +143,25 @@ test("cancelling sharing stays retryable without claiming a creation failure", a
   assert.equal(f.requests.length, 1);
 });
 
-test("without native sharing, copying runs on a fresh tap without duplicate buttons", async () => {
+test("without native sharing, the first tap copies without revealing a link box", async () => {
   const f = fixture({ share: false });
-  await f.click();
+  await f.ready();
   assert.equal(f.main.textContent, "Copy link");
-  assert.equal(f.copyButton.hidden, true);
+  assert.equal(f.fields.hidden, true);
   assert.equal(f.copies.length, 0);
   await f.click();
   assert.deepEqual(f.copies, [handoffUrl]);
   assert.equal(f.main.textContent, "Secure link copied");
+  assert.equal(f.fields.hidden, true);
 });
 
 for (const copy of [false, () => Promise.reject({ name: "NotAllowedError" })]) {
   test(`clipboard ${copy === false ? "missing" : "blocked"} selects the real link for manual copying`, async () => {
     const f = fixture({ share: false, copy });
-    await f.click();
+    await f.ready();
     await f.click();
     assert.equal(f.fields.hidden, false);
+    assert.equal(f.copyButton.hidden, true);
     assert.equal(f.input.value, handoffUrl);
     assert.equal(f.input.focused, true);
     assert.equal(f.input.selected, true);
@@ -161,7 +178,7 @@ test("a failed creation can retry without exposing a bogus link", async () => {
   const f = fixture({ fetchImpl: async () => fails
     ? { ok: false, status: 503 }
     : { ok: true, json: async () => ({ handoffUrl }) } });
-  await f.click();
+  await f.ready();
   assert.equal(f.fields.hidden, true);
   assert.equal(f.status.classes.has("is-error"), true);
   assert.match(f.status.textContent, /Could not create/);
@@ -170,18 +187,21 @@ test("a failed creation can retry without exposing a bogus link", async () => {
   await f.click();
   assert.equal(f.status.classes.has("is-error"), false);
   assert.equal(f.input.value, handoffUrl);
+  assert.equal(f.fields.hidden, true);
+  assert.equal(f.shares.length, 0, "A retry request must not share after awaiting the network");
+  await f.click();
+  assert.equal(f.shares[0].url, handoffUrl);
 });
 
 test("a stalled creation times out, releases the button, and does not act like share cancellation", async () => {
   const f = fixture({ fetchImpl: (_url, { signal }) => new Promise((_resolve, reject) => {
     signal.addEventListener("abort", () => reject({ name: "AbortError" }));
   }) });
-  const pending = f.click();
   assert.equal(f.main.disabled, true);
   await f.click();
   assert.equal(f.requests.length, 1, "Ignore duplicate taps while preparing");
   [...f.timers.values()][0]();
-  await pending;
+  await f.ready();
   assert.equal(f.main.disabled, false);
   assert.equal(f.fields.hidden, true);
   assert.match(f.status.textContent, /Could not create/);
@@ -192,11 +212,42 @@ test("malformed or non-handoff responses never reach sharing or the clipboard", 
   for (const value of [undefined, "", "javascript:alert(1)", "https://example.com/?handoff=x",
     "https://sidestream.tv/api/download", `${handoffUrl}&email=person@example.com`, `${handoffUrl}&handoff=duplicate`]) {
     const f = fixture({ fetchImpl: async () => ({ ok: true, json: async () => ({ handoffUrl: value }) }) });
-    await f.click();
+    await f.ready();
     assert.equal(f.fields.hidden, true);
     assert.equal(f.input.value, "");
     assert.equal(f.status.classes.has("is-error"), true);
     assert.equal(f.main.disabled, false);
     assert.equal(f.shares.length + f.copies.length, 0);
   }
+});
+
+test("a slow background request never shares automatically or opens a link box", async () => {
+  let resolveResponse;
+  const f = fixture({ fetchImpl: () => new Promise((resolve) => { resolveResponse = resolve; }) });
+  assert.equal(f.main.disabled, true);
+  await f.click();
+  f.resize(true);
+  assert.equal(f.requests.length, 1);
+  assert.equal(f.shares.length, 0);
+  resolveResponse({ ok: true, json: async () => ({ handoffUrl }) });
+  await f.ready();
+  assert.equal(f.main.disabled, false);
+  assert.equal(f.fields.hidden, true);
+  assert.equal(f.shares.length, 0);
+  await f.click();
+  assert.equal(f.shares[0].url, handoffUrl);
+});
+
+test("desktop loads do not prepare a handoff, entering mobile width prepares only once", async () => {
+  const f = fixture({ mobile: false });
+  assert.equal(f.requests.length, 0);
+  f.resize(true);
+  await f.ready();
+  assert.equal(f.requests.length, 1);
+  f.resize(false);
+  f.resize(true);
+  assert.equal(f.requests.length, 1);
+  await f.click();
+  assert.equal(f.shares[0].url, handoffUrl);
+  assert.equal(f.fields.hidden, true);
 });

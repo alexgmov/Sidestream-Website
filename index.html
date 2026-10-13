@@ -1305,7 +1305,7 @@
                 <input class="mobile-download-handoff-input" id="mobile-download-email" name="email" type="email" inputmode="email" autocomplete="email" enterkeyhint="send" placeholder="you@email.com" required>
                 <button class="btn btn-primary mobile-download-handoff-submit" id="mobile-download-submit" type="submit">Email it to me</button>
               </div>
-              <button class="btn btn-secondary mobile-download-handoff-copy-link" id="mobile-download-copy-link" type="button" aria-controls="mobile-download-link-fields" aria-expanded="false">Send it directly to your computer</button>
+              <button class="btn btn-secondary mobile-download-handoff-copy-link" id="mobile-download-copy-link" type="button" aria-controls="mobile-download-link-fields" aria-expanded="false" disabled>Share link</button>
               <div class="mobile-download-handoff-fields" id="mobile-download-link-fields" hidden>
                 <label class="mobile-download-handoff-label" for="mobile-download-link">Your computer download link</label>
                 <input class="mobile-download-handoff-input" id="mobile-download-link" type="text" readonly inputmode="none" autocomplete="off" spellcheck="false">
@@ -2157,13 +2157,19 @@
       });
       if (mobileDownloadCopyLink && mobileDownloadLinkFields && mobileDownloadLink && mobileDownloadCopyReadyLink) {
         let computerLink = "";
+        let preparingComputerLink = false;
         const canShareComputerLink = typeof navigator.share === "function";
         const readyLabel = canShareComputerLink ? "Share link" : "Copy link";
-        const readyMessage = "Link ready. Share or copy it, then open it on your computer.";
 
         function clearComputerLinkStatus() {
           mobileDownloadStatus.classList.remove("is-error", "is-success");
           mobileDownloadStatus.textContent = "";
+        }
+
+        function showComputerLinkFallback(show) {
+          mobileDownloadLinkFields.hidden = !show;
+          mobileDownloadCopyReadyLink.hidden = !canShareComputerLink;
+          mobileDownloadCopyLink.setAttribute("aria-expanded", String(show));
         }
 
         async function copyComputerLink(button) {
@@ -2175,6 +2181,7 @@
             await navigator.clipboard.writeText(computerLink);
             button.textContent = "Secure link copied";
           } catch {
+            showComputerLinkFallback(true);
             mobileDownloadLink.focus();
             mobileDownloadLink.select();
             mobileDownloadLink.setSelectionRange(0, computerLink.length);
@@ -2191,6 +2198,7 @@
           clearComputerLinkStatus();
           if (computerLink) {
             if (!canShareComputerLink) return copyComputerLink(mobileDownloadCopyLink);
+            showComputerLinkFallback(false);
             mobileDownloadCopyLink.disabled = true;
             try {
               // The link is already prepared, so sharing retains this tap's activation.
@@ -2202,16 +2210,24 @@
               mobileDownloadCopyLink.textContent = "Link shared";
             } catch (error) {
               mobileDownloadCopyLink.textContent = readyLabel;
-              mobileDownloadStatus.textContent = error && error.name === "AbortError"
-                ? readyMessage
-                : "Sharing isn't available in this browser. Copy the link below or enter your email.";
+              if (!error || error.name !== "AbortError") {
+                showComputerLinkFallback(true);
+                mobileDownloadStatus.textContent = "Sharing isn't available in this browser. Copy the link below or enter your email.";
+              }
             } finally {
               mobileDownloadCopyLink.disabled = false;
             }
             return;
           }
 
+          return prepareComputerLink();
+        });
+
+        async function prepareComputerLink() {
+          if (computerLink || preparingComputerLink) return;
+          preparingComputerLink = true;
           mobileDownloadCopyLink.disabled = true;
+          mobileDownloadCopyLink.setAttribute("aria-busy", "true");
           mobileDownloadCopyLink.textContent = "Preparing your link...";
           const controller = new AbortController();
           const timeout = window.setTimeout(() => controller.abort(), 10_000);
@@ -2234,19 +2250,24 @@
             }
             computerLink = result.handoffUrl;
             mobileDownloadLink.value = computerLink;
-            mobileDownloadLinkFields.hidden = false;
-            mobileDownloadCopyReadyLink.hidden = !canShareComputerLink;
-            mobileDownloadCopyLink.setAttribute("aria-expanded", "true");
             mobileDownloadCopyLink.textContent = readyLabel;
-            mobileDownloadStatus.textContent = readyMessage;
           } catch {
             mobileDownloadStatus.textContent = "Could not create the computer link. Try again or enter your email.";
             mobileDownloadStatus.classList.add("is-error");
-            mobileDownloadCopyLink.textContent = "Send it directly to your computer";
+            mobileDownloadCopyLink.textContent = "Try again";
           } finally {
             window.clearTimeout(timeout);
+            preparingComputerLink = false;
+            mobileDownloadCopyLink.setAttribute("aria-busy", "false");
             mobileDownloadCopyLink.disabled = false;
           }
+        }
+
+        // Prepare before the tap: iOS sharing requires fresh user activation.
+        // Keep the raw link hidden unless native sharing or copying fails.
+        if (mobileDownloadMedia.matches) prepareComputerLink();
+        mobileDownloadMedia.addEventListener("change", () => {
+          if (mobileDownloadMedia.matches) prepareComputerLink();
         });
       }
     }
