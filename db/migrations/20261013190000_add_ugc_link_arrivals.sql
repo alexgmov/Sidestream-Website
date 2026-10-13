@@ -23,6 +23,11 @@ do $$ begin
   if to_regrole('authenticated') is not null then
     execute 'revoke all on public.sidestream_ugc_link_arrivals,public.sidestream_ugc_tracking_start from authenticated';
   end if;
+  if to_regrole('sidestream_web_runtime') is not null then
+    execute 'revoke all on public.sidestream_ugc_link_arrivals,public.sidestream_ugc_tracking_start from sidestream_web_runtime';
+    execute 'grant select, insert on public.sidestream_ugc_link_arrivals to sidestream_web_runtime';
+    execute 'grant select on public.sidestream_ugc_tracking_start to sidestream_web_runtime';
+  end if;
 end $$;
 comment on table public.sidestream_ugc_link_arrivals is 'Aggregate-only UGC tagged page arrivals. Random per-page event IDs; no browser, customer, IP, user agent, or acquisition identity stored.';
 commit;

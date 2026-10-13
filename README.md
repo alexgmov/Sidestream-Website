@@ -2199,7 +2199,9 @@ The separate **UGC Creators** dashboard tab is owned by FlowState
   campaign, placement, server time. Namespace/event uniqueness makes retries
   idempotent. `sidestream_ugc_tracking_start` marks availability. Both are RLS
   enabled and revoked from public browser roles. Apply the migration before
-  enabling the collector or report; no acquisition or payment backfill is needed.
+  enabling the collector or report as the database owner (the runtime cannot
+  create tables). The hosted runtime receives only SELECT/INSERT on arrivals and
+  SELECT on tracking start; no acquisition or payment backfill is needed.
 
 Historical **first visits** come from the canonical landing-stage acquisition
 ledger; they cannot reconstruct repeat clicks. New **tagged link arrivals** count
