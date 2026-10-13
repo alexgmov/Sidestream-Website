@@ -58,7 +58,7 @@ test('SQL deduplicates visits and first paying customers, excludes comps, isolat
     assert.equal(report.channels.find(x => x.channel === 'Unattributed').buyers, 2);
     assert.equal(report.channels.find(x => x.channel === 'Reddit').buyers, 1);
     assert.equal(report.channels.find(x => x.channel === 'Google').buyers, 0);
-    assert.equal(report.channels.find(x => x.channel === 'Instagram').converted, 1);
+    assert.equal(report.channels.find(x => x.channel === 'Instagram (unspecified)').converted, 1);
     assert.equal(report.channels.find(x => x.channel === 'YouTube').visitors, 0);
     assert.equal(report.channels.some(x => x.channel === 'test-only'), false);
     const narrowed = await mod.queryChannelReport({ ...input, from: '2026-08-16T00:00:00Z' }, { transaction });

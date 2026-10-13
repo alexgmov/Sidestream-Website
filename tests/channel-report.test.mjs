@@ -7,15 +7,55 @@ const admin = await loadInjectedModule(new URL('../api/_lib/customer-admin.ts', 
 const route = await loadInjectedModule(new URL('../api/internal/channel-report.ts', import.meta.url), { '../_lib/customer-admin.js': admin, '../_lib/channel-report.js': mod });
 const input = { licenseNamespace: 'production', from: '2026-08-01T00:00:00.000Z', through: '2026-09-01T00:00:00.000Z', asOf: '2026-09-20T00:00:00.000Z' };
 const row = (source, values = {}) => ({ source, medium: null, campaign: null, content: null, referrer: null, visitors: '10', downloads: '3', checkouts: '2', converted: '1', cohort_buyers: '1', buyers: '2', ...values });
-test('channels preserve complete totals, alias Instagram and keep unspecified search honest', () => {
+test('channels preserve complete totals and keep unspecified Instagram and search honest', () => {
   const report = mod.buildChannelReport(input, [row('instagram'), row('ig'), row('external_referrer', { referrer: 'search' }), row('google')]);
-  assert.equal(report.channels.find(x => x.channel === 'Instagram').visitors, 20);
+  assert.equal(report.channels.find(x => x.channel === 'Instagram (unspecified)').visitors, 20);
   assert.equal(report.channels.find(x => x.channel === 'Google').visitors, 10);
   assert.equal(report.channels.find(x => x.channel === 'Search (unspecified)').visitors, 10);
   assert.equal(report.totals.conversionRate, 10);
   assert.equal(report.totals.visitors, 40);
   assert.equal(report.totals.buyers, 8);
   assert.equal(report.campaigns.length, 4);
+});
+test('bio and Manychat visits and paid outcomes stay separate without changing raw tags or totals', () => {
+  const rows = [
+    row('instagram', { medium: 'social', campaign: 'ugc-instagram-02', visitors: '20', converted: '2', cohort_buyers: '2', buyers: '3' }),
+    row('manychat-instagram', { medium: 'dm', campaign: 'ugc-instagram-02', visitors: '10', converted: '3', cohort_buyers: '3', buyers: '4' }),
+    row('ig', { medium: 'social', content: 'link_in_bio', visitors: '5', converted: '0', cohort_buyers: '0', buyers: '0' }),
+  ];
+  const report = mod.buildChannelReport(input, rows);
+  const bio = report.channels.find(x => x.channel === 'Instagram / Bio');
+  const dm = report.channels.find(x => x.channel === 'Instagram / Manychat');
+  assert.equal(bio.visitors, 25); assert.equal(bio.buyers, 3); assert.equal(bio.conversionRate, 8);
+  assert.equal(dm.visitors, 10); assert.equal(dm.buyers, 4); assert.equal(dm.conversionRate, 30);
+  for (const key of ['visitors', 'downloads', 'checkouts', 'converted', 'cohort_buyers', 'buyers']) {
+    assert.equal(report.totals[key], rows.reduce((sum, row) => sum + Number(row[key]), 0));
+  }
+  assert.equal(report.totals.conversionRate, 5 / 35 * 100);
+  assert.deepEqual(report.campaigns.map(({ source, medium, campaign, content, referrer }) => ({ source, medium, campaign, content, referrer })), rows.map(({ source, medium, campaign, content, referrer }) => ({ source, medium, campaign, content, referrer })));
+});
+test('placement labels require explicit evidence and do not change other reports channel labels', () => {
+  const cases = [
+    [row('instagram', { medium: 'social', campaign: 'bio' }), 'Instagram / Bio'],
+    [row('instagram', { medium: 'social', campaign: 'alex-bio' }), 'Instagram / Bio'],
+    [row('instagram', { medium: 'social', campaign: 'ugc-instagram-01' }), 'Instagram / Bio'],
+    [row('instagram-bio'), 'Instagram / Bio'],
+    [row('instagram', { medium: 'social', campaign: 'unregistered' }), 'Instagram (unspecified)'],
+    [row('instagram', { campaign: 'ugc-instagram-02' }), 'Instagram (unspecified)'],
+    [row('instagram', { medium: 'dm', campaign: 'ugc-instagram-02' }), 'Instagram / DM (unspecified)'],
+    [row('instagram', { medium: 'paid_social', content: 'link_in_bio' }), 'Instagram (unspecified)'],
+    [row('manychat'), 'Manychat (unspecified platform)'],
+    [row('facebook', { medium: 'dm', campaign: 'sidestream.tv', content: 'manychat_comments' }), 'Facebook / Manychat'],
+    [row('facebook', { medium: 'dm', campaign: 'sidestream.tv' }), 'Facebook'],
+    [row('meta', { medium: 'social', campaign: 'sidestream_direct_offer_test' }), 'Meta'],
+  ];
+  for (const [inputRow, label] of cases) {
+    const report = mod.buildChannelReport(input, [inputRow]);
+    assert.equal(report.channels[0].channel, label);
+    assert.equal(report.campaigns[0].channel, label);
+    assert.match(label, /^[A-Za-z0-9][A-Za-z0-9 ._()/\-]{0,79}$/);
+  }
+  assert.equal(mod.channelLabel('manychat-instagram', null), 'Instagram');
 });
 test('zero denominators are unavailable; campaign cap never truncates channel totals', () => {
   const report = mod.buildChannelReport(input, Array.from({ length: 105 }, (_, i) => row('reddit', { campaign: `post-${i}` })));

@@ -636,8 +636,19 @@ detail shows at most the top 100 combinations with explicit truncation.
   first positive payment by `asOf`, divided by all selected first visits. This
   numerator uses journey grain; the separate cohort-paid count uses people.
   The paid pie can include earlier visits, so it is not the conversion numerator.
-- Instagram aliases aggregate for chart display; original UTM values remain in
-  detail. Untagged historical search referrals remain Search (unspecified),
+- Channels separates `Instagram / Bio` from `Instagram / Manychat` in visit and
+  paid aggregates. Bio requires `instagram-bio`, an Instagram `link_in_bio` tag
+  with no medium or `social`, or `social` plus registered campaign `bio`,
+  `alex-bio`, `ugc-instagram-01`, or `ugc-instagram-02`. Instagram `dm` without
+  the explicit `manychat-instagram` source remains `Instagram / DM (unspecified)`;
+  other Instagram traffic remains `Instagram (unspecified)`. Legacy `manychat`
+  stays platform-unspecified; Facebook requires `facebook / dm` plus
+  `manychat_comments` content to show `Facebook / Manychat`. Original UTM values
+  and creator campaigns remain in detail. Small channels may be grouped under
+  Other channels in the pies; the channel table includes the complete split.
+  This is a read-only reporting change: no historical tags, counts, or purchase
+  links are rewritten, and the separate Revenue purchase report keeps its
+  existing platform labels. Untagged historical search referrals remain Search (unspecified),
   not Google. Direct/unknown external origin and missing purchase linkage are
   separate buckets. No old source is inferred or rewritten.
 

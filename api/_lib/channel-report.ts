@@ -107,13 +107,27 @@ export function channelLabel(source: string, referrer: string | null) {
   }
   return aliases[source] || source;
 }
+function reportChannelLabel(row: Row) {
+  if (row.source === "manychat-instagram") return "Instagram / Manychat";
+  if (row.source === "manychat") return "Manychat (unspecified platform)";
+  if (row.source === "facebook" && row.medium === "dm" && row.content === "manychat_comments") return "Facebook / Manychat";
+  if (["instagram", "ig", "instagram-bio"].includes(row.source)) {
+    if (row.medium === "dm") return "Instagram / DM (unspecified)";
+    // Only explicit bio tags or registered bio campaigns establish placement.
+    const bioCampaign = ["bio", "alex-bio", "ugc-instagram-01", "ugc-instagram-02"].includes(row.campaign || "");
+    if (row.source === "instagram-bio" || (!row.medium || row.medium === "social") &&
+      (row.content === "link_in_bio" || row.medium === "social" && bioCampaign)) return "Instagram / Bio";
+    return "Instagram (unspecified)";
+  }
+  return channelLabel(row.source, row.referrer);
+}
 const FIELDS = ["visitors", "downloads", "checkouts", "converted", "cohort_buyers", "buyers"] as const;
 const empty = () => Object.fromEntries(FIELDS.map(key => [key, 0])) as Record<typeof FIELDS[number], number>;
 export function buildChannelReport(input: Input, rows: readonly Row[]) {
   const channels = new Map<string, ReturnType<typeof empty>>();
   const totals = empty();
   const campaigns = rows.map(row => {
-    const channel = channelLabel(row.source, row.referrer);
+    const channel = reportChannelLabel(row);
     const values = empty();
     for (const key of FIELDS) {
       const n = Number(row[key]);
@@ -139,7 +153,7 @@ export function buildChannelReport(input: Input, rows: readonly Row[]) {
       visitors: "Distinct tracked first-touch journeys with an observed landing. Not pageviews or cross-device unique people.",
       buyers: "Distinct customers whose first verified positive payment occurred in the selected dates. Zero-cost upgrades are excluded; later refunds do not erase a historical purchase.",
       conversion: "Selected first-visit journeys with an exactly linked first positive payment by the observation time / all selected first-visit journeys.",
-      attribution: "Immutable first touch linked through the exact Checkout payment. Missing or conflicting purchase links remain unattributed.",
+      attribution: "Immutable first touch linked through the exact Checkout payment. Bio and Manychat placements are separated only by explicit recorded tags; unspecified traffic is not assigned a placement. Missing or conflicting purchase links remain unattributed.",
       referrers: "Older untagged referrers retain their recorded category; unspecified search cannot be relabeled Google.",
     },
   };
