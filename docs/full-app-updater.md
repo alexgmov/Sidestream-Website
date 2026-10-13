@@ -5,7 +5,10 @@ Settings enrollment does not meet the customer experience. Local rollback commit
 `4dd084a` reverses implementation `77076c3` and documentation `aa2863f` / `5e7873f`.
 The resulting source tree exactly matched canonical `origin/main`
 `f8a5526bdf77acf2f49ef31fc73fad30a36acb72` before this documentation was added.
-There are no deployed replacement updater API routes or enabled server keys/flags.
+The production successor, hosted service configuration and future paid-update
+authorization are documented in [production-updater.md](production-updater.md).
+The local qualification mechanisms below retain their private scopes and keys;
+their historical approval boundaries do not describe the new production service.
 Do not recover the old routes as the replacement baseline.
 
 ## Boundaries and next gate

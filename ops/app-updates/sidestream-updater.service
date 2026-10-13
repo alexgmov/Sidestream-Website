@@ -1,0 +1,43 @@
+[Unit]
+Description=Sidestream production Mac update authority
+After=network.target
+
+[Service]
+Type=simple
+User=sidestream-updater
+Group=sidestream-updater
+WorkingDirectory=/srv/sidestream-updates/current
+EnvironmentFile=/etc/sidestream/updater-source.env
+LoadCredential=policy.pem:/etc/sidestream/app-updates/policy.pem
+LoadCredential=continuation.pem:/etc/sidestream/app-updates/continuation.pem
+LoadCredential=ticket.key:/etc/sidestream/app-updates/ticket.key
+ExecStart=/usr/bin/flock --nonblock /run/sidestream-updater/service.lock /usr/bin/node scripts/production-update-service.mjs --serve --state /var/lib/sidestream-updater --keys %d --trust /srv/sidestream-updates/trust.json --catalog /srv/sidestream-updates/catalog.json --artifacts /srv/sidestream-updates/artifacts --source-sha ${SIDESTREAM_UPDATER_SOURCE_SHA}
+StateDirectory=sidestream-updater
+StateDirectoryMode=0700
+RuntimeDirectory=sidestream-updater
+RuntimeDirectoryMode=0700
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=20
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectClock=true
+ProtectHostname=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+IPAddressDeny=any
+IPAddressAllow=localhost
+MemoryMax=256M
+TasksMax=32
+
+[Install]
+WantedBy=multi-user.target

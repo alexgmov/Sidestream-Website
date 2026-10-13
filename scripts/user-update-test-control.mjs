@@ -8,20 +8,20 @@ export function target(value) {
     !Number.isSafeInteger(value.bytes) || value.bytes<1 || value.bytes>2_000_000_000) throw Error('Invalid immutable Test target');
  return {id:value.id,sha256:value.sha256,manifestSha256:value.manifestSha256,bytes:value.bytes};
 }
-export function cohort(client,salt,percent) {
+export function cohort(client,salt,percent,scope=testScope) {
  if(!hash.test(client)||!id.test(salt)||!Number.isInteger(percent)||percent<0||percent>100) throw Error('Invalid cohort');
- const bucket=crypto.createHash('sha256').update(`${testScope}:${salt}:${client}`).digest().readUInt32BE(0)%10000;
+ const bucket=crypto.createHash('sha256').update(`${scope}:${salt}:${client}`).digest().readUInt32BE(0)%10000;
  return bucket<percent*100;
 }
-export function validateControl(catalog,control) {
- if(catalog.scope!==testScope || control.schema!=='sidestream.user-control.v2')throw Error('Wrong Test protocol');
+export function validateControl(catalog,control,scope=testScope) {
+ if(catalog.scope!==scope || control.schema!=='sidestream.user-control.v2')throw Error('Wrong Test protocol');
  const select=(choice,kind='cep')=>{
   if(choice===null)return null;
   if(!choice || !Object.hasOwn(catalog.releases,choice.id))throw Error('Unknown release');
   const exact=target(catalog.releases[choice.id].target);
   if((catalog.releases[choice.id].kind||'cep')!==kind)throw Error('Release kind mismatch');
   if(choice.sha256!==exact.sha256)throw Error('Exact release hash required');
-  cohort('0'.repeat(64),choice.salt,choice.percent);
+  cohort('0'.repeat(64),choice.salt,choice.percent,scope);
   return {...choice,target:exact};
  };
  const download=select(control.download), activate=select(control.activate);
@@ -37,12 +37,12 @@ export function validateControl(catalog,control) {
  if(companion && [companion.download,companion.activate].some(c=>c&&control.revoked.includes(c.target.sha256)))throw Error('Revoked companion');
  return {download,activate,rollback,companion,revoked:[...new Set(control.revoked)]};
 }
-export function makePolicy(catalog,control,client,revision,now=Date.now()/1000) {
+export function makePolicy(catalog,control,client,revision,now=Date.now()/1000,scope=testScope) {
  if(!hash.test(client)||!Number.isSafeInteger(revision)||revision<1||!Number.isFinite(now))throw Error('Invalid client/revision/time');
- const checked=validateControl(catalog,control);
- const select=choice=>choice&&cohort(client,choice.salt,choice.percent)?choice.target:null;
+ const checked=validateControl(catalog,control,scope);
+ const select=choice=>choice&&cohort(client,choice.salt,choice.percent,scope)?choice.target:null;
  const activate=select(checked.activate);
- return {schema:'sidestream.user-policy.v2',scope:testScope,client,revision,issuedAt:now,expiresAt:now+60,
+ return {schema:'sidestream.user-policy.v2',scope,client,revision,issuedAt:now,expiresAt:now+60,
   download:select(checked.download),activate,rollback:activate?checked.rollback:null,revoked:checked.revoked,
   companion:checked.companion?{download:select(checked.companion.download),activate:select(checked.companion.activate)}:null};
 }

@@ -32,17 +32,17 @@ function exactControl(control) {
     choice(control.companion.download); choice(control.companion.activate);
   }
 }
-export function signRequest({control, snapshot, privateKey, now = Math.floor(Date.now()/1000)}) {
+export function signRequest({control, snapshot, privateKey, scope = testScope, now = Math.floor(Date.now()/1000)}) {
   if (privateKey.asymmetricKeyType !== 'ed25519') throw Error('Ed25519 operator key required');
   exactControl(control);
-  const request = {schema:'sidestream.user-operator-request.v1', scope:testScope,
+  const request = {schema:'sidestream.user-operator-request.v1', scope,
     operator:keyId(privateKey), issuedAt:now, expiresAt:now+300,
     nonce:crypto.randomBytes(16).toString('hex'), expected:snapshot, control};
   const bytes = Buffer.from(JSON.stringify(request));
   if (bytes.length > 32768) throw Error('Oversized operator request');
   return {payload:bytes.toString('base64'), signature:crypto.sign(null, bytes, privateKey).toString('base64')};
 }
-export function authorizeRequest({envelope, operators, previous, catalog, now = Date.now()/1000}) {
+export function authorizeRequest({envelope, operators, previous, catalog, scope = testScope, now = Date.now()/1000}) {
   fields(envelope, ['payload','signature']);
   const decode = (text, max) => {
     if (typeof text !== 'string' || text.length > max || !/^[A-Za-z0-9+/]+={0,2}$/.test(text))
@@ -70,7 +70,7 @@ export function authorizeRequest({envelope, operators, previous, catalog, now = 
   }
   const key = keys.get(request.operator);
   if (!key || !crypto.verify(null, bytes, key, signature)) throw Error('Unauthorized Test operator');
-  if (request.schema !== 'sidestream.user-operator-request.v1' || request.scope !== testScope ||
+  if (request.schema !== 'sidestream.user-operator-request.v1' || request.scope !== scope ||
       !Number.isFinite(now) || !Number.isSafeInteger(request.issuedAt) || !Number.isSafeInteger(request.expiresAt) ||
       request.issuedAt > now+5 || request.expiresAt <= now || request.expiresAt <= request.issuedAt ||
       request.expiresAt-request.issuedAt > 300 || !/^[a-f0-9]{32}$/.test(request.nonce)) throw Error('Invalid or expired Test authorization');
@@ -80,7 +80,7 @@ export function authorizeRequest({envelope, operators, previous, catalog, now = 
       request.expected.revision !== snapshot.revision || request.expected.sha256 !== snapshot.sha256 ||
       previous?.history.some(entry => entry.authorization?.nonce === request.nonce)) throw Error('Stale or replayed Test authorization');
   exactControl(request.control);
-  validateControl(catalog, request.control);
+  validateControl(catalog, request.control, scope);
   return {control:request.control, authorization:{operator:request.operator, nonce:request.nonce,
     requestSha256:sha(bytes), issuedAt:request.issuedAt, expiresAt:request.expiresAt}};
 }
