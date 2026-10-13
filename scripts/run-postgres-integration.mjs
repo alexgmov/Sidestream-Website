@@ -27,6 +27,7 @@ export const RUNTIME_DATABASE_ENV_NAMES = Object.freeze([
 
 const POSTGRES_INTEGRATION_TESTS = Object.freeze([
   "tests/channel-report-postgres.test.mjs",
+  "tests/ugc-report-postgres.test.mjs",
   "tests/purchase-attribution-postgres.test.mjs",
   "tests/pre-upgrade-downloads-postgres.test.mjs",
   "tests/postgres-integration.test.mjs",

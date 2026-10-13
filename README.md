@@ -205,6 +205,8 @@ This repository owns the whole Sidestream web service: the public/account fronte
 
 - `scripts/production-update-service.mjs`, `scripts/production-update-protocol.mjs`, `scripts/production-update-operator.mjs` and `ops/app-updates/` - Production Mac signed policy/range delivery and future paid-acquisition continuity; dedicated loopback service behind the downloads host. [Production updater runbook](docs/production-updater.md) owns routes, key roles, provisioning, immutable artifacts, signed operator control, recovery and release gates. `npm run test:production-updater` covers service/security/restart behavior.
 
+- `api/_lib/ugc-report.ts` and `api/internal/ugc-report.ts` - Aggregate-only UGC creator daily traffic and directly attributed per-currency revenue for FlowState's UGC Creators tab; exact payment ownership and Checkout acquisition linkage, never lifetime customer revenue.
+- `public/ugc-arrival.js`, `api/ugc-visit.ts`, and `db/migrations/20261013190000_add_ugc_link_arrivals.sql` - Independent tagged page-arrival counter for registered creator Bio/Manychat URLs. Random per-page idempotency UUID, server timestamp/namespace, bounded same-origin POST, hashed-IP rate limit, scanner filtering, no customer/browser identity stored; immutable acquisition first touch is unchanged.
 - `api/_lib/channel-report.ts` and `api/internal/channel-report.ts` - Read-only cross-channel first visits and first positive-payment reporting for the FlowState dashboard Channels tab. Groups all stored UTM source/medium/campaign/content combinations, preserves unspecified referrer categories, and resolves purchases only through exact Checkout payment aliases.
 
 - `AGENTS.md` - Durable repository instructions for the exact Upgrade, Google authentication, and Stripe sequence plus the only supported Production deployment command.
@@ -2174,3 +2176,55 @@ entitlement, API build and website build.
 ## Dashboard rollout saves
 
 - 2026-10-08: Owner dashboard Save changed Windows 1.0.21 update notices from 50% to 100%. Installer bytes and cumulative observation start are unchanged. Public release and Production SHA verification are required before Save reports success.
+
+## UGC creator traffic and revenue (2026-10-13)
+
+The separate **UGC Creators** dashboard tab is owned by FlowState
+`analytics/src/ugc-view.jsx`; this repository owns its data. It reports Marcel
+(`ugc-instagram-01`, `@sidestream.tv.1`) and Matthew (`ugc-instagram-02`,
+`@sidestream.tv.2`). Creator registry changes require updating both Website's
+`UGC_CREATORS` and the dashboard's strict response validator/browser allowlist.
+
+- `POST /api/internal/ugc-report` uses the existing Customer Admin bearer,
+  POST-only/no-browser-Origin/no-store boundary. Body: `licenseNamespace`, `from`,
+  `through`, `asOf` as UTC ISO timestamps; reuses the Channel report's bounded
+  parser. Response: zero-filled daily traffic and currency-specific payment
+  aggregates for each registered creator, counter start, and metric definitions.
+- `POST /api/ugc-visit` accepts only `eventId` (UUIDv4), registered `campaign`,
+  `source` and `medium`: `instagram/social` for Bio or `manychat-instagram/dm`.
+  It requires JSON and the public site Origin. Only server configuration selects
+  namespace/database. A 120/minute hashed-IP limit and known-scanner filter bound
+  collection; failures are non-blocking and never alter acquisition attribution.
+- `sidestream_ugc_link_arrivals` stores only namespace, per-page random event UUID,
+  campaign, placement, server time. Namespace/event uniqueness makes retries
+  idempotent. `sidestream_ugc_tracking_start` marks availability. Both are RLS
+  enabled and revoked from public browser roles. Apply the migration before
+  enabling the collector or report; no acquisition or payment backfill is needed.
+
+Historical **first visits** come from the canonical landing-stage acquisition
+ledger; they cannot reconstruct repeat clicks. New **tagged link arrivals** count
+visible page loads including repeats/reloads, starting at counter rollout.
+Platform clicks that never load the page remain unobservable. Duplicate UTM
+parameters, unsupported tags and known scanners are excluded. Missing/mistagged
+history is not guessed. Before rollout, arrivals are unavailable, not zero.
+
+Revenue is read-only: one verified settled PaymentIntent/Charge per payment key,
+with one non-conflicting live profile and currency, linked through exact Checkout
+aliases to exactly one intact acquisition preceding payment. Resolve ambiguity
+before filtering the creator registry. Only positive paid instruments qualify;
+zero-total comps and Checkout/Invoice fallback facts without settled instruments
+are excluded. Repeat purchases count only with their own exact link. Paid dates
+use the selected window even if the visit occurred earlier. Refunds use the
+larger of Charge-reported refunds and individual refund facts; current open/lost
+disputes reduce net, floored at zero per payment. Fees are not deducted. Currencies
+remain separate and unsafe numeric totals fail closed. This is directly linked
+revenue, not an estimate of every sale influenced by a creator.
+
+Focused checks: `node --test tests/ugc-report.test.mjs tests/acquisition-route-coverage.test.mjs`
+and `SIDESTREAM_TEST_POSTGRES_URL=... node --test tests/ugc-report-postgres.test.mjs`
+against a disposable isolated database. SQL tests cover duplicate instruments,
+repeat payments, earlier visits, refunded/disputed amounts, currencies, namespace
+isolation, ambiguous links, conflicting ownership and arrival idempotency.
+Build with `npm run build:hetzner-api` and `npm run build`. Deployment follows
+clean pushed `origin/main`, with the additive migration applied before API and
+frontend activation; the dashboard proxy keeps all credentials server-side.

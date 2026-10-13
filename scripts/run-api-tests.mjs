@@ -15,6 +15,7 @@ const REQUIRED_ROOT_TESTS = Object.freeze([
 ]);
 const ROOT_POSTGRES_ONLY_TESTS = new Set([
   "channel-report-postgres.test.mjs",
+  "ugc-report-postgres.test.mjs",
   "download-friend-rewards-postgres.test.mjs",
   "meta-roas-report-postgres.test.mjs",
   "pre-upgrade-downloads-postgres.test.mjs",
