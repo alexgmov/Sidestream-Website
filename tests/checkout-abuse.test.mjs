@@ -262,6 +262,7 @@ test("database-backed intents serialize retries, rotate deliberately, and fulfil
     configureRuntime(postgres.connectionString);
     runtimeModules = await loadRuntimeModules();
     const { account, acquisition: acquisitionBrowser } = runtimeModules;
+    await assertPaidActivationIdentitySnapshot(account, databasePool);
     const stripe = new RecordingStripe();
     account.__setCheckoutAbuseStripeClient(stripe);
 
@@ -1840,6 +1841,41 @@ function createHeaderResponse() {
       headers.set(String(name).toLowerCase(), value);
     },
   };
+}
+
+async function assertPaidActivationIdentitySnapshot(account, pool) {
+  const pair = { installIdHash: "a".repeat(64), installerReceiptIdHash: "b".repeat(64) };
+  const payload = { deviceId: "paid-snapshot-device", source: "paid-acquisition-mc-v1", ...pair };
+  const started = await account.createActivationSession({ headers: { host: "sidestream.test" } }, payload);
+  const url = new URL(started.restoreUrl);
+  assert.deepEqual([...url.searchParams.keys()], ["activation"]);
+  assert.equal(url.pathname, "/api/activation/paid-claim");
+  const snapshot = await pool.query(`
+    select identity.* from public.sidestream_paid_activation_installation_identity identity
+    join public.sidestream_activation_sessions activation on activation.id = identity.activation_id
+    where activation.activation_key = $1`, [started.activationKey]);
+  assert.equal(snapshot.rows.length, 1);
+  const row = snapshot.rows[0];
+  assert.equal(row.license_namespace, "production");
+  assert.equal(row.install_id_hash, pair.installIdHash);
+  assert.equal(row.installer_receipt_id_hash, pair.installerReceiptIdHash);
+  await assert.rejects(pool.query(`update public.sidestream_paid_activation_installation_identity
+    set install_id_hash = $2 where activation_id = $1`, [row.activation_id, "c".repeat(64)]), /immutable/);
+  await assert.rejects(pool.query(`insert into public.sidestream_paid_activation_installation_identity
+    (activation_id, license_namespace, install_id_hash, installer_receipt_id_hash)
+    values ($1, 'test', $2, $3)`, [row.activation_id, pair.installIdHash, pair.installerReceiptIdHash]), /duplicate key/);
+  const replay = await account.getActivationStatus(started.activationKey, payload.deviceId, {
+    identity: { installIdHash: "c".repeat(64), installerReceiptIdHash: "d".repeat(64) },
+  });
+  assert.equal(replay.status, "pending");
+  const unchanged = await pool.query(`select * from public.sidestream_paid_activation_installation_identity
+    where activation_id = $1`, [row.activation_id]);
+  assert.deepEqual(unchanged.rows, snapshot.rows);
+  const count = await pool.query("select count(*)::int as count from public.sidestream_paid_activation_installation_identity");
+  await account.createActivationSession({ headers: { host: "sidestream.test" } }, { ...payload, source: "plugin" });
+  await account.createActivationSession({ headers: { host: "sidestream.test" } }, { deviceId: "legacy-paid-device", source: payload.source });
+  const final = await pool.query("select count(*)::int as count from public.sidestream_paid_activation_installation_identity");
+  assert.equal(final.rows[0].count, count.rows[0].count);
 }
 
 async function startEphemeralPostgres() {

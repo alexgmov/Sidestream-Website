@@ -931,3 +931,28 @@ Google restore, Customer 360 `installation_claimed=1` with
 This documentation run did not deploy, apply migrations, publish artifacts,
 make payments, send email, change Production, or prove loaded Premiere
 behavior.
+
+## October 16 activation snapshot qualification
+
+The Mac qualification exposed `installation_identity_missing` despite a real paid
+license/device activation. The client sent its verified receipt and installation
+identity only in the activation start/status bodies; the old server finalizer
+expected browser fields. The prepared fix captures the exact pair on new paid
+activation creation and uses the existing opaque activation/CSRF browser flow.
+No entitlement rule, artifact pointer, receipt format or updater policy changes.
+
+Apply the additive `20261016183000_add_paid_activation_installation_identity.sql`
+migration before deploying the clean pushed main commit to the API runtime.
+Existing activations intentionally remain without a snapshot. Do not backfill
+from profile memberships or repair the qualification order manually. After
+deployment, start a new supported activation from the unchanged installed paid
+client; use the purchase's email/download handoff in the same browser to establish
+the signed paid receipt. Complete Google confirmation and verify
+`installation_claimed_recorded` plus the exact immutable paid-telemetry binding
+using read-only queries. Existing entitlement recovery must continue if that
+browser receipt is missing. Keep updater HOLD and public/paid manifests unchanged.
+
+Local tests do not close this live gate. Retain snapshot/claim privacy, account,
+namespace, expiry, replay, forged-browser-pair and missing-storage evidence, plus
+existing checkout, entitlement and paid acquisition suites. Deployment status and
+actual Mac evidence are tracked in FlowState `docs/release-ops.md`.

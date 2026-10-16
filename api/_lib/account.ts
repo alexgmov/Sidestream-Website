@@ -3650,6 +3650,17 @@ export async function createActivationSession(
       const activationId = inserted.rows[0]?.id;
       if (!activationId) throw new Error("Activation insert did not return an ID");
 
+      if (paidOnboardingSource && identity.installIdHash && identity.installerReceiptIdHash) {
+        // Capture only the exact pair supplied in this activation's start body.
+        // It is association evidence, never entitlement or payment authority.
+        await client.query(
+          `insert into public.sidestream_paid_activation_installation_identity
+             (activation_id, license_namespace, install_id_hash, installer_receipt_id_hash)
+           values ($1, $2, $3, $4)`,
+          [activationId, environment.namespace, identity.installIdHash, identity.installerReceiptIdHash],
+        );
+      }
+
       await attachCustomerIdentity(client, {
         environment,
         identity,

@@ -2,6 +2,24 @@
 
 ## Product Overview
 
+### Paid activation identity — October 16, 2026 (local qualification)
+
+New exact paid-source activations retain the installation/native-receipt hash
+pair from the start POST in an immutable, namespace-scoped row. The paid browser
+flow carries only the opaque activation key and existing CSRF confirmation;
+query/form identity cannot replace the stored pair. After authenticated reconnect
+or transfer, attribution reads that exact activation/account/namespace snapshot
+and still requires the separate signed browser purchase receipt and existing
+verified payment/license checks. Missing legacy snapshots or attribution outages
+do not revoke valid entitlement recovery. No historical pair is backfilled.
+Apply `20261016183000_add_paid_activation_installation_identity.sql` before
+deploying this code; current live qualification is still pending. The normal
+email/download handoff sets the purchase receipt in the receiving browser. A
+different browser without it cannot claim purchase attribution. Tests are
+`paid-activation-body-identity`, `checkout-abuse` (disposable PostgreSQL), the paid
+acquisition matrix, checkout contract and entitlement suites. See
+[the paid acquisition contract](docs/paid-acquisition-contract.md#additive-activation-input).
+
 ### Google sign-in and damaged tracking records — October 5, 2026
 
 `api/auth/google/start.ts` and `api/auth/google/callback.ts` treat acquisition

@@ -86,7 +86,8 @@ export async function handleActivationClaim(
     const requestUrl = new URL(request.url || claimPath, baseUrl);
     const activationKey = cleanString(requestUrl.searchParams.get("activation"), 160);
     if (!activationKey) return sendJson(response, 400, { error: "Missing activation key" });
-    const identity = readCustomerIdentityFields({
+    const identity = options.requiredActivationSource === PAID_ACQUISITION_SOURCE
+      ? {} : readCustomerIdentityFields({
       installIdHash: requestUrl.searchParams.get("installIdHash"),
       supportCode: requestUrl.searchParams.get("supportCode"),
       installerReceiptIdHash: requestUrl.searchParams.get("installerReceiptIdHash"),
@@ -180,7 +181,8 @@ export async function handleActivationClaim(
       code: "invalid_intent",
     });
   }
-  const identity = readCustomerIdentityFields({
+  const identity = options.requiredActivationSource === PAID_ACQUISITION_SOURCE
+    ? {} : readCustomerIdentityFields({
     installIdHash: form.get("installIdHash"),
     supportCode: form.get("supportCode"),
     installerReceiptIdHash: form.get("installerReceiptIdHash"),
@@ -320,13 +322,31 @@ async function finalizePaidAcquisitionLinkage(options: {
     return;
   }
   try {
+    // The browser carries only the opaque activation key and existing CSRF.
+    // A form/query identity cannot select or replace the start-body snapshot.
+    const stored = await query<{
+      install_id_hash: string;
+      installer_receipt_id_hash: string;
+    }>(
+      `select identity.install_id_hash, identity.installer_receipt_id_hash
+       from public.sidestream_paid_activation_installation_identity identity
+       join public.sidestream_activation_sessions activation
+         on activation.id = identity.activation_id
+       where activation.activation_key = $1
+         and identity.license_namespace = $2
+         and activation.account_id = $3
+         and activation.source = $4
+         and activation.expires_at > now()`,
+      [options.activationKey, options.environment, options.expectedAccountId, PAID_ACQUISITION_SOURCE],
+    );
+    const identity = stored.rows.length === 1 ? stored.rows[0] : undefined;
     const association = await associatePaidAcquisitionActivationWithOutcome({
       environment: options.environment,
       activationKey: options.activationKey,
       expectedAccountId: options.expectedAccountId,
       receipt: options.receipt,
-      installIdHash: options.identity.installIdHash,
-      installerReceiptIdHash: options.identity.installerReceiptIdHash,
+      installIdHash: identity?.install_id_hash,
+      installerReceiptIdHash: identity?.installer_receipt_id_hash,
     });
     recordPaidAcquisitionLinkageOutcome(association.outcome);
   } catch {

@@ -86,7 +86,7 @@ test("the dedicated route constrains server-side source and changes only inactiv
   );
 });
 
-test("paid POST finalization carries the normalized exact pair and account", () => {
+test("paid POST finalization reads the exact stored start-body pair and account", () => {
   assert.match(
     dedicatedRouteSource,
     /validatePaidAcquisitionReceiptCookie/,
@@ -117,8 +117,12 @@ test("paid POST finalization carries the normalized exact pair and account", () 
   );
   assert.match(
     claimSource,
-    /installIdHash: options\.identity\.installIdHash,[\s\S]*?installerReceiptIdHash: options\.identity\.installerReceiptIdHash/,
+    /installIdHash: identity\?\.install_id_hash,[\s\S]*?installerReceiptIdHash: identity\?\.installer_receipt_id_hash/,
   );
+  assert.match(claimSource, /identity\.license_namespace = \$2/);
+  assert.match(claimSource, /activation\.account_id = \$3/);
+  assert.match(claimSource, /activation\.source = \$4/);
+  assert.match(claimSource, /activation\.expires_at > now\(\)/);
 });
 
 test("paid POST linkage records only bounded outcomes and ordinary claims stay quiet", () => {

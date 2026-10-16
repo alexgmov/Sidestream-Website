@@ -38,7 +38,7 @@ function knownBaselineSnapshot(rowSecurityEnabled = false) {
 
 test("migration files are ordered, checksummed, and append-only baseline files are pinned", async () => {
   const migrations = validateMigrationFiles(await loadMigrationFiles());
-  assert.equal(migrations.length, 39);
+  assert.equal(migrations.length, 40);
   assert.deepEqual(
     migrations.map((migration) => migration.filename),
     [...migrations.map((migration) => migration.filename)].sort(),
@@ -75,6 +75,7 @@ test("migration files are ordered, checksummed, and append-only baseline files a
     "20260825140000_add_annual_upgrade_pricing_experiment.sql",
     "20260831120000_add_meta_ad_spend.sql",
     "20261013190000_add_ugc_link_arrivals.sql",
+    "20261016183000_add_paid_activation_installation_identity.sql",
   ]) {
     assert.ok(migrations.some((migration) => migration.filename === filename));
   }

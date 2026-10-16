@@ -407,10 +407,21 @@ different identifiers and must never be compared or substituted. The dedicated
 claim GET remains read-only. Only after the authenticated, same-origin,
 CSRF-protected reconnect or confirmed-transfer POST succeeds may the server use
 the browser receipt to bind the paid Checkout to the exact paid-source
-activation. That same POST's normalized `installIdHash` and
-`installerReceiptIdHash` are the only current installation pair eligible for
-binding; the server must not select an arbitrary pair from activation-profile
-history. If exact paid/account evidence and the telemetry install begin on two
+activation. For new activations, the start POST's exact normalized `installIdHash`
+and `installerReceiptIdHash` are stored atomically with the activation in
+`sidestream_paid_activation_installation_identity`, keyed by activation ID and
+scoped to its license namespace. The pair cannot be updated. Paid claim GET and
+POST ignore browser identity fields; OAuth return URLs and confirmation forms
+carry only the opaque activation key and existing CSRF/intent fields. Finalization
+reads the snapshot only for the exact authenticated account, paid source,
+namespace and unexpired activation. It never selects a pair from profile history.
+Migration `20261016183000_add_paid_activation_installation_identity.sql` must
+precede code deployment. Legacy activations have no inferred/backfilled snapshot;
+a new activation from the client is required to qualify attribution. Missing
+identity or storage failure remains additive to valid entitlement recovery. The
+existing signed receipt still must be present in this browser: the supported
+email/download handoff sets it after verified artifact delivery; a different
+browser's cookie is not available automatically. If exact paid/account evidence and the telemetry install begin on two
 compatible live profiles, they converge under the existing deterministic
 Customer 360 merge order before one immutable paid-telemetry binding records
 the exact claim, activation, install membership/link, and native-receipt link.
@@ -580,10 +591,10 @@ account/license identifier, Stripe reference, token, or database error.
 | `receipt_activation_no_match` | No active, unexpired receipt/activation association matched in the trusted environment. |
 | `activation_source_mismatch` | The selected activation did not retain exact source `paid-acquisition-mc-v1`; no canonical install evidence was written. |
 | `claim_binding_conflict` | The paid receipt/claim is already bound incompatibly. |
-| `installation_identity_not_unique_or_missing` | The POST omitted the exact current install/receipt pair, or those exact values did not resolve one install membership and one locally verified native-receipt identity. |
+| `installation_identity_not_unique_or_missing` | The stored activation pair did not resolve one install membership and one locally verified native-receipt identity. |
 | `acquisition_identity_missing` | The paid acquisition could not resolve its canonical acquisition identity after claim binding. |
 | `acquisition_ownership_conflict` | The resolved acquisition is owned by a different Customer 360 profile. |
-| `installation_claimed_recorded` | Canonical `installation_claimed` and `verified_installation_claim` were committed for the POST's exact current install/receipt pair after deterministic live-profile convergence. |
+| `installation_claimed_recorded` | Canonical `installation_claimed` and `verified_installation_claim` were committed for the immutable start-body installation/receipt pair after deterministic live-profile convergence. |
 | `linkage_unavailable` | The additive association attempt failed outside the bounded domain outcomes; the valid entitlement result remains intact. |
 
 `installation_claimed_recorded` is necessary but is not sufficient end-to-end
