@@ -2,7 +2,7 @@
 
 ## Product Overview
 
-### Paid activation identity — October 16, 2026 (local qualification)
+### Paid activation identity — October 18, 2026 (deployed qualification)
 
 New exact paid-source activations retain the installation/native-receipt hash
 pair from the start POST in an immutable, namespace-scoped row. The paid browser
@@ -12,8 +12,14 @@ or transfer, attribution reads that exact activation/account/namespace snapshot
 and still requires the separate signed browser purchase receipt and existing
 verified payment/license checks. Missing legacy snapshots or attribution outages
 do not revoke valid entitlement recovery. No historical pair is backfilled.
-Apply `20261016183000_add_paid_activation_installation_identity.sql` before
-deploying this code; current live qualification is still pending. The normal
+The additive migration `20261016183000_add_paid_activation_installation_identity.sql`
+was applied before the approved `1beca614` frontend/Linux API deployment. A fresh
+supported activation and normal receipt handoff produced
+`installation_claimed_recorded` at `2026-10-18T04:39:13.186Z`; read-only server
+evidence independently verified the exact purchase, activation, installation and
+current paid device. No historical rows were backfilled. This qualifies the
+activation linkage, not direct new-updater first acquisition or a customer release.
+Public Mac 1.0.21 and paid fulfillment 1.0.17 remain unchanged. The normal
 email/download handoff sets the purchase receipt in the receiving browser. A
 different browser without it cannot claim purchase attribution. Tests are
 `paid-activation-body-identity`, `checkout-abuse` (disposable PostgreSQL), the paid
