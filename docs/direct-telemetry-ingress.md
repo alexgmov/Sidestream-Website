@@ -15,6 +15,59 @@ Client defaults and local stages are updated; public client release remains pend
 non-administrative `sidestream-dev` account. Do not add privileges to that account
 or create replacement credentials merely to administer Nginx.
 
+### October 19 storage recovery
+
+The public Production snapshot was stuck at `2026-10-19T10:07:48.429Z`
+(03:07:48 PDT), with `last_refresh_failed=true`. The host had only 599 MiB
+available on its 75 GiB root filesystem. PostgreSQL logs confirmed repeated
+temporary-file `No space left on device` errors and several collector table
+extension failures. Natural telemetry still arrived during diagnosis; that does
+not prove every failed client batch was later retried or recovered.
+
+Storage inventory found approximately 42 GB in the live telemetry database
+(19.2 million estimated event rows) and 4 GB in system journals. The recovery
+preserved 54 archived journal files, totaling 4,320,133,120 bytes, in a local
+749,244,560-byte gzip archive. Every file's SHA-256 matched the server manifest.
+The private archive and verification JSON are under
+`~/Documents/Codex/telemetry-recovery-2026-10-19/private/`; the server manifest is
+`/root/telemetry-recovery-20261019/journal-manifest.json`. Do not commit these logs.
+
+The checked-in `ops/journald/60-sidestream-disk-budget.conf` was installed at
+`/etc/systemd/journald.conf.d/60-sidestream-disk-budget.conf`. It sets
+`SystemMaxUse=512M` and `SystemKeepFree=4G`. Restarting journald reclaimed the
+archived history after preservation; the follow-up vacuum found no further work.
+A second journald restart confirmed its effective ceiling below 512 MB after the
+initial disk-pressure adjustment. Journal usage became about 420 MiB and free
+space about 4 GiB while the dashboard query was running. The database, collector,
+and analytics services were not restarted, and no stored telemetry, customer
+records, application artifacts, or database backups were removed.
+
+This journal budget bounds log growth; `SystemKeepFree` is not a reservation for
+PostgreSQL. The growing telemetry database still needs additional storage
+headroom. Do not truncate telemetry or remove backups as an implicit retention
+policy. A full recovery requires the four public snapshot responses to return
+complete live/Postgres data with one fresh timestamp and no refresh failure,
+plus a rendered browser check. Ingestion alone is insufficient.
+
+Recovery passed at `2026-10-19T18:22:51.203Z` (11:22:51 PDT): health, Overview,
+installs, and sessions returned complete JSON with `live`, `postgres`,
+`production`, the same snapshot timestamp, and `last_refresh_failed=false`.
+The largest response (sessions) was 9,203,223 bytes and parsed completely.
+The browser Refresh button rendered 42,298 user-day rollups, 2,349 installs,
+the matching timestamp, and no stale-refresh warning. At 18:23 UTC the host had
+4,432,470,016 bytes (4.1 GiB) available, no remaining query temporary files, all
+five checked services active, and a natural event received at
+`2026-10-19T18:23:24.611133Z`. No new PostgreSQL error had appeared since the
+17:52 UTC disk error. Snapshot verification JSON and the browser screenshot are
+saved in the local recovery folder. This is a recovery check, not a historical
+missing-event reconciliation or a substitute for additional storage capacity.
+
+Rollback of the journal policy is to remove only the new drop-in and restart
+`systemd-journald`; no prior file existed at that path. Archived logs remain
+recoverable from the verified local archive and can be inspected offline with
+`journalctl --directory` after extraction. Restoring them onto the nearly-full
+host would recreate disk pressure.
+
 ### Live evidence and remaining work
 
 - GoDaddy A `telemetry` → `2.29.9.121`, TTL 600; both authoritative nameservers

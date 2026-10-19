@@ -2,6 +2,22 @@
 
 ## Product Overview
 
+### Telemetry host storage recovery — October 19, 2026
+
+The hosted dashboard stopped refreshing after `2026-10-19T10:07:48.429Z`
+because PostgreSQL temporary files exhausted the host disk; some collector
+writes also failed. The telemetry database was approximately 42 GB. Archived
+system journals were copied off-host and all 54 file hashes verified before
+reclaiming space. `ops/journald/60-sidestream-disk-budget.conf` bounds persistent
+journals to 512 MB and requests 4 GB free space; this is not a database disk
+reservation. No telemetry/customer rows or database backups were deleted.
+All four public snapshot endpoints and the rendered dashboard recovered at
+`2026-10-19T18:22:51.203Z` (11:22:51 PDT), with live/Postgres data and no refresh
+failure. About 4.1 GiB remained free afterward; database growth still requires
+more capacity, and recovery does not establish complete replay of failed writes.
+See [the recovery record](docs/direct-telemetry-ingress.md#october-19-storage-recovery)
+for preservation evidence, recovery checks, rollback, and capacity limits.
+
 ### Paid activation identity — October 18, 2026 (deployed qualification)
 
 New exact paid-source activations retain the installation/native-receipt hash
