@@ -20,6 +20,7 @@ const ROOT_POSTGRES_ONLY_TESTS = new Set([
   "meta-roas-report-postgres.test.mjs",
   "pre-upgrade-downloads-postgres.test.mjs",
   "purchase-attribution-postgres.test.mjs",
+  "paid-initial-authorization-postgres.test.mjs",
   "paid-telemetry-handoff-repair.test.mjs",
   "postgres-integration.test.mjs",
   "single-device-postgres.test.mjs",

@@ -6,7 +6,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import {spawn,spawnSync} from 'node:child_process';
 import {scope,paidScope,sha,signed,verified,paidProof,continuePaid} from '../scripts/production-update-protocol.mjs';
-import {hold,atomic,verifyCatalog,createServer,applyControl,loadTrust,loadKeys,json} from '../scripts/production-update-service.mjs';
+import {hold,atomic,verifyCatalog,createServer,applyControl,loadTrust,loadKeys,json,policyForLineage} from '../scripts/production-update-service.mjs';
 import {signRequest,controlSnapshot,keyId} from '../scripts/user-update-test-operator.mjs';
 import {makePolicy} from '../scripts/user-update-test-control.mjs';
 
@@ -62,6 +62,41 @@ test('offline seed authorizes a third and subsequent release without changing ac
   }
   assert.deepEqual(Object.keys(proof).sort(),['acquisition','links','schema','scope']);
   assert.throws(()=>verified(issued,[f.release.publicKey]));
+});
+
+test('separate initial authority extends only its exact catalog anchor and never gains release or continuation authority',t=>{
+  const f=fixture(t),initial=pair(),[a,,c]=f.targets;
+  const lineage='generic-first-qualification';
+  f.catalog.releases[a.id].paidInitialLineage=lineage;
+  const acquisition={...f.seed.acquisition,version:a.version};
+  const initialProof={schema:'sidestream.paid-initial.v1',scope:'sidestream-paid-initial-production-1',lineage,acquisition,target:a};
+  const invoke=(proof=initialProof,key=initial.privateKey,initialKey=initial.publicKey)=>continuePaid({
+    request:{client,prior:signed(proof,key),target:c},catalog:f.catalog,
+    policy:makePolicy(f.catalog,{...hold,download:f.choice(c)},client,1,1000,scope),
+    releaseKey:f.keys.release,continuationKey:f.keys.continuation,initialKey});
+  const continued=paidProof(invoke(),[f.continuation.publicKey]);
+  assert.deepEqual(continued.acquisition,acquisition);assert.deepEqual(continued.links[0].to,c);
+  for(const key of [f.release.privateKey,f.policy.privateKey,f.continuation.privateKey])assert.throws(()=>invoke(initialProof,key));
+  assert.throws(()=>invoke(initialProof,initial.privateKey,null));
+  for(const mutate of [p=>p.scope=paidScope,p=>p.lineage='wrong',p=>p.target={...a,version:'1.0.1'},
+    p=>p.acquisition.version='1.0.1',p=>p.target={...a,manifestSha256:'f'.repeat(64)},p=>p.extra=true]) {
+    const proof=structuredClone(initialProof);mutate(proof);assert.throws(()=>invoke(proof));
+  }
+  assert.throws(()=>paidProof(signed(initialProof,initial.privateKey),[f.release.publicKey,f.continuation.publicKey]));
+  const pins={scope,releaseKey:raw(f.release.publicKey),policyKey:raw(f.policy.publicKey),continuationKey:raw(f.continuation.publicKey)};
+  assert.ok(loadTrust({...pins,initialKey:raw(initial.publicKey)}).initial);
+  assert.throws(()=>loadTrust({...pins,initialKey:raw(f.release.publicKey)}));
+});
+
+test('signed companion selection isolates generic and legacy lineages without fallback',()=>{
+  const generic={id:'generic-companion'},legacy={id:'legacy-companion'};
+  const catalog={releases:{[generic.id]:{paidInitialLineage:'generic-one'},[legacy.id]:{}}};
+  const policy={companion:{download:generic,activate:generic}};
+  assert.deepEqual(policyForLineage(policy,catalog,'generic-one').companion,{download:generic,activate:generic,lineage:'generic-one'});
+  assert.deepEqual(policyForLineage(policy,catalog,'unknown').companion,{download:null,activate:null,lineage:'unknown'});
+  assert.deepEqual(policyForLineage(policy,catalog).companion,{download:null,activate:null});
+  assert.deepEqual(policyForLineage({companion:{download:legacy,activate:null}},catalog).companion,{download:legacy,activate:null});
+  assert.equal(policyForLineage({companion:{download:legacy,activate:null}},catalog,'generic-one').companion.download,null);
 });
 
 test('forged, private-scope, malformed, wrong key and client-invented acquisitions/targets cannot be signed',t=>{

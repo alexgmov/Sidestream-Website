@@ -33,6 +33,8 @@
     "test:download-friend-rewards": "npm run build:hetzner-api && node --test tests/download-friend-rewards-postgres.test.mjs",
     "test:credits": "node --experimental-strip-types --test tests/download-credits.test.mjs && npm run test:migrations",
     "test:download-referral": "node --test tests/download-referral.test.mjs",
+    "test:paid-initial": "npm run build:hetzner-api && node --test tests/paid-initial-authorization.test.mjs",
+    "test:paid-initial-postgres": "npm run build:hetzner-api && node --test tests/paid-initial-authorization-postgres.test.mjs",
     "test:production-updater": "node --test tests/production-update-service.test.mjs tests/user-update-test-control.test.mjs tests/user-update-test-operator.test.mjs",
     "test:installer-delivery": "node --experimental-strip-types --test tests/installer-delivery.test.mjs",
     "test:paid-acquisition-e2e": "node --experimental-strip-types --test tests/paid-acquisition-e2e-fixtures.test.mjs",

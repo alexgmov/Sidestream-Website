@@ -27,6 +27,7 @@ import {
 } from "../_lib/rate-limit.js";
 import { createSignedPaidDownloadUrl } from "../_lib/paid-download.js";
 import { headInstallerArtifact } from "../_lib/installer-delivery.js";
+import { qualificationInitialArtifact } from "../_lib/paid-initial-authorization.js";
 
 const RECEIPT = /^[A-Za-z0-9_-]{43}$/;
 const HANDOFF_BODY_MAX_BYTES = 128;
@@ -47,6 +48,8 @@ export default async function handler(
     "https://sidestream.tv",
   );
   const entries = [...requestUrl.searchParams.entries()];
+  const initialQualification = requestUrl.searchParams.get("qualification") === "paid-initial-v1" &&
+    requestUrl.searchParams.getAll("qualification").length === 1;
   if (
     entries.length === 1 &&
     requestUrl.searchParams.getAll("handoff").length === 1
@@ -68,7 +71,7 @@ export default async function handler(
     return;
   }
   if (
-    entries.length !== 2 ||
+    entries.length !== (initialQualification ? 3 : 2) ||
     requestUrl.searchParams.getAll("receipt").length !== 1 ||
     requestUrl.searchParams.getAll("platform").length !== 1
   ) {
@@ -160,7 +163,12 @@ export default async function handler(
       return sendError(response, 403, code);
     }
 
-    const manifest = readPaidReleaseManifest(platform);
+    if (initialQualification && (environment.namespace !== "production" || platform !== "macos-universal")) {
+      return sendError(response, 404, "artifact_not_found");
+    }
+    const manifest = initialQualification
+      ? qualificationInitialArtifact(process.env, state.entitlement_account_ref)
+      : readPaidReleaseManifest(platform);
     const pathname = getPaidArtifactPathname(manifest);
     const metadata = await headInstallerArtifact(pathname);
     if (

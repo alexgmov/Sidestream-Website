@@ -3,6 +3,7 @@ import {target} from './user-update-test-control.mjs';
 
 export const scope = 'sidestream-user-release-production-1';
 export const paidScope = 'sidestream-paid-update-production-1';
+export const paidInitialScope = 'sidestream-paid-initial-production-1';
 export const sha = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
 export const hash = /^[a-f0-9]{64}$/;
 const version = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/;
@@ -45,6 +46,9 @@ export function sameTarget(a, b) {
 export function paidProof(envelope, keys) {
   if (Buffer.byteLength(JSON.stringify(envelope)) > 65536) throw Error('Oversized certificate');
   const proof = verified(envelope, keys);
+  return validatePaidProof(proof);
+}
+function validatePaidProof(proof) {
   exact(proof, ['schema','scope','acquisition','links']);
   if (proof.schema !== 'sidestream.paid-continuation.v1' || proof.scope !== paidScope) throw Error('Wrong paid scope');
   const a = proof.acquisition;
@@ -73,7 +77,7 @@ export function paidProof(envelope, keys) {
 
 // Only a previously authorized acquisition can obtain continuity. No supplied
 // receipt, account token or self-asserted identity is accepted as a signing root.
-export function continuePaid({request, catalog, policy, releaseKey, continuationKey}) {
+export function continuePaid({request, catalog, policy, releaseKey, continuationKey, initialKey}) {
   exact(request, ['client','prior','target']);
   if (!hash.test(request.client) || request.client !== policy.client) throw Error('Invalid client');
   const requested = paidTarget(request.target);
@@ -82,7 +86,21 @@ export function continuePaid({request, catalog, policy, releaseKey, continuation
       !sameTarget(requested, {...item.target, version:item.version}) || policy.revoked.includes(requested.sha256) ||
       ![policy.download, policy.activate].some(t => t && t.id === requested.id && t.sha256 === requested.sha256 && t.manifestSha256 === requested.manifestSha256))
     throw Error('Target not authorized');
-  const proof = paidProof(request.prior, [releaseKey, publicKey(continuationKey)]);
+  let proof;
+  try { proof = paidProof(request.prior, [releaseKey, publicKey(continuationKey)]); }
+  catch (error) {
+    if (!initialKey) throw error;
+    const initial=verified(request.prior,[initialKey]);
+    exact(initial,['schema','scope','lineage','acquisition','target']);
+    if(initial.schema!=='sidestream.paid-initial.v1'||initial.scope!==paidInitialScope ||
+       typeof initial.lineage!=='string'||!/^[a-z0-9][a-z0-9-]{0,63}$/.test(initial.lineage))throw Error('Wrong initial authority');
+    const anchor=paidTarget(initial.target),seed=catalog.releases[anchor.id];
+    if(!seed||seed.kind!=='cep'||seed.customerOnboarding!=='paid-onboarding'||seed.paidInitialLineage!==initial.lineage||
+       !sameTarget(anchor,{...seed.target,version:seed.version})||anchor.version!==initial.acquisition?.version||
+       policy.revoked.includes(anchor.sha256))throw Error('Initial target not authorized');
+    proof=validatePaidProof({schema:'sidestream.paid-continuation.v1',scope:paidScope,acquisition:initial.acquisition,
+      links:[{from:{receiptSha256:initial.acquisition.receiptSha256,version:initial.acquisition.version},to:anchor}]});
+  }
   // Re-anchor the signed acquisition, instead of exhausting a finite chain or
   // duplicating a previous target during a separately authorized rollback.
   const response = signed({schema:proof.schema, scope:paidScope, acquisition:proof.acquisition,
@@ -110,5 +128,9 @@ export function releaseMetadata(envelope, releaseKey, expected) {
   }
   if (bytes !== expected.bytes || (release.kind === 'cep' && !['standard','paid-onboarding'].includes(release.customerOnboarding)))
     throw Error('Invalid release size or onboarding');
-  return {kind:release.kind, version:release.version, customerOnboarding:release.customerOnboarding};
+  if(release.paidInitialLineage!==undefined && (typeof release.paidInitialLineage!=='string'||
+     !/^[a-z0-9][a-z0-9-]{0,63}$/.test(release.paidInitialLineage)||
+     (release.kind==='cep'&&release.customerOnboarding!=='paid-onboarding')))throw Error('Invalid initial lineage');
+  return {kind:release.kind, version:release.version, customerOnboarding:release.customerOnboarding,
+    ...(release.paidInitialLineage!==undefined?{paidInitialLineage:release.paidInitialLineage}:{})};
 }

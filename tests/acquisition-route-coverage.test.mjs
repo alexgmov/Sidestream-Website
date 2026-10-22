@@ -59,6 +59,7 @@ const ROUTE_POLICY = Object.freeze({
   "api/paid-acquisition/artifact.ts": "product_delivery",
   "api/paid-acquisition/checkout.ts": "acquisition_stage",
   "api/paid-acquisition/claim.ts": "acquisition_continuity",
+  "api/paid-acquisition/initial-authorization.ts": "acquisition_continuity",
   "api/paid-acquisition/landing.ts": "acquisition_entry",
   "api/referral-visit.ts": "referral_observation",
   "api/releases/latest.ts": "product_metadata",

@@ -69,7 +69,7 @@ export function verifyCatalog(catalog, releaseKey, artifactRoot, rootOwned=false
   return {scope, releases};
 }
 export function loadTrust(value) {
-  exact(value, ['scope','releaseKey','policyKey','continuationKey']);
+  exact(value, ['scope','releaseKey','policyKey','continuationKey',...(Object.hasOwn(value,'initialKey')?['initialKey']:[])]);
   if (value.scope !== scope) throw Error('Wrong trust scope');
   const decode = text => {
     if (typeof text !== 'string') throw Error('Invalid public key');
@@ -77,13 +77,14 @@ export function loadTrust(value) {
     if (raw.length !== 32 || raw.toString('base64') !== text) throw Error('Invalid public key');
     return publicKey({key:Buffer.concat([Buffer.from('302a300506032b6570032100','hex'),raw]),type:'spki',format:'der'});
   };
-  const keys={release:decode(value.releaseKey),policy:decode(value.policyKey),continuation:decode(value.continuationKey)};
+  const keys={release:decode(value.releaseKey),policy:decode(value.policyKey),continuation:decode(value.continuationKey),
+    ...(Object.hasOwn(value,'initialKey')?{initial:decode(value.initialKey)}:{})};
   const ids=Object.values(keys).map(key=>sha(key.export({type:'spki',format:'der'})));
-  if (new Set(ids).size !== 3) throw Error('Separate signing roles required');
+  if (new Set(ids).size !== ids.length) throw Error('Separate signing roles required');
   return {...keys,ids};
 }
 export function loadKeys(directory, trust) {
-  if (fs.existsSync(path.join(directory,'release.pem'))) throw Error('Offline release private key must not be on the service');
+  if (['release.pem','initial.pem'].some(name=>fs.existsSync(path.join(directory,name)))) throw Error('Release and initial-authorization private keys must not be on the updater service');
   const secret = name => {
     const file=path.join(directory,name);
     // systemd's credential ACL grants this service read access through a 0440
@@ -106,7 +107,7 @@ export function loadKeys(directory, trust) {
   if (new Set(ids).size !== ids.length) throw Error('Separate signing roles required');
   if (ids.some(id=>!trust.ids.includes(id)) || keyId(policy) !== sha(trust.policy.export({type:'spki',format:'der'})) ||
       keyId(continuation) !== sha(trust.continuation.export({type:'spki',format:'der'}))) throw Error('Secret does not match pinned trust');
-  return {policy,continuation,release,ticket,ids};
+  return {policy,continuation,release,ticket,ids,...(trust.initial?{initial:trust.initial}:{})};
 }
 export function checkState(state) {
   const stat = fs.lstatSync(state);
@@ -140,15 +141,23 @@ function body(req) {
     req.once('end', () => { try { resolve(JSON.parse(Buffer.concat(chunks))); } catch { reject(fault(400)); } });
   });
 }
+// Lineage is public immutable compatibility metadata, never customer identity.
+// The filtered result is signed, and delivery repeats the same selection.
+export function policyForLineage(policy,catalog,lineage=null) {
+  if(!policy.companion)return policy;
+  const compatible=t=>t&&(catalog.releases[t.id]?.paidInitialLineage??null)===lineage?t:null;
+  const download=compatible(policy.companion.download),activate=compatible(policy.companion.activate);
+  return {...policy,companion:{download,activate,...(lineage!==null?{lineage}:{})}};
+}
 export function createServer({catalog,state,keys,sourceSha,clock=()=>Date.now()/1000,rootOwned=false}) {
   checkState(state);
   let revision = json(path.join(state,'counter.json'), {privateFile:true}).revision;
   if (!Number.isSafeInteger(revision) || revision < 0) throw Error('Invalid persisted policy revision');
   const control = () => json(path.join(state,'control.json'), {privateFile:true});
   validateControl(catalog, control().control, scope);
-  const policy = client => {
+  const policy = (client,lineage=null) => {
     if (revision >= Number.MAX_SAFE_INTEGER-1) throw Error('Policy revision exhausted');
-    const result = makePolicy(catalog,control().control,client,revision+1,clock(),scope);
+    const result = policyForLineage(makePolicy(catalog,control().control,client,revision+1,clock(),scope),catalog,lineage);
     atomic(path.join(state,'counter.json'),{revision:result.revision}); revision=result.revision;
     return result;
   };
@@ -167,7 +176,7 @@ export function createServer({catalog,state,keys,sourceSha,clock=()=>Date.now()/
         if (!hash.test(request?.client)) throw fault(400);
         const lease = policy(request.client);
         let certificate;
-        try { certificate=continuePaid({request,catalog,policy:lease,releaseKey:keys.release,continuationKey:keys.continuation}); }
+        try { certificate=continuePaid({request,catalog,policy:lease,releaseKey:keys.release,continuationKey:keys.continuation,initialKey:keys.initial}); }
         catch { throw fault(403); }
         reply(res,certificate); return;
       }
@@ -180,7 +189,9 @@ export function createServer({catalog,state,keys,sourceSha,clock=()=>Date.now()/
       if (url.pathname === '/policy' || url.pathname === '/delivery') {
         const client=url.searchParams.get('client');
         if (!hash.test(client)) throw fault(400);
-        const lease=policy(client);
+        const lineage=url.searchParams.get('lineage');
+        if(lineage!==null&&(!/^[a-z0-9][a-z0-9-]{0,63}$/.test(lineage)||url.searchParams.getAll('lineage').length!==1))throw fault(400);
+        const lease=policy(client,lineage);
         if (url.pathname === '/policy') { reply(res,signed(lease,keys.policy)); return; }
         const t=[lease.download,lease.companion?.download].find(t => t?.id === url.searchParams.get('id'));
         if (!t || t.sha256 !== url.searchParams.get('sha256')) throw fault(403);

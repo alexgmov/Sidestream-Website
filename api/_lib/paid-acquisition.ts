@@ -1486,6 +1486,7 @@ export async function getPaidAcquisitionReceiptState(options: {
         paid.checkout_email_normalized,
         core.acquisition_id,
         license.id as entitlement_ref,
+        license.account_id as entitlement_account_ref,
         ${paidLifecycleSql("license")} as entitlement_status
       from public.sidestream_paid_acquisition_checkouts paid
       join public.sidestream_checkout_intents core
