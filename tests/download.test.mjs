@@ -19,6 +19,8 @@ const manifests = {
 };
 let compiledDirectory;
 let createDownloadHandler;
+let macRollout;
+let deliveryModule;
 
 before(async () => {
   mkdirSync(path.join(process.cwd(), "node_modules", ".tmp"), { recursive: true });
@@ -29,6 +31,10 @@ before(async () => {
   ({ createDownloadHandler } = await import(
     pathToFileURL(path.join(compiledDirectory, "api", "download.js")).href
   ));
+  macRollout = await import(pathToFileURL(path.join(compiledDirectory, "api/_lib/mac-download-rollout.js")));
+  const { parseReleaseManifest } = await import(pathToFileURL(path.join(compiledDirectory, "api/_lib/release-manifest.js")));
+  for (const platform of ["macos", "windows"]) manifests[platform] = parseReleaseManifest(manifests[platform], platform);
+  deliveryModule = await import(pathToFileURL(path.join(compiledDirectory, "api/_lib/installer-delivery.js")));
 });
 
 after(() => {
@@ -168,6 +174,8 @@ test("Mac and Windows fulfillment select the manifest artifact without wrapping 
 function downloadHandler(overrides = {}) {
   const backgroundTasks = [];
   const handler = createDownloadHandler({
+    readMacRollout: () => null,
+    logDownloadSelection: () => {},
     headInstaller: async (pathname) => ({
       contentType: "application/octet-stream",
       etag: "test-etag",
@@ -230,3 +238,145 @@ async function invoke(handler, options = {}) {
     server.close();
   }
 }
+
+
+function pilotConfig(percent = 1) {
+  return macRollout.parseMacDownloadRollout({ ...readManifest("mac-download-rollout.json"), percent });
+}
+
+function pilotCookie(wanted) {
+  const config = pilotConfig();
+  for (let n = 1; n < 10000; n += 1) {
+    const cookie = createBrowserAcquisitionCookie({ acquisitionId: `12345678-1234-4234-8234-${n.toString(16).padStart(12, "0")}` }, { secret: SECRET, now: NOW });
+    if ((macRollout.selectMacDownloadManifest(manifests.macos, config, cookie.token, SECRET) === config.candidate) === wanted) return cookie;
+  }
+  throw new Error("Deterministic cohort fixture missing");
+}
+
+function pilotHandler(overrides = {}) {
+  const candidate = pilotConfig().candidate;
+  return downloadHandler({
+    readMacRollout: () => pilotConfig(),
+    headInstaller: async (pathname) => {
+      const artifact = [manifests.macos, manifests.windows, candidate].find((x) => x.artifact.pathname === pathname)?.artifact;
+      assert.ok(artifact);
+      return { size: artifact.sizeBytes, sha256: artifact.sha256, etag: artifact.sha256 };
+    },
+    createSignedUrl: async (pathname) => `https://downloads.example/${pathname}`,
+    ...overrides,
+  });
+}
+
+test("Mac download pilot is independently bound, disabled at zero, and never an update notice", () => {
+  const source = readManifest("mac-download-rollout.json");
+  const config = pilotConfig();
+  assert.equal(config.percent, 1);
+  assert.equal(config.candidate.version, "1.0.57");
+  assert.equal(config.candidate.rolloutPercent, 0);
+  assert.equal(manifests.macos.version, "1.0.21");
+  assert.equal(macRollout.parseMacDownloadRollout({ ...source, enabled: false }), null);
+  assert.equal(macRollout.parseMacDownloadRollout({ ...source, percent: 0 }), null);
+  for (const percent of [-1, 101, 1.5, "1"]) assert.throws(() => macRollout.parseMacDownloadRollout({ ...source, percent }));
+  assert.throws(() => macRollout.parseMacDownloadRollout({ ...source, candidate: { ...source.candidate, channel: "stable" } }));
+  assert.throws(() => macRollout.parseMacDownloadRollout({ ...source, candidate: { ...source.candidate, critical: true } }));
+  assert.ok(deliveryModule.listManifestInstallerArtifacts().some((x) => x.pathname === config.candidate.artifact.pathname));
+});
+
+test("one percent assignment is stable, statistically bounded, and rejects unbound inputs", () => {
+  const config = pilotConfig();
+  let selected = 0;
+  for (let n = 0; n < 10000; n += 1) {
+    const bytes = Buffer.alloc(32); bytes.writeUInt32BE(n);
+    const token = bytes.toString("base64url");
+    const first = macRollout.selectMacDownloadManifest(manifests.macos, config, token, SECRET);
+    assert.equal(macRollout.selectMacDownloadManifest(manifests.macos, config, token, SECRET), first);
+    if (first === config.candidate) selected += 1;
+  }
+  assert.ok(selected >= 65 && selected <= 135, `1 percent of 10000 identities: ${selected}`);
+  const cookie = pilotCookie(true);
+  for (const [stable, rollout, token, secret] of [
+    [manifests.windows, config, cookie.token, SECRET],
+    [manifests.macos, null, cookie.token, SECRET],
+    [manifests.macos, config, undefined, SECRET],
+    [manifests.macos, config, cookie.token, "short"],
+    [{ ...manifests.macos, version: "1.0.58" }, config, cookie.token, SECRET],
+    [{ ...manifests.macos, artifact: { ...manifests.macos.artifact, sha256: "0".repeat(64) } }, config, cookie.token, SECRET],
+  ]) assert.equal(macRollout.selectMacDownloadManifest(stable, rollout, token, secret), stable);
+});
+
+test("pilot GET and cookie-bearing HEAD return the same verified artifact without identity headers", async () => {
+  const cookie = pilotCookie(true);
+  const headers = { cookie: `${ACQUISITION_COOKIE_NAME}=${cookie.value}` };
+  const recorded = [];
+  const selections = [];
+  const handler = pilotHandler({ recordAcquisition: async (x) => recorded.push(x), logDownloadSelection: (x) => selections.push(x) });
+  for (const method of ["HEAD", "GET", "GET"]) {
+    const result = await invoke(handler, { method, headers });
+    assert.equal(result.response.status, method === "HEAD" ? 200 : 302);
+    assert.equal(result.response.headers.get("x-sidestream-version"), "1.0.57");
+    assert.equal(result.response.headers.get("x-sidestream-download-cohort"), "pilot");
+    assert.equal(result.response.headers.get("x-sidestream-sha256"), pilotConfig().candidate.artifact.sha256);
+    assert.equal(result.response.headers.get("vary"), "Cookie");
+    if (method === "HEAD") assert.equal(result.response.headers.get("content-length"), "227078245");
+    else assert.match(result.response.headers.get("location"), /manual-beta\/1\.0\.57/);
+    assert.ok(!JSON.stringify([...result.response.headers]).includes(cookie.token));
+    await result.response.arrayBuffer(); await result.handlerDone; await flushBackground(handler);
+  }
+  assert.equal(recorded.length, 2);
+  assert.equal(recorded[0].cookie.value, cookie.value);
+  assert.equal(selections.length, 2);
+  assert.deepEqual(Object.keys(selections[0]).sort(), ["cohort", "rolloutId", "version"]);
+});
+
+test("control, stable recovery, unauthenticated HEAD and Windows never become pilot downloads", async () => {
+  for (const entry of [
+    { path: "/api/download?release=pilot&rollout=100", cookie: pilotCookie(false).value, version: "1.0.21" },
+    { path: "/api/download?release=stable", cookie: pilotCookie(true).value, version: "1.0.21" },
+    { method: "HEAD", version: "1.0.21" },
+    { method: "HEAD", cookie: "forged.value", version: "1.0.21" },
+    { method: "HEAD", cookie: createBrowserAcquisitionCookie({}, { secret: SECRET, now: new Date("2026-01-01T00:00:00Z") }).value, version: "1.0.21" },
+    { path: "/api/download?platform=win32-x64", cookie: pilotCookie(true).value, version: manifests.windows.version },
+  ]) {
+    const handler = pilotHandler();
+    const result = await invoke(handler, { path: entry.path, method: entry.method, headers: entry.cookie ? { cookie: `${ACQUISITION_COOKIE_NAME}=${entry.cookie}` } : {} });
+    assert.equal(result.response.status, entry.method === "HEAD" ? 200 : 302);
+    assert.equal(result.response.headers.get("x-sidestream-version"), entry.version);
+    assert.notEqual(result.response.headers.get("x-sidestream-download-cohort"), "pilot");
+    await result.response.arrayBuffer(); await result.handlerDone; await flushBackground(handler);
+  }
+});
+
+test("first successful GET persists its server-issued assignment without affecting failed or HEAD requests", async () => {
+  const handler = pilotHandler({ readMacRollout: () => pilotConfig(100) });
+  const first = await invoke(handler);
+  assert.equal(first.response.headers.get("x-sidestream-version"), "1.0.57");
+  const cookie = first.response.headers.get("set-cookie").split(";")[0];
+  assert.match(cookie, /^__Host-sidestream-acquisition-v2=/);
+  await first.response.arrayBuffer(); await first.handlerDone; await flushBackground(handler);
+  const retry = await invoke(handler, { headers: { cookie } });
+  assert.equal(retry.response.headers.get("x-sidestream-version"), "1.0.57");
+  assert.equal(retry.response.headers.get("set-cookie"), null);
+  await retry.response.arrayBuffer(); await retry.handlerDone; await flushBackground(handler);
+});
+
+test("candidate missing, hash mismatch and signing errors fall back to validated stable bytes", async () => {
+  const candidate = pilotConfig().candidate;
+  const cookie = `${ACQUISITION_COOKIE_NAME}=${pilotCookie(true).value}`;
+  for (const failure of ["missing", "hash", "sign", "config", "disabled"]) {
+    const handler = pilotHandler({
+      readMacRollout: () => { if (failure === "config") throw new Error("bad config"); return failure === "disabled" ? null : pilotConfig(); },
+      headInstaller: async (pathname) => {
+        if (pathname === candidate.artifact.pathname && failure === "missing") throw new Error("missing");
+        const artifact = pathname === candidate.artifact.pathname ? candidate.artifact : manifests.macos.artifact;
+        return { size: artifact.sizeBytes, sha256: pathname === candidate.artifact.pathname && failure === "hash" ? "0".repeat(64) : artifact.sha256, etag: artifact.sha256 };
+      },
+      createSignedUrl: async (pathname) => { if (pathname === candidate.artifact.pathname && failure === "sign") throw new Error("sign error"); return `https://downloads.example/${pathname}`; },
+    });
+    const result = await invoke(handler, { headers: { cookie } });
+    assert.equal(result.response.status, 302);
+    assert.equal(result.response.headers.get("x-sidestream-version"), "1.0.21");
+    assert.equal(result.response.headers.get("x-sidestream-download-cohort"), "stable");
+    assert.match(result.response.headers.get("location"), /1\.0\.21/);
+    await result.response.arrayBuffer(); await result.handlerDone; await flushBackground(handler);
+  }
+});

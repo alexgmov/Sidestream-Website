@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "enabled": true,
+  "rolloutId": "mac-manual-1.0.57-20261029",
+  "percent": 1,
+  "baselineVersion": "1.0.21",
+  "baselineSha256": "c7f553f5c4bca0a7314e4f40ff50ac7feb3fd55c5e9eb14657fab54f5cdb26e9",
+  "candidate": {
+    "schemaVersion": 1,
+    "product": "sidestream",
+    "channel": "macos-download-pilot",
+    "platform": "macos",
+    "version": "1.0.57",
+    "minSupportedVersion": "1.0.12",
+    "critical": false,
+    "rolloutPercent": 0,
+    "publishedAt": "2026-10-29T00:00:00.000Z",
+    "releaseNotesUrl": "https://sidestream.tv/",
+    "artifact": {
+      "type": "dmg",
+      "url": "https://sidestream.tv/api/download",
+      "pathname": "sidestream/manual-beta/1.0.57/Sidestream-1.0.57-Mac-Installer.dmg",
+      "sha256": "d8c91d5c6aa2ad3dd882926fd2a6112208ac39a7ec438ba77de5c2ba6f81aebe",
+      "sizeBytes": 227078245
+    }
+  }
+}

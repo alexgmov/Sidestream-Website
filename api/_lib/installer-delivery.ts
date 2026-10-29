@@ -1,4 +1,5 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
+import { readMacDownloadRollout } from "./mac-download-rollout.js";
 import { lstat, realpath } from "node:fs/promises";
 import path from "node:path";
 
@@ -115,6 +116,18 @@ export function listManifestInstallerArtifacts(): readonly InstallerArtifactReco
       platform: "macos" as const,
       access: "free" as const,
     }));
+  }
+
+  let macPilot = null;
+  try { macPilot = readMacDownloadRollout(); } catch { /* fail closed for the pilot only */ }
+  if (macPilot) {
+    const candidate = macPilot.candidate;
+    const stable = readReleaseManifest("macos");
+    if (stable.version === macPilot.baselineVersion && stable.artifact.sha256 === macPilot.baselineSha256) {
+      records.push(Object.freeze({ pathname: candidate.artifact.pathname, filename: candidate.artifact.filename,
+        sha256: candidate.artifact.sha256, sizeBytes: candidate.artifact.sizeBytes,
+        contentType: contentTypeForFilename(candidate.artifact.filename), platform: "macos" as const, access: "free" as const }));
+    }
   }
 
   const pathnames = new Set<string>();

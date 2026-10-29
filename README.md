@@ -243,6 +243,16 @@ This repository owns the whole Sidestream web service: the public/account fronte
 
 ## File Map
 
+- `api/_lib/mac-download-rollout.ts` and `data/mac-download-rollout.json` -
+  Owner-approved 1% Mac installer-download pilot of immutable 1.0.57, separate
+  from update notices, paid fulfillment and native updater controls. Assignment
+  uses the existing signed browser acquisition cookie; retries remain in the
+  same cohort. Candidate failures return the validated stable 1.0.21 installer.
+  `?release=stable` is the recovery path. No parameter forces pilot eligibility.
+  [Mac download pilot operations](docs/mac-download-rollout.md) owns deployment,
+  proof, coverage limits, observation and rollback. Run the download,
+  installer-delivery, after-effects-release and release-contract tests.
+
 - `api/download-after-effects.ts` and `data/release-manifest.after-effects.json` -
   Invited Mac AE cohort delivery, independently enabled from standard releases.
   The route reuses `/api/download`'s metadata validation, GET signed redirect and

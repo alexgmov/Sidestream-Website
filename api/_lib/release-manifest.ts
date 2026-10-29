@@ -40,7 +40,7 @@ export type PublicReleasePlatform =
 export type ReleaseManifest = {
   schemaVersion: 1;
   product: "sidestream";
-  channel: "stable" | "after-effects-download-release";
+  channel: "stable" | "after-effects-download-release" | "macos-download-pilot";
   platform: PublicReleasePlatform;
   version: string;
   minSupportedVersion: string;

@@ -41,6 +41,7 @@ import {
   recordAcquisitionStage,
 } from "./_lib/acquisition-integrity.js";
 import { ensureBrowserAcquisition } from "./acquisition/_lib.js";
+import { readMacDownloadRollout, selectMacDownloadManifest, type MacDownloadRollout } from "./_lib/mac-download-rollout.js";
 
 const DEFAULT_CONTENT_TYPE = "application/octet-stream";
 const REFERRAL_WRITE_TIMEOUT_MS = 1_000;
@@ -53,6 +54,8 @@ type DownloadRequest = IncomingMessage & {
 type DownloadDependencies = {
   readManifest: (platform: ReleasePlatform) => ReleaseManifest | null;
   trackAcquisition: boolean;
+  readMacRollout: () => MacDownloadRollout | null;
+  logDownloadSelection: (selection: { rolloutId: string; version: string; cohort: "stable" | "pilot" }) => void;
   headInstaller: (pathname: string) => Promise<{
     contentType?: string | null;
     etag?: string;
@@ -84,6 +87,8 @@ export function createDownloadHandler(
   const dependencies: DownloadDependencies = {
     readManifest: readReleaseManifest,
     trackAcquisition: true,
+    readMacRollout: readMacDownloadRollout,
+    logDownloadSelection: (selection) => console.info("[sidestream mac download cohort]", JSON.stringify(selection)),
     headInstaller: headInstallerArtifact,
     createSignedUrl: createInstallerDownloadUrl,
     recordReferral: recordInstallerReferral,
@@ -134,11 +139,49 @@ export function createDownloadHandler(
       return sendText(response, 503, "Release manifest is not available");
     }
 
-    const pathname = manifest.artifact.pathname;
+    const baseline = manifest;
+    let macPilot: MacDownloadRollout | null = null;
+    const acquisition = dependencies.trackAcquisition ? resolveAcquisitionForDownload(
+      request, requestUrl, dependencies, method === "GET",
+    ) : null;
+    if (dependencies.trackAcquisition && platform === "macos" && manifest.channel === "stable" &&
+        requestUrl.searchParams.get("release") !== "stable") {
+      try {
+        macPilot = dependencies.readMacRollout();
+        manifest = selectMacDownloadManifest(manifest, macPilot, acquisition?.cookie.token,
+          dependencies.getAcquisitionSecret());
+      } catch {
+        dependencies.logManifestError(new Error("Mac download pilot configuration unavailable; serving stable"));
+      }
+    }
+    const ifNoneMatch = headerValue(request.headers["if-none-match"]) ||
+      headerValue(request.headers["x-sidestream-origin-if-none-match"]);
+    const prepareDelivery = async (selected: ReleaseManifest) => {
+      const metadata = await dependencies.headInstaller(selected.artifact.pathname);
+      validateArtifactMetadata(metadata, selected);
+      const unchanged = method === "GET" && ifNoneMatch === metadata.etag;
+      const signedDownloadUrl = method === "GET" && !unchanged
+        ? await dependencies.createSignedUrl(selected.artifact.pathname) : null;
+      return { metadata, unchanged, signedDownloadUrl };
+    };
 
     try {
-      const metadata = await dependencies.headInstaller(pathname);
-      validateArtifactMetadata(metadata, manifest);
+      let delivery;
+      try {
+        delivery = await prepareDelivery(manifest);
+      } catch (error) {
+        if (manifest === baseline) throw error;
+        dependencies.logManifestError(new Error("Mac download pilot artifact unavailable; serving stable"));
+        manifest = baseline;
+        delivery = await prepareDelivery(manifest);
+      }
+      const { metadata, unchanged, signedDownloadUrl } = delivery;
+      response.setHeader("X-Sidestream-Version", manifest.version);
+      response.setHeader("X-Sidestream-Sha256", manifest.artifact.sha256);
+      if (platform === "macos" && baseline.channel === "stable") {
+        response.setHeader("Vary", "Cookie");
+        response.setHeader("X-Sidestream-Download-Cohort", manifest === baseline ? "stable" : "pilot");
+      }
 
       if (method === "HEAD") {
         setDownloadHeaders(response, {
@@ -151,9 +194,8 @@ export function createDownloadHandler(
         return;
       }
 
-      const ifNoneMatch = headerValue(request.headers["if-none-match"]) ||
-        headerValue(request.headers["x-sidestream-origin-if-none-match"]);
-      if (ifNoneMatch === metadata.etag) {
+      if (unchanged) {
+        if (acquisition?.setCookie) response.setHeader("Set-Cookie", acquisition.setCookie);
         response.setHeader("Cache-Control", "private, no-cache, max-age=0, must-revalidate");
         response.setHeader("X-Content-Type-Options", "nosniff");
         if (metadata.etag) response.setHeader("ETag", metadata.etag);
@@ -162,14 +204,8 @@ export function createDownloadHandler(
         return;
       }
 
-      const signedDownloadUrl = await dependencies.createSignedUrl(pathname);
-      const acquisition = dependencies.trackAcquisition ? resolveAcquisitionForDownload(
-        request,
-        requestUrl,
-        dependencies,
-      ) : null;
       response.statusCode = 302;
-      response.setHeader("Location", signedDownloadUrl);
+      response.setHeader("Location", signedDownloadUrl!);
       response.setHeader("Cache-Control", "no-store");
       response.setHeader("X-Content-Type-Options", "nosniff");
       if (acquisition?.setCookie) {
@@ -177,6 +213,11 @@ export function createDownloadHandler(
       }
       response.end();
 
+      if (macPilot && !isLikelyScanner(request) && baseline.version === macPilot.baselineVersion &&
+          baseline.artifact.sha256 === macPilot.baselineSha256) {
+        try { dependencies.logDownloadSelection({ rolloutId: macPilot.rolloutId, version: manifest.version,
+          cohort: manifest === baseline ? "stable" : "pilot" }); } catch { /* observation must not block delivery */ }
+      }
       if (acquisition && !isLikelyScanner(request)) {
         try {
           dependencies.scheduleBackground(
@@ -240,6 +281,7 @@ function resolveAcquisitionForDownload(
     DownloadDependencies,
     "getAcquisitionSecret" | "now" | "logTrackingError"
   >,
+  createIfMissing = true,
 ) {
   try {
     const secret = dependencies.getAcquisitionSecret();
@@ -261,6 +303,7 @@ function resolveAcquisitionForDownload(
         // A forged or expired cookie has no authority over the fresh first touch.
       }
     }
+    if (!createIfMissing) return null;
     const cookie = createBrowserAcquisitionCookie({
       attribution: normalizeBrowserAcquisitionAttribution(requestUrl.searchParams),
     }, { secret, now: requestedAt });
