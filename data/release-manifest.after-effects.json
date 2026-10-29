@@ -1,0 +1,20 @@
+{
+  "enabled": true,
+  "schemaVersion": 1,
+  "product": "sidestream",
+  "channel": "after-effects-download-release",
+  "platform": "macos",
+  "version": "1.0.22",
+  "minSupportedVersion": "1.0.22",
+  "critical": false,
+  "rolloutPercent": 100,
+  "publishedAt": "2026-10-29T17:28:00.442Z",
+  "releaseNotesUrl": "https://sidestream.tv/",
+  "artifact": {
+    "type": "dmg",
+    "url": "https://sidestream.tv/api/download-after-effects",
+    "pathname": "sidestream/after-effects/1.0.22/Sidestream-1.0.22-Mac-AfterEffects-Installer.dmg",
+    "sha256": "736d32d9cbd71c62c85c6f5dd092c323dcc7c8cba359899576dddd4e45553f1c",
+    "sizeBytes": 227060091
+  }
+}

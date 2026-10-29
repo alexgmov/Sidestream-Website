@@ -51,6 +51,8 @@ type DownloadRequest = IncomingMessage & {
 };
 
 type DownloadDependencies = {
+  readManifest: (platform: ReleasePlatform) => ReleaseManifest | null;
+  trackAcquisition: boolean;
   headInstaller: (pathname: string) => Promise<{
     contentType?: string | null;
     etag?: string;
@@ -80,6 +82,8 @@ export function createDownloadHandler(
   overrides: Partial<DownloadDependencies> = {},
 ) {
   const dependencies: DownloadDependencies = {
+    readManifest: readReleaseManifest,
+    trackAcquisition: true,
     headInstaller: headInstallerArtifact,
     createSignedUrl: createInstallerDownloadUrl,
     recordReferral: recordInstallerReferral,
@@ -122,7 +126,9 @@ export function createDownloadHandler(
 
     let manifest: ReleaseManifest;
     try {
-      manifest = readReleaseManifest(platform);
+      const selected = dependencies.readManifest(platform);
+      if (!selected) return sendText(response, 404, "Release installer not available");
+      manifest = selected;
     } catch (error) {
       dependencies.logManifestError(error);
       return sendText(response, 503, "Release manifest is not available");
@@ -157,11 +163,11 @@ export function createDownloadHandler(
       }
 
       const signedDownloadUrl = await dependencies.createSignedUrl(pathname);
-      const acquisition = resolveAcquisitionForDownload(
+      const acquisition = dependencies.trackAcquisition ? resolveAcquisitionForDownload(
         request,
         requestUrl,
         dependencies,
-      );
+      ) : null;
       response.statusCode = 302;
       response.setHeader("Location", signedDownloadUrl);
       response.setHeader("Cache-Control", "no-store");
@@ -186,7 +192,7 @@ export function createDownloadHandler(
         }
       }
 
-      if (parseGmailReferral(requestUrl.searchParams)) {
+      if (dependencies.trackAcquisition && parseGmailReferral(requestUrl.searchParams)) {
         try {
           dependencies.scheduleBackground(
             captureReferralAfterResponse(
@@ -404,6 +410,7 @@ function setDownloadHeaders(
   response.setHeader("X-Sidestream-Platform", manifest.platform);
   response.setHeader("X-Sidestream-Sha256", manifest.artifact.sha256);
   response.setHeader("X-Sidestream-Version", manifest.version);
+  response.setHeader("X-Sidestream-Release-Category", manifest.channel);
   response.setHeader("X-Content-Type-Options", "nosniff");
 
   if (options.etag) {

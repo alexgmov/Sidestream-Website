@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import macosReleaseManifest from "../../data/release-manifest.json" with { type: "json" };
 import windowsReleaseManifest from "../../data/release-manifest.windows.json" with { type: "json" };
+import afterEffectsReleaseManifest from "../../data/release-manifest.after-effects.json" with { type: "json" };
 
 const DEFAULT_MANIFESTS = {
   macos: macosReleaseManifest,
@@ -39,7 +40,7 @@ export type PublicReleasePlatform =
 export type ReleaseManifest = {
   schemaVersion: 1;
   product: "sidestream";
-  channel: "stable";
+  channel: "stable" | "after-effects-download-release";
   platform: PublicReleasePlatform;
   version: string;
   minSupportedVersion: string;
@@ -89,6 +90,7 @@ export function readReleaseManifest(
 export function parseReleaseManifest(
   source: unknown,
   expectedPlatform: ReleasePlatform,
+  channel: ReleaseManifest["channel"] = "stable",
 ): ReleaseManifest {
   const manifest = requireRecord(source, "manifest object missing");
   const artifact = requireRecord(manifest.artifact, "artifact missing");
@@ -100,7 +102,7 @@ export function parseReleaseManifest(
   if (manifest.product !== "sidestream") {
     throw new Error("manifest product mismatch");
   }
-  if (manifest.channel !== "stable") {
+  if (manifest.channel !== channel) {
     throw new Error("unsupported release channel");
   }
 
@@ -155,7 +157,7 @@ export function parseReleaseManifest(
   }
 
   const artifactUrl = requireString(artifact.url, "artifact URL missing");
-  if (!isCanonicalDownloadUrl(artifactUrl, expectedPlatform)) {
+  if (!isCanonicalDownloadUrl(artifactUrl, expectedPlatform, channel)) {
     throw new Error("artifact URL does not match platform");
   }
 
@@ -186,7 +188,7 @@ export function parseReleaseManifest(
   return {
     schemaVersion: 1,
     product: "sidestream",
-    channel: "stable",
+    channel,
     platform: contract.publicPlatform,
     version,
     minSupportedVersion,
@@ -203,6 +205,20 @@ export function parseReleaseManifest(
       sizeBytes: Number(artifact.sizeBytes),
     },
   };
+}
+
+// This opt-in manifest never participates in the normal update manifest.
+// A disabled cohort is absent from the artifact allowlist and returns 404.
+export function readAfterEffectsReleaseManifest(): ReleaseManifest | null {
+  const override = process.env.SIDESTREAM_AFTER_EFFECTS_RELEASE_MANIFEST_PATH;
+  const source = override ? JSON.parse(fs.readFileSync(override, "utf8")) : afterEffectsReleaseManifest;
+  if (source?.enabled === false) return null;
+  const manifest = parseReleaseManifest(source, "macos", "after-effects-download-release");
+  if (!manifest.artifact.pathname.startsWith("sidestream/after-effects/") ||
+      !manifest.artifact.filename.endsWith("-Mac-AfterEffects-Installer.dmg")) {
+    throw new Error("After Effects artifact must use its isolated release path");
+  }
+  return manifest;
 }
 
 export function toPublicReleaseManifest(manifest: ReleaseManifest) {
@@ -265,13 +281,13 @@ function validateArtifactPathname(
   return filename;
 }
 
-function isCanonicalDownloadUrl(value: string, platform: ReleasePlatform) {
+function isCanonicalDownloadUrl(value: string, platform: ReleasePlatform, channel: ReleaseManifest["channel"]) {
   try {
     const url = new URL(value);
     if (
       url.protocol !== "https:" ||
       url.origin !== SIDESTREAM_ORIGIN ||
-      url.pathname !== "/api/download" ||
+      url.pathname !== (channel === "after-effects-download-release" ? "/api/download-after-effects" : "/api/download") ||
       url.username ||
       url.password ||
       url.hash

@@ -31,6 +31,7 @@ const ROUTE_POLICY = Object.freeze({
   "api/credits/sync.ts": "credit_state",
   "api/download-lead.ts": "legacy_lead_capture",
   "api/download.ts": "product_delivery",
+  "api/download-after-effects.ts": "isolated_cohort_delivery",
   "api/installation/claim-complete.ts": "acquisition_stage",
   "api/installation/claim-status.ts": "acquisition_continuity",
   "api/installation/claim.ts": "acquisition_continuity",
@@ -77,7 +78,7 @@ test("every public API handler has an explicit acquisition role", async () => {
   assert.deepEqual(discovered, Object.keys(ROUTE_POLICY).sort());
 });
 
-test("the only installer delivery routes are canonical and receipt-gated", async () => {
+test("Production delivery stays canonical and the AE cohort is explicitly isolated", async () => {
   const deliveryRoutes = Object.entries(ROUTE_POLICY)
     .filter(([, role]) => role === "product_delivery")
     .map(([filename]) => filename)
@@ -94,6 +95,13 @@ test("the only installer delivery routes are canonical and receipt-gated", async
   assert.match(freeDownload, /persistCanonicalInstallerRequest/);
   assert.match(paidArtifact, /getPaidAcquisitionReceiptState/);
   assert.match(paidArtifact, /recordPaidAcquisitionInstallerRequest/);
+  const cohortRoutes = Object.entries(ROUTE_POLICY)
+    .filter(([, role]) => role === "isolated_cohort_delivery")
+    .map(([filename]) => filename);
+  assert.deepEqual(cohortRoutes, ["api/download-after-effects.ts"]);
+  const cohortDownload = await readFile(cohortRoutes[0], "utf8");
+  assert.match(cohortDownload, /readAfterEffectsReleaseManifest/);
+  assert.match(cohortDownload, /trackAcquisition: false/);
   await assert.rejects(readFile("api/paid-download.ts", "utf8"), /ENOENT/);
 });
 

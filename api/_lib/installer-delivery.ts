@@ -8,6 +8,7 @@ import {
 } from "./paid-release-manifest.js";
 import {
   readReleaseManifest,
+  readAfterEffectsReleaseManifest,
   type ReleasePlatform,
 } from "./release-manifest.js";
 
@@ -99,6 +100,22 @@ export function listManifestInstallerArtifacts(): readonly InstallerArtifactReco
       });
     }),
   ];
+
+  // An invalid optional cohort must not take the existing customer routes down.
+  // Its own route reports 503; the artifact authorizer simply excludes it.
+  let afterEffects = null;
+  try { afterEffects = readAfterEffectsReleaseManifest(); } catch { /* fail closed for the cohort only */ }
+  if (afterEffects) {
+    records.push(Object.freeze({
+      pathname: afterEffects.artifact.pathname,
+      filename: afterEffects.artifact.filename,
+      sha256: afterEffects.artifact.sha256,
+      sizeBytes: afterEffects.artifact.sizeBytes,
+      contentType: contentTypeForFilename(afterEffects.artifact.filename),
+      platform: "macos" as const,
+      access: "free" as const,
+    }));
+  }
 
   const pathnames = new Set<string>();
   for (const record of records) {
