@@ -89,7 +89,7 @@ The publish command independently asks the remote finalizer to verify exact path
 6. Replace the bootstrap site with `ops/nginx/downloads.sidestream.tv.conf`, require `nginx -t`, and reload.
 7. Prove automatic renewal with `certbot renew --dry-run`.
 
-Only `/v1/` is public. `/__sidestream_artifacts/` is Nginx `internal`; requesting it directly must return `404`. Directory listing is off. The transfer log contains time, OS class, status, byte count, duration, Range, and upstream duration only. It deliberately omits client IP, query strings, signatures, and full paths. Per-client request and connection limits plus a 12 MiB/s per-transfer ceiling reduce obvious scraping without serializing normal installers.
+Installer bytes are public only through signed `/v1/` routes. The standalone CLI uses separate exact-file `/cli/` routes documented in [public-cli-downloads.md](public-cli-downloads.md); these do not expose the installer directory. `/__sidestream_artifacts/` is Nginx `internal`; requesting it directly must return `404`. Directory listing is off. The transfer log contains time, OS class, status, byte count, duration, Range, and upstream duration only. It deliberately omits client IP, query strings, signatures, and full paths. Per-client request and connection limits plus a 12 MiB/s per-transfer ceiling reduce obvious scraping without serializing normal installers.
 
 ## Same-SHA deployment and cutover
 

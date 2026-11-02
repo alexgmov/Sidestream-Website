@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "version": "1.0.21",
+  "releaseId": "1.0.21-86876e22b6c162af",
+  "platform": "darwin-universal",
+  "architectures": [
+    "arm64",
+    "x64"
+  ],
+  "requirements": {
+    "node": ">=18"
+  },
+  "sourceDigest": "86876e22b6c162af1fa6c6aff827edfb9d522084d9559cbb40a579b180f67e88",
+  "archive": {
+    "filename": "Sidestream-CLI-1.0.21-darwin-universal-86876e22b6c162af.tar.gz",
+    "pathname": "sidestream/cli/1.0.21-86876e22b6c162af/Sidestream-CLI-1.0.21-darwin-universal-86876e22b6c162af.tar.gz",
+    "url": "https://downloads.sidestream.tv/cli/Sidestream-CLI-1.0.21-darwin-universal-86876e22b6c162af.tar.gz",
+    "sizeBytes": 222415181,
+    "sha256": "60a9166d1a3c53d563a9fa313952f6658a745ecb2016da4ca3c1e39e9f8b686f"
+  },
+  "manifestPathname": "sidestream/cli/1.0.21-86876e22b6c162af/release.json"
+}
