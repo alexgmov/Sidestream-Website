@@ -196,6 +196,74 @@ is harmless and must never be deleted/replaced during operation. The internal
 archive the protected audit under controlled maintenance, preserve current
 revision and nonce history policy, and do not reset state casually.
 
+### Exact-client bounded beta qualification
+
+The optional qualification selector is prepared from deployed service source
+`49811469889498cb71725393f26faae3e2773f91`. It needs a service/operator code
+deployment before use. Source tests do not establish live deployment or beta
+installation. Existing v2 controls and native v2 policy/delivery envelopes keep
+their current behavior.
+
+Qualification controls use **`sidestream.user-control.v3`**. Each qualified
+download, activation or companion choice adds **both** `clients` (one to eight
+unique lowercase 64-hex updater client IDs) and `expiresAt` (integer Unix seconds).
+The existing percentage is an additional restriction: use 100 with the exact
+allowlist for a deterministic internal test. A 1% percentage alone is not an
+exact-client test. Signing and application reject missing/malformed pairs,
+expired choices and deadlines beyond 30 minutes from request issuance. These
+IDs are random updater identities, not authenticated accounts or device proofs;
+read them from the intended installed native client's private state.
+
+```mermaid
+flowchart LR
+  C[Signed v3 control] --> M{Exact client and percentage match?}
+  M -- No --> N[Null offer]
+  M -- Yes --> E{Window still open?}
+  E -- No --> N
+  E -- Yes --> P[Signed v2 policy clipped to deadline]
+  P --> D[Delivery repeats selection and clips ticket expiry]
+  P --> A[Native verifies exact target and waits for closed hosts]
+```
+
+Other clients get the ordinary result of every unqualified choice. Expired
+qualified choices become null without invalidating stored state or service
+restart. Signed policy and new delivery tickets cannot outlive the deadline;
+continuation issuance repeats policy eligibility. Allowlist contents stay in
+private operator state/audit, never public health or signed policy responses.
+The existing policy's own client field remains unchanged. Immutable manifests
+remain readable; selection and delivery still require their existing authority.
+
+For one-client qualification while all customer updates are held:
+
+1. Verify live source and signed policy, then capture the current control and
+   revision/digest. Abort if expected HOLD or its revocations changed. Preserve
+   all previous catalog entries, control history, counters and trust.
+2. Publish the new immutable signed target to the catalog using the normal
+   verification/restart process. Deploy the tested source and verify the health
+   source SHA. Do not change public installer or paid-fulfillment pointers.
+3. Copy the held control, set its schema to v3 and fill only the intended
+   download choice with the exact target, client allowlist and deadline. Keep
+   activation and companion choices null. Sign/apply through the existing CAS
+   operator path; inspect signed matching/nonmatching policies and negative
+   nonmatching delivery before observing native staging.
+4. After native staging, sign a fresh bounded activation choice for the same
+   client and target. Normal host closure and exact loaded root/version/bridge
+   evidence remain independent gates. Do not edit native state or force-close
+   an Adobe host.
+5. Restore the original held v2 control through a fresh signed CAS request and
+   verify null matching/nonmatching policies. Expiry is a safety bound, not a
+   substitute for restoring HOLD. `/health.held` reports configured choices;
+   it stays false for an expired but still configured choice.
+
+**Code rollback requires restoring a v2 HOLD first.** Old service code does not
+understand the qualification restriction. Requiring control v3 makes it reject
+qualified state instead of silently expanding a 100% choice to all clients.
+Never relabel a bounded v3 control as v2 or strip its restriction. This is a
+server-side control change only: no native installer rebuild, new signing key,
+database migration, protocol version change or frontend deployment is required.
+Only the updater service and operator modules need deployment; run
+`npm run test:production-updater` and `git diff --check` first.
+
 `counter.json` is fsynced before each signed policy/lease is emitted. Do not
 restore an old counter or reset it to zero for clients already in service.
 Back up the state with the service stopped for a consistent snapshot; before

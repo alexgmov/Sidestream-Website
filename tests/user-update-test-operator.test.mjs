@@ -33,6 +33,24 @@ test('exact operator signature, Test scope, field bounds and five-minute expiry'
     r=>r.control.activate.email='private@example.invalid',r=>r.expected.extra=true,r=>r.extra=true])
     assert.throws(()=>check(resign(signed,mutate)));
 });
+test('operator signing and application enforce exact-client qualification expiry and thirty-minute ceiling',()=>{
+ const bounded={...control,schema:'sidestream.user-control.v3',activate:{...control.activate,clients:['c'.repeat(64)],expiresAt:1100}};
+ const sign=value=>signRequest({control:value,snapshot:controlSnapshot(null),privateKey:pair.privateKey,now:1000});
+ const signed=sign(bounded);
+ assert.deepEqual(check(signed).control,bounded);
+ assert.throws(()=>check(signed,{now:1100}),/qualification/);
+ for(const mutate of [v=>delete v.clients,v=>delete v.expiresAt,v=>v.clients=[],v=>v.clients=['bad'],
+  v=>v.clients=['c'.repeat(64),'c'.repeat(64)],v=>v.expiresAt=1000,v=>v.expiresAt=2801]) {
+  const invalid=structuredClone(bounded);mutate(invalid.activate);
+  assert.throws(()=>sign(invalid));
+  assert.throws(()=>check(resign(signed,r=>mutate(r.control.activate))));
+ }
+ // Delaying application cannot extend the maximum window from request issuance.
+ assert.throws(()=>check(resign(signed,r=>r.control.activate.expiresAt=2801),{now:1200}));
+ assert.doesNotThrow(()=>sign({...bounded,activate:{...bounded.activate,expiresAt:2800}}));
+ assert.throws(()=>sign({...bounded,schema:'sidestream.user-control.v2'}),/control v3/);
+ assert.throws(()=>check(resign(signed,r=>r.control.schema='sidestream.user-control.v2')),/control v3/);
+});
 
 test('atomic audit rejects replay, stale approval after hold, reused nonce and concurrent writer',()=>{
   const state=fs.mkdtempSync(path.join(os.tmpdir(),'operator-audit-'));fs.chmodSync(state,0o700);

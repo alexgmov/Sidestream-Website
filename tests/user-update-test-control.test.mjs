@@ -31,6 +31,41 @@ test('stable cohorts do not expand outside operator percentage',()=>{
  }
  assert.ok(count>190&&count<310);
 });
+test('bounded qualification intersects exact clients with cohorts for CEP, rollback and companion',()=>{
+ const companion=t('companion-next','d');
+ const cat={...catalog,releases:{...catalog.releases,[companion.id]:{kind:'companion',target:companion}}};
+ const qualify=(target,expiresAt=1030)=>({...choice(target),clients:[client],expiresAt});
+ const qualified={...control,schema:'sidestream.user-control.v3',download:qualify(b),activate:qualify(a),rollback:{fromSha256:b.sha256,toSha256:a.sha256},
+  companion:{download:qualify(companion,1040),activate:qualify(companion,1040)}};
+ const expected=makePolicy(cat,qualified,client,1,1000);
+ assert.deepEqual(expected.download,b);assert.deepEqual(expected.activate,a);assert.deepEqual(expected.rollback,qualified.rollback);
+ assert.deepEqual(expected.companion,{download:companion,activate:companion});assert.equal(expected.expiresAt,1030);
+ assert.equal(Object.hasOwn(expected,'clients'),false);
+ for(const [who,now] of [['e'.repeat(64),1000],[client,1040]]) {
+  const p=makePolicy(cat,qualified,who,2,now);
+  assert.equal(p.download,null);assert.equal(p.activate,null);assert.equal(p.rollback,null);
+  assert.deepEqual(p.companion,{download:null,activate:null});
+ }
+ const partial=makePolicy(cat,qualified,client,3,1030);
+ assert.equal(partial.activate,null);assert.equal(partial.rollback,null);assert.deepEqual(partial.companion.activate,companion);
+ assert.equal(partial.expiresAt,1040);
+ assert.equal(makePolicy(cat,{...qualified,download:{...qualified.download,percent:0}},client,4,1000).download,null);
+ // Existing customer choices retain their behavior independently of a qualified download.
+ const mixed={...control,schema:'sidestream.user-control.v3',download:qualify(b)};
+ assert.deepEqual(makePolicy(cat,mixed,'e'.repeat(64),5,1000).activate,a);
+ assert.deepEqual(makePolicy(cat,mixed,client,6,1030).activate,a);
+});
+test('qualification requires a bounded paired allowlist and deadline without malformed fallback',()=>{
+ const valid={...choice(b),clients:[client],expiresAt:1030};
+ for(const change of [v=>delete v.clients,v=>delete v.expiresAt,v=>v.clients=[],v=>v.clients=[client,client],
+  v=>v.clients='all',v=>v.clients=[null],v=>v.clients=['C'.repeat(64)],v=>v.clients=[123],
+  v=>v.clients=Array.from({length:9},(_,n)=>String(n).repeat(64)),v=>v.expiresAt=0,v=>v.expiresAt=Infinity,
+  v=>v.expiresAt='1030',v=>v.expiresAt=1030.5]) {
+  const invalid=structuredClone(valid);change(invalid);
+  assert.throws(()=>makePolicy(catalog,{...control,schema:'sidestream.user-control.v3',download:invalid},client,1,1000));
+ }
+ assert.throws(()=>makePolicy(catalog,{...control,download:valid},client,1,1000),/control v3/);
+});
 test('exact rollback authority, revocation and immutable hashes fail closed',()=>{
  assert.throws(()=>validateControl(catalog,{...control,activate:{...choice(a),sha256:b.sha256}}));
  assert.throws(()=>validateControl(catalog,{...control,revoked:[b.sha256]}));

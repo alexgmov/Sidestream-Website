@@ -195,7 +195,7 @@ export function createServer({catalog,state,keys,sourceSha,clock=()=>Date.now()/
         if (url.pathname === '/policy') { reply(res,signed(lease,keys.policy)); return; }
         const t=[lease.download,lease.companion?.download].find(t => t?.id === url.searchParams.get('id'));
         if (!t || t.sha256 !== url.searchParams.get('sha256')) throw fault(403);
-        const expires=Math.floor(clock()+60);
+        const expires=Math.floor(Math.min(clock()+60,lease.expiresAt));
         reply(res,signed({schema:'sidestream.user-delivery.v2',scope,client,target:t,expiresAt:expires,
           route:`/releases/${t.id}/payload.bin?expires=${expires}&mac=${signature(t.id,t.sha256,expires)}`},keys.policy)); return;
       }

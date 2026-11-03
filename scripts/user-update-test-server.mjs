@@ -67,7 +67,7 @@ export function createServer({catalog,state,key,ticketKey,clock=()=>Date.now()/1
     if(url.pathname==='/policy'){signedReply(res,policy);return;}
     const t=[policy.download,policy.companion?.download].find(t=>t?.id===url.searchParams.get('id'));
     if(!t||url.searchParams.get('id')!==t.id||url.searchParams.get('sha256')!==t.sha256){res.writeHead(403).end();return;}
-    const expires=Math.floor(clock()+60);
+    const expires=Math.floor(Math.min(clock()+60,policy.expiresAt));
     signedReply(res,{schema:'sidestream.user-delivery.v2',scope:testScope,client,target:t,expiresAt:expires,
      route:`/releases/${t.id}/payload.bin?expires=${expires}&mac=${signature(t.id,t.sha256,expires)}`});return;
    }

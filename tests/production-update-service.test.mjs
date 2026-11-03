@@ -166,6 +166,45 @@ test('actual HTTP service signs policy, serves immutable ranges, refreshes expir
   assert.equal((await get(refreshed.route,{headers:{Range:'bytes=0-7','If-Range':'"'+target.sha256+'"'}})).status,503);
 });
 
+test('actual HTTP qualification denies other clients and expires policy, delivery and continuation together',async t=>{
+  const f=fixture(t),target=f.targets[2],other='d'.repeat(64);let now=1000;
+  const bounded={...f.choice(target),clients:[client],expiresAt:1030};
+  f.apply({...hold,schema:'sidestream.user-control.v3',download:bounded,activate:bounded});
+  const server=createServer({catalog:f.catalog,state:f.state,keys:f.keys,sourceSha:'a'.repeat(40),clock:()=>now});
+  await new Promise(r=>server.listen(0,'127.0.0.1',r));
+  t.after(async()=>{server.closeAllConnections();if(server.listening)await new Promise(r=>server.close(r));});
+  const get=(route,options)=>fetch(`http://127.0.0.1:${server.address().port}${route}`,options);
+  const decode=async response=>{assert.equal(response.status,200);return verified(await response.json(),[f.policy.publicKey]);};
+  const delivery=who=>get(`/delivery?client=${who}&id=${target.id}&sha256=${target.sha256}`);
+  const continuation=who=>get('/continuation',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({client:who,prior:signed(f.seed,f.release.privateKey),target})});
+  const p=await decode(await get('/policy?client='+client));
+  assert.equal(p.download.id,target.id);assert.equal(p.activate.id,target.id);assert.equal(p.expiresAt,1030);
+  assert.equal(JSON.stringify(p).includes('clients'),false);
+  const outside=await decode(await get('/policy?client='+other));
+  assert.equal(outside.download,null);assert.equal(outside.activate,null);
+  assert.equal((await delivery(other)).status,403);assert.equal((await continuation(other)).status,403);
+  assert.equal((await continuation(client)).status,200);
+  const ticket=await decode(await delivery(client));assert.equal(ticket.expiresAt,1030);
+  const range={headers:{Range:'bytes=0-7','If-Range':'"'+target.sha256+'"'}};
+  assert.equal((await get(ticket.route,range)).status,206);
+  const health=JSON.stringify(await (await get('/health')).json());
+  assert.equal(health.includes(client),false);assert.equal(health.includes('clients'),false);
+  now=1030;
+  const expired=await decode(await get('/policy?client='+client));
+  assert.equal(expired.download,null);assert.equal(expired.activate,null);
+  assert.equal((await delivery(client)).status,403);assert.equal((await continuation(client)).status,403);
+  assert.equal((await get(ticket.route,range)).status,401);
+  // Expired controls remain valid stored state; restart must not resurrect offers.
+  server.closeAllConnections();await new Promise(r=>server.close(r));
+  const restarted=createServer({catalog:f.catalog,state:f.state,keys:f.keys,sourceSha:'a'.repeat(40),clock:()=>now});
+  await new Promise(r=>restarted.listen(0,'127.0.0.1',r));
+  try {
+    const response=await fetch(`http://127.0.0.1:${restarted.address().port}/policy?client=${client}`);
+    assert.equal((await decode(response)).activate,null);
+  }finally{restarted.closeAllConnections();await new Promise(r=>restarted.close(r));}
+});
+
 test('startup rejects altered, unsigned, private-scope, symlinked artifacts and non-separated keys',t=>{
   const f=fixture(t),item=f.unchecked.releases[f.targets[0].id];
   assert.throws(()=>verifyCatalog({...f.unchecked,scope:'sidestream-user-release-test-2'},f.keys.release,f.artifacts));

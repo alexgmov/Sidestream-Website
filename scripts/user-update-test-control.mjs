@@ -1,8 +1,19 @@
 // Isolated Test protocol v2. No deployed routes or customer release pointers.
 import crypto from 'node:crypto';
 export const testScope='sidestream-user-release-test-2';
+export const qualificationControlSchema='sidestream.user-control.v3';
 const hash=/^[a-f0-9]{64}$/;
 const id=/^[a-z0-9][a-z0-9-]{0,63}$/;
+export const qualificationWindowSeconds=30*60;
+export function validateQualificationChoice(choice,now,issuedAt=now) {
+ const clients=Object.hasOwn(choice,'clients'),expires=Object.hasOwn(choice,'expiresAt');
+ if(!clients&&!expires)return;
+ if(!clients||!expires||!Array.isArray(choice.clients)||choice.clients.length<1||choice.clients.length>8||
+    choice.clients.some(client=>typeof client!=='string'||!hash.test(client))||new Set(choice.clients).size!==choice.clients.length||
+    !Number.isSafeInteger(choice.expiresAt)||choice.expiresAt<=0)throw Error('Invalid bounded qualification choice');
+ if(now!==undefined&&(!Number.isFinite(now)||!Number.isFinite(issuedAt)||choice.expiresAt<=now||
+    choice.expiresAt>issuedAt+qualificationWindowSeconds))throw Error('Expired or excessive qualification window');
+}
 export function target(value) {
  if(!value || !id.test(value.id) || !hash.test(value.sha256) || !hash.test(value.manifestSha256) ||
     !Number.isSafeInteger(value.bytes) || value.bytes<1 || value.bytes>2_000_000_000) throw Error('Invalid immutable Test target');
@@ -14,7 +25,7 @@ export function cohort(client,salt,percent,scope=testScope) {
  return bucket<percent*100;
 }
 export function validateControl(catalog,control,scope=testScope) {
- if(catalog.scope!==scope || control.schema!=='sidestream.user-control.v2')throw Error('Wrong Test protocol');
+ if(catalog.scope!==scope || !['sidestream.user-control.v2',qualificationControlSchema].includes(control.schema))throw Error('Wrong Test protocol');
  const select=(choice,kind='cep')=>{
   if(choice===null)return null;
   if(!choice || !Object.hasOwn(catalog.releases,choice.id))throw Error('Unknown release');
@@ -22,6 +33,8 @@ export function validateControl(catalog,control,scope=testScope) {
   if((catalog.releases[choice.id].kind||'cep')!==kind)throw Error('Release kind mismatch');
   if(choice.sha256!==exact.sha256)throw Error('Exact release hash required');
   cohort('0'.repeat(64),choice.salt,choice.percent,scope);
+  validateQualificationChoice(choice);
+  if(Object.hasOwn(choice,'clients')&&control.schema!==qualificationControlSchema)throw Error('Qualification requires control v3');
   return {...choice,target:exact};
  };
  const download=select(control.download), activate=select(control.activate);
@@ -40,11 +53,20 @@ export function validateControl(catalog,control,scope=testScope) {
 export function makePolicy(catalog,control,client,revision,now=Date.now()/1000,scope=testScope) {
  if(!hash.test(client)||!Number.isSafeInteger(revision)||revision<1||!Number.isFinite(now))throw Error('Invalid client/revision/time');
  const checked=validateControl(catalog,control,scope);
- const select=choice=>choice&&cohort(client,choice.salt,choice.percent,scope)?choice.target:null;
+ let expiresAt=now+60;
+ const select=choice=>{
+  if(!choice||!cohort(client,choice.salt,choice.percent,scope))return null;
+  if(Object.hasOwn(choice,'clients')) {
+   if(!choice.clients.includes(client)||choice.expiresAt<=now)return null;
+   expiresAt=Math.min(expiresAt,choice.expiresAt);
+  }
+  return choice.target;
+ };
+ const download=select(checked.download);
  const activate=select(checked.activate);
- return {schema:'sidestream.user-policy.v2',scope,client,revision,issuedAt:now,expiresAt:now+60,
-  download:select(checked.download),activate,rollback:activate?checked.rollback:null,revoked:checked.revoked,
-  companion:checked.companion?{download:select(checked.companion.download),activate:select(checked.companion.activate)}:null};
+ const companion=checked.companion?{download:select(checked.companion.download),activate:select(checked.companion.activate)}:null;
+ return {schema:'sidestream.user-policy.v2',scope,client,revision,issuedAt:now,expiresAt,
+  download,activate,rollback:activate?checked.rollback:null,revoked:checked.revoked,companion};
 }
 export function rangeFor(header,ifRange,etag,size) {
  if(!Number.isSafeInteger(size)||size<1)throw Error('Invalid artifact length');

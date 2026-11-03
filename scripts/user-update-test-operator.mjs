@@ -5,7 +5,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {testScope, validateControl} from './user-update-test-control.mjs';
+import {testScope, validateControl, validateQualificationChoice, qualificationControlSchema} from './user-update-test-control.mjs';
 
 const sha = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
 const hash = /^[a-f0-9]{64}$/;
@@ -22,9 +22,15 @@ export function controlSnapshot(previous) {
   if (!Number.isSafeInteger(revision) || revision < previous.history.length) throw Error('Invalid operator revision');
   return {revision, sha256:sha(JSON.stringify(previous.control))};
 }
-function exactControl(control) {
+function exactControl(control,now,issuedAt=now) {
   fields(control, ['schema','download','activate','rollback','revoked','companion']);
-  const choice = value => { if (value !== null) fields(value, ['id','sha256','salt','percent']); };
+  const choice = value => {
+    if (value !== null) {
+      fields(value, ['id','sha256','salt','percent','clients','expiresAt']);
+      validateQualificationChoice(value,now,issuedAt);
+      if(Object.hasOwn(value,'clients')&&control.schema!==qualificationControlSchema)throw Error('Qualification requires control v3');
+    }
+  };
   choice(control.download); choice(control.activate);
   if (control.rollback !== null) fields(control.rollback, ['fromSha256','toSha256']);
   if (control.companion !== null && control.companion !== undefined) {
@@ -34,7 +40,7 @@ function exactControl(control) {
 }
 export function signRequest({control, snapshot, privateKey, scope = testScope, now = Math.floor(Date.now()/1000)}) {
   if (privateKey.asymmetricKeyType !== 'ed25519') throw Error('Ed25519 operator key required');
-  exactControl(control);
+  exactControl(control,now);
   const request = {schema:'sidestream.user-operator-request.v1', scope,
     operator:keyId(privateKey), issuedAt:now, expiresAt:now+300,
     nonce:crypto.randomBytes(16).toString('hex'), expected:snapshot, control};
@@ -79,7 +85,7 @@ export function authorizeRequest({envelope, operators, previous, catalog, scope 
   if (!Number.isSafeInteger(request.expected.revision) || !hash.test(request.expected.sha256) ||
       request.expected.revision !== snapshot.revision || request.expected.sha256 !== snapshot.sha256 ||
       previous?.history.some(entry => entry.authorization?.nonce === request.nonce)) throw Error('Stale or replayed Test authorization');
-  exactControl(request.control);
+  exactControl(request.control,now,request.issuedAt);
   validateControl(catalog, request.control, scope);
   return {control:request.control, authorization:{operator:request.operator, nonce:request.nonce,
     requestSha256:sha(bytes), issuedAt:request.issuedAt, expiresAt:request.expiresAt}};
