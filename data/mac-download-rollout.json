@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "enabled": true,
   "rolloutId": "mac-manual-1.0.57-20261029",
-  "percent": 1,
+  "percent": 10,
   "baselineVersion": "1.0.21",
   "baselineSha256": "c7f553f5c4bca0a7314e4f40ff50ac7feb3fd55c5e9eb14657fab54f5cdb26e9",
   "candidate": {

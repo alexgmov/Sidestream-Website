@@ -304,6 +304,26 @@ test("one percent assignment is stable, statistically bounded, and rejects unbou
   ]) assert.equal(macRollout.selectMacDownloadManifest(stable, rollout, token, secret), stable);
 });
 
+test("ten percent ramp retains every one percent member and expands the same cohort", () => {
+  const before = pilotConfig(1);
+  const after = pilotConfig(10);
+  let previousMembers = 0;
+  let selected = 0;
+  for (let n = 0; n < 10000; n += 1) {
+    const bytes = Buffer.alloc(32); bytes.writeUInt32BE(n);
+    const token = bytes.toString("base64url");
+    const wasSelected = macRollout.selectMacDownloadManifest(manifests.macos, before, token, SECRET) === before.candidate;
+    const first = macRollout.selectMacDownloadManifest(manifests.macos, after, token, SECRET);
+    const isSelected = first === after.candidate;
+    assert.equal(macRollout.selectMacDownloadManifest(manifests.macos, after, token, SECRET), first);
+    if (wasSelected) { previousMembers += 1; assert.ok(isSelected); }
+    if (isSelected) selected += 1;
+  }
+  assert.ok(previousMembers > 0);
+  assert.ok(selected >= 850 && selected <= 1150, `10 percent of 10000 identities: ${selected}`);
+  assert.ok(selected > previousMembers);
+});
+
 test("pilot GET and cookie-bearing HEAD return the same verified artifact without identity headers", async () => {
   const cookie = pilotCookie(true);
   const headers = { cookie: `${ACQUISITION_COOKIE_NAME}=${cookie.value}` };

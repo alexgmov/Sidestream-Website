@@ -5,11 +5,20 @@
 On October 29, 2026, Alex explicitly selected **1% of Mac installer downloads**
 for the qualified standard 1.0.57 artifact. This supersedes the immediate
 two-person private-link handoff, not the separate native-updater qualification.
-This document describes the prepared implementation; activation requires the
-same pushed main SHA in the Git-linked website and Linux API plus live readback.
+The original 1% pilot went live at 2026-10-29T20:01:49Z from Website commit
+`96e84a8ae818bbdc618bb23c6bcc46c42a715463`.
 
-The 1% is a probability over stable browser acquisition identities, not a hard
-quota of one request in every hundred. Retries share the assignment while the
+On November 2, Alex explicitly approved increasing this installer pilot to
+**10%** after reviewing the limited signal: 29 retained successful installer
+redirects, all baseline, and no independent 1.0.57 customer in observed telemetry.
+Earlier launch logs were no longer retained. This is an owner-approved expansion
+to collect signal, not a claim that external installation or updater GA passed.
+The candidate bytes, baseline binding and rollout identity remain unchanged, so
+every existing 1% member stays selected. Activation requires the same pushed main
+SHA in the Git-linked website and Linux API plus live readback.
+
+The 10% is a probability over stable browser acquisition identities, not a hard
+quota of one request in every ten. Retries share the assignment while the
 existing signed 30-day cookie remains valid. Different browsers, cleared or
 expired cookies can be assigned again. No IP/device fingerprint is used.
 The 1.0.57 qualification host was macOS 26.6.2 arm64 / Premiere 26.5.2; it does
@@ -22,7 +31,7 @@ installer traffic rather than claiming an architecture filter.
 ```mermaid
 flowchart TD
   A[Mac installer request] --> B{Verified browser cohort}
-  B -->|About 1 percent| C[Immutable 1.0.57]
+  B -->|About 10 percent| C[Immutable 1.0.57]
   B -->|Other visitors or unavailable assignment| D[Stable 1.0.21]
   C --> E{Metadata and signing pass}
   E -->|No| D
@@ -103,10 +112,10 @@ Existing client telemetry provides actual 1.0.57 host/download/import activity;
 exclude pre-pilot qualification sessions from customer adoption counts. Preserve
 the distinction between missing telemetry and a product failure.
 
-Hold at 1% until real installation/account/data/media/relaunch evidence is
-reviewed. Stop for hash drift, installer failure, lost account/data, repeatable
-host crashes or a material download/import regression. Do not automatically
-advance to 10%. Set `enabled:false` or `percent:0` in this separate config and
+Hold at the explicitly approved 10% while gathering real
+installation/account/data/media/relaunch evidence. Stop for hash drift, installer
+failure, lost account/data, repeatable host crashes or a material download/import regression. Do not automatically
+advance beyond 10%. Set `enabled:false` or `percent:0` in this separate config and
 deploy the same SHA to both execution surfaces to stop new pilot delivery;
 leave immutable artifacts and customer data intact. A protected runtime override
 `SIDESTREAM_MAC_DOWNLOAD_ROLLOUT_PATH` can point to an audited disabled copy for
