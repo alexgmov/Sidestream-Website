@@ -6,6 +6,9 @@
   "devCommand": "npm run dev -- --host 127.0.0.1 --port $PORT",
   "outputDirectory": "dist",
   "functions": {
+    "api/download-cli.ts": {
+      "includeFiles": "data/cli-downloads.json"
+    },
     "api/download-after-effects.ts": {
       "includeFiles": "data/release-manifest*.json"
     },

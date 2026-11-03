@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "releases": {
+    "1.0.21-86876e22b6c162af": {
+      "version": "1.0.21",
+      "filename": "Sidestream-CLI-1.0.21-darwin-universal-86876e22b6c162af.tar.gz",
+      "pathname": "sidestream/cli/1.0.21-86876e22b6c162af/Sidestream-CLI-1.0.21-darwin-universal-86876e22b6c162af.tar.gz",
+      "sizeBytes": 222415181,
+      "sha256": "60a9166d1a3c53d563a9fa313952f6658a745ecb2016da4ca3c1e39e9f8b686f"
+    }
+  }
+}

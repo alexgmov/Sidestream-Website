@@ -3,6 +3,8 @@ import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 
 const manifest = JSON.parse(await readFile(new URL("../data/cli-release.json", import.meta.url), "utf8"));
+const registry = JSON.parse(await readFile(new URL("../data/cli-downloads.json", import.meta.url), "utf8"));
+const vercel = JSON.parse(await readFile(new URL("../vercel.json", import.meta.url), "utf8"));
 const nginx = await readFile(new URL("../ops/nginx/downloads.sidestream.tv.conf", import.meta.url), "utf8");
 const cliLocations = new Map(
   [...nginx.matchAll(/^    location = (\/cli\/[^\s]+) \{([\s\S]*?)^    \}/gm)]
@@ -43,17 +45,21 @@ test("latest and latest.json select the same immutable release without caching t
   assert.match(metadata, /disable_symlinks on from=\/srv\/sidestream\/artifacts;/);
 });
 
-test("public CLI bytes use an exact-file route, retaining the private installer boundary", () => {
+test("public CLI bytes use an exact-release CDN redirect, retaining the private installer boundary", () => {
   const archive = cliLocations.get(new URL(manifest.archive.url).pathname);
   assert.ok(archive);
   assertReadOnlyLocation(archive);
-  assert.ok(archive.includes(`alias /srv/sidestream/artifacts/${manifest.archive.pathname};`));
-  assert.ok(archive.includes(`add_header Content-Disposition 'attachment; filename="${manifest.archive.filename}"';`));
-  assert.match(archive, /default_type application\/gzip;/);
-  assert.match(archive, /add_header Cache-Control "public, max-age=31536000, immutable";/);
-  assert.match(archive, /disable_symlinks on from=\/srv\/sidestream\/artifacts;/);
-  assert.match(archive, /limit_conn sidestream_download_connections 3;/);
-  assert.match(archive, /limit_rate 12m;/);
+  assert.ok(archive.includes(`return 302 https://sidestream.tv/api/download-cli?release=${manifest.releaseId};`));
+  assert.match(archive, /add_header Cache-Control "no-store" always;/);
+  assert.doesNotMatch(archive, /alias|proxy_pass/);
+  assert.deepEqual(registry.releases[manifest.releaseId], {
+    version: manifest.version,
+    filename: manifest.archive.filename,
+    pathname: manifest.archive.pathname,
+    sizeBytes: manifest.archive.sizeBytes,
+    sha256: manifest.archive.sha256,
+  });
+  assert.equal(vercel.functions["api/download-cli.ts"].includeFiles, "data/cli-downloads.json");
   assert.doesNotMatch(nginx, /location\s+(?:\^~\s+|~\*?\s+)?\/cli\//);
 
   // New public aliases must never expose the parent directory or installer files.

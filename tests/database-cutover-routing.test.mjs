@@ -103,3 +103,31 @@ test("target mode fails closed when its origin or secret is invalid", () => {
     assert.equal(response.status, 503);
   }
 });
+
+
+test("only the exact CLI signer bypasses Linux and strips forged origin headers", () => {
+  for (const mode of ["source", "fenced", "target", "unexpected"]) {
+    const response = middleware.routeDatabaseApiForTest(request("/api/download-cli?release=known", {
+      "x-sidestream-origin-auth": "forged",
+      "x-sidestream-original-host": "forged.invalid",
+      "x-sidestream-origin-if-none-match": "forged-etag",
+      "x-forwarded-host": "forged.invalid",
+      "x-forwarded-proto": "http",
+    }), { databaseCutoverMode: mode });
+    assert.equal(response.headers.get("x-test-next"), "1");
+    assert.equal(response.headers.get("x-test-rewrite"), null);
+    for (const name of ["x-sidestream-origin-auth", "x-sidestream-original-host", "x-sidestream-origin-if-none-match", "x-forwarded-host", "x-forwarded-proto"]) {
+      assert.equal(response.headers.get(`x-request-${name}`), null);
+    }
+  }
+  for (const url of ["/api/download", "/api/download-cli/", "/api/download-cli/other", "/api/download-cli-extra", "/api/%64ownload-cli", "/api/download-cl%69", "/api/checkout/start"]) {
+    const response = middleware.routeDatabaseApiForTest(request(url), {
+      databaseCutoverMode: "target",
+      hetznerOriginUrl: "https://static.example.invalid/sidestream/",
+      originAuthSecret: "x".repeat(32),
+    });
+    assert.equal(response.headers.get("x-test-next"), null, url);
+    assert.ok(response.headers.get("x-test-rewrite"), url);
+    assert.equal(middleware.routeDatabaseApiForTest(request(url), { databaseCutoverMode: "fenced" }).status, 503, url);
+  }
+});

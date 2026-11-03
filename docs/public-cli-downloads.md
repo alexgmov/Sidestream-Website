@@ -4,30 +4,45 @@ The standalone CLI is delivered separately from the Adobe installers. The curren
 
 Public entrypoints:
 
-- `https://downloads.sidestream.tv/cli/latest` redirects to the current immutable archive.
+- `https://downloads.sidestream.tv/cli/latest` redirects to the current immutable archive URL.
 - `https://downloads.sidestream.tv/cli/latest.json` returns its version, platform requirements, size, SHA-256, and immutable download URL.
-- The exact versioned archive path is public and supports `HEAD` and byte ranges.
+- Each exact versioned archive URL redirects to `https://sidestream.tv/api/download-cli?release=<release-id>`. `GET` validates the pinned Blob pathname and size, then issues a five-minute GET URL so Blob's CDN serves the bytes directly. `HEAD` returns pinned size, filename, version, and SHA-256 without signing or transferring bytes.
 
-`data/cli-release.json` pins the current release, platform/runtime requirements, shared-source content digest, immutable archive path, size, and SHA-256. Run `node --test tests/cli-download-route.test.mjs` to verify the endpoint and private-storage boundary.
+```mermaid
+flowchart LR
+  C[Client GET] --> L[downloads host: /cli/latest]
+  L --> I[Exact immutable archive URL]
+  I --> S[Vercel: exact CLI release signer]
+  R[Append-only CLI registry] --> S
+  S --> B[302 to private Blob CDN]
+  B --> D[Archive bytes with Range support]
+```
 
-FlowState owns the shared CLI source, archive builder, bundled dependencies, and standalone smoke tests. This Website repository owns download-host configuration and publication. A public CLI archive is not an Adobe installer release or a change to paid entitlement.
+`data/cli-release.json` selects latest and pins platform/runtime requirements and the shared-source content digest. Append-only `data/cli-downloads.json` retains every published release's filename, pathname, size, and SHA-256, so advancing latest cannot retarget old immutable URLs. Do not edit or remove a published registry entry. New bytes require a new release ID and filename.
 
-The Nginx configuration in `ops/nginx/downloads.sidestream.tv.conf` exposes only the exact CLI archive and metadata file. Never add a public alias for `/srv/sidestream/artifacts`, a wildcard CLI directory, or change `/v1/` and `/__sidestream_artifacts/` to publish the CLI. Ordinary and paid installer storage remains behind its existing signed allowlist.
+`api/download-cli.ts` is database-free and never imports account, acquisition, payment, or installer-provider code. Only the exact `/api/download-cli` path bypasses Linux API routing in `middleware.ts`; incoming origin/forwarding headers are removed. The signer accepts exactly one `release` parameter, rejects arbitrary pathnames and duplicate/extra parameters, and returns generic `503` errors without provider details. The registry is explicitly included in this Vercel function through `vercel.json`. There is no function byte proxy and no change to the global installer provider.
+
+Run `node --test tests/cli-download-api.test.mjs tests/cli-download-route.test.mjs tests/database-cutover-routing.test.mjs` to verify signing scope, immutable release continuity, and the private-storage boundary.
+
+FlowState owns the shared CLI source, archive builder, bundled dependencies, and standalone smoke tests. This Website repository owns the registry, signer, download-host configuration, and publication. A public CLI archive is not an Adobe installer release or a change to paid entitlement.
+
+The Nginx configuration in `ops/nginx/downloads.sidestream.tv.conf` retains only exact CLI routes. Never add a public alias for `/srv/sidestream/artifacts`, a wildcard CLI directory, or change `/v1/` and `/__sidestream_artifacts/` to publish the CLI. Ordinary and paid installer storage remains behind its existing signed allowlist. The current CLI metadata file remains a root-owned exact static alias; archive bytes use the CDN redirect.
 
 ## Publication
 
-1. Build and smoke-test the CLI archive from FlowState. Keep archive filenames and storage pathnames immutable, and retain its SHA-256 and byte count. CLI release identifiers must distinguish changed bytes even when the Adobe package version is unchanged.
-2. Upload both archive and release JSON with the existing immutable artifact uploader:
+1. Build and smoke-test the CLI archive from FlowState. Keep filenames and storage pathnames immutable, and retain the SHA-256 and byte count. Release IDs must distinguish changed bytes even when the Adobe package version is unchanged.
+2. Retain an immutable origin copy of the archive and release JSON using the existing artifact uploader:
 
    ```sh
    node scripts/upload-hetzner-artifact.mjs --artifact /absolute/archive.tar.gz --pathname sidestream/cli/RELEASE/archive.tar.gz
    node scripts/upload-hetzner-artifact.mjs --artifact /absolute/release.json --pathname sidestream/cli/RELEASE/release.json
    ```
 
-   The uploader uses `root@2.29.9.121`, `~/.ssh/sidestream_hetzner_ed25519`, and `/srv/sidestream/website-backend/scripts/finalize-hetzner-artifact.mjs`. It hashes both sides, refuses different bytes at an existing pathname, and publishes root-owned `0444` files. Do not use the Adobe installer manifest publisher for CLI releases.
-3. Update the exact CLI locations in the tracked Nginx file. `/cli/latest` must target the archive whose immutable JSON is served by `/cli/latest.json`. Keep prior exact archive locations when advancing latest so existing versioned URLs continue working.
-4. Run the focused CLI delivery checks and the Website `AGENTS.md` publication checks. Commit on synchronized `main`, push `main:main`, wait for canonical `/version.json` to report the pushed SHA, and verify the ordinary Checkout redirect.
-5. Before installing Nginx configuration, compare the live file with its tracked pre-change source and retain a root-only timestamped rollback copy. Install the reviewed config to `/etc/nginx/sites-available/downloads.sidestream.tv` with mode `0644`, run `nginx -t`, then `systemctl reload nginx`. If validation fails, restore the previous file without reloading. No Website service or database restart is needed for these static CLI routes.
-6. Verify live latest redirect, JSON, archive `HEAD`, one-byte `206`, full archive size and SHA-256, and standalone execution from the downloaded archive. Also verify unsupported methods, unknown CLI paths, and the direct internal installer path return no bytes. Check the normal installer `HEAD` and signed redirect still work.
+   The uploader uses `root@2.29.9.121`, `~/.ssh/sidestream_hetzner_ed25519`, and `/srv/sidestream/website-backend/scripts/finalize-hetzner-artifact.mjs`. It verifies size/SHA, refuses different bytes at an existing pathname, and publishes root-owned `0444` files. Do not use the Adobe installer manifest publisher for CLI releases.
+3. Mirror the same verified archive to the existing private `sidestream-release-105` Blob store at the identical pathname. Use the protected existing `BLOB_READ_WRITE_TOKEN` or Vercel OIDC, `put()` with `access: "private"`, `addRandomSuffix: false`, `allowOverwrite: false`, and multipart upload. Do not change the store's access mode or existing project credentials. If the pathname already exists, verify it instead of overwriting. Require a complete Blob readback with the same byte count and SHA-256 before publication. Keep all tokens and signed URLs out of source and logs. A full download transfers 222,415,181 bytes for the initial release; include expected download volume when monitoring Blob usage.
+4. Add the new immutable entry to `data/cli-downloads.json`, update latest metadata, and add its exact Nginx archive redirect to the release signer. Keep all previous registry entries and exact archive routes. `/cli/latest` and `/cli/latest.json` must select the same release.
+5. Run the focused checks and Website `AGENTS.md` publication checks. Commit on synchronized `main`, push `main:main`, wait for canonical `/version.json` to report that SHA, and verify the ordinary Checkout redirect. Verify the new live signing API returns the correct pinned `HEAD`, a `GET` redirect to Blob, and `404`/`405` for invalid releases/methods before activating the Nginx redirect. No Linux Website service or database restart is needed: this exact signer runs on Vercel.
+6. Compare live Nginx with the tracked pre-change source and retain a root-only timestamped rollback copy. Install reviewed configuration to `/etc/nginx/sites-available/downloads.sidestream.tv` with mode `0644`, run `nginx -t`, then `systemctl reload nginx`. If validation fails, restore the previous file without reloading.
+7. From an external client, verify latest redirect, JSON, archive `HEAD`, one-byte `206`, complete download size/SHA-256, transfer time, and standalone execution from the downloaded archive. A server-local download does not qualify client performance. Confirm unsupported methods, unknown CLI paths, and direct internal installer paths return no bytes. Check the normal installer `HEAD` and signed redirect still work.
 
-Rollback restores the prior reviewed Nginx config, passes `nginx -t`, then reloads Nginx. Keep immutable archives and their metadata; do not overwrite or delete them to roll back latest.
+For a CDN outage, restore the previously reviewed exact origin-file Nginx alias from the protected rollback copy, pass `nginx -t`, then reload. The preserved origin archive has identical bytes but may transfer more slowly on distant networks. Keep both immutable copies and their metadata; never overwrite or delete them to roll back delivery.

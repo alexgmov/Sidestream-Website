@@ -110,14 +110,20 @@ export function routeDatabaseApiForTest(request, overrides = {}) {
 }
 
 function routeDatabaseApiRequest(request, runtime) {
-  const mode = databaseApiDecision(runtime.databaseCutoverMode);
-  if (mode === "fenced") return databaseWriteFenceResponse();
-
   const headers = new Headers(request.headers);
   const originalIfNoneMatch = boundedIfNoneMatch(headers.get("if-none-match"));
   headers.delete(ORIGIN_AUTH_HEADER);
   headers.delete(ORIGINAL_HOST_HEADER);
   headers.delete(ORIGINAL_IF_NONE_MATCH_HEADER);
+  // The CLI signer is an exact, database-free Vercel route. All other API
+  // requests retain the existing source/fence/target behavior.
+  if (new URL(request.url).pathname === "/api/download-cli") {
+    headers.delete("x-forwarded-host");
+    headers.delete("x-forwarded-proto");
+    return next({ request: { headers } });
+  }
+  const mode = databaseApiDecision(runtime.databaseCutoverMode);
+  if (mode === "fenced") return databaseWriteFenceResponse();
   if (mode === "source") {
     return next({ request: { headers } });
   }
