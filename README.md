@@ -244,7 +244,7 @@ This repository owns the whole Sidestream web service: the public/account fronte
 ## File Map
 
 - `api/_lib/mac-download-rollout.ts` and `data/mac-download-rollout.json` -
-  Owner-approved 10% Mac installer-download pilot of immutable 1.0.57, separate
+  Owner-approved 100% Mac installer-download rollout of immutable 1.0.57, separate
   from update notices, paid fulfillment and native updater controls. Assignment
   uses the existing signed browser acquisition cookie; retries remain in the
   same cohort. Candidate failures return the validated stable 1.0.21 installer.
