@@ -15,10 +15,14 @@ import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { Pool } from "pg";
+import { SIDESTREAM_PRICING_CONTRACT } from "../config/pricing-contract.mjs";
+const CURRENT_GLOBAL_AMOUNT = SIDESTREAM_PRICING_CONTRACT.global.amountMinor;
+const CURRENT_MONTHLY_AMOUNT = SIDESTREAM_PRICING_CONTRACT.global.monthlyAmountMinor;
 import {
   getActivationCheckoutIdempotencyKey,
   getCheckoutParametersFingerprint,
   getCheckoutSessionIdempotencyKey,
+  sanitizeAccountNextPath,
 } from "../api/_lib/entitlement.ts";
 import {
   ACQUISITION_COOKIE_NAME,
@@ -77,6 +81,7 @@ test("Upgrade authenticates and then redirects the signed-in buyer to Stripe", a
   let limiterCalls = 0;
   let allowed = true;
   let selectedCountry = "";
+  let selectedPlan;
   const authenticationCalls = [];
   const start = await loadInjectedHandler(
     new URL("../api/checkout/start.ts", import.meta.url),
@@ -86,6 +91,7 @@ test("Upgrade authenticates and then redirects the signed-in buyer to Stripe", a
         async createCheckoutIntent(options) {
           intentCalls += 1;
           selectedCountry = options.buyerCountry;
+          selectedPlan = options.selectedPlan;
           return {
             intentId: VALID_INTENT_ID,
             browserToken: "browser-capability",
@@ -234,13 +240,44 @@ test("Upgrade authenticates and then redirects the signed-in buyer to Stripe", a
   assert.equal(intentCalls, 2);
   assert.equal(checkoutCalls, 2);
 
+  for (const plan of ["pro_monthly", "unlimited_one_time"]) {
+    session = null;
+    const signedOutPlan = await invokeHandler(start, {
+      method: "GET", url: `/api/checkout/start?activation=chosen&plan=${plan}`,
+      headers: { host: "sidestream.test" },
+    });
+    const next = new URL(signedOutPlan.response.getHeader("location")).searchParams.get("next");
+    assert.equal(next, `/api/checkout/start?activation=chosen&plan=${plan}`);
+    assert.equal(sanitizeAccountNextPath(next), next);
+    const canonical = await invokeHandler(start, {
+      method: "GET", url: next, headers: { host: "sidestream-xi.vercel.app" },
+    });
+    assert.equal(canonical.response.getHeader("location"), `${BASE_URL}${next}`);
+    session = accountSession({ active: false });
+    const chosen = await invokeHandler(start, {
+      method: "GET", url: sanitizeAccountNextPath(next), headers: { host: "sidestream.test" },
+    });
+    assert.equal(chosen.response.statusCode, 303);
+    assert.equal(selectedPlan, plan);
+  }
+  const beforeInvalid = intentCalls;
+  for (const query of ["plan=", "plan=free", "plan=PRO_MONTHLY", "plan=pro_monthly&plan=unlimited_one_time"]) {
+    const invalid = await invokeHandler(start, {
+      method: "GET", url: `/api/checkout/start?${query}`, headers: { host: "sidestream.test" },
+    });
+    assert.equal(invalid.response.statusCode, 400);
+    assert.equal(invalid.response.json.code, "invalid_plan");
+    assert.equal(sanitizeAccountNextPath(`/api/checkout/start?${query}`), "/account.html");
+  }
+  assert.equal(intentCalls, beforeInvalid);
+
   const [index, account, startSource] = await Promise.all([
     readFile(join(repositoryRoot, "index.html"), "utf8"),
     readFile(join(repositoryRoot, "account.html"), "utf8"),
     readFile(join(repositoryRoot, "api", "checkout", "start.ts"), "utf8"),
   ]);
-  assert.match(index, /href="\/api\/checkout\/start"/);
-  assert.match(account, /href="\/api\/checkout\/start"/);
+  assert.match(index, /href="\/upgrade.html"/);
+  assert.match(account, /href="\/upgrade.html(?:\?from=account)?"/);
   assert.doesNotMatch(startSource, /text\/html|<form|<button/);
   assert.doesNotMatch(stripComments(startSource), /\bgetStripe\s*\(/);
 });
@@ -916,7 +953,7 @@ test("database-backed intents serialize retries, rotate deliberately, and fulfil
       assert.equal(currentCheckout.ok, true);
       const write = stripe.sessionCreateWrites.at(-1);
       assert.equal(write.params.mode, "payment");
-      assert.equal(write.params.metadata.sidestream_offer_amount_minor, "1999");
+      assert.equal(write.params.metadata.sidestream_offer_amount_minor, String(CURRENT_GLOBAL_AMOUNT));
       assert.match(write.params.custom_text.submit.message, /One-time payment/);
       assert.equal(write.params.allow_promotion_codes, true);
       assert.equal(write.params.subscription_data, undefined);
@@ -1123,7 +1160,7 @@ test("database-backed intents serialize retries, rotate deliberately, and fulfil
       upgrade_pricing_assignment_bucket: null,
       upgrade_pricing_variant: "control_one_time",
       upgrade_pricing_billing_model: "one_time",
-      upgrade_pricing_amount_minor: "1999",
+      upgrade_pricing_amount_minor: String(CURRENT_GLOBAL_AMOUNT),
       upgrade_pricing_stripe_price_id: "price_checkout_changed_after_open",
     });
     const persistedFallbackAssignment = await databasePool.query(
@@ -1158,6 +1195,7 @@ test("database-backed intents serialize retries, rotate deliberately, and fulfil
       { stage: "checkout_started", count: 11 },
       { stage: "payment_settled", count: 4 },
     ]);
+    await assertSelectedPlanCheckout(account, databasePool, stripe);
 
   } finally {
     if (runtimeModules) {
@@ -1333,6 +1371,174 @@ async function assertDamagedAcquisitionRecovery(account, databasePool, buyer) {
   assert.equal(activation.accountId, owner.accountId);
 }
 
+async function assertSelectedPlanCheckout(account, pool, stripe) {
+  process.env.SIDESTREAM_PRO_MONTHLY_PRICE_ID = "price_checkout_monthly";
+  const buyer = await seedFreeAccount(pool, "selected-plans");
+  const session = accountSession(buyer);
+  const acquisition = await createRuntimeAcquisition(account);
+  const activationKey = "activation-explicit-plans";
+  await seedActivation(pool, activationKey);
+  const options = { session, acquisitionId: acquisition.acquisitionId, activationKey, buyerCountry: "IN" };
+  const monthly = await account.createCheckoutIntent({ ...options, selectedPlan: "pro_monthly" });
+  const monthlySnapshot = (await pool.query(
+    "select * from public.sidestream_checkout_intents where id = $1", [monthly.intentId],
+  )).rows[0];
+  assert.equal(monthlySnapshot.upgrade_pricing_snapshot_version, 3);
+  assert.equal(monthlySnapshot.upgrade_pricing_experiment_id, "upgrade-plans-v1");
+  assert.equal(monthlySnapshot.upgrade_pricing_decision_reason, "customer_choice");
+  assert.equal(monthlySnapshot.upgrade_pricing_assignment_id, null);
+  assert.equal(monthlySnapshot.offer_country, "IN");
+  assert.equal(monthlySnapshot.offer_currency, "usd");
+  assert.equal(Number(monthlySnapshot.offer_amount_minor), CURRENT_MONTHLY_AMOUNT);
+  const checkoutOptions = (intent) => ({ ...intent, session, baseUrl: BASE_URL });
+  const first = await account.createOrReuseCheckoutSession(checkoutOptions(monthly));
+  assert.equal(first.ok, true);
+  const monthlyWrite = stripe.sessionCreateWrites.at(-1);
+  assert.equal(monthlyWrite.params.mode, "subscription");
+  assert.equal(monthlyWrite.params.line_items[0].price, "price_checkout_monthly");
+  assert.equal(monthlyWrite.params.metadata.sidestream_upgrade_variant, "pro_monthly");
+  assert.equal(monthlyWrite.params.subscription_data.metadata.sidestream_upgrade_snapshot_version, "3");
+  assert.match(monthlyWrite.params.custom_text.submit.message, /Renews monthly/);
+  assert.match(monthlyWrite.params.custom_text.submit.message, /Pro: unlimited 4K downloads\. Social posts require Unlimited one-time\./);
+
+  // Choosing the other plan must expire the open monthly Session, never send a
+  // one-time buyer to a recurring contract because an activation was reused.
+  const once = await account.createCheckoutIntent({ ...options, selectedPlan: "unlimited_one_time" });
+  const second = await account.createOrReuseCheckoutSession(checkoutOptions(once));
+  assert.equal(second.ok, true);
+  assert.notEqual(second.url, first.url);
+  assert.equal((await stripe.checkout.sessions.retrieve(monthlyWrite.session.id)).status, "expired");
+  const onceWrite = stripe.sessionCreateWrites.at(-1);
+  assert.equal(onceWrite.params.mode, "payment");
+  assert.equal(onceWrite.params.line_items[0].price, "price_checkout_india");
+  assert.equal(onceWrite.params.metadata.sidestream_upgrade_variant, "unlimited_one_time");
+  assert.equal(onceWrite.params.metadata.sidestream_offer_amount_minor, "49900");
+  assert.equal((await pool.query(
+    "select upgrade_pricing_variant from public.sidestream_checkout_intents where id = $1", [monthly.intentId],
+  )).rows[0].upgrade_pricing_variant, "pro_monthly");
+  await assert.rejects(pool.query(
+    "update public.sidestream_checkout_intents set upgrade_pricing_variant = 'unlimited_one_time' where id = $1", [monthly.intentId],
+  ), /immutable/);
+  // SQL CHECK must fail closed even when a partial v3 snapshot contains NULLs.
+  await assert.rejects(pool.query(
+    `insert into public.sidestream_checkout_intents
+       (intent_kind, account_id, browser_token_hash, expires_at, acquisition_id, upgrade_pricing_snapshot_version)
+     values ('account', $1, repeat('a',64), now() + interval '1 hour', $2, 3)`,
+    [buyer.accountId, acquisition.acquisitionId],
+  ), /upgrade_pricing_snapshot_valid/);
+  assert.deepEqual((await pool.query(
+    "select id from public.sidestream_upgrade_pricing_assignments where account_id = $1", [buyer.accountId],
+  )).rows, []);
+  assert.deepEqual((await pool.query(
+    "select id from public.sidestream_upgrade_pricing_exposures where account_id = $1", [buyer.accountId],
+  )).rows, []);
+
+  // Missing exact monthly configuration cannot silently turn the choice into
+  // a different billing model, and must not persist a payable intent.
+  const retrieve = stripe.prices.retrieve;
+  stripe.prices.retrieve = async (id) => {
+    if (id.startsWith("price_checkout_monthly")) throw new Error("Monthly price missing");
+    return retrieve(id);
+  };
+  const beforeMissing = stripe.sessionCreateWrites.length;
+  await assert.rejects(account.createCheckoutIntent({ ...options, selectedPlan: "pro_monthly" }));
+  stripe.prices.retrieve = retrieve;
+  assert.equal(stripe.sessionCreateWrites.length, beforeMissing);
+  assert.equal(Number((await pool.query(
+    "select count(*) from public.sidestream_checkout_intents where account_id = $1", [buyer.accountId],
+  )).rows[0].count), 2);
+
+  stripe.complete(onceWrite.session.id, { email: buyer.email, name: "Selected Plan" });
+  stripe.completeZeroTotal(onceWrite.session.id, "paid");
+  onceWrite.session.metadata.sidestream_upgrade_variant = "pro_monthly";
+  assert.deepEqual(await account.fulfillCheckoutSession(onceWrite.session.id, activationKey), {
+    fulfilled: false, reason: "selected_plan_snapshot_mismatch",
+  });
+  onceWrite.session.metadata.sidestream_upgrade_variant = "unlimited_one_time";
+  const fulfilled = await account.fulfillCheckoutSession(onceWrite.session.id, activationKey);
+  assert.equal(fulfilled.fulfilled, true, JSON.stringify(fulfilled));
+  const onceLicense = (await pool.query(
+    "select * from public.sidestream_licenses where account_id = $1", [buyer.accountId],
+  )).rows[0];
+  assert.equal(onceLicense.features.purchase_plan, "unlimited_one_time");
+  const summarize = (license) => account.__buildLicenseSummary({
+    status: license.status, planKey: license.plan_key, entitlementStatus: license.entitlement_status,
+    features: license.features,
+  });
+  assert.equal(summarize(onceLicense).socialDownloads, true);
+
+  const proBuyer = await seedFreeAccount(pool, "selected-pro-fulfillment");
+  const proSession = accountSession(proBuyer);
+  const proActivation = "activation-selected-pro";
+  await seedActivation(pool, proActivation);
+  const proOptions = {
+    session: proSession, acquisitionId: acquisition.acquisitionId, activationKey: proActivation, buyerCountry: "US",
+  };
+  const originalOnce = await account.createCheckoutIntent({ ...proOptions, selectedPlan: "unlimited_one_time" });
+  assert.equal((await account.createOrReuseCheckoutSession({ ...originalOnce, session: proSession, baseUrl: BASE_URL })).ok, true);
+  const originalOnceWrite = stripe.sessionCreateWrites.at(-1);
+  assert.equal(originalOnceWrite.params.mode, "payment");
+  assert.equal(originalOnceWrite.session.amount_total, CURRENT_GLOBAL_AMOUNT);
+  const proIntent = await account.createCheckoutIntent({ ...proOptions, selectedPlan: "pro_monthly" });
+  assert.equal((await account.createOrReuseCheckoutSession({ ...proIntent, session: proSession, baseUrl: BASE_URL })).ok, true);
+  const proWrite = stripe.sessionCreateWrites.at(-1);
+  assert.equal(proWrite.params.mode, "subscription");
+  assert.notEqual(proWrite.session.id, originalOnceWrite.session.id);
+  assert.equal((await stripe.checkout.sessions.retrieve(originalOnceWrite.session.id)).status, "expired");
+  stripe.complete(proWrite.session.id, { email: proBuyer.email, name: "Pro" });
+  const truth = await stripe.checkout.sessions.retrieve(proWrite.session.id);
+  const metadata = { ...proWrite.params.subscription_data.metadata };
+  stripe.subscriptions = { retrieve: async () => ({
+    id: truth.subscription, customer: truth.customer, livemode: false, status: "active",
+    collection_method: "charge_automatically", latest_invoice: truth.invoice,
+    cancel_at_period_end: false, metadata,
+    items: { data: [{ quantity: 1, price: "price_checkout_monthly", current_period_end: Math.floor(Date.now() / 1000) + 2592000 }], has_more: false },
+  }) };
+  stripe.invoices = { retrieve: async () => ({
+    id: truth.invoice, customer: truth.customer, subscription: truth.subscription, livemode: false,
+    collection_method: "charge_automatically", currency: "usd", status: "paid", paid: true,
+    amount_due: CURRENT_MONTHLY_AMOUNT, amount_paid: CURRENT_MONTHLY_AMOUNT,
+    amount_remaining: 0, total: CURRENT_MONTHLY_AMOUNT,
+    total_discount_amounts: [],
+    billing_reason: "subscription_create",
+    lines: { data: [{ quantity: 1, currency: "usd", amount: CURRENT_MONTHLY_AMOUNT,
+      discount_amounts: [],
+      parent: { type: "subscription_item_details", subscription_item_details: { subscription: truth.subscription } },
+      pricing: { type: "price_details", price_details: { price: "price_checkout_monthly", product: "prod_checkout_test" } },
+    }], has_more: false },
+    parent: { type: "subscription_details", subscription_details: { subscription: truth.subscription, metadata } },
+    payments: { data: [{
+      id: "inpay_selected_pro", invoice: truth.invoice, livemode: false, currency: "usd",
+      amount_requested: CURRENT_MONTHLY_AMOUNT, amount_paid: CURRENT_MONTHLY_AMOUNT, status: "paid",
+      payment: { type: "payment_intent", payment_intent: {
+        id: "pi_selected_pro", customer: truth.customer, livemode: false, currency: "usd",
+        amount: CURRENT_MONTHLY_AMOUNT, amount_received: CURRENT_MONTHLY_AMOUNT, status: "succeeded",
+      } },
+    }], has_more: false },
+  }) };
+  metadata.sidestream_upgrade_variant = "unlimited_one_time";
+  const invalidPro = await account.fulfillCheckoutSession(truth.id);
+  assert.equal(invalidPro.fulfilled, false);
+  assert.equal(invalidPro.reason, "subscription_identity_mismatch");
+  metadata.sidestream_upgrade_variant = "pro_monthly";
+  const selectedIntentId = metadata.sidestream_checkout_intent_id;
+  delete metadata.sidestream_checkout_intent_id;
+  assert.equal((await account.fulfillCheckoutSession(truth.id)).reason, "selected_plan_snapshot_mismatch");
+  metadata.sidestream_checkout_intent_id = selectedIntentId;
+  const proFulfilled = await account.fulfillCheckoutSession(truth.id);
+  assert.equal(proFulfilled.fulfilled, true, JSON.stringify(proFulfilled));
+  const proLicense = (await pool.query(
+    "select * from public.sidestream_licenses where account_id = $1", [proBuyer.accountId],
+  )).rows[0];
+  assert.equal(proLicense.features.purchase_plan, "pro_monthly");
+  assert.deepEqual(Object.fromEntries(["active", "purchasePlan", "maxVideoHeight", "socialDownloads"].map(
+    key => [key, summarize(proLicense)[key]],
+  )), { active: true, purchasePlan: "pro_monthly", maxVideoHeight: 2160, socialDownloads: false });
+  assert.equal(summarize({ ...proLicense, features: {} }).purchasePlan, "legacy_paid");
+  assert.equal(summarize({ ...proLicense, features: {} }).socialDownloads, true);
+  assert.equal(summarize({ ...proLicense, entitlement_status: "revoked" }).maxVideoHeight, 1080);
+}
+
 class RecordingStripe {
   #customersByKey = new Map();
   #sessionsByKey = new Map();
@@ -1371,7 +1577,7 @@ class RecordingStripe {
           product: "prod_checkout_test",
           unit_amount: priceId.endsWith("_wrong_amount")
             ? 49901
-            : monthly ? 499 : india ? 49900 : brazil ? 2500 : southKorea ? 24900 : 1999,
+            : monthly ? CURRENT_MONTHLY_AMOUNT : annual ? 1999 : india ? 49900 : brazil ? 2500 : southKorea ? 24900 : CURRENT_GLOBAL_AMOUNT,
           currency: india ? "inr" : brazil ? "brl" : southKorea ? "krw" : "usd",
           type: monthly || annual ? "recurring" : "one_time",
           recurring: monthly || annual
@@ -1384,10 +1590,10 @@ class RecordingStripe {
           lookup_key: monthly || annual
             ? annual
               ? "sidestream_pro_annual_usd_1999"
-              : "sidestream_pro_monthly_usd_499"
+              : `sidestream_pro_monthly_usd_${CURRENT_MONTHLY_AMOUNT}`
             : india || brazil || southKorea
             ? null
-            : "sidestream_pro_once_1999",
+            : `sidestream_pro_once_${CURRENT_GLOBAL_AMOUNT}`,
         };
       },
       list: async () => ({ data: [] }),
@@ -1461,10 +1667,14 @@ class RecordingStripe {
           const annual = params.line_items[0].price.startsWith(
             "price_checkout_annual",
           );
-          const amount = monthly ? 499 : annual ? 1999 : india ? 49900 : brazil ? 2500 : southKorea ? 24900 : 1999;
+          const amount = monthly ? CURRENT_MONTHLY_AMOUNT : annual ? 1999 : india ? 49900 : brazil ? 2500 : southKorea ? 24900 : CURRENT_GLOBAL_AMOUNT;
           const currency = india ? "inr" : brazil ? "brl" : southKorea ? "krw" : "usd";
           const session = {
             id,
+            livemode: false,
+            created: Math.floor(Date.now() / 1000),
+            client_reference_id: params.client_reference_id,
+            invoice: params.mode === "subscription" ? `in_${id}` : null,
             url: `https://checkout.stripe.test/${id}`,
             mode: params.mode,
             status: "open",
@@ -1594,10 +1804,10 @@ test("a stale configured Price falls through to the current exact lookup Price",
             id: "price_checkout_current",
             active: true,
             product: "prod_checkout_test",
-            unit_amount: 1999,
+            unit_amount: CURRENT_GLOBAL_AMOUNT,
             currency: "usd",
             recurring: null,
-            lookup_key: "sidestream_pro_once_1999",
+            lookup_key: `sidestream_pro_once_${CURRENT_GLOBAL_AMOUNT}`,
           }]
         : [],
     });
@@ -1778,6 +1988,7 @@ export function decideNewCheckoutPricing(options) {
     );
     source = replaceImports(source, imports);
     source += `
+export { buildLicenseSummary as __buildLicenseSummary };
 export function __setCheckoutAbuseStripeClient(value: Stripe | null) {
   stripeClient = value;
 }

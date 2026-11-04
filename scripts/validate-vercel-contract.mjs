@@ -35,6 +35,11 @@ const INTERNAL_CRONS = Object.freeze([
 
 const PROTECTED_ADMIN_ROUTES = Object.freeze([
   {
+    path: "/api/internal/ugc-report",
+    source: "api/internal/ugc-report.ts",
+    testSource: "tests/ugc-report.test.mjs",
+  },
+  {
     path: "/api/internal/channel-report",
     source: "api/internal/channel-report.ts",
     testSource: "tests/channel-report.test.mjs",

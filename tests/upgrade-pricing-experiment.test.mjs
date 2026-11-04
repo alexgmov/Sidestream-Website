@@ -17,6 +17,9 @@ import {
   UPGRADE_PRICING_EXPERIMENT_CONFIG,
 } from "../config/upgrade-pricing-experiment.mjs";
 
+import { SIDESTREAM_PRICING_CONTRACT } from "../config/pricing-contract.mjs";
+const currentGlobal = SIDESTREAM_PRICING_CONTRACT.global;
+
 const SECRET = "upgrade-pricing-fixture-secret-000000000000000000000000";
 const FIXTURE_SIZE = 20_000;
 
@@ -28,7 +31,7 @@ function decide(index, overrides = {}) {
   return decideUpgradePricing({
     accountId: accountId(index),
     currency: "usd",
-    oneTimeAmountMinor: 1999,
+    oneTimeAmountMinor: currentGlobal.amountMinor,
     enabled: true,
     rolloutBasisPoints: 5_000,
     secret: SECRET,
@@ -81,7 +84,7 @@ test("the concluded source contract restores one-time for every new eligible glo
     const decision = decideUpgradePricing({
       accountId: accountId(index),
       currency: "usd",
-      oneTimeAmountMinor: 1999,
+      oneTimeAmountMinor: currentGlobal.amountMinor,
       environment: {
         SIDESTREAM_UPGRADE_PRICING_V2_ENABLED: "true",
         SIDESTREAM_UPGRADE_PRICING_V2_ROLLOUT_BPS: "5000",
@@ -110,7 +113,7 @@ test("new purchases use current one-time pricing without rewriting monthly or an
       assignedAt: "2026-08-27T00:00:00.000Z",
     });
     const before = JSON.stringify(existingAssignment);
-    for (const [currency, amount] of [["usd", 1999], ["inr", 49900], ["brl", 2500]]) {
+    for (const [currency, amount] of [["usd", currentGlobal.amountMinor], ["inr", 49900], ["brl", 2500]]) {
       const decision = decideNewCheckoutPricing({
         accountId: accountId(42), currency, oneTimeAmountMinor: amount,
         existingAssignment, enabled: true, rolloutBasisPoints: 10000, secret: SECRET,
@@ -130,7 +133,7 @@ test("new purchases use current one-time pricing without rewriting monthly or an
 });
 
 test("annual treatment is exactly $19.99 and deliberately global USD only", () => {
-  assert.equal(deriveAnnualOfferAmount("usd", 1999), 1999);
+  assert.equal(deriveAnnualOfferAmount("usd", currentGlobal.amountMinor), 1999);
   for (const [currency, amount] of [["inr", 49900], ["brl", 2500], ["krw", 24900]]) {
     assert.throws(
       () => deriveAnnualOfferAmount(currency, amount),
@@ -141,7 +144,7 @@ test("annual treatment is exactly $19.99 and deliberately global USD only", () =
     () => deriveAnnualOfferAmount("eur", 1999),
     (error) => error instanceof UpgradePricingExperimentError && error.code === "unsupported_currency",
   );
-  assert.equal(deriveMonthlyHalfAmount("usd", 1999), 499);
+  assert.equal(deriveMonthlyHalfAmount("usd", currentGlobal.amountMinor), currentGlobal.monthlyAmountMinor);
 });
 
 test("the cryptographic account fixture is deterministic and approximately balanced", () => {
@@ -197,7 +200,8 @@ test("a persisted v1 monthly assignment survives the new annual experiment", () 
   assert.equal(retry.experimentId, "upgrade-pricing-v1");
   assert.equal(retry.assignmentVersion, 1);
   assert.equal(retry.variant, UPGRADE_PRICING_MONTHLY_VARIANT);
-  assert.equal(retry.recurringAmountMinor, 499);
+  // Assignment helpers price new offers; locked intents retain their own historical terms.
+  assert.equal(retry.recurringAmountMinor, currentGlobal.monthlyAmountMinor);
   assert.equal(retry.recurringInterval, "month");
   assert.equal(retry.assignmentId, existingAssignment.assignmentId);
   assert.equal(retry.usedExistingAssignment, true);
@@ -239,7 +243,7 @@ test("a persisted v2 one-time assignment remains permanent after annual becomes 
   const retry = decideUpgradePricing({
     accountId: accountId(44),
     currency: "usd",
-    oneTimeAmountMinor: 1999,
+    oneTimeAmountMinor: currentGlobal.amountMinor,
     existingAssignment,
     environment: {
       SIDESTREAM_UPGRADE_PRICING_V2_ENABLED: "true",

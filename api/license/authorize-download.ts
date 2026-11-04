@@ -12,6 +12,7 @@ import {
 type DownloadAuthorizationPayload = {
   licenseToken?: unknown;
   deviceId?: unknown;
+  downloadPolicyVersion?: unknown;
 };
 
 export default async function handler(
@@ -26,6 +27,12 @@ export default async function handler(
     if (!environment) return authorizationUnavailable(response);
 
     const payload = await readJsonBody<DownloadAuthorizationPayload>(request);
+    if (payload.downloadPolicyVersion !== undefined && payload.downloadPolicyVersion !== 1) {
+      return sendJson(response, 400, {
+        active: false,
+        code: "invalid_download_policy_version",
+      });
+    }
     const licenseToken = cleanString(payload.licenseToken, 500);
     const deviceId = cleanString(payload.deviceId, 240);
     if (!licenseToken || !deviceId) {
@@ -39,9 +46,19 @@ export default async function handler(
       licenseToken,
       deviceId,
       environment,
+      ...(payload.downloadPolicyVersion === 1 ? { downloadPolicyVersion: 1 as const } : {}),
     });
     if (authorization.active) {
-      return sendJson(response, 200, { active: true });
+      // Installed clients require the original exact one-key response.
+      if (payload.downloadPolicyVersion !== 1) {
+        return sendJson(response, 200, { active: true });
+      }
+      return sendJson(response, 200, {
+        active: true,
+        purchasePlan: authorization.purchasePlan,
+        maxVideoHeight: authorization.maxVideoHeight,
+        socialDownloads: authorization.socialDownloads,
+      });
     }
     if (authorization.code === "license_inactive") {
       return sendJson(response, 403, {

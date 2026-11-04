@@ -32,12 +32,36 @@ function pricingSurfaces(offer) {
     },
   },
   {
+    path: "upgrade.html",
+    transform(source) {
+      const monthlyDisplay = formatOfferPrice({
+        ...offer,
+        amountMinor: offer.monthlyAmountMinor,
+      });
+      return source
+        .replace(
+          /(<span class="amount" data-upgrade-price="unlimited_one_time">)[^<]+(<\/span>)/,
+          (_match, beforePrice, afterPrice) => `${beforePrice}${globalDisplay}${afterPrice}`,
+        )
+        .replace(
+          /(<span class="amount" data-upgrade-price="pro_monthly">)[^<]+(<\/span>)/,
+          (_match, beforePrice, afterPrice) => `${beforePrice}${monthlyDisplay}${afterPrice}`,
+        );
+    },
+  },
+  {
     path: "public/llms.txt",
     transform(source) {
-      return source.replace(
-        /(Sidestream Unlimited as a )[^ ]+( one-time paid upgrade)/,
-        (_match, beforePrice, afterPrice) => `${beforePrice}${globalDisplay}${afterPrice}`,
-      );
+      const monthlyDisplay = formatOfferPrice({ ...offer, amountMinor: offer.monthlyAmountMinor });
+      return source
+        .replace(
+          /(Sidestream Unlimited as a )[^ ]+( one-time paid upgrade)/,
+          (_match, beforePrice, afterPrice) => `${beforePrice}${globalDisplay}${afterPrice}`,
+        )
+        .replace(
+          /(Pro at )[^ ]+(\/month for unlimited 4K downloads)/,
+          (_match, beforePrice, afterPrice) => `${beforePrice}${monthlyDisplay}${afterPrice}`,
+        );
     },
   },
   ];

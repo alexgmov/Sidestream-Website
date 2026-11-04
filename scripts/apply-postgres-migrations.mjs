@@ -31,6 +31,10 @@ export const MIGRATION_STATUS_OPERATION = "postgres_migration_status";
 export const MIGRATION_PRODUCTION_CONFIRMATION = "APPLY_PRODUCTION_POSTGRES_MIGRATIONS";
 export const MIGRATION_BASELINE_PRODUCTION_CONFIRMATION =
   "BASELINE_PRODUCTION_POSTGRES_MIGRATIONS";
+const BOUNDED_MIGRATION_PREREQUISITES = Object.freeze({
+  "20261103120000_add_selected_upgrade_plans.sql":
+    "20260825140000_add_annual_upgrade_pricing_experiment.sql",
+});
 
 const CREATE_LEDGER_SQL = `
   create table if not exists ${MIGRATION_LEDGER} (
@@ -123,6 +127,25 @@ export function classifyMigrationState(migrations, ledgerRows) {
   }));
 }
 
+export function selectPendingMigrations(migrations, ledgerRows, only = "") {
+  // Check the entire ledger before narrowing scope: unrelated applied files
+  // must still exist locally with their original checksums.
+  const statuses = classifyMigrationState(migrations, ledgerRows);
+  if (!only) return statuses.filter((migration) => migration.status === "pending");
+  if (!Object.hasOwn(BOUNDED_MIGRATION_PREREQUISITES, only)) {
+    throw new Error(`Migration is not approved for --only: ${only}`);
+  }
+  const selected = statuses.find((migration) => migration.filename === only);
+  if (!selected) throw new Error(`Selected migration file is missing: ${only}`);
+  const prerequisite = BOUNDED_MIGRATION_PREREQUISITES[only];
+  if (!statuses.some((migration) =>
+    migration.filename === prerequisite && migration.status === "applied"
+  )) {
+    throw new Error(`Selected migration requires an applied prerequisite: ${prerequisite}`);
+  }
+  return selected.status === "pending" ? [selected] : [];
+}
+
 export function migrationSqlForTransaction(sql) {
   const trimmed = sql.trim();
   const wrapped = /^begin\s*;\s*([\s\S]*?)\s*commit\s*;$/i.exec(trimmed);
@@ -150,7 +173,7 @@ export function selectMigrationDatabase(
 
 export function parseMigrationOperatorArguments(argv) {
   const valueOptions = new Set([
-    "--target", "--target-url-env", "--confirm-operation", "--confirm-target",
+    "--target", "--target-url-env", "--confirm-operation", "--confirm-target", "--only",
   ]);
   const core = [];
   const options = {
@@ -158,6 +181,7 @@ export function parseMigrationOperatorArguments(argv) {
     targetUrlEnv: "",
     confirmOperation: "",
     confirmTarget: "",
+    only: "",
   };
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
@@ -178,8 +202,18 @@ export function parseMigrationOperatorArguments(argv) {
     if (name === "--target-url-env") options.targetUrlEnv = value;
     if (name === "--confirm-operation") options.confirmOperation = value;
     if (name === "--confirm-target") options.confirmTarget = value;
+    if (name === "--only") {
+      if (options.only) throw new Error("--only may be supplied only once");
+      options.only = value;
+    }
   }
   const mode = parseMigrationArguments(core);
+  if (options.only) {
+    if (mode !== "apply") throw new Error("--only is supported only when applying migrations");
+    if (!Object.hasOwn(BOUNDED_MIGRATION_PREREQUISITES, options.only)) {
+      throw new Error(`Migration is not approved for --only: ${options.only}`);
+    }
+  }
   if (options.target && !["test", "production"].includes(options.target)) {
     throw new Error("--target must be test or production");
   }
@@ -308,7 +342,7 @@ async function main() {
     } else if (mode === "baseline") {
       await baselineKnownSchema(client, migrations);
     } else {
-      await applyPendingMigrations(client, migrations);
+      await applyPendingMigrations(client, migrations, operator.only);
     }
   } finally {
     if (lockHeld) {
@@ -346,8 +380,11 @@ async function reportStatus(client, migrations) {
   printStatuses(statuses);
 }
 
-async function applyPendingMigrations(client, migrations) {
+async function applyPendingMigrations(client, migrations, only = "") {
   const ledgerExists = await migrationLedgerExists(client);
+  if (only && !ledgerExists) {
+    throw new Error("Bounded migration requires an existing checksummed migration ledger");
+  }
   const productSchemaExists = await hasSidestreamProductSchema(client);
   if (!ledgerExists) {
     if (productSchemaExists) {
@@ -366,8 +403,8 @@ async function applyPendingMigrations(client, migrations) {
       "Existing Sidestream schema has an empty migration ledger; explicit --baseline is required",
     );
   }
-  const statuses = classifyMigrationState(migrations, ledgerRows);
-  for (const migration of statuses.filter((candidate) => candidate.status === "pending")) {
+  const pending = selectPendingMigrations(migrations, ledgerRows, only);
+  for (const migration of pending) {
     const startedAt = process.hrtime.bigint();
     await client.query("begin");
     try {
@@ -392,8 +429,8 @@ async function applyPendingMigrations(client, migrations) {
       throw new Error(`Migration failed: ${migration.filename}`, { cause: error });
     }
   }
-  if (statuses.every((status) => status.status === "applied")) {
-    console.log("No pending migrations.");
+  if (pending.length === 0) {
+    console.log(only ? `Selected migration is already applied: ${only}` : "No pending migrations.");
   }
 }
 
@@ -551,6 +588,11 @@ Operations:
   --validate   Validate local ordering and checksums without a database
   --baseline   Verify the known schema, then record only proven files
   --dry-run    List local files without connecting or mutating a database
+
+Apply may use --only 20261103120000_add_selected_upgrade_plans.sql after its
+20260825140000_add_annual_upgrade_pricing_experiment.sql prerequisite is applied.
+All local files and the complete ledger are still validated; other pending files
+are left unchanged. No other filename or operation accepts --only.
 
 URLs are accepted only through SIDESTREAM_TEST_POSTGRES_URL or
 SIDESTREAM_POSTGRES_URL_NON_POOLING. Production mutations also require exact

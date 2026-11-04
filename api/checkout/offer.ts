@@ -1,6 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import {
   getCheckoutOfferPresentation,
+  getUpgradePlanPresentation,
   getTrustedCheckoutCountry,
 } from "../_lib/checkout-offers.js";
 
@@ -14,9 +15,11 @@ export default function handler(
     return sendJson(response, 405, { error: "Method not allowed" }, method);
   }
 
-  const presentation = getCheckoutOfferPresentation(
-    getTrustedCheckoutCountry(request.headers),
-  );
+  const requestUrl = new URL(request.url || "/api/checkout/offer", "https://sidestream.tv");
+  const present = requestUrl.searchParams.get("view") === "plans"
+    ? getUpgradePlanPresentation
+    : getCheckoutOfferPresentation;
+  const presentation = present(getTrustedCheckoutCountry(request.headers));
   return sendJson(response, 200, presentation, method);
 }
 

@@ -176,7 +176,7 @@
             <p class="value" id="account-plan">Checking...</p>
           </div>
           <div class="actions">
-            <a class="button primary" id="upgrade-link" href="/api/checkout/start">Upgrade</a>
+            <a class="button primary" id="upgrade-link" href="/upgrade.html?from=account">Upgrade</a>
             <button class="secondary" id="billing-button" type="button">Open Stripe portal</button>
             <button class="secondary danger" id="cancel-subscription-button" type="button" hidden>Cancel subscription</button>
           </div>
@@ -239,10 +239,15 @@
 
     function describePlan(license) {
       if (!license || !license.active) return "Free";
+      const label = paidPlanLabel(license);
       if (license.cancelAtPeriodEnd && license.currentPeriodEnd) {
-        return "Unlimited - cancels " + new Date(license.currentPeriodEnd).toLocaleDateString();
+        return label + " - cancels " + new Date(license.currentPeriodEnd).toLocaleDateString();
       }
-      return "Unlimited";
+      return label;
+    }
+
+    function paidPlanLabel(license) {
+      return license?.purchasePlan === "pro_monthly" ? "Pro" : "Unlimited";
     }
 
     async function apiPost(url, body = {}) {
@@ -273,6 +278,7 @@
       signedInEmail = session.user.email || "";
       accountEmail.textContent = session.user.email;
       accountPlan.textContent = describePlan(session.license);
+      accountPlan.dataset.paidPlanLabel = paidPlanLabel(session.license);
       accountPlan.dataset.currentPeriodEnd = session.license?.currentPeriodEnd || "";
       const hasActiveLicense = Boolean(session.license && session.license.active);
       accountPlan.classList.toggle("status", hasActiveLicense);
@@ -334,12 +340,13 @@
     });
 
     cancelSubscriptionButton.addEventListener("click", async () => {
+      const planLabel = accountPlan.dataset.paidPlanLabel || "Unlimited";
       const currentPeriodEnd = accountPlan.dataset.currentPeriodEnd || "";
       const endLabel = currentPeriodEnd
         ? new Date(currentPeriodEnd).toLocaleDateString()
         : "the end of your current billing period";
       if (!window.confirm(
-        "Cancel your Sidestream subscription? You will keep Unlimited access until " +
+        "Cancel your Sidestream subscription? You will keep " + planLabel + " access until " +
         endLabel + "."
       )) return;
 
@@ -349,12 +356,12 @@
         const payload = await apiPost("/api/billing/subscription/cancel");
         const confirmedEnd = payload.currentPeriodEnd || currentPeriodEnd;
         accountPlan.textContent = confirmedEnd
-          ? "Unlimited - cancels " + new Date(confirmedEnd).toLocaleDateString()
-          : "Unlimited - cancellation scheduled";
+          ? planLabel + " - cancels " + new Date(confirmedEnd).toLocaleDateString()
+          : planLabel + " - cancellation scheduled";
         cancelSubscriptionButton.hidden = true;
         window.alert(
           confirmedEnd
-            ? "Your subscription is canceled for renewal. Unlimited access continues until " +
+            ? "Your subscription is canceled for renewal. " + planLabel + " access continues until " +
               new Date(confirmedEnd).toLocaleDateString() + "."
             : "Your subscription is canceled for renewal."
         );
@@ -383,7 +390,7 @@
       const body = [
         "Hi Sidestream,",
         "",
-        "I'd like to request a refund for my Sidestream Unlimited purchase.",
+        "I'd like to request a refund for my Sidestream purchase.",
         "",
         "Account email: " + (signedInEmail || ""),
         "",

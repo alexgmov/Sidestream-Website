@@ -140,6 +140,14 @@
       ]
     },
     {
+      "source": "/upgrade.html",
+      "headers": [
+        { "key": "Cache-Control", "value": "private, no-store" },
+        { "key": "Referrer-Policy", "value": "no-referrer" },
+        { "key": "X-Robots-Tag", "value": "noindex, nofollow" }
+      ]
+    },
+    {
       "source": "/credit-complete.html",
       "headers": [
         { "key": "Cache-Control", "value": "no-store" },

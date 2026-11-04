@@ -31,6 +31,7 @@ const ALLOWED_ROOT_HTML = new Set([
   "index.html",
   "paid-thank-you.html",
   "thank-you.html",
+  "upgrade.html",
 ]);
 
 export async function verifyVercelBuild(outputRoot = OUTPUT_ROOT) {

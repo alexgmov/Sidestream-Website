@@ -48,7 +48,7 @@ test("committed paid landing is the deterministic canonical render", () => {
   );
 });
 
-test("the annual public card and one-time paid landing stay distinct", () => {
+test("the public plan chooser and one-time paid landing stay distinct", () => {
   assert.match(canonicalHtml, /<p class="plan-name">Unlimited<\/p>/);
   assert.match(canonicalHtml, /data-checkout-offer-cadence>one-time<\/span>/);
   assert.doesNotMatch(
@@ -93,8 +93,8 @@ test("rendered paid page contains no prohibited free or pre-purchase email offer
   ];
 
   prohibited.forEach((pattern) => assert.doesNotMatch(text, pattern));
-  assert.match(text, /Buy Now \$19\.99/);
-  assert.match(text, /\$19\.99 one-time/);
+  assert.match(text, /Buy Now \$39\.99/);
+  assert.match(text, /\$39\.99 one-time/);
   assert.match(text, /We’ll email your download link after purchase\./);
 });
 

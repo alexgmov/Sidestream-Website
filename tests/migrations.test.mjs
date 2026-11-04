@@ -38,7 +38,7 @@ function knownBaselineSnapshot(rowSecurityEnabled = false) {
 
 test("migration files are ordered, checksummed, and append-only baseline files are pinned", async () => {
   const migrations = validateMigrationFiles(await loadMigrationFiles());
-  assert.equal(migrations.length, 41);
+  assert.equal(migrations.length, 42);
   assert.deepEqual(
     migrations.map((migration) => migration.filename),
     [...migrations.map((migration) => migration.filename)].sort(),
@@ -76,6 +76,7 @@ test("migration files are ordered, checksummed, and append-only baseline files a
     "20260831120000_add_meta_ad_spend.sql",
     "20261013190000_add_ugc_link_arrivals.sql",
     "20261016183000_add_paid_activation_installation_identity.sql",
+    "20261103120000_add_selected_upgrade_plans.sql",
   ]) {
     assert.ok(migrations.some((migration) => migration.filename === filename));
   }
@@ -530,7 +531,8 @@ test("runner holds one global lock and persists each ledger row with its migrati
     import.meta.url,
   ), "utf8");
   const lock = source.indexOf('client.query("select pg_advisory_lock(hashtext($1))"');
-  const loop = source.indexOf("for (const migration of statuses.filter");
+  const selection = source.indexOf("selectPendingMigrations(migrations, ledgerRows, only)", lock);
+  const loop = source.indexOf("for (const migration of pending)", selection);
   const begin = source.indexOf('client.query("begin")', loop);
   const sql = source.indexOf(
     "client.query(migrationSqlForTransaction(migration.sql))",
@@ -538,7 +540,7 @@ test("runner holds one global lock and persists each ledger row with its migrati
   );
   const ledger = source.indexOf(`insert into \${MIGRATION_LEDGER}`, sql);
   const commit = source.indexOf('client.query("commit")', ledger);
-  assert.ok(lock >= 0 && loop > lock && begin > loop && sql > begin && ledger > sql && commit > ledger);
+  assert.ok(lock >= 0 && selection > lock && loop > selection && begin > loop && sql > begin && ledger > sql && commit > ledger);
   assert.match(source, /Migration checksum drift detected/);
   assert.match(source, /explicit --baseline/);
   assert.equal(

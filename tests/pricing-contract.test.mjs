@@ -15,10 +15,10 @@ test("one contract owns Free, global, India, Brazil, South Korea, and Stripe loo
   const contract = SIDESTREAM_PRICING_CONTRACT;
   assert.equal(contract.free.amountMinor, 0);
   assert.equal(formatOfferPrice(contract.free), "$0");
-  assert.equal(formatOfferPrice(contract.global), "$19.99");
-  assert.equal(formatOfferDecimal(contract.global), "19.99");
-  assert.equal(contract.global.lookupKey, "sidestream_pro_once_1999");
-  assert.equal(contract.global.monthlyAmountMinor, 499);
+  assert.equal(formatOfferPrice(contract.global), "$39.99");
+  assert.equal(formatOfferDecimal(contract.global), "39.99");
+  assert.equal(contract.global.lookupKey, "sidestream_pro_once_3999");
+  assert.equal(contract.global.monthlyAmountMinor, 999);
   assert.equal(contract.global.annualAmountMinor, 1999);
   assert.equal(contract.global.annualPriceSource.configuredVariable, "SIDESTREAM_PRO_ANNUAL_PRICE_ID");
   assert.equal(formatOfferPrice(contract.india), "₹499");
@@ -63,9 +63,22 @@ test("a hypothetical global change makes every generated public surface fail the
   const results = await getPricingSurfaceResults(hypothetical);
   assert.deepEqual(
     results.filter((result) => result.actual !== result.expected).map((result) => result.path),
-    ["index.html", "public/llms.txt"],
+    ["index.html", "upgrade.html", "public/llms.txt"],
   );
   assert.match(results[0].expected, /\$12\.99/);
   assert.match(results[0].expected, /"price": "12\.99"/);
-  assert.match(results[1].expected, /Sidestream Unlimited as a \$12\.99 one-time paid upgrade/);
+  assert.match(results[1].expected, /data-upgrade-price="unlimited_one_time">\$12\.99/);
+  assert.match(results[2].expected, /Sidestream Unlimited as a \$12\.99 one-time paid upgrade/);
+});
+
+test("monthly price drift is detected in the chooser and crawler summary", async () => {
+  const results = await getPricingSurfaceResults({
+    ...SIDESTREAM_PRICING_CONTRACT.global, monthlyAmountMinor: 1299,
+  });
+  assert.deepEqual(
+    results.filter((result) => result.actual !== result.expected).map((result) => result.path),
+    ["upgrade.html", "public/llms.txt"],
+  );
+  assert.match(results[1].expected, /data-upgrade-price="pro_monthly">\$12\.99/);
+  assert.match(results[2].expected, /Pro at \$12\.99\/month/);
 });

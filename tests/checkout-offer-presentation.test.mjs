@@ -65,7 +65,7 @@ test("the public offer presentation uses only the trusted country header", async
       headers: { "x-vercel-ip-country": "US" },
     });
     assert.deepEqual(forged.response.json, {
-      formattedPrice: "$19.99",
+      formattedPrice: "$39.99",
       currency: "USD",
       billingCadence: "one_time",
     });
@@ -109,12 +109,72 @@ test("India safely receives the global presentation without its approved Price",
       headers: { "x-vercel-ip-country": "IN" },
     });
     assert.deepEqual(result.response.json, {
-      formattedPrice: "$19.99",
+      formattedPrice: "$39.99",
       currency: "USD",
       billingCadence: "one_time",
     });
   } finally {
     restoreEnvironment(previous);
+  }
+});
+
+test("the plan chooser presents exact capabilities and trusted regional one-time pricing", async () => {
+  const variables = [INDIA_PRICE_ENV, BRAZIL_PRICE_ENV, SOUTH_KOREA_PRICE_ENV];
+  const previous = variables.map((name) => process.env[name]);
+  variables.forEach((name, index) => { process.env[name] = `price_region_${index}`; });
+  try {
+    for (const [country, formattedPrice, currency] of [
+      ["US", "$39.99", "USD"],
+      ["IN", "₹499", "INR"],
+      ["BR", "R$ 25", "BRL"],
+      ["KR", "₩24,900", "KRW"],
+    ]) {
+      const result = await invokeHandler(handler, {
+        url: "/api/checkout/offer?view=plans&country=IN&currency=EUR&amount=1&price=price_forged&plan=free&billingCadence=year",
+        headers: { "x-vercel-ip-country": country },
+      });
+      assert.equal(result.response.statusCode, 200);
+      assert.deepEqual(result.response.json, {
+        plans: {
+          free: {
+            id: "free", name: "Free", formattedPrice: "$0", currency: "USD",
+            billingCadence: "free", downloadLimit: 10, maxVideoHeight: 1080,
+            socialDownloads: false,
+          },
+          pro_monthly: {
+            id: "pro_monthly", name: "Pro", formattedPrice: "$9.99", currency: "USD",
+            billingCadence: "month", downloadLimit: null, maxVideoHeight: 2160,
+            socialDownloads: false,
+          },
+          unlimited_one_time: {
+            id: "unlimited_one_time", name: "Unlimited", formattedPrice, currency,
+            billingCadence: "one_time", downloadLimit: null, maxVideoHeight: 2160,
+            socialDownloads: true,
+          },
+        },
+      });
+      assert.equal(result.response.getHeader("cache-control"), "private, no-store, max-age=0");
+      assert.equal(result.response.getHeader("vary"), "x-vercel-ip-country");
+      assert.doesNotMatch(result.response.body, /price_region_|price_forged|prod_|stripe/i);
+    }
+
+    delete process.env[INDIA_PRICE_ENV];
+    const fallback = await invokeHandler(handler, {
+      url: "/api/checkout/offer?view=plans&country=IN&currency=INR&amount=49900",
+      headers: { "x-vercel-ip-country": "IN" },
+    });
+    assert.equal(fallback.response.json.plans.unlimited_one_time.formattedPrice, "$39.99");
+    assert.equal(fallback.response.json.plans.unlimited_one_time.currency, "USD");
+    assert.equal(fallback.response.json.plans.pro_monthly.formattedPrice, "$9.99");
+
+    const head = await invokeHandler(handler, {
+      method: "HEAD", url: "/api/checkout/offer?view=plans",
+    });
+    assert.equal(head.response.statusCode, 200);
+    assert.equal(head.response.body, "");
+    assert.ok(Number(head.response.getHeader("content-length")) > 0);
+  } finally {
+    variables.forEach((name, index) => restoreNamedEnvironment(name, previous[index]));
   }
 });
 
@@ -139,7 +199,7 @@ test("the landing page renders a global fallback and updates text only", async (
   const html = await readFile(new URL("../index.html", import.meta.url), "utf8");
   assert.match(
     html,
-    /data-checkout-offer-price aria-live="polite">\$19\.99<\/span>/,
+    /data-checkout-offer-price aria-live="polite">\$39\.99<\/span>/,
   );
   assert.match(html, /data-checkout-offer-cadence>one-time<\/span>/);
   assert.match(html, /data-checkout-offer-annual-term hidden>Renews automatically/);

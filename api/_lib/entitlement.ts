@@ -1054,11 +1054,14 @@ export function sanitizeAccountNextPath(value: unknown) {
     }
     if (parsed.pathname === "/api/checkout/start") {
       if ([...parsed.searchParams.keys()].some(
-        (key) => key !== "activation" && key !== "handoff",
+        (key) => key !== "activation" && key !== "handoff" && key !== "plan",
       )) return "/account.html";
       const activationValues = parsed.searchParams.getAll("activation");
       const handoffValues = parsed.searchParams.getAll("handoff");
-      if (activationValues.length > 1 || handoffValues.length > 1) {
+      const planValues = parsed.searchParams.getAll("plan");
+      if (activationValues.length > 1 || handoffValues.length > 1 ||
+        planValues.length > 1 || (planValues.length === 1 &&
+          !["pro_monthly", "unlimited_one_time"].includes(planValues[0]))) {
         return "/account.html";
       }
       const activationKey = activationValues[0] || "";
@@ -1069,6 +1072,7 @@ export function sanitizeAccountNextPath(value: unknown) {
       const next = new URLSearchParams();
       if (activationKey) next.set("activation", activationKey);
       if (handoff) next.set("handoff", handoff);
+      if (planValues.length) next.set("plan", planValues[0]);
       return next.size
         ? `/api/checkout/start?${next.toString()}`
         : "/api/checkout/start";

@@ -39,16 +39,16 @@ test("the static Vercel contract includes every protected cron and both release 
   const result = await validateVercelContract();
   assert.deepEqual(result, {
     crons: 5,
-    adminRoutes: 11,
+    adminRoutes: 12,
     operationalRoutes: 0,
-    internalRoutes: 16,
+    internalRoutes: 17,
     releaseEndpoints: 2,
   });
 });
 
 test("every Customer 360 and experiment read is a protected on-demand admin route", async () => {
   const result = await validateVercelContract();
-  assert.equal(result.adminRoutes, 11);
+  assert.equal(result.adminRoutes, 12);
   assert.equal(result.crons, 5);
 });
 
@@ -67,7 +67,7 @@ test("the source checkout contract is direct and retains both zero-total Stripe 
   assert.deepEqual(result, {
     checkoutRoute: "direct",
     zeroTotalStatuses: 2,
-    rootHtmlPages: 5,
+    rootHtmlPages: 6,
   });
 });
 
@@ -83,9 +83,9 @@ test("the checkout contract rejects browser UI and unexpected deployable root pa
       "session.payment_intent",
     ].join("\n"),
     readme: [
-      "1. The user clicks Upgrade and chooses Unlimited.",
+      "1. The user clicks Upgrade and chooses Pro monthly or Unlimited one-time.",
       "2. Google authentication establishes the Sidestream account session.",
-      "3. The browser opens the server-selected Stripe Checkout: $19.99 one-time for a new eligible global-USD account, or the preserved historical assignment/regional offer.",
+      "3. The browser opens the server-selected Stripe Checkout: $9.99/month for Pro or $39.99 one-time for Unlimited globally, with preserved historical purchases and regional one-time offers.",
     ].join("\n"),
     unexpectedRootPages: [],
   };

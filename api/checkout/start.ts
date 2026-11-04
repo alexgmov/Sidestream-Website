@@ -13,6 +13,7 @@ import {
   resolveRequiredCheckoutAcquisition,
   sendJson,
   type AccountRequest,
+  type SelectedUpgradePlan,
 } from "../_lib/account.js";
 import { isLegacyVercelHost } from "../_lib/entitlement.js";
 import {
@@ -30,6 +31,12 @@ export default async function handler(
 
   const baseUrl = getBaseUrl(request);
   const requestUrl = new URL(request.url || "/api/checkout/start", baseUrl);
+  const planValues = requestUrl.searchParams.getAll("plan");
+  if (planValues.length > 1 || (planValues.length === 1 &&
+    !["pro_monthly", "unlimited_one_time"].includes(planValues[0]))) {
+    return sendJson(response, 400, { error: "Invalid plan", code: "invalid_plan" });
+  }
+  const selectedPlan = planValues[0] as SelectedUpgradePlan | undefined;
   const activationKey = cleanString(requestUrl.searchParams.get("activation"), 160);
   const handoffValues = requestUrl.searchParams.getAll("handoff");
   const handoffToken = handoffValues.length === 1 ? handoffValues[0] : "";
@@ -39,6 +46,7 @@ export default async function handler(
     if (!isLegacyVercelHost(canonicalCheckout.host)) {
       if (activationKey) canonicalCheckout.searchParams.set("activation", activationKey);
       if (handoffToken) canonicalCheckout.searchParams.set("handoff", handoffToken);
+      if (selectedPlan) canonicalCheckout.searchParams.set("plan", selectedPlan);
       return redirect(response, canonicalCheckout.toString(), 302);
     }
   }
@@ -72,6 +80,7 @@ export default async function handler(
   if (!session) {
     const nextUrl = new URL("/api/checkout/start", baseUrl);
     if (activationKey) nextUrl.searchParams.set("activation", activationKey);
+    if (selectedPlan) nextUrl.searchParams.set("plan", selectedPlan);
     if (acquisition.acceptedHandoffToken) {
       nextUrl.searchParams.set("handoff", acquisition.acceptedHandoffToken);
     }
@@ -108,6 +117,7 @@ export default async function handler(
     acquisitionId: acquisition.acquisitionId,
     activationKey,
     buyerCountry: getTrustedCheckoutCountry(request.headers),
+    ...(selectedPlan ? { selectedPlan } : {}),
     session,
   });
   if (!intent) {

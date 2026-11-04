@@ -198,6 +198,9 @@ export type AccountSession = {
 
 export type LicenseSummary = {
   active: boolean;
+  purchasePlan: "free" | "pro_monthly" | "unlimited_one_time" | "legacy_paid";
+  maxVideoHeight: 1080 | 2160;
+  socialDownloads: boolean;
   plan: string;
   status: string;
   currentPeriodEnd: string;
@@ -1137,15 +1140,19 @@ type CheckoutOfferSnapshot = Readonly<{
   priceId: string;
 }>;
 
+export type SelectedUpgradePlan = "pro_monthly" | "unlimited_one_time";
+const SELECTED_UPGRADE_PLANS_ID = "upgrade-plans-v1";
+type CheckoutPricingVariant = UpgradePricingVariant | SelectedUpgradePlan;
+
 type UpgradePricingIntentSnapshot = Readonly<{
-  snapshotVersion: 1 | 2;
-  experimentId: "upgrade-pricing-v1" | "upgrade-pricing-v2";
-  decisionReason: UpgradePricingDecisionReason;
+  snapshotVersion: 1 | 2 | 3;
+  experimentId: "upgrade-pricing-v1" | "upgrade-pricing-v2" | typeof SELECTED_UPGRADE_PLANS_ID;
+  decisionReason: UpgradePricingDecisionReason | "customer_choice";
   assignmentId: string | null;
   assignmentBucket: number | null;
   rolloutBasisPoints: number;
   assignedAt: string | null;
-  variant: UpgradePricingVariant;
+  variant: CheckoutPricingVariant;
   billingModel: UpgradePricingBillingModel;
   country: string;
   currency: string;
@@ -1202,11 +1209,12 @@ function readUpgradePricingIntentSnapshot(
     snapshotVersion === 1 && experimentId === UPGRADE_PRICING_LEGACY_EXPERIMENT_ID;
   const currentAnnual =
     snapshotVersion === 2 && experimentId === UPGRADE_PRICING_EXPERIMENT_ID;
-  if (!historicalMonthly && !currentAnnual) return null;
+  const customerChoice = snapshotVersion === 3 && experimentId === SELECTED_UPGRADE_PLANS_ID;
+  if (!historicalMonthly && !currentAnnual && !customerChoice) return null;
   const decisionReason = cleanString(row.upgrade_pricing_decision_reason, 80) as
-    UpgradePricingDecisionReason;
+    UpgradePricingIntentSnapshot["decisionReason"];
   const variant = cleanString(row.upgrade_pricing_variant, 40) as
-    UpgradePricingVariant;
+    CheckoutPricingVariant;
   const billingModel = cleanString(row.upgrade_pricing_billing_model, 40) as
     UpgradePricingBillingModel;
   const country = cleanString(row.upgrade_pricing_country, 2).toUpperCase();
@@ -1218,17 +1226,24 @@ function readUpgradePricingIntentSnapshot(
   const acquisitionId = cleanString(row.upgrade_pricing_acquisition_id, 80);
   const intentId = cleanString(row.upgrade_pricing_checkout_intent_id, 80);
   if (
-    ![
-      "existing_assignment", "rollout_control", "rollout_monthly", "rollout_annual",
-      "rollout_zero", "kill_switch", "assignment_unavailable", "unsupported_currency",
-    ].includes(decisionReason) ||
-    (
-      historicalMonthly
-        ? !["control_one_time", "monthly_half"].includes(variant)
-        : !["control_one_time", "annual_same_price"].includes(variant)
-    ) ||
+    (customerChoice
+      ? decisionReason !== "customer_choice" ||
+        !["pro_monthly", "unlimited_one_time"].includes(variant) ||
+        row.upgrade_pricing_assignment_id !== null ||
+        row.upgrade_pricing_assignment_bucket !== null ||
+        row.upgrade_pricing_assigned_at !== null ||
+        Number(row.upgrade_pricing_rollout_basis_points) !== 0 ||
+        (variant === "pro_monthly" && currency !== "usd")
+      : ![
+          "existing_assignment", "rollout_control", "rollout_monthly", "rollout_annual",
+          "rollout_zero", "kill_switch", "assignment_unavailable", "unsupported_currency",
+        ].includes(decisionReason) ||
+        (historicalMonthly
+          ? !["control_one_time", "monthly_half"].includes(variant)
+          : !["control_one_time", "annual_same_price"].includes(variant))) ||
     !["one_time", "subscription"].includes(billingModel) ||
-    (variant === "control_one_time" ? billingModel !== "one_time" : billingModel !== "subscription") ||
+    (["control_one_time", "unlimited_one_time"].includes(variant)
+      ? billingModel !== "one_time" : billingModel !== "subscription") ||
     !/^[A-Z]{2}$/.test(country) ||
     !/^[a-z]{3}$/.test(currency) ||
     !Number.isSafeInteger(amountMinor) ||
@@ -1240,8 +1255,8 @@ function readUpgradePricingIntentSnapshot(
     !intentId
   ) return null;
   return {
-    snapshotVersion: snapshotVersion as 1 | 2,
-    experimentId: experimentId as "upgrade-pricing-v1" | "upgrade-pricing-v2",
+    snapshotVersion: snapshotVersion as 1 | 2 | 3,
+    experimentId: experimentId as UpgradePricingIntentSnapshot["experimentId"],
     decisionReason,
     assignmentId: cleanString(row.upgrade_pricing_assignment_id, 80) || null,
     assignmentBucket: row.upgrade_pricing_assignment_bucket === null
@@ -1517,14 +1532,60 @@ async function resolveUpgradePricingCheckout(options: {
   };
 }
 
+async function resolveSelectedUpgradeCheckout(options: {
+  plan: SelectedUpgradePlan;
+  accountId: string;
+  acquisitionId: string;
+  intentId: string;
+  activationSessionId: string | null;
+  oneTimeOffer: CheckoutOfferSnapshot;
+}): Promise<ResolvedUpgradePricingCheckout> {
+  // Explicit choices must fail closed. Never substitute a one-time purchase
+  // when the selected recurring provider Price is unavailable.
+  const offer = options.plan === "pro_monthly"
+    ? await resolveMonthlyCheckoutOfferSnapshot(
+        options.oneTimeOffer,
+        SIDESTREAM_GLOBAL_CHECKOUT_OFFER.monthlyAmountMinor,
+      )
+    : options.oneTimeOffer;
+  return {
+    offer,
+    snapshot: {
+      snapshotVersion: 3,
+      experimentId: SELECTED_UPGRADE_PLANS_ID,
+      decisionReason: "customer_choice",
+      assignmentId: null,
+      assignmentBucket: null,
+      rolloutBasisPoints: 0,
+      assignedAt: null,
+      variant: options.plan,
+      billingModel: options.plan === "pro_monthly" ? "subscription" : "one_time",
+      country: offer.country,
+      currency: offer.currency,
+      amountMinor: offer.amountMinor,
+      productId: offer.productId,
+      priceId: offer.priceId,
+      accountId: options.accountId,
+      acquisitionId: options.acquisitionId,
+      intentId: options.intentId,
+      activationSessionId: options.activationSessionId,
+    },
+  };
+}
+
 export async function createCheckoutIntent(options: {
   acquisitionId: string;
   activationKey?: string;
   buyerCountry?: string;
+  selectedPlan?: SelectedUpgradePlan;
   session: AccountSession;
   now?: Date;
 }): Promise<CheckoutIntent | null> {
   if (options.session.license.active) return null;
+  if (options.selectedPlan !== undefined &&
+    !["pro_monthly", "unlimited_one_time"].includes(options.selectedPlan)) {
+    throw new TypeError("Unsupported selected Upgrade plan");
+  }
 
   return withPgClient(async (client) => {
     await client.query("begin");
@@ -1568,15 +1629,20 @@ export async function createCheckoutIntent(options: {
       )).rows[0]?.id || null
     : null;
   if (activationKey && !activationSessionId) return null;
-  const oneTimeOffer = await resolveCheckoutOfferSnapshot(options.buyerCountry);
-  const upgradePricing = await resolveUpgradePricingCheckout({
+  const oneTimeOffer = await resolveCheckoutOfferSnapshot(options.buyerCountry, {
+    globalOnly: options.selectedPlan === "pro_monthly",
+  });
+  const pricingOptions = {
     accountId,
     acquisitionId,
     intentId,
     activationSessionId,
     oneTimeOffer,
     runner: client,
-  });
+  };
+  const upgradePricing = options.selectedPlan
+    ? await resolveSelectedUpgradeCheckout({ ...pricingOptions, plan: options.selectedPlan })
+    : await resolveUpgradePricingCheckout(pricingOptions);
   const { offer, snapshot } = upgradePricing;
   const snapshotParameters = [
     snapshot.experimentId,
@@ -1790,7 +1856,7 @@ export async function createCheckoutIntentConfirmation(options: {
 
 export function buildUpgradeCheckoutSessionParameters(options: {
   billingModel: UpgradePricingBillingModel;
-  variant?: UpgradePricingVariant;
+  variant?: CheckoutPricingVariant;
   stripeCustomerId: string;
   stripePriceId: string;
   successUrl: string;
@@ -1828,7 +1894,15 @@ export function buildUpgradeCheckoutSessionParameters(options: {
               },
             },
           }
-        : {}),
+        : options.variant === "pro_monthly"
+          ? {
+              custom_text: {
+                submit: {
+                  message: "Pro: unlimited 4K downloads. Social posts require Unlimited one-time. Renews monthly until canceled. Cancel anytime from your Sidestream account; access continues through your paid period.",
+                },
+              },
+            }
+          : {}),
       subscription_data: { metadata },
     };
   }
@@ -2062,12 +2136,15 @@ export async function createOrReuseCheckoutSession(options: {
             offer_stripe_product_id: string | null;
             offer_stripe_price_id: string | null;
             stripe_session_expires_at: Date | string | null;
+            upgrade_pricing_snapshot_version: number | null;
+            upgrade_pricing_variant: string | null;
           }>(
             `
               select acquisition_id, state, attempt, stripe_customer_id, stripe_checkout_url,
                 stripe_price_id, stripe_product_id, offer_id, offer_country,
                 offer_currency, offer_amount_minor, offer_stripe_product_id,
-                offer_stripe_price_id, stripe_session_expires_at
+                offer_stripe_price_id, stripe_session_expires_at,
+                upgrade_pricing_snapshot_version, upgrade_pricing_variant
               from public.sidestream_checkout_intents
               where stripe_checkout_session_id = $1
               order by updated_at desc
@@ -2102,6 +2179,16 @@ export async function createOrReuseCheckoutSession(options: {
           const attachedOffer = attached
             ? readCheckoutOfferSnapshot(attached)
             : null;
+          const selectedPlanMismatch = upgradePricingSnapshot?.snapshotVersion === 3 && (
+            attached?.upgrade_pricing_snapshot_version !== 3 ||
+            attached?.upgrade_pricing_variant !== upgradePricingSnapshot.variant ||
+            !attachedOffer || attachedOffer.offerId !== checkoutOffer.offerId ||
+            attachedOffer.country !== checkoutOffer.country ||
+            attachedOffer.currency !== checkoutOffer.currency ||
+            attachedOffer.amountMinor !== checkoutOffer.amountMinor ||
+            attachedOffer.priceId !== checkoutOffer.priceId ||
+            attachedOffer.productId !== checkoutOffer.productId
+          );
           let attachedUsesStoredOffer = Boolean(
             attachedOffer &&
             attached?.stripe_price_id === attachedOffer.priceId &&
@@ -2109,6 +2196,7 @@ export async function createOrReuseCheckoutSession(options: {
           );
           if (
             !options.rotateCancelledSession &&
+            !selectedPlanMismatch &&
             attachedUsesStoredOffer &&
             attached?.stripe_checkout_url &&
             attachedExpiresAt > now.getTime()
@@ -2193,6 +2281,7 @@ export async function createOrReuseCheckoutSession(options: {
             }
             if (
               !options.rotateCancelledSession &&
+              !selectedPlanMismatch &&
               stripeSession.status === "open" &&
               stripeSession.url &&
               stripeSession.allow_promotion_codes === true &&
@@ -2239,7 +2328,7 @@ export async function createOrReuseCheckoutSession(options: {
             if (stripeSession.status === "open") {
               await expireCheckoutSession(stripeSession.id, row.id, attempt);
             }
-          } else if (options.rotateCancelledSession || !attachedUsesStoredOffer) {
+          } else if (options.rotateCancelledSession || !attachedUsesStoredOffer || selectedPlanMismatch) {
             const replacementStatus = await prepareCheckoutSessionReplacement(
               attachedSessionId,
               row.id,
@@ -2624,6 +2713,7 @@ async function recordUpgradePricingExposure(
   const snapshot = input.upgradePricing;
   if (
     !snapshot ||
+    snapshot.snapshotVersion === 3 ||
     (
       snapshot.experimentId === UPGRADE_PRICING_EXPERIMENT_ID &&
       !snapshot.assignmentId
@@ -2761,8 +2851,12 @@ export function getStripeRequestOptions(): Stripe.RequestOptions {
 
 async function resolveCheckoutOfferSnapshot(
   buyerCountry: unknown,
+  options: { globalOnly?: boolean } = {},
 ): Promise<CheckoutOfferSnapshot> {
-  const selection = selectCheckoutOffer(buyerCountry);
+  const countrySelection = selectCheckoutOffer(buyerCountry);
+  const selection = options.globalOnly
+    ? { ...selectCheckoutOffer("ZZ"), country: countrySelection.country }
+    : countrySelection;
   const productId = getSidestreamProProductId();
   const priceId = selection.entry.priceSource.kind === "default"
     ? await getSidestreamProPriceId()
@@ -4992,7 +5086,11 @@ export async function reconcileUpgradePricingSubscription(
     80,
   );
   if (!intentId) {
-    return { fulfilled: false as const, reason: "not_upgrade_pricing_subscription" };
+    return {
+      fulfilled: false as const,
+      reason: subscription.metadata?.sidestream_upgrade_experiment_id === SELECTED_UPGRADE_PLANS_ID
+        ? "selected_plan_snapshot_mismatch" : "not_upgrade_pricing_subscription",
+    };
   }
 
   const context = await query<UpgradePricingSubscriptionContextRow>(
@@ -5034,11 +5132,16 @@ export async function reconcileUpgradePricingSubscription(
   if (
     !row ||
     !snapshot ||
-    ![UPGRADE_PRICING_MONTHLY_VARIANT, UPGRADE_PRICING_ANNUAL_VARIANT]
+    ![UPGRADE_PRICING_MONTHLY_VARIANT, UPGRADE_PRICING_ANNUAL_VARIANT, "pro_monthly"]
       .includes(snapshot.variant) ||
     snapshot.billingModel !== "subscription"
   ) {
-    return { fulfilled: false as const, reason: "not_upgrade_pricing_subscription" };
+    return {
+      fulfilled: false as const,
+      reason: row?.upgrade_pricing_snapshot_version === 3 ||
+        subscription.metadata?.sidestream_upgrade_experiment_id === SELECTED_UPGRADE_PLANS_ID
+        ? "selected_plan_snapshot_mismatch" : "not_upgrade_pricing_subscription",
+    };
   }
   const offer = readCheckoutOfferSnapshot(row);
   if (
@@ -5057,7 +5160,7 @@ export async function reconcileUpgradePricingSubscription(
   ) {
     return { fulfilled: false as const, reason: "upgrade_subscription_intent_mismatch" };
   }
-  if (
+  if (snapshot.snapshotVersion !== 3 && (
     !snapshot.assignmentId ||
     row.assignment_version !== snapshot.snapshotVersion ||
     row.assignment_experiment_id !== snapshot.experimentId ||
@@ -5067,7 +5170,7 @@ export async function reconcileUpgradePricingSubscription(
     Number(row.assignment_bucket) !== snapshot.assignmentBucket ||
     Number(row.assignment_rollout_basis_points) !== snapshot.rolloutBasisPoints ||
     toIsoString(row.assignment_assigned_at) !== snapshot.assignedAt
-  ) {
+  )) {
     return { fulfilled: false as const, reason: "upgrade_subscription_assignment_mismatch" };
   }
   assertCheckoutAcquisitionIntact(
@@ -5300,6 +5403,7 @@ export async function reconcileUpgradePricingSubscription(
         upgrade_pricing_experiment_id: snapshot.experimentId,
         upgrade_pricing_variant: snapshot.variant,
         subscription: true,
+        ...(snapshot.snapshotVersion === 3 ? { purchase_plan: "pro_monthly" } : {}),
       });
       let licenseId = existing?.id || "";
       let resultingEntitlement = existing?.entitlement_status || transition.entitlementStatus;
@@ -5539,26 +5643,9 @@ export async function fulfillCheckoutSession(
   expectedActivationKey = "",
   stripeEvent?: { eventId: string; created: number },
 ) {
-  const intentCandidates = await query<{
-    id: string;
-    acquisition_id: string | null;
-    account_id: string | null;
-    activation_session_id: string | null;
-    offer_id: string | null;
-    offer_country: string | null;
-    offer_currency: string | null;
-    offer_amount_minor: number | null;
-    offer_stripe_product_id: string | null;
-    offer_stripe_price_id: string | null;
-    upgrade_pricing_snapshot_version: number | null;
-    upgrade_pricing_variant: string | null;
-    upgrade_pricing_billing_model: string | null;
-  }>(
+  const intentCandidates = await query<CheckoutIntentRow>(
     `
-      select id, acquisition_id, account_id, activation_session_id, offer_id, offer_country,
-        offer_currency, offer_amount_minor, offer_stripe_product_id,
-        offer_stripe_price_id, upgrade_pricing_snapshot_version,
-        upgrade_pricing_variant, upgrade_pricing_billing_model
+      select *
       from public.sidestream_checkout_intents
       where stripe_checkout_session_id = $1
       order by updated_at desc, id desc
@@ -5595,9 +5682,9 @@ export async function fulfillCheckoutSession(
   if (subscriptionId) {
     if (
       checkoutIntent &&
-      [1, 2].includes(checkoutIntent.upgrade_pricing_snapshot_version || 0) &&
-      [UPGRADE_PRICING_MONTHLY_VARIANT, UPGRADE_PRICING_ANNUAL_VARIANT]
-        .includes(checkoutIntent.upgrade_pricing_variant as UpgradePricingVariant) &&
+      [1, 2, 3].includes(checkoutIntent.upgrade_pricing_snapshot_version || 0) &&
+      [UPGRADE_PRICING_MONTHLY_VARIANT, UPGRADE_PRICING_ANNUAL_VARIANT, "pro_monthly"]
+        .includes(checkoutIntent.upgrade_pricing_variant as CheckoutPricingVariant) &&
       checkoutIntent.upgrade_pricing_billing_model === "subscription"
     ) {
       const created = Number(checkoutSession.created);
@@ -5619,6 +5706,10 @@ export async function fulfillCheckoutSession(
       return experimentResult.fulfilled
         ? experimentResult
         : { ...experimentResult, experimentSubscription: true as const };
+    }
+    if (checkoutIntent?.upgrade_pricing_snapshot_version === 3 ||
+      checkoutSession.metadata?.sidestream_upgrade_experiment_id === SELECTED_UPGRADE_PLANS_ID) {
+      return { fulfilled: false as const, reason: "selected_plan_snapshot_mismatch" };
     }
     // Historical subscription reconciliation remains a separate allowlisted
     // compatibility path. Upgrade-pricing subscriptions never enter it.
@@ -5654,6 +5745,29 @@ export async function fulfillCheckoutSession(
   const checkoutOffer = readCheckoutOfferSnapshot(checkoutIntent);
   if (!checkoutOffer) {
     return { fulfilled: false as const, reason: "offer_snapshot_missing" };
+  }
+
+  const selectedPricing = checkoutIntent.upgrade_pricing_snapshot_version === 3
+    ? readUpgradePricingIntentSnapshot(checkoutIntent)
+    : null;
+  if (checkoutIntent.upgrade_pricing_snapshot_version === 3 && (
+    !selectedPricing || selectedPricing.variant !== "unlimited_one_time" ||
+    selectedPricing.billingModel !== "one_time" ||
+    selectedPricing.intentId !== checkoutIntent.id ||
+    selectedPricing.accountId !== checkoutIntent.account_id ||
+    selectedPricing.acquisitionId !== acquisitionId ||
+    selectedPricing.activationSessionId !== checkoutIntent.activation_session_id ||
+    selectedPricing.country !== checkoutOffer.country ||
+    selectedPricing.currency !== checkoutOffer.currency ||
+    selectedPricing.amountMinor !== checkoutOffer.amountMinor ||
+    selectedPricing.priceId !== checkoutOffer.priceId ||
+    selectedPricing.productId !== checkoutOffer.productId ||
+    !Object.entries(upgradePricingSubscriptionMetadata(selectedPricing, checkoutOffer, activationKey))
+      .every(([key, expected]) => expected === null
+        ? !checkoutSession.metadata?.[key]
+        : checkoutSession.metadata?.[key] === expected)
+  )) {
+    return { fulfilled: false as const, reason: "selected_plan_snapshot_mismatch" };
   }
 
   const expectedPriceId = checkoutOffer.priceId;
@@ -5813,6 +5927,7 @@ export async function fulfillCheckoutSession(
         noPaymentRequired: canonicalPayment.noPaymentRequired,
         currency: canonicalPayment.currency,
         eventWatermark: normalizeStripeEventWatermark(stripeEvent),
+        purchasePlan: selectedPricing ? "unlimited_one_time" : undefined,
       }, client);
       if (!licenseResult.fulfilled) {
         await client.query("rollback");
@@ -6365,6 +6480,7 @@ async function upsertLicenseFromOneTimeCheckoutSession(options: {
   currency: string;
   eventWatermark: ReturnType<typeof normalizeStripeEventWatermark>;
   lifecycleEventType?: string;
+  purchasePlan?: "unlimited_one_time";
 }, runner: Pool | PoolClient) {
   const selected = await runner.query<{
     id: string;
@@ -6497,6 +6613,7 @@ async function upsertLicenseFromOneTimeCheckoutSession(options: {
           unlimited_downloads: active,
           customer_portal: true,
           one_time_purchase: true,
+          ...(options.purchasePlan ? { purchase_plan: options.purchasePlan } : {}),
         }),
         amountPaid,
         amountRefunded,
@@ -6785,8 +6902,21 @@ function buildLicenseSummary(options: {
     entitlementStatus: options.entitlementStatus,
   });
 
+  const purchasePlan: LicenseSummary["purchasePlan"] = !active
+    ? "free"
+    : options.features?.purchase_plan === "pro_monthly"
+      ? "pro_monthly"
+      : options.features?.purchase_plan === "unlimited_one_time"
+        ? "unlimited_one_time"
+        : "legacy_paid";
+  const maxVideoHeight = active ? 2160 as const : 1080 as const;
+  const socialDownloads = active && purchasePlan !== "pro_monthly";
+
   return {
     active,
+    purchasePlan,
+    maxVideoHeight,
+    socialDownloads,
     plan: active ? (cleanString(options.planKey, 120) || SIDESTREAM_PRO_PLAN_KEY) : "free",
     status,
     currentPeriodEnd: toIsoString(options.currentPeriodEnd),
@@ -6796,6 +6926,8 @@ function buildLicenseSummary(options: {
       customer_portal: true,
       ...(options.features || {}),
       unlimited_downloads: active,
+      max_video_height: maxVideoHeight,
+      social_downloads: socialDownloads,
     },
   };
 }
@@ -7205,6 +7337,7 @@ export async function authorizeLicenseDownload(options: {
   licenseToken: string;
   deviceId: string;
   environment: ResolvedLicenseEnvironment;
+  downloadPolicyVersion?: 1;
 }) {
   const environment = requireMatchingLicenseEnvironment(options.environment);
   if (!options.licenseToken || !options.deviceId) {
@@ -7388,7 +7521,14 @@ export async function authorizeLicenseDownload(options: {
       );
 
       await client.query("commit");
-      return { active: true as const };
+      return {
+        active: true as const,
+        ...(options.downloadPolicyVersion === 1 ? {
+          purchasePlan: license.purchasePlan,
+          maxVideoHeight: license.maxVideoHeight,
+          socialDownloads: license.socialDownloads,
+        } : {}),
+      };
     } catch (error) {
       await client.query("rollback");
       throw error;

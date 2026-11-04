@@ -77,6 +77,47 @@ export function getCheckoutOfferPresentation(
   return Object.freeze({ formattedPrice, currency, billingCadence });
 }
 
+/** Public plan copy shares the exact server-owned offer catalog used by Checkout. */
+export function getUpgradePlanPresentation(
+  countryValue: unknown,
+  environment: NodeJS.ProcessEnv = process.env,
+) {
+  const unlimited = getCheckoutOfferPresentation(countryValue, environment);
+  const global = SIDESTREAM_GLOBAL_CHECKOUT_OFFER;
+  return {
+    plans: {
+      free: {
+        id: "free",
+        name: "Free",
+        formattedPrice: "$0",
+        currency: "USD",
+        billingCadence: "free",
+        downloadLimit: 10,
+        maxVideoHeight: 1080,
+        socialDownloads: false,
+      },
+      pro_monthly: {
+        id: "pro_monthly",
+        name: "Pro",
+        formattedPrice: formatOfferPrice({ ...global, amountMinor: global.monthlyAmountMinor }),
+        currency: global.currency.toUpperCase(),
+        billingCadence: "month",
+        downloadLimit: null,
+        maxVideoHeight: 2160,
+        socialDownloads: false,
+      },
+      unlimited_one_time: {
+        id: "unlimited_one_time",
+        name: "Unlimited",
+        ...unlimited,
+        downloadLimit: null,
+        maxVideoHeight: 2160,
+        socialDownloads: true,
+      },
+    },
+  };
+}
+
 /**
  * Monthly Price configuration stays server-owned and follows the already
  * selected one-time offer. Regional offers fail closed without their exact

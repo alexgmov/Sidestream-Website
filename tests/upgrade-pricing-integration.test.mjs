@@ -16,6 +16,8 @@ import {
 } from "../api/_lib/upgrade-pricing-experiment.ts";
 import { loadInjectedModule } from "./helpers/handler-loader.mjs";
 
+import { SIDESTREAM_PRICING_CONTRACT } from "../config/pricing-contract.mjs";
+
 const SECRET = "upgrade-pricing-integration-secret-000000000000000000";
 const REPORT_SECRET = "upgrade-pricing-integration-report-secret";
 
@@ -43,7 +45,7 @@ test("the deterministic fixture is exactly balanced and account assignments stay
     const decision = decideUpgradePricing({
       accountId,
       currency: "usd",
-      oneTimeAmountMinor: 1999,
+      oneTimeAmountMinor: SIDESTREAM_PRICING_CONTRACT.global.amountMinor,
       enabled: true,
       rolloutBasisPoints: 5_000,
       secret: SECRET,
@@ -69,7 +71,7 @@ test("the deterministic fixture is exactly balanced and account assignments stay
   const retry = decideUpgradePricing({
     accountId: annual.accountId,
     currency: "usd",
-    oneTimeAmountMinor: 1999,
+    oneTimeAmountMinor: SIDESTREAM_PRICING_CONTRACT.global.amountMinor,
     enabled: false,
     rolloutBasisPoints: 0,
     secret: SECRET,
@@ -92,7 +94,7 @@ test("control fallback is observable but isolated from eligible annual assignmen
     const decision = decideUpgradePricing({
       accountId,
       currency: "usd",
-      oneTimeAmountMinor: 1999,
+      oneTimeAmountMinor: SIDESTREAM_PRICING_CONTRACT.global.amountMinor,
       ...overrides,
     });
     assert.deepEqual({
