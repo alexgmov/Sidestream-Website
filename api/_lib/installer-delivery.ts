@@ -1,5 +1,6 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { readMacDownloadRollout } from "./mac-download-rollout.js";
+import { readUpdaterBetaInstallers } from "./updater-beta-installers.js";
 import { lstat, realpath } from "node:fs/promises";
 import path from "node:path";
 
@@ -75,7 +76,7 @@ export function listManifestInstallerArtifacts(): readonly InstallerArtifactReco
     "macos-universal",
     "windows-x64",
   ];
-  const records = [
+  const records: InstallerArtifactRecord[] = [
     ...freePlatforms.map((platform) => {
       const manifest = readReleaseManifest(platform);
       return Object.freeze({
@@ -129,6 +130,12 @@ export function listManifestInstallerArtifacts(): readonly InstallerArtifactReco
         contentType: contentTypeForFilename(candidate.artifact.filename), platform: "macos" as const, access: "free" as const }));
     }
   }
+
+  // Only an explicitly published beta pair is eligible for operator-issued links.
+  // A disabled or malformed optional manifest cannot break ordinary delivery.
+  let updaterBeta = null;
+  try { updaterBeta = readUpdaterBetaInstallers(); } catch { /* fail closed for beta only */ }
+  if (updaterBeta) records.push(...updaterBeta.artifacts);
 
   const pathnames = new Set<string>();
   for (const record of records) {
