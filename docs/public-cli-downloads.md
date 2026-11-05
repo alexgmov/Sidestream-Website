@@ -28,6 +28,53 @@ FlowState owns the shared CLI source, archive builder, bundled dependencies, and
 
 The Nginx configuration in `ops/nginx/downloads.sidestream.tv.conf` retains only exact CLI routes. Never add a public alias for `/srv/sidestream/artifacts`, a wildcard CLI directory, or change `/v1/` and `/__sidestream_artifacts/` to publish the CLI. Ordinary and paid installer storage remains behind its existing signed allowlist. The current CLI metadata file remains a root-owned exact static alias; archive bytes use the CDN redirect.
 
+## One-command install
+
+The Website serves `public/install.sh` unchanged at
+`https://sidestream.tv/install.sh`. Vite copies it to `dist/install.sh`; the exact
+Vercel header rule serves a plain-text download without caching. It does not
+enter API middleware or require a download-host configuration change.
+
+Paste this single line into Terminal on the destination Mac:
+
+```sh
+curl -fL --retry 3 https://sidestream.tv/install.sh -o ~/Downloads/install-sidestream.sh && /bin/bash ~/Downloads/install-sidestream.sh
+```
+
+The command finishes downloading the script before running it with macOS Bash.
+After installation, open a new Terminal tab and run `sidestream --help`.
+URLs passed to the CLI should be quoted.
+
+The bootstrap supports Intel and Apple Silicon on macOS 12+. It reuses a native
+working Node 22+ installation, or privately installs an official Node runtime:
+Node 24 on macOS 13.5+, Node 22 on older compatible Macs. It verifies Node's
+versioned archive against the official SHA-256 manifest. It pins CLI release
+`1.0.21-86876e22b6c162af` and its archive SHA-256; update both together after
+qualifying a newer CLI. The CLI's own minimum Node requirement remains 18.
+
+The bundle includes Python, yt-dlp, FFmpeg, FFprobe, and Deno. The installer tests
+every runtime and the CLI before switching `~/.local/bin/sidestream`; an existing
+launcher is backed up beside the new installation. Installed files live below
+`~/.local/share/sidestream-cli`. It adds the command directory to zsh and the
+existing Bash login profile, without replacing prior profile contents. No
+Homebrew, Xcode, sudo, npm install, or Adobe app is required. Browser/Keychain
+permissions and a signed-in source session remain separate from installation.
+
+For isolated verification, pass an absolute destination directory. This skips
+profile edits and creates `<destination>/bin/sidestream`:
+
+```sh
+/bin/bash -n public/install.sh
+/bin/bash public/install.sh /absolute/scratch/install-check
+# To exercise the missing-Node branch, use only macOS system tools on PATH:
+env PATH=/usr/bin:/bin:/usr/sbin:/sbin /bin/bash public/install.sh /absolute/scratch/fresh-check
+```
+
+For publication, run the repository release checks, compare
+`public/install.sh` with `dist/install.sh`, commit/push canonical `main`, and
+verify the live script bytes and the canonical version SHA. The hosted bootstrap
+does not change the CLI archive, release registry, Adobe installers, or updater.
+
 ## Publication
 
 1. Build and smoke-test the CLI archive from FlowState. Keep filenames and storage pathnames immutable, and retain the SHA-256 and byte count. Release IDs must distinguish changed bytes even when the Adobe package version is unchanged.
