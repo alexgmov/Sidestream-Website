@@ -6,6 +6,7 @@ import { parseReleaseManifest, type ReleaseManifest } from "./release-manifest.j
 export type MacDownloadRollout = Readonly<{
   rolloutId: string;
   percent: number;
+  notifyExistingClients: boolean;
   baselineVersion: string;
   baselineSha256: string;
   candidate: ReleaseManifest;
@@ -24,6 +25,9 @@ export function parseMacDownloadRollout(source: unknown): MacDownloadRollout | n
       !Number.isInteger(value.percent) || Number(value.percent) < 0 || Number(value.percent) > 100) {
     throw new Error("Invalid Mac download rollout controls");
   }
+  if (value.notifyExistingClients !== undefined && typeof value.notifyExistingClients !== "boolean") {
+    throw new Error("Invalid Mac update notice control");
+  }
   if (!value.enabled || value.percent === 0) return null;
   if (typeof value.rolloutId !== "string" || !/^[a-z0-9][a-z0-9.-]{0,63}$/.test(value.rolloutId) ||
       typeof value.baselineVersion !== "string" || !/^\d+\.\d+\.\d+$/.test(value.baselineVersion) ||
@@ -36,7 +40,18 @@ export function parseMacDownloadRollout(source: unknown): MacDownloadRollout | n
     throw new Error("Invalid isolated Mac download candidate");
   }
   return { rolloutId: value.rolloutId, percent: Number(value.percent), baselineVersion: value.baselineVersion,
-    baselineSha256: value.baselineSha256, candidate };
+    baselineSha256: value.baselineSha256, notifyExistingClients: value.notifyExistingClients === true, candidate };
+}
+
+// Notices use the existing CEP stable feed. Require full download availability
+// so its Install action cannot assign a notified browser to the older baseline.
+export function selectMacUpdateNoticeManifest(
+  stable: ReleaseManifest, rollout: MacDownloadRollout | null,
+): ReleaseManifest {
+  if (!rollout?.notifyExistingClients || rollout.percent !== 100 ||
+      stable.platform !== "macos" || stable.channel !== "stable" ||
+      stable.version !== rollout.baselineVersion || stable.artifact.sha256 !== rollout.baselineSha256) return stable;
+  return { ...rollout.candidate, channel: "stable", rolloutPercent: 100 };
 }
 
 // Only call with the token from a verified or newly server-issued acquisition cookie.

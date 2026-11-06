@@ -22,6 +22,7 @@ let compiledDirectory;
 let createDownloadHandler;
 let createReleaseHandler;
 let parseReleaseManifest;
+let macRollout;
 const originalManifestPaths = {
   macos: process.env.SIDESTREAM_RELEASE_MANIFEST_PATH,
   windows: process.env.SIDESTREAM_WINDOWS_RELEASE_MANIFEST_PATH,
@@ -46,6 +47,9 @@ before(async () => {
       path.join(compiledDirectory, "api", "releases", "latest.js"),
     ).href
   ));
+  macRollout = await import(
+    pathToFileURL(path.join(compiledDirectory, "api", "_lib", "mac-download-rollout.js")).href
+  );
   ({ parseReleaseManifest } = await import(
     pathToFileURL(
       path.join(compiledDirectory, "api", "_lib", "release-manifest.js"),
@@ -314,6 +318,74 @@ test("public release metadata redacts Blob pathnames and signing inputs", async 
   assert.equal(body.includes(manifestFixtures.windows.pathname), false);
 });
 
+test("enabled Mac notice advertises the exact fully available installer across aliases", async () => {
+  const config = macRollout.readMacDownloadRollout();
+  assert.equal(config.notifyExistingClients, true);
+  assert.equal(config.percent, 100);
+  assert.equal(config.candidate.rolloutPercent, 0);
+  for (const query of ["", "?platform=darwin-arm64", "?platform=darwin-x64", "?platform=macos", "?platform=macos-arm64", "?platform=macos-x64"]) {
+    const handler = createReleaseHandler({ logManifestError: () => {} });
+    const get = await invoke(handler, { path: `/api/releases/latest${query}` });
+    await get.handlerDone;
+    const body = await get.response.json();
+    assert.equal(get.response.status, 200);
+    assert.equal(body.version, "1.0.57");
+    assert.equal(body.channel, "stable");
+    assert.equal(body.rolloutPercent, 100);
+    assert.equal(body.critical, false);
+    assert.equal(body.artifact.sha256, config.candidate.artifact.sha256);
+    assert.equal(body.artifact.sizeBytes, config.candidate.artifact.sizeBytes);
+    assert.equal(body.artifact.url, "https://sidestream.tv/api/download");
+    assert.equal("pathname" in body.artifact, false);
+    const head = await invoke(handler, { method: "HEAD", path: `/api/releases/latest${query}` });
+    await head.handlerDone;
+    assert.equal(head.response.status, 200);
+    assert.equal(head.response.headers.get("x-sidestream-version"), body.version);
+    assert.equal(head.response.headers.get("x-sidestream-sha256"), body.artifact.sha256);
+    assert.equal((await head.response.arrayBuffer()).byteLength, 0);
+  }
+  // Notice publication never changes recovery metadata or the immutable candidate.
+  const download = createDownloadState();
+  const recovery = await invoke(download.handler, { method: "HEAD", path: "/api/download?release=stable" });
+  await recovery.handlerDone;
+  assert.equal(recovery.response.headers.get("x-sidestream-version"), "1.0.21");
+  assert.equal(config.candidate.channel, "macos-download-pilot");
+  assert.equal(config.candidate.rolloutPercent, 0);
+});
+
+test("Mac notice requires opt-in, full delivery and the exact recovery binding", async () => {
+  const source = JSON.parse(readFileSync(path.join(repoRoot, "data/mac-download-rollout.json"), "utf8"));
+  const { notifyExistingClients, ...withoutFlag } = source;
+  for (const config of [
+    withoutFlag,
+    { ...source, notifyExistingClients: false },
+    { ...source, enabled: false },
+    { ...source, percent: 0 },
+    { ...source, percent: 99 },
+    { ...source, baselineVersion: "1.0.20" },
+    { ...source, baselineSha256: "0".repeat(64) },
+    { ...source, notifyExistingClients: "true" },
+    { ...source, candidate: { ...source.candidate, rolloutPercent: 100 } },
+  ]) {
+    const handler = releaseHandler({ readMacRollout: () => macRollout.parseMacDownloadRollout(config) });
+    const result = await invoke(handler, { path: "/api/releases/latest?platform=darwin-arm64" });
+    await result.handlerDone;
+    assert.equal(result.response.status, 200);
+    assert.equal((await result.response.json()).version, "1.0.21", JSON.stringify(config));
+  }
+  assert.throws(() => macRollout.parseMacDownloadRollout({ ...source, notifyExistingClients: "true" }));
+});
+
+test("Windows notice does not read Mac rollout controls", async () => {
+  const handler = releaseHandler({ readMacRollout: () => assert.fail("Windows must not read Mac controls") });
+  const result = await invoke(handler, { path: "/api/releases/latest?platform=win32-x64" });
+  await result.handlerDone;
+  assert.equal(result.response.status, 200);
+  const body = await result.response.json();
+  assert.equal(body.version, manifestFixtures.windows.version);
+  assert.equal(body.artifact.sha256, manifestFixtures.windows.sha256);
+});
+
 function createDownloadState(overrides = {}) {
   const state = {
     backgroundTasks: [],
@@ -350,8 +422,8 @@ function createDownloadState(overrides = {}) {
   return state;
 }
 
-function releaseHandler() {
-  return createReleaseHandler({ logManifestError: () => {} });
+function releaseHandler(overrides = {}) {
+  return createReleaseHandler({ readMacRollout: () => null, logManifestError: () => {}, ...overrides });
 }
 
 function loadManifestFixture(platformName) {

@@ -267,7 +267,7 @@ function pilotHandler(overrides = {}) {
   });
 }
 
-test("Mac download pilot is independently bound, disabled at zero, and never an update notice", () => {
+test("Mac download candidate remains independently bound and disabled at zero", () => {
   const source = readManifest("mac-download-rollout.json");
   const config = pilotConfig();
   assert.equal(config.percent, 1);

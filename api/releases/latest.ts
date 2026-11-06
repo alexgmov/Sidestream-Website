@@ -8,6 +8,11 @@ import type {
   ReleaseManifest,
 } from "../_lib/release-manifest.js";
 
+import {
+  readMacDownloadRollout,
+  selectMacUpdateNoticeManifest,
+} from "../_lib/mac-download-rollout.js";
+
 const SUPPORTED_CHANNELS = new Set(["stable"]);
 
 type ReleaseRequest = IncomingMessage & {
@@ -16,6 +21,7 @@ type ReleaseRequest = IncomingMessage & {
 };
 
 type ReleaseDependencies = {
+  readMacRollout: typeof readMacDownloadRollout;
   logManifestError: (error: unknown) => void;
 };
 
@@ -23,6 +29,7 @@ export function createReleaseHandler(
   overrides: Partial<ReleaseDependencies> = {},
 ) {
   const dependencies: ReleaseDependencies = {
+    readMacRollout: readMacDownloadRollout,
     logManifestError: (error) => {
       console.error("[sidestream releases] manifest unavailable:", error);
     },
@@ -79,6 +86,15 @@ export function createReleaseHandler(
       return sendJson(response, 503, {
         error: "Release manifest is not available",
       });
+    }
+
+    if (platform === "macos") {
+      try {
+        manifest = selectMacUpdateNoticeManifest(manifest, dependencies.readMacRollout());
+      } catch (error) {
+        // A broken optional notice must not remove the validated baseline feed.
+        dependencies.logManifestError(error);
+      }
     }
 
     const publicManifest = toPublicReleaseManifest(manifest);

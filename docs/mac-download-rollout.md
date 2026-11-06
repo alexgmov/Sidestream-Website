@@ -26,7 +26,7 @@ installer downloads** with the same immutable standard 1.0.57 artifact.
 At 100%, every valid existing or newly server-issued acquisition identity selects
 1.0.57, including browsers previously in the baseline cohort. The existing
 30-day cookie, rollout identity and fallback remain unchanged; no IP/device
-fingerprint is used. This changes installer delivery only. The package does not
+fingerprint is used. The original rollout changed installer delivery only. The package does not
 install the native automatic updater, and no customer-beta/GA proof is inferred
 for that separate service.
 The 1.0.57 qualification host was macOS 26.6.2 arm64 / Premiere 26.5.2; it does
@@ -72,10 +72,27 @@ failure instead of serving unverified bytes. Disabled/zero/invalid pilots are
 absent from the artifact authorizer allowlist. The signed five-minute byte URLs
 retain existing path, expiry and range-security checks.
 
-The standard `/api/releases/latest` remains 1.0.21; paid Mac remains 1.0.17.
-Windows, the independently published AE installer, checkout, account/license
-controls and native Production updater HOLD are not rollout inputs. There is
-no automatic expansion or native updater installation in this package.
+### Existing-client update notice
+
+On November 5, Alex requested in-app notification for the available manual
+1.0.57 release. `notifyExistingClients: true` explicitly selects that candidate
+for the Mac `/api/releases/latest` response as channel `stable` at 100% notice
+eligibility. Selection requires enabled 100% installer delivery plus the exact
+baseline version/hash binding. Missing, false, invalid, disabled, reduced or
+mismatched rollout settings retain the validated baseline update response.
+Windows never reads this optional Mac notice configuration.
+
+The raw candidate retains `rolloutPercent: 0`; only the notice response receives
+100%. The stored 1.0.21 manifest and `?release=stable` recovery download stay
+unchanged. Existing older Mac clients show their existing update banner after
+their next scheduled check, normally within 12 hours while the panel is running.
+Install opens the normal manual installer URL. Notification availability does
+not prove every user saw it or installed it. Turning the flag off stops new
+notice responses; client caches may retain a notice until their next check.
+
+Paid Mac remains 1.0.17. Windows, the independently published AE installer,
+checkout, account/license controls and native Production updater HOLD are not
+notice inputs. There is no automatic installation in this package.
 
 ## Immutable candidate
 
