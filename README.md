@@ -17,8 +17,8 @@ offers remain unchanged. Homepage and account Upgrade actions open the chooser;
 Google authentication starts only after the user selects a paid plan.
 
 The homepage pricing section also compares all three plans and links both paid
-Upgrade actions to the chooser. Homepage and chooser copy explicitly preserve
-founding members' Unlimited features on their existing purchase terms. Historical
+Upgrade actions to the chooser. The chooser copy explicitly preserves founding
+members' Unlimited features on their existing purchase terms. Historical
 paid licenses resolve as `legacy_paid` with unlimited downloads, 4K, and social
 access; they are not reclassified as the new monthly Pro plan. The homepage's Pro
 price and structured offers are synchronized from the canonical pricing contract.
