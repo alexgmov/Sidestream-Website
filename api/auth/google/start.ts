@@ -25,7 +25,7 @@ export default async function handler(
     ? "select_account"
     : undefined;
   const session = await getSession(request);
-  if (session) return redirect(response, nextPath, 303);
+  if (session && prompt !== "select_account") return redirect(response, nextPath, 303);
 
   let acquisition;
   try {

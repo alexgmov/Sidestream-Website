@@ -17,7 +17,7 @@ test("Unlimited Upgrade remains Google authentication followed by shared Stripe 
   assert.deepEqual(await verifyCheckoutContract(), {
     checkoutRoute: "direct",
     zeroTotalStatuses: 2,
-    rootHtmlPages: 6,
+    rootHtmlPages: 7,
   });
 
   const checkoutStart = await source("api/checkout/start.ts");

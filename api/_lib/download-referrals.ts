@@ -86,13 +86,29 @@ export async function completeReferralConnection(environment: Environment, brows
     [referralHash(browserKey), environment.namespace])).rows[0];
     if (!connection) throw new DownloadReferralError("connection_expired", 410);
     if (connection.account_id && connection.account_id !== accountId) throw new DownloadReferralError("connection_already_used");
+    // Shared with MCP/credits even when different rollout instances have different
+    // referral modes. Ownership checks and alias writes must not race.
+    await client.query("select pg_advisory_xact_lock(hashtext($1))", [
+      `sidestream:credits:${environment.namespace}:${connection.device_id_hash}`,
+    ]);
     const device = (await client.query(`select account_id from public.sidestream_download_referral_devices
       where license_namespace = $1 and device_id_hash = $2`, [environment.namespace, connection.device_id_hash])).rows[0];
     if (device && device.account_id !== accountId) throw new DownloadReferralError("installation_already_linked");
     const member = (await client.query(`select wallet_id from public.sidestream_download_referral_members
       where license_namespace = $1 and account_id = $2`, [environment.namespace, accountId])).rows[0];
+    // MCP and referral connections share installation ownership and the original
+    // account wallet. Do not let an unbound secondary wallet change that owner.
+    const mcpBindingsInstalled = process.env.SIDESTREAM_MCP_ENABLED === "1" ||
+      (await client.query("select to_regclass('public.sidestream_mcp_wallet_devices') is not null as installed")).rows[0]?.installed === true;
+    const mcpAlias = mcpBindingsInstalled
+      ? (await client.query(`select account_id,wallet_id from public.sidestream_mcp_wallet_devices
+          where license_namespace=$1 and device_id_hash=$2`,
+        [environment.namespace,connection.device_id_hash])).rows[0] : null;
+    if (mcpAlias && mcpAlias.account_id !== accountId) throw new DownloadReferralError("installation_already_linked");
     const wallet = (await client.query(`select * from public.sidestream_credit_wallets
-      where license_namespace = $1 and device_id_hash = $2 for update`, [environment.namespace, connection.device_id_hash])).rows[0];
+      where license_namespace = $1 and (($3::uuid is not null and id=$3::uuid)
+        or ($3::uuid is null and device_id_hash=$2)) for update`,
+    [environment.namespace, connection.device_id_hash, mcpAlias?.wallet_id || null])).rows[0];
     // The ordinary credits sync owns starter creation. Never manufacture a wallet.
     if (!wallet) throw new DownloadReferralError("wallet_sync_required", 409, true);
     if (wallet.account_id && wallet.account_id !== accountId) throw new DownloadReferralError("installation_already_linked");

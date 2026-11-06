@@ -490,6 +490,21 @@ test("OAuth start reuses an active server session without sending the user throu
   assert.equal(harness.oauth.state, "");
 });
 
+test("OAuth account selection bypasses an existing session and preserves the MCP continuation", async () => {
+  const harness = createApiContractHarness();
+  const start = await loadAccountHandler("../api/auth/google/start.ts", harness);
+  const nextPath = "/mcp.html?connection=" + "A".repeat(43);
+  const result = await invokeHandler(start, {
+    method: "GET",
+    url: `/api/auth/google/start?next=${encodeURIComponent(nextPath)}&prompt=select_account`,
+    session: { accountId: "wrong-account" },
+  });
+  assert.equal(result.response.statusCode, 302);
+  assert.equal(harness.oauth.prompt, "select_account");
+  assert.equal(harness.oauth.nextPath, nextPath);
+  assert.equal(new URL(result.response.getHeader("location")).searchParams.get("prompt"), "select_account");
+});
+
 test("OAuth start forwards only the exact account-selection prompt", async () => {
   const harness = createApiContractHarness();
   const start = await loadAccountHandler("../api/auth/google/start.ts", harness);

@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="robots" content="noindex, nofollow" />
+  <meta name="referrer" content="no-referrer" />
+  <meta name="description" content="Connect Sidestream to your AI assistant. Download videos, audio, and exact clips with your existing Sidestream plan." />
+  <title>Connect your assistant · Sidestream</title>
+  <style>
+    :root { color-scheme:dark; --bg:#080809; --card:#111113; --line:#29292d; --ink:#f5f5f7; --muted:#aaaab3; --red:#ff3155; --green:#86e3b3; }
+    * { box-sizing:border-box; }
+    body { margin:0; background:var(--bg); color:var(--ink); font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; -webkit-font-smoothing:antialiased; }
+    a { color:inherit; text-decoration:none; } button { font:inherit; }
+    .shell { max-width:1060px; margin:auto; padding:25px 24px 64px; }
+    header { display:flex; justify-content:space-between; align-items:center; gap:20px; }
+    .brand { display:inline-flex; gap:10px; align-items:center; font-size:20px; font-weight:800; letter-spacing:-.7px; }
+    .brand svg { color:var(--red); } .account-link { color:var(--muted); font-size:14px; padding:12px 0; }
+    main { display:grid; grid-template-columns:1fr 1fr; gap:64px; align-items:start; margin-top:86px; }
+    .eyebrow { display:inline-flex; align-items:center; gap:8px; margin:0 0 24px; color:var(--muted); font-size:12px; font-weight:650; letter-spacing:.09em; text-transform:uppercase; }
+    .dot { width:6px; height:6px; border-radius:50%; background:var(--red); }
+    h1 { font-size:clamp(42px,6vw,64px); line-height:1.04; letter-spacing:-3px; margin:0 0 22px; font-weight:650; }
+    h1 span { color:var(--muted); } .intro { max-width:390px; color:var(--muted); font-size:17px; line-height:1.65; margin:0; }
+    .example { margin-top:36px; padding:18px 20px; border:1px solid var(--line); border-radius:16px; font-size:14px; line-height:1.6; max-width:410px; }
+    .example-label { color:var(--muted); font-size:11px; letter-spacing:.08em; text-transform:uppercase; display:block; margin-bottom:8px; }
+    .fine { color:var(--muted); font-size:12px; line-height:1.65; }
+    .compatibility { margin-top:20px; }
+    .card { background:var(--card); border:1px solid var(--line); border-radius:22px; padding:28px; }
+    .card-top { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:24px; }
+    .step-tag { color:var(--muted); font-size:12px; } .badge { color:var(--green); font-size:12px; border:1px solid #284937; border-radius:999px; padding:6px 10px; white-space:nowrap; }
+    h2 { font-size:25px; line-height:1.2; letter-spacing:-.65px; margin:0 0 12px; }
+    .description { color:var(--muted); font-size:14px; line-height:1.65; margin:0 0 22px; }
+    .button { min-height:48px; padding:13px 18px; display:inline-flex; align-items:center; justify-content:center; gap:8px; border:1px solid transparent; border-radius:11px; font-weight:650; font-size:14px; cursor:pointer; text-align:center; }
+    .primary { background:var(--ink); color:var(--bg); width:100%; } .primary:hover { background:#dddde4; }
+    .secondary { background:transparent; color:var(--ink); border-color:var(--line); } .secondary:hover { background:#202024; }
+    .quiet { color:var(--muted); background:none; border:none; padding:12px; min-height:44px; cursor:pointer; font-size:13px; }
+    button:disabled, [aria-disabled="true"] { opacity:.45; cursor:default; pointer-events:none; }
+    :focus-visible { outline:3px solid var(--red); outline-offset:4px; }
+    .actions { display:flex; gap:10px; margin-top:14px; flex-wrap:wrap; } .actions .primary { flex:1; }
+    .steps { list-style:none; padding:0; margin:24px 0 0; display:grid; gap:18px; counter-reset:steps; }
+    .steps li { display:grid; grid-template-columns:25px 1fr; gap:12px; color:var(--muted); font-size:13px; line-height:1.55; }
+    .steps li:before { counter-increment:steps; content:counter(steps); border:1px solid #38383d; border-radius:50%; width:23px; height:23px; display:grid; place-items:center; color:var(--ink); font-size:11px; }
+    .steps strong { color:var(--ink); display:block; font-weight:550; margin-bottom:2px; }
+    .prompt { display:block; color:var(--ink); margin-top:4px; }
+    .plan { border-top:1px solid var(--line); padding-top:20px; margin-top:24px; display:flex; justify-content:space-between; gap:15px; align-items:center; }
+    .plan strong { display:block; font-size:14px; } .plan p { margin:4px 0 0; font-size:12px; color:var(--muted); line-height:1.5; }
+    .plan a { color:var(--ink); font-size:13px; text-decoration:underline; text-underline-offset:4px; padding:10px 0; }
+    .status { font-size:13px; line-height:1.6; margin:18px 0 0; color:var(--muted); overflow-wrap:anywhere; }
+    .status[data-tone="error"] { color:#ff9cae; } .status[data-tone="success"] { color:var(--green); }
+    .consent { padding:16px; border:1px solid var(--line); border-radius:12px; margin:0 0 20px; font-size:13px; line-height:1.65; color:var(--muted); }
+    .consent strong { color:var(--ink); font-weight:550; }
+    .connections { margin-top:24px; } .connections h3 { font-size:13px; color:var(--muted); font-weight:500; margin:0 0 10px; }
+    .connection { padding:14px 0; border-top:1px solid var(--line); display:flex; align-items:center; justify-content:space-between; gap:12px; }
+    .connection-name { font-size:13px; } .connection-date { font-size:11px; color:var(--muted); margin-top:4px; }
+    .connection button { min-height:44px; font-size:12px; padding:10px; }
+    footer { border-top:1px solid var(--line); margin-top:62px; padding-top:20px; display:flex; justify-content:space-between; gap:20px; }
+    footer p { margin:0; max-width:580px; } footer a { text-decoration:underline; text-underline-offset:3px; }
+    [hidden] { display:none!important; }
+    @media(max-width:760px) { .shell { padding:18px 20px 36px; } main { grid-template-columns:1fr; gap:30px; margin-top:44px; } h1 { font-size:47px; letter-spacing:-2px; } .intro { font-size:16px; max-width:440px; } .example { margin-top:24px; max-width:none; } .compatibility { margin-bottom:0; } .card { padding:24px; border-radius:18px; } footer { margin-top:36px; flex-direction:column; gap:12px; } }
+    @media(prefers-reduced-motion:no-preference) { .button { transition:background .15s ease; } }
+  </style>
+</head>
+<body>
+<div class="shell">
+  <header>
+    <a class="brand" href="/" aria-label="Sidestream home"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M5 6h9m-9 6h14M5 18h9" stroke="currentColor" stroke-width="3" stroke-linecap="round"/></svg>Sidestream</a>
+    <a class="account-link" href="/account.html">Your account ↗</a>
+  </header>
+  <main>
+    <section aria-labelledby="page-title">
+      <p class="eyebrow"><span class="dot"></span>Sidestream for AI</p>
+      <h1 id="page-title">Ask for it.<br><span>It’s downloaded.</span></h1>
+      <p class="intro">Give your assistant a direct line to Sidestream. Save videos, audio, and exact clips to your computer with a simple request.</p>
+      <div class="example"><span class="example-label">Try asking your assistant</span>“Download this interview in the best quality my plan supports.”</div>
+      <p class="fine compatibility">Claude Desktop on macOS. Uses your existing Sidestream account and plan. Premiere is optional.</p>
+    </section>
+    <div>
+      <section class="card" aria-labelledby="connection-title" aria-busy="true" id="connect-card">
+        <div class="card-top"><span class="step-tag" id="step-label">Your assistant, connected</span><span class="badge" id="connection-badge" hidden>Connected</span></div>
+        <h2 id="connection-title">Connect Sidestream</h2>
+        <p class="description" id="connection-description">Checking your account…</p>
+        <div class="consent" id="connection-consent" hidden></div>
+        <a class="button primary" id="sign-in" hidden>Sign in with Google</a>
+        <a class="button primary" id="install-extension" hidden aria-disabled="true">Download for Claude Desktop</a>
+        <button class="button primary" id="approve-connection" type="button" hidden>Connect this assistant</button>
+        <div class="actions">
+          <button class="quiet" id="deny-connection" type="button" hidden>Cancel connection</button>
+          <a class="quiet" id="switch-account" hidden>Switch account</a>
+          <button class="button secondary" id="retry-connection" type="button" hidden>Try again</button>
+          <a class="button secondary" id="new-connection" href="/mcp.html" hidden>Back to setup</a>
+        </div>
+        <ol class="steps" id="setup-steps" hidden>
+          <li><div><strong>Add Sidestream to Claude Desktop</strong>Open the downloaded extension and approve installation.</div></li>
+          <li><div><strong>Choose where downloads go</strong>Select your download folder during setup.</div></li>
+          <li><div><strong>Connect your account</strong>Ask Claude:<span class="prompt">“Connect my Sidestream account.”</span>Approve the connection here, then return to your conversation.</div></li>
+        </ol>
+        <div class="plan" id="plan-summary" hidden><div><strong id="plan-name">Your plan</strong><p id="plan-detail"></p></div><a id="plan-upgrade" href="/upgrade.html?from=account">View plans</a></div>
+        <p class="status" id="connection-status" role="status" aria-live="polite"></p>
+      </section>
+      <section class="connections" id="connections-section" hidden aria-labelledby="connections-title"><h3 id="connections-title">Connected assistants</h3><div id="connections-list"></div><p class="status" id="connections-status" role="status" aria-live="polite"></p></section>
+    </div>
+  </main>
+  <footer><p class="fine" id="pricing-note">Start with 10 free downloads, up to 1080p. Upgrade whenever you need more.</p><a class="fine" href="mailto:alex@alexg.mov">Need a hand?</a></footer>
+</div>
+<script type="module" src="/src/mcp-connect.js"></script>
+</body>
+</html>

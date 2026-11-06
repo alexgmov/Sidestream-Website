@@ -115,9 +115,9 @@ function routeDatabaseApiRequest(request, runtime) {
   headers.delete(ORIGIN_AUTH_HEADER);
   headers.delete(ORIGINAL_HOST_HEADER);
   headers.delete(ORIGINAL_IF_NONE_MATCH_HEADER);
-  // The CLI signer is an exact, database-free Vercel route. All other API
+  // CLI and MCP artifact signers are exact, database-free Vercel routes. All other API
   // requests retain the existing source/fence/target behavior.
-  if (new URL(request.url).pathname === "/api/download-cli") {
+  if (["/api/download-cli", "/api/download-mcp"].includes(new URL(request.url).pathname)) {
     headers.delete("x-forwarded-host");
     headers.delete("x-forwarded-proto");
     return next({ request: { headers } });

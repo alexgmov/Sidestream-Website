@@ -1047,6 +1047,11 @@ export function sanitizeAccountNextPath(value: unknown) {
     const parsed = new URL(raw, "https://sidestream.invalid");
     if (parsed.origin !== "https://sidestream.invalid") return "/account.html";
     if (parsed.pathname === "/account.html") return `${parsed.pathname}${parsed.search}`;
+    if (["/mcp.html", "/api/mcp/upgrade"].includes(parsed.pathname)) {
+      if (parsed.pathname === "/mcp.html" && parsed.searchParams.size === 0) return "/mcp.html";
+      return parsed.searchParams.size === 1 && /^[A-Za-z0-9_-]{43}$/.test(parsed.searchParams.get("connection") || "")
+        ? `${parsed.pathname}${parsed.search}` : "/account.html";
+    }
     if (["/api/download-referrals/claim", "/api/download-referrals/connect"].includes(parsed.pathname)) {
       const key = parsed.pathname.endsWith("/claim") ? "visit" : "key";
       return parsed.searchParams.size === 1 && /^[A-Za-z0-9_-]{43}$/.test(parsed.searchParams.get(key) || "")

@@ -131,3 +131,16 @@ test("only the exact CLI signer bypasses Linux and strips forged origin headers"
     assert.equal(middleware.routeDatabaseApiForTest(request(url), { databaseCutoverMode: "fenced" }).status, 503, url);
   }
 });
+
+
+test("MCP signer is database-free but account and pairing routes retain the database boundary", () => {
+  const response = middleware.routeDatabaseApiForTest(request("/api/download-mcp?release=known", {
+    "x-sidestream-origin-auth": "forged", "x-forwarded-host": "forged.invalid",
+  }), { databaseCutoverMode: "fenced" });
+  assert.equal(response.headers.get("x-test-next"), "1");
+  assert.equal(response.headers.get("x-request-x-sidestream-origin-auth"), null);
+  assert.equal(response.headers.get("x-request-x-forwarded-host"), null);
+  for (const route of ["/api/download-mcp/", "/api/download-mcp-extra", "/api/mcp/start", "/api/mcp/authorize", "/api/mcp/reserve"]) {
+    assert.equal(middleware.routeDatabaseApiForTest(request(route), { databaseCutoverMode: "fenced" }).status, 503);
+  }
+});

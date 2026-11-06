@@ -2,6 +2,10 @@
 
 ## Product Overview
 
+### Sidestream MCP connection
+
+[The MCP integration contract](docs/mcp-integration.md) owns `/mcp.html`, `api/mcp/*`, account-bound Free wallets, device-aware paid access, upgrade/revoke behavior, the additive migration and release gates. The local assistant service and macOS extension package remain in FlowState. The integration is default-off until its migration, API/frontend release and verified extension publication are complete.
+
 ### Selected upgrade plans — November 2026 implementation
 
 `/upgrade.html` offers Free with **10 total 1080p downloads**, Pro with

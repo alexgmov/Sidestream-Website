@@ -207,6 +207,9 @@ export async function fulfillDownloadCreditPackCheckout(
 }
 
 export async function synchronizeDownloadCredits(options: {
+  // Server-only authenticated identity; never copied from a public credit payload.
+  trustedAccountId?: string;
+  transactionClient?: PoolClient;
   deviceId: string;
   referralToken?: string;
   environment: ResolvedLicenseEnvironment;
@@ -215,7 +218,7 @@ export async function synchronizeDownloadCredits(options: {
   const legacyUsedCredits = normalizeLegacyUsedCredits(options.legacyUsedCredits);
   return withCreditTransaction(options.environment, async (client) => {
     const identity = await readReferralIdentity(client, options.environment, options.deviceId, options.referralToken);
-    const wallet = identity ? await getLockedWallet(client, identity.walletId) : await lockOrCreateWallet(
+    const wallet = options.trustedAccountId ? await getAccountWallet(client, options.environment.namespace, options.trustedAccountId) : identity ? await getLockedWallet(client, identity.walletId) : await lockOrCreateWallet(
       client,
       options.environment.namespace,
       options.deviceId,
@@ -223,10 +226,13 @@ export async function synchronizeDownloadCredits(options: {
     );
     await releaseExpiredReservations(client, wallet);
     return getWalletSnapshot(client, wallet.id, identity);
-  });
+  }, options.transactionClient);
 }
 
 export async function reserveDownloadCredits(options: {
+  // Server-only authenticated identity; never copied from a public credit payload.
+  trustedAccountId?: string;
+  transactionClient?: PoolClient;
   deviceId: string;
   referralToken?: string;
   environment: ResolvedLicenseEnvironment;
@@ -240,7 +246,7 @@ export async function reserveDownloadCredits(options: {
 
   return withCreditTransaction(options.environment, async (client) => {
     const identity = await readReferralIdentity(client, options.environment, options.deviceId, options.referralToken);
-    const wallet = identity ? await getLockedWallet(client, identity.walletId) : await lockOrCreateWallet(
+    const wallet = options.trustedAccountId ? await getAccountWallet(client, options.environment.namespace, options.trustedAccountId) : identity ? await getLockedWallet(client, identity.walletId) : await lockOrCreateWallet(
       client,
       options.environment.namespace,
       options.deviceId,
@@ -363,10 +369,13 @@ export async function reserveDownloadCredits(options: {
       status: "reserved",
       creditCost,
     };
-  });
+  }, options.transactionClient);
 }
 
 export async function finalizeDownloadCredits(options: {
+  // Server-only authenticated identity; never copied from a public credit payload.
+  trustedAccountId?: string;
+  transactionClient?: PoolClient;
   deviceId: string;
   referralToken?: string;
   environment: ResolvedLicenseEnvironment;
@@ -378,7 +387,7 @@ export async function finalizeDownloadCredits(options: {
 
   return withCreditTransaction(options.environment, async (client) => {
     const identity = await readReferralIdentity(client, options.environment, options.deviceId, options.referralToken);
-    const wallet = identity ? await getLockedWallet(client, identity.walletId) : await lockExistingWallet(
+    const wallet = options.trustedAccountId ? await getAccountWallet(client, options.environment.namespace, options.trustedAccountId) : identity ? await getLockedWallet(client, identity.walletId) : await lockExistingWallet(
       client,
       options.environment.namespace,
       options.deviceId,
@@ -522,7 +531,7 @@ export async function finalizeDownloadCredits(options: {
       status: options.outcome,
       creditCost: reservation.credit_cost,
     };
-  });
+  }, options.transactionClient);
 }
 
 export async function grantPurchasedDownloadCredits(options: {
@@ -637,7 +646,9 @@ async function grantPurchasedCreditsToWallet(
 async function withCreditTransaction<T>(
   environment: ResolvedLicenseEnvironment,
   callback: (client: PoolClient) => Promise<T>,
+  transactionClient?: PoolClient,
 ) {
+  if (transactionClient) return callback(transactionClient);
   const pool = getPostgresPool({
     connectionString: environment.database.connectionString,
     environmentVariable: environment.database.environmentVariable,
@@ -667,8 +678,9 @@ async function lockOrCreateWallet(
   namespace: string,
   deviceId: string,
   initialUsedCredits = 0,
+  alreadyHashed = false,
 ) {
-  const deviceIdHash = hashPrivateIdentifier(deviceId);
+  const deviceIdHash = alreadyHashed ? deviceId : hashPrivateIdentifier(deviceId);
   await lockWalletIdentity(client, namespace, deviceIdHash);
   let wallet = await selectWallet(client, namespace, deviceIdHash);
   if (wallet) return wallet;
@@ -735,6 +747,19 @@ async function lockWalletIdentity(client: PoolClient, namespace: string, deviceI
 }
 
 async function selectWallet(client: PoolClient, namespace: string, deviceIdHash: string) {
+  // Disabling new MCP connections must not reset already-linked installation wallets.
+  const mcpBindingsInstalled = process.env.SIDESTREAM_MCP_ENABLED === "1" ||
+    (await client.query("select to_regclass('public.sidestream_mcp_wallet_devices') is not null as installed")).rows[0]?.installed === true;
+  if (mcpBindingsInstalled) {
+    const alias = await client.query<CreditWalletRow>(`
+      select w.id, w.available_credits, w.granted_credits, w.spent_credits
+      from public.sidestream_mcp_wallet_devices d
+      join public.sidestream_credit_wallets w on w.id = d.wallet_id
+      where d.license_namespace = $1 and d.device_id_hash = $2
+        and w.license_namespace = $1 and w.account_id = d.account_id
+      for update of w`, [namespace, deviceIdHash]);
+    if (alias.rows[0]) return alias.rows[0];
+  }
   const result = await client.query<CreditWalletRow>(
     `
       select id, available_credits, granted_credits, spent_credits
@@ -868,4 +893,84 @@ function emptyFinalizationResult(reservationKey: string): DownloadCreditFinaliza
     status: "not_found",
     creditCost: 0,
   };
+}
+
+
+async function getAccountWallet(client: PoolClient, namespace: string, accountId: string) {
+  const result = await client.query<CreditWalletRow>(`
+    select id, available_credits, granted_credits, spent_credits
+    from public.sidestream_credit_wallets
+    where license_namespace = $1 and account_id = $2 for update`, [namespace, accountId]);
+  if (!result.rows[0]) throw new Error("Authenticated download wallet is unavailable");
+  return result.rows[0];
+}
+
+/** Bind once after authenticated browser consent. Caller owns the transaction. */
+export async function bindDownloadCreditAccount(client: PoolClient, options: {
+  environment: ResolvedLicenseEnvironment; accountId: string; deviceIdHash: string;
+}) {
+  const namespace = options.environment.namespace;
+  await client.query("select pg_advisory_xact_lock(hashtext($1))", [
+    `sidestream:credits-account:${namespace}:${options.accountId}`,
+  ]);
+  await lockWalletIdentity(client, namespace, options.deviceIdHash);
+  const alias = (await client.query(`select account_id from public.sidestream_mcp_wallet_devices
+    where license_namespace = $1 and device_id_hash = $2`, [namespace, options.deviceIdHash])).rows[0];
+  const foreignDevice = await client.query(`select 1 from public.sidestream_account_devices
+    where license_namespace = $1 and device_id_hash = $2 and account_id <> $3 limit 1`,
+  [namespace, options.deviceIdHash, options.accountId]);
+  const referralOwner = (await client.query(`select account_id from public.sidestream_download_referral_devices
+    where license_namespace=$1 and device_id_hash=$2`, [namespace, options.deviceIdHash])).rows[0];
+  if ((alias && alias.account_id !== options.accountId) || foreignDevice.rowCount ||
+      (referralOwner && referralOwner.account_id !== options.accountId)) {
+    throw new DownloadReferralError("installation_already_linked");
+  }
+  if (alias) return getAccountWallet(client, namespace, options.accountId);
+  const ownerWallet = (await client.query<CreditWalletRow>(`select id, available_credits, granted_credits, spent_credits
+    from public.sidestream_credit_wallets where license_namespace = $1 and account_id = $2 for update`,
+  [namespace, options.accountId])).rows[0];
+  let installationWallet = (await client.query<CreditWalletRow & {account_id: string | null}>(`
+    select id, account_id, available_credits, granted_credits, spent_credits
+    from public.sidestream_credit_wallets where license_namespace = $1 and device_id_hash = $2 for update`,
+  [namespace, options.deviceIdHash])).rows[0];
+  if (installationWallet?.account_id && installationWallet.account_id !== options.accountId) {
+    throw new DownloadReferralError("installation_already_linked");
+  }
+  let wallet = ownerWallet;
+  if (!wallet) {
+    const original = installationWallet || await lockOrCreateWallet(client, namespace, options.deviceIdHash, 0, true);
+    await client.query(`update public.sidestream_credit_wallets set account_id=$2, account_bound_at=now()
+      where id=$1 and account_id is null`, [original.id, options.accountId]);
+    wallet = original;
+  } else if (installationWallet && installationWallet.id !== wallet.id) {
+    await releaseExpiredReservations(client, installationWallet);
+    const pending = await client.query(`select 1 from public.sidestream_credit_reservations
+      where wallet_id=$1 and status='reserved' limit 1`, [installationWallet.id]);
+    if (pending.rowCount) throw new DownloadReferralError("downloads_in_progress", 409, true);
+    if (installationWallet.spent_credits > 0) {
+      const accountPending = await client.query(`select 1 from public.sidestream_credit_reservations
+        where wallet_id=$1 and status='reserved' limit 1`, [wallet.id]);
+      if (accountPending.rowCount) throw new DownloadReferralError("downloads_in_progress", 409, true);
+    }
+    if (installationWallet.granted_credits > STARTER_DOWNLOAD_CREDITS) {
+      throw new DownloadReferralError("wallet_support_required", 409);
+    }
+    // Preserve usage from an older anonymous installation without granting its
+    // unused starter balance again. The alias makes this import run only once.
+    const used = Math.min(wallet.available_credits, installationWallet.spent_credits);
+    if (used > 0) {
+      const updated = await client.query<CreditWalletRow>(`update public.sidestream_credit_wallets
+        set available_credits=available_credits-$2,spent_credits=spent_credits+$2,updated_at=now()
+        where id=$1 returning id,available_credits,granted_credits,spent_credits`, [wallet.id, used]);
+      wallet=updated.rows[0];
+      await client.query(`insert into public.sidestream_credit_ledger
+        (wallet_id,entry_type,credit_delta,available_balance_after,idempotency_key)
+        values ($1,'legacy_usage_import',$2,$3,$4)`,
+      [wallet.id,-used,wallet.available_credits,`mcp:usage:${installationWallet.id}`]);
+    }
+  }
+  await client.query(`insert into public.sidestream_mcp_wallet_devices
+    (license_namespace,device_id_hash,account_id,wallet_id) values ($1,$2,$3,$4)`,
+  [namespace,options.deviceIdHash,options.accountId,wallet.id]);
+  return wallet;
 }

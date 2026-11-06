@@ -8650,3 +8650,47 @@ function safeUrlOrigin(value: string) {
     return "";
   }
 }
+
+
+/** Shared canonical policy for authenticated integrations, with no web cookie. */
+export async function getAccountLicenseSummary(accountId: string, runner: PoolClient): Promise<LicenseSummary> {
+  const result = await runner.query(`select l.status,l.plan_key,
+    ${LICENSE_ENTITLEMENT_STATUS_SQL} as entitlement_status,
+    l.current_period_end,l.cancel_at_period_end,l.grace_until,l.features
+    from public.sidestream_licenses l where l.account_id=$1
+    order by (case when (${LICENSE_ENTITLEMENT_STATUS_SQL})='active'
+      and l.plan_key in ('sidestream_pro','sidestream_unlimited') then 0 else 1 end),
+      l.updated_at desc limit 1`, [accountId]);
+  const row=result.rows[0];
+  return buildLicenseSummary({status:row?.status,planKey:row?.plan_key,
+    entitlementStatus:row?.entitlement_status,currentPeriodEnd:row?.current_period_end,
+    cancelAtPeriodEnd:row?.cancel_at_period_end,graceUntil:row?.grace_until,features:row?.features});
+}
+
+/** Caller owns the transaction. Reuse the same device slots and revocation rules. */
+export async function authorizeAccountIntegrationDevice(client: PoolClient, options: {
+  accountId:string; namespace:DeviceNamespace; deviceIdHash:string;
+  approvedAt:Date|string; boundAt?:Date|string|null; expectedDeviceId?:string|null;
+  platform?:unknown; appVersion?:unknown;
+}) {
+  await client.query("select pg_advisory_xact_lock(hashtext($1))", [getAccountDeviceLockKey(options.accountId,options.namespace)]);
+  const latest=(await client.query<AccountDeviceRow>(`select id,device_id_hash,active_slot,activated_at,revoked_at,revocation_reason
+    from public.sidestream_account_devices where account_id=$1 and license_namespace=$2 and device_id_hash=$3
+    order by activated_at desc,id desc limit 1 for update`,
+  [options.accountId,options.namespace,options.deviceIdHash])).rows[0];
+  if (latest?.revoked_at && new Date(latest.revoked_at).getTime() >= new Date(options.approvedAt).getTime()) {
+    return {allowed:false as const,code:getDeviceRevocationErrorCode(latest.revocation_reason==='replaced'?'replaced':'deactivated')};
+  }
+  const binding=await lockAccountDeviceBinding(client,{
+    accountId:options.accountId,namespace:options.namespace,requestedDeviceIdHash:options.deviceIdHash,
+    purpose:options.expectedDeviceId?'credential':'activation',claimEmpty:!options.expectedDeviceId,
+    credentialCreatedAt:options.boundAt||options.approvedAt,platform:options.platform,
+    appVersion:options.appVersion,buildChannel:'mcp',
+  });
+  if (!binding.allowed) return binding;
+  if (!binding.bindingMatches) return {allowed:false as const,code:DEVICE_POLICY_ERROR_CODES.TRANSFER_REQUIRED};
+  if (options.expectedDeviceId && options.expectedDeviceId!==binding.activeDeviceId) {
+    return {allowed:false as const,code:DEVICE_POLICY_ERROR_CODES.DEVICE_REPLACED};
+  }
+  return {allowed:true as const,deviceId:binding.activeDeviceId};
+}

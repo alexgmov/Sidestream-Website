@@ -28,6 +28,7 @@ const BROWSER_UI_MARKERS = Object.freeze([
 ]);
 const ALLOWED_ROOT_HTML = new Set([
   "account.html",
+  "mcp.html",
   "credit-complete.html",
   "index.html",
   "paid-thank-you.html",
