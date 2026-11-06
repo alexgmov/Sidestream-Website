@@ -71,14 +71,24 @@ test("a hypothetical global change makes every generated public surface fail the
   assert.match(results[2].expected, /Sidestream Unlimited as a \$12\.99 one-time paid upgrade/);
 });
 
-test("monthly price drift is detected in the chooser and crawler summary", async () => {
+test("monthly price drift is detected on the homepage, chooser, and crawler summary", async () => {
   const results = await getPricingSurfaceResults({
     ...SIDESTREAM_PRICING_CONTRACT.global, monthlyAmountMinor: 1299,
   });
   assert.deepEqual(
     results.filter((result) => result.actual !== result.expected).map((result) => result.path),
-    ["upgrade.html", "public/llms.txt"],
+    ["index.html", "upgrade.html", "public/llms.txt"],
   );
+  assert.match(results[0].expected, /data-pro-monthly-price>\$12\.99/);
+  const metadata = JSON.parse(results[0].expected.match(/<script type="application\/ld\+json">([\s\S]*?)<\/script>/)[1]);
+  const proOffers = metadata["@graph"].flatMap((item) => item.offers || [])
+    .filter((offer) => offer.name === "Sidestream Pro");
+  assert.equal(proOffers.length, 2);
+  for (const offer of proOffers) {
+    assert.equal(offer.price, "12.99");
+    assert.equal(offer.priceSpecification.price, "12.99");
+    assert.equal(offer.priceSpecification.billingDuration, "P1M");
+  }
   assert.match(results[1].expected, /data-upgrade-price="pro_monthly">\$12\.99/);
   assert.match(results[2].expected, /Pro at \$12\.99\/month/);
 });

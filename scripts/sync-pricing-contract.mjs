@@ -15,6 +15,9 @@ const globalOffer = SIDESTREAM_PRICING_CONTRACT.global;
 function pricingSurfaces(offer) {
   const globalDisplay = formatOfferPrice(offer);
   const globalDecimal = formatOfferDecimal(offer);
+  const monthlyOffer = { ...offer, amountMinor: offer.monthlyAmountMinor };
+  const monthlyDisplay = formatOfferPrice(monthlyOffer);
+  const monthlyDecimal = formatOfferDecimal(monthlyOffer);
   return [
   {
     path: "index.html",
@@ -28,7 +31,16 @@ function pricingSurfaces(offer) {
         /(<span class="amt" data-checkout-offer-price aria-live="polite">)[^<]+(<\/span>)/,
         (_match, beforePrice, afterPrice) => `${beforePrice}${globalDisplay}${afterPrice}`,
       );
-      return output;
+      return output
+        .replace(
+          /("name": "Sidestream Pro",\s*"price": ")[^"]+("[\s\S]*?"priceSpecification": \{\s*"@type": "UnitPriceSpecification",\s*"price": ")[^"]+("\s*,\s*"priceCurrency": "USD")/g,
+          (_match, beforePrice, beforeSpecificationPrice, afterPrice) =>
+            `${beforePrice}${monthlyDecimal}${beforeSpecificationPrice}${monthlyDecimal}${afterPrice}`,
+        )
+        .replace(
+          /(<span class="amt" data-pro-monthly-price>)[^<]+(<\/span>)/,
+          (_match, beforePrice, afterPrice) => `${beforePrice}${monthlyDisplay}${afterPrice}`,
+        );
     },
   },
   {

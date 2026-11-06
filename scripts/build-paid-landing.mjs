@@ -64,6 +64,11 @@ const variantStyles = `
     outline-offset: 3px;
   }
 
+  html[data-mobile-paid-variant] #pricing .plans {
+    grid-template-columns: 1fr;
+    max-width: 620px;
+  }
+
   html[data-mobile-paid-variant] .mobile-paid-checkout-status {
     min-height: 1.5em;
     margin: 10px 0 0;
