@@ -1,9 +1,11 @@
 # Native updater beta installer delivery
 
-This prepares operator-issued downloads for a matched standard Mac Install and
-Restore pair. `data/updater-beta-installers.json` is **disabled with no candidate**.
-No artifact versions, identifiers or hashes are allocated by this change. A fresh
-signed/notarized candidate is required after native recovery source changes.
+This prepares operator-issued downloads for the matched standard Mac 1.0.60
+Install and Restore pair, candidate `standard-beta-20261105-01`, from native source
+`e3cc1635111147c53f180023be05ad4363d5a6eb`. The manifest binds both finalized PKG
+hashes and their shared sealed seed. It is enabled in this prepared source;
+immutable uploads, canonical publication and intended-response qualification must
+be verified separately before delivery is claimed live.
 
 The existing `/v1/` HMAC authorizer serves these PKGs only when their exact pair
 is explicitly enabled. Public/paid manifests, the manual Mac rollout, update

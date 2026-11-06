@@ -1,5 +1,18 @@
 {
   "schemaVersion": 1,
-  "enabled": false,
-  "candidate": null
+  "enabled": true,
+  "candidate": {
+    "id": "standard-beta-20261105-01",
+    "version": "1.0.60",
+    "sourceSha": "e3cc1635111147c53f180023be05ad4363d5a6eb",
+    "seedSha256": "329c95b2777bcadc07047039623d455c9ea268a9b1006f81efe4a31e00eea5eb",
+    "install": {
+      "sha256": "0c5b6f57b9d4c535dc16a3e875b505f9da4a4fff1eff33d71e127acd2b9f4328",
+      "sizeBytes": 257987287
+    },
+    "restore": {
+      "sha256": "ab23228b9e282ce71158b6e20bc22bf88433ccadd371da09860516039024ddfa",
+      "sizeBytes": 257987304
+    }
+  }
 }

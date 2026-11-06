@@ -22,6 +22,7 @@ before(async () => {
   temporary = fs.mkdtempSync(path.join(process.cwd(), "node_modules/.tmp/updater-beta-"));
   const original = path.join(temporary, "disabled");
   compileApiFixture(["api/_lib/installer-delivery.ts"], original);
+  fs.writeFileSync(path.join(original, "data/updater-beta-installers.json"), JSON.stringify({ schemaVersion: 1, enabled: false, candidate: null }));
   betaModule = await load(original, "updater-beta-installers");
   disabled = await load(original, "installer-delivery");
   for (const [name, value] of [["enabled", configured], ["malformed", { ...configured, candidate: null }]]) {
@@ -44,7 +45,7 @@ after(() => {
   if (artifactRoot) fs.rmSync(artifactRoot, { recursive: true, force: true });
 });
 
-test("checked-in beta is disabled with no candidate; malformed beta cannot affect current customer artifacts", () => {
+test("disabled and malformed beta cannot affect current customer artifacts", () => {
   assert.equal(betaModule.readUpdaterBetaInstallers(), null);
   const baseline = disabled.listManifestInstallerArtifacts();
   assert.ok(baseline.length >= 4);
@@ -54,6 +55,17 @@ test("checked-in beta is disabled with no candidate; malformed beta cannot affec
   for (const artifact of beta.artifacts) {
     assert.throws(() => disabled.createHetznerSignedDownloadUrl(artifact.pathname, { nowMs: NOW, signingSecret: SECRET }));
     assert.throws(() => malformed.createHetznerSignedDownloadUrl(artifact.pathname, { nowMs: NOW, signingSecret: SECRET }));
+  }
+});
+
+test("checked-in beta configuration is valid and binds a complete immutable pair when enabled", () => {
+  const value = JSON.parse(fs.readFileSync(new URL("../data/updater-beta-installers.json", import.meta.url), "utf8"));
+  const parsed = betaModule.parseUpdaterBetaInstallers(value);
+  if (!value.enabled) assert.equal(parsed, null);
+  else {
+    assert.equal(parsed.artifacts.length, 2);
+    assert.deepEqual(parsed.artifacts.map(item => item.action), ["install", "restore"]);
+    assert.ok(parsed.artifacts.every(item => item.pathname.startsWith(`sidestream/updater-beta/${value.candidate.id}/`)));
   }
 });
 
