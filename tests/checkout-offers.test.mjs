@@ -72,7 +72,7 @@ test("the server-owned catalog selects regional offers only from configured trus
       entry.currency,
       entry.amountMinor,
     ]),
-    [["inr", 49900], ["brl", 2500], ["krw", 24900], ["usd", 1999]],
+    [["inr", 49900], ["brl", 2500], ["krw", 24900], ["usd", 3499]],
   );
   assert.equal(
     selectCheckoutOffer("IN", {}).entry.offerId,
@@ -132,7 +132,7 @@ test("the server-owned catalog selects regional offers only from configured trus
   );
   assert.deepEqual(
     getCheckoutOfferPresentation("IN", {}),
-    { formattedPrice: "$19.99", currency: "USD", billingCadence: "one_time" },
+    { formattedPrice: "$34.99", currency: "USD", billingCadence: "one_time" },
   );
 });
 
@@ -323,8 +323,8 @@ function checkoutSession(offer) {
   };
 }
 
-test("public global pricing advertises the restored one-time default", () => {
+test("public global pricing advertises the current one-time default", () => {
   assert.deepEqual(getCheckoutOfferPresentation("US", {}), {
-    formattedPrice: "$19.99", currency: "USD", billingCadence: "one_time",
+    formattedPrice: "$34.99", currency: "USD", billingCadence: "one_time",
   });
 });

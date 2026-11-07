@@ -26,7 +26,7 @@ function plans() {
     plans: {
       free: { id: "free", name: "Free", formattedPrice: "$0", currency: "USD", billingCadence: "free", downloadLimit: 10, maxVideoHeight: 1080, socialDownloads: false },
       pro_monthly: { id: "pro_monthly", name: "Pro", formattedPrice: "$9.99", currency: "USD", billingCadence: "month", downloadLimit: null, maxVideoHeight: 2160, socialDownloads: false },
-      unlimited_one_time: { id: "unlimited_one_time", name: "Unlimited", formattedPrice: "$39.99", currency: "USD", billingCadence: "one_time", downloadLimit: null, maxVideoHeight: 2160, socialDownloads: true },
+      unlimited_one_time: { id: "unlimited_one_time", name: "Unlimited", formattedPrice: "$34.99", currency: "USD", billingCadence: "one_time", downloadLimit: null, maxVideoHeight: 2160, socialDownloads: true },
     },
   };
 }
