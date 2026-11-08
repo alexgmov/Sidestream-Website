@@ -1040,6 +1040,12 @@
     background-repeat: no-repeat;
     background-position: center;
   }
+  .plan .feature-note { display: block; margin-top: 4px; font-size: 12px; line-height: 1.5; color: #bfc5cd; }
+  .plan li.feature-unavailable { color: #bfc5cd; }
+  .plan li.feature-unavailable::before {
+    background-color: rgba(255, 255, 255, .1);
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 10 10'%3E%3Cpath d='m2.5 2.5 5 5m0-5-5 5' fill='none' stroke='%23bfc5cd' stroke-width='1.5' stroke-linecap='round'/%3E%3C/svg%3E");
+  }
   .plan .btn { width: 100%; margin-top: auto; }
   .pricing-download-ctas {
     display: grid;
@@ -1399,9 +1405,11 @@
             <p class="plan-name">Free</p>
             <div class="price"><span class="amt">$0</span></div>
             <ul>
-              <li>Full video and audio downloads</li>
-              <li>Up to 1080p video downloads</li>
-              <li>10 free downloads total</li>
+              <li><span><strong>10 free downloads total</strong><span class="feature-note">One-time allowance. Does not reset.</span></span></li>
+              <li>1080p maximum video quality</li>
+              <li>YouTube video and audio downloads</li>
+              <li class="feature-unavailable">No 4K downloads</li>
+              <li class="feature-unavailable">No social downloads</li>
             </ul>
             <div class="pricing-download-ctas" role="group" aria-label="Free downloads">
               <a class="btn btn-secondary" href="https://sidestream.tv/api/download" data-download aria-label="Download Sidestream for Mac">Download</a>
@@ -1413,8 +1421,9 @@
             <div class="price"><span class="amt" data-pro-monthly-price>$9.99</span><span class="per">/ month</span></div>
             <ul>
               <li>Unlimited YouTube downloads</li>
-              <li>Full video and audio downloads</li>
-              <li>Up to 4K video downloads</li>
+              <li>Up to 4K video quality</li>
+              <li>Video and audio downloads</li>
+              <li class="feature-unavailable">No social downloads</li>
               <li>Cancel anytime from your Sidestream account</li>
             </ul>
             <a class="btn btn-ghost-light" href="/upgrade.html">Upgrade to Pro</a>
@@ -1424,9 +1433,9 @@
               <p class="plan-name">Unlimited</p>
               <div class="price"><span class="amt" data-checkout-offer-price aria-live="polite">$34.99</span><span class="per" data-checkout-offer-cadence>one-time</span></div>
               <ul>
-                <li>Unlimited downloads</li>
-                <li>Full video and audio downloads</li>
-                <li>Up to 4K video downloads</li>
+                <li>Unlimited YouTube and social downloads</li>
+                <li>Up to 4K video quality</li>
+                <li>Video and audio downloads</li>
                 <li>Instagram, TikTok, X, and LinkedIn posts</li>
                 <li>Use Unlimited on up to two devices</li>
                 <li data-checkout-offer-annual-term hidden>Renews automatically every year with a 30-day email reminder</li>

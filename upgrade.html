@@ -71,6 +71,12 @@
     .features { list-style: none; display: grid; align-content: start; gap: 12px; padding: 0; margin: 0; font-size: 13px; line-height: 1.5; }
     .features li { display: flex; align-items: flex-start; gap: 10px; }
     .features li::before { content: ""; flex: 0 0 15px; width: 15px; height: 15px; margin-top: 2px; border-radius: 50%; background: rgba(255, 42, 42, .13) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 10 10'%3E%3Cpath d='m1.5 5 2 2 5-5' fill='none' stroke='%23ff5353' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center no-repeat; }
+    .features .feature-note { display: block; margin-top: 4px; font-size: 12px; line-height: 1.5; color: var(--pricing-muted); }
+    .features li.feature-unavailable { color: var(--pricing-muted); }
+    .features li.feature-unavailable::before {
+      background-color: rgba(255, 255, 255, .1);
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 10 10'%3E%3Cpath d='m2.5 2.5 5 5m0-5-5 5' fill='none' stroke='%23b1b1b7' stroke-width='1.5' stroke-linecap='round'/%3E%3C/svg%3E");
+    }
     .platforms { display: flex; flex-wrap: wrap; gap: 6px; margin: 13px 0 0 25px; padding: 0; list-style: none; }
     .platforms li { display: inline-flex; align-items: center; gap: 5px; border: 1px solid var(--pricing-line); border-radius: 6px; padding: 5px 7px; color: #d1d1d7; font-size: 10px; line-height: 1.2; }
     .platforms svg { width: 12px; height: 12px; flex: none; }
@@ -130,10 +136,11 @@
           <div class="divider"></div>
           <p class="features-title">The essentials, inside Premiere Pro</p>
           <ul class="features">
-            <li>1080p video downloads</li>
-            <li>Full video and audio downloads</li>
-            <li>Search and preview before you download</li>
-            <li>Import directly into your edit</li>
+            <li><span><strong>10 free downloads total</strong><span class="feature-note">One-time allowance. Does not reset.</span></span></li>
+            <li>1080p maximum video quality</li>
+            <li>YouTube video and audio downloads</li>
+            <li class="feature-unavailable">No 4K downloads</li>
+            <li class="feature-unavailable">No social downloads</li>
           </ul>
         </section>
 
@@ -147,8 +154,10 @@
           <div class="divider"></div>
           <p class="features-title">For higher-resolution edits</p>
           <ul class="features">
+            <li>Unlimited YouTube downloads</li>
             <li>Up to 4K video quality</li>
-            <li>Unlimited video and audio downloads</li>
+            <li>Video and audio downloads</li>
+            <li class="feature-unavailable">No social downloads</li>
             <li>Search, preview, and import in Premiere</li>
           </ul>
         </section>
@@ -163,8 +172,9 @@
           <div class="divider"></div>
           <p class="features-title">Everything in Pro, plus</p>
           <ul class="features">
-            <li>Unlimited video and audio downloads</li>
+            <li>Unlimited YouTube and social downloads</li>
             <li>Up to 4K video quality</li>
+            <li>Video and audio downloads</li>
             <li>Use Unlimited on up to two devices</li>
             <li>Download posts from social platforms</li>
           </ul>

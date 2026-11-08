@@ -25,6 +25,11 @@ paid licenses resolve as `legacy_paid` with unlimited downloads, 4K, and social
 access; they are not reclassified as the new monthly Pro plan. The homepage's Pro
 price and structured offers are synchronized from the canonical pricing contract.
 
+The homepage and chooser feature lists lead with the download allowance and
+resolution cap. Free explicitly states that its 10 downloads do not reset and
+excludes 4K/social downloads; Pro explicitly excludes social downloads. Excluded
+features use readable gray cross markers rather than included-feature checkmarks.
+
 Apply `db/migrations/20261103120000_add_selected_upgrade_plans.sql` before deploying
 the API that writes version-3 snapshots. Explicit selections use
 `upgrade-plans-v1` / `customer_choice`, with no experiment assignment or exposure.
