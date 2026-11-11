@@ -299,7 +299,7 @@ export function buildPaidLanding(canonicalHtml) {
   );
   output = replaceOnce(
     output,
-    '<a class="btn btn-primary" href="/upgrade.html">Upgrade to Unlimited</a>',
+    '<a class="btn btn-primary" href="/api/checkout/start?plan=unlimited_one_time">Upgrade to Unlimited</a>',
     '<button class="btn btn-primary" type="button" data-paid-checkout-button aria-label="Buy Sidestream Unlimited, one-time purchase">Buy Now</button>',
     "Unlimited purchase action"
   );
