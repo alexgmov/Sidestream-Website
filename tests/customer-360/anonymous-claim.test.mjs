@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
@@ -229,10 +230,15 @@ test("browser GET treats missing cookie as safe unknown and always uses hardened
   assert.equal(completions, 0);
   assert.equal(response.headers.get("cache-control"), "no-store");
   assert.equal(response.headers.get("referrer-policy"), "no-referrer");
+  const styles = [...response.body.matchAll(/<style>([\s\S]*?)<\/style>/g)];
+  assert.equal(styles.length, 1);
+  const styleHash = createHash("sha256").update(styles[0][1]).digest("base64");
   assert.equal(
     response.headers.get("content-security-policy"),
-    "default-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+    `default-src 'none'; style-src 'sha256-${styleHash}'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`,
   );
+  assert.doesNotMatch(response.body, /<script\b|<link\b|\s(?:src|href|style|on\w+)\s*=/i);
+  assert.equal(response.headers.get("content-length"), String(Buffer.byteLength(response.body)));
   assert.match(response.body, /Sidestream connected\./);
   assert.match(response.body, /Return to Premiere Pro\./);
   for (const forbidden of [INSTALL, RECEIPT, "nonce=", "profile", "email"]) {
