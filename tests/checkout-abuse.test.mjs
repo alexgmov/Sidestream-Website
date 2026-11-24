@@ -276,7 +276,8 @@ test("Upgrade authenticates and then redirects the signed-in buyer to Stripe", a
     readFile(join(repositoryRoot, "account.html"), "utf8"),
     readFile(join(repositoryRoot, "api", "checkout", "start.ts"), "utf8"),
   ]);
-  assert.match(index, /href="\/upgrade.html"/);
+  assert.match(index, /href="\/api\/checkout\/start\?plan=pro_monthly"/);
+  assert.match(index, /href="\/api\/checkout\/start\?plan=unlimited_one_time"/);
   assert.match(account, /href="\/upgrade.html(?:\?from=account)?"/);
   assert.doesNotMatch(startSource, /text\/html|<form|<button/);
   assert.doesNotMatch(stripComments(startSource), /\bgetStripe\s*\(/);
@@ -1793,10 +1794,10 @@ test("a stale configured Price falls through to the current exact lookup Price",
       id: priceId,
       active: true,
       product: "prod_checkout_test",
-      unit_amount: 2499,
+      unit_amount: 3499,
       currency: "usd",
       recurring: null,
-      lookup_key: "sidestream_pro_once_2499",
+      lookup_key: "sidestream_pro_once_3499",
     });
     stripe.prices.list = async (params) => ({
       data: params.lookup_keys

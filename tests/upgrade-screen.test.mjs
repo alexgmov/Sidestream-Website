@@ -25,8 +25,8 @@ function plans() {
   return {
     plans: {
       free: { id: "free", name: "Free", formattedPrice: "$0", currency: "USD", billingCadence: "free", downloadLimit: 10, maxVideoHeight: 1080, socialDownloads: false },
-      pro_monthly: { id: "pro_monthly", name: "Pro", formattedPrice: "$9.99", currency: "USD", billingCadence: "month", downloadLimit: null, maxVideoHeight: 2160, socialDownloads: false },
-      unlimited_one_time: { id: "unlimited_one_time", name: "Unlimited", formattedPrice: "$34.99", currency: "USD", billingCadence: "one_time", downloadLimit: null, maxVideoHeight: 2160, socialDownloads: true },
+      pro_monthly: { id: "pro_monthly", name: "Pro", formattedPrice: "$7.99", currency: "USD", billingCadence: "month", downloadLimit: null, maxVideoHeight: 2160, socialDownloads: false },
+      unlimited_one_time: { id: "unlimited_one_time", name: "Unlimited", formattedPrice: "$24.99", currency: "USD", billingCadence: "one_time", downloadLimit: null, maxVideoHeight: 2160, socialDownloads: true },
     },
   };
 }
@@ -109,7 +109,7 @@ test("paid navigation waits for verified server presentation and preserves only 
     assert.equal(link.getAttribute("tabindex"), null);
   }
   assert.ok(f.returns.every((link) => link.href === "/account.html"));
-  assert.equal(f.prices.pro_monthly.textContent, "$9.99");
+  assert.equal(f.prices.pro_monthly.textContent, "$7.99");
   assert.equal(f.status.textContent, "");
   assert.equal(f.timers.size, 0);
 });

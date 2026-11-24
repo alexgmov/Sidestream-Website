@@ -108,8 +108,8 @@ test("MCP browser connection, shared allowance, upgrade and revocation", { timeo
       assert.equal(result.json.accessToken, replay.json.accessToken);
       connection = { ...pairing, accessToken: result.json.accessToken, deviceId: alice.deviceId };
       assert.equal(result.json.account.remainingDownloads, 10);
-      assert.equal(result.json.account.upgrade.plans.pro_monthly.formattedPrice, "$9.99");
-      assert.equal(result.json.account.upgrade.plans.unlimited_one_time.formattedPrice, "$34.99");
+      assert.equal(result.json.account.upgrade.plans.pro_monthly.formattedPrice, "$7.99");
+      assert.equal(result.json.account.upgrade.plans.unlimited_one_time.formattedPrice, "$24.99");
       assert.equal((await approve(alice, pairing)).json.account.remainingDownloads, 10);
       const stranger = await user("mcp-stranger");
       assert.equal((await call("authorize", undefined, {method:"GET",cookie:stranger.cookie,url:`/api/mcp/authorize?connection=${pairing.connectionId}`})).statusCode, 409);

@@ -85,7 +85,7 @@ test("the checkout contract rejects browser UI and unexpected deployable root pa
     readme: [
       "1. The user clicks Upgrade and chooses Pro monthly or Unlimited one-time.",
       "2. Google authentication establishes the Sidestream account session.",
-      "3. The browser opens the server-selected Stripe Checkout: $9.99/month for Pro or $34.99 one-time for Unlimited globally, with preserved historical purchases and regional one-time offers.",
+      "3. The browser opens the server-selected Stripe Checkout: $7.99/month for Pro or $24.99 one-time for Unlimited globally, with preserved historical purchases and regional one-time offers.",
     ].join("\n"),
     unexpectedRootPages: [],
   };

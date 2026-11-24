@@ -65,7 +65,7 @@ test("the public offer presentation uses only the trusted country header", async
       headers: { "x-vercel-ip-country": "US" },
     });
     assert.deepEqual(forged.response.json, {
-      formattedPrice: "$34.99",
+      formattedPrice: "$24.99",
       currency: "USD",
       billingCadence: "one_time",
     });
@@ -109,7 +109,7 @@ test("India safely receives the global presentation without its approved Price",
       headers: { "x-vercel-ip-country": "IN" },
     });
     assert.deepEqual(result.response.json, {
-      formattedPrice: "$34.99",
+      formattedPrice: "$24.99",
       currency: "USD",
       billingCadence: "one_time",
     });
@@ -124,7 +124,7 @@ test("the plan chooser presents exact capabilities and trusted regional one-time
   variables.forEach((name, index) => { process.env[name] = `price_region_${index}`; });
   try {
     for (const [country, formattedPrice, currency] of [
-      ["US", "$34.99", "USD"],
+      ["US", "$24.99", "USD"],
       ["IN", "₹499", "INR"],
       ["BR", "R$ 25", "BRL"],
       ["KR", "₩24,900", "KRW"],
@@ -142,7 +142,7 @@ test("the plan chooser presents exact capabilities and trusted regional one-time
             socialDownloads: false,
           },
           pro_monthly: {
-            id: "pro_monthly", name: "Pro", formattedPrice: "$9.99", currency: "USD",
+            id: "pro_monthly", name: "Pro", formattedPrice: "$7.99", currency: "USD",
             billingCadence: "month", downloadLimit: null, maxVideoHeight: 2160,
             socialDownloads: false,
           },
@@ -163,9 +163,9 @@ test("the plan chooser presents exact capabilities and trusted regional one-time
       url: "/api/checkout/offer?view=plans&country=IN&currency=INR&amount=49900",
       headers: { "x-vercel-ip-country": "IN" },
     });
-    assert.equal(fallback.response.json.plans.unlimited_one_time.formattedPrice, "$34.99");
+    assert.equal(fallback.response.json.plans.unlimited_one_time.formattedPrice, "$24.99");
     assert.equal(fallback.response.json.plans.unlimited_one_time.currency, "USD");
-    assert.equal(fallback.response.json.plans.pro_monthly.formattedPrice, "$9.99");
+    assert.equal(fallback.response.json.plans.pro_monthly.formattedPrice, "$7.99");
 
     const head = await invokeHandler(handler, {
       method: "HEAD", url: "/api/checkout/offer?view=plans",
@@ -199,7 +199,7 @@ test("the landing page renders a global fallback and updates text only", async (
   const html = await readFile(new URL("../index.html", import.meta.url), "utf8");
   assert.match(
     html,
-    /data-checkout-offer-price aria-live="polite">\$34\.99<\/span>/,
+    /data-checkout-offer-price aria-live="polite">\$24\.99<\/span>/,
   );
   assert.match(html, /data-checkout-offer-cadence>one-time<\/span>/);
   assert.match(html, /data-checkout-offer-annual-term hidden>Renews automatically/);

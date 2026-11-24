@@ -64,8 +64,8 @@ function fixture({ url = connectionUrl, handle } = {}) {
       if (request.url.startsWith('/api/mcp/authorize?')) return response({ status: 'pending', csrfToken: 'approve-csrf', clientName: 'Claude Desktop', account: account() });
       if (request.url === '/mcp-release.json') return response(release());
       if (request.url === '/api/checkout/offer?view=plans') return response({ plans: {
-        pro_monthly: { formattedPrice: '$9.99', currency: 'USD', billingCadence: 'month' },
-        unlimited_one_time: { formattedPrice: '$34.99', currency: 'USD', billingCadence: 'one_time' },
+        pro_monthly: { formattedPrice: '$7.99', currency: 'USD', billingCadence: 'month' },
+        unlimited_one_time: { formattedPrice: '$24.99', currency: 'USD', billingCadence: 'one_time' },
       } });
       throw new Error('Unhandled fake request: ' + request.url);
     }
