@@ -48,6 +48,16 @@ fulfillment, and capability responses. The separate
 `/Users/alexgarrett/alexg.mov/nle-plugins/FlowState` repository owns the installed
 panel's Upgrade entry and enforcement of download resolution and social access.
 
+The November 24 price change requires the Git-linked website and Linux Website
+API release, with no installed-app update for the new checkout amounts. Existing
+app versions still open activation-bound direct Unlimited Checkout; this release
+does not add a Pro/Unlimited chooser inside those apps. Monthly plan selection is
+available through the website/account chooser. Live Stripe inspection on November
+24 verified the active Sidestream Product `prod_UpwXh6oO1OmPyQ` with monthly Price
+`price_1UfGQ4DFKjeGlioXBVyNYwKU` (`sidestream_pro_monthly_usd_799`) and one-time
+Price `price_1Ty5VADFKjeGlioXaplBkLdo` (`sidestream_pro_once_2499`). Historical
+Prices and subscriptions were not modified.
+
 | Plan | Download allowance | Maximum video | Social posts |
 | --- | --- | --- | --- |
 | Free | 10 total; no daily reset | 1080p | No |
