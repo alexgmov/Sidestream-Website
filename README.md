@@ -1048,8 +1048,24 @@ sidestream/1.0.21/Sidestream-1.0.21-Mac-Installer.dmg
 The current public Windows pathname is:
 
 ```text
-sidestream/1.0.21/Sidestream-1.0.21-Windows-Beta-Installer.exe
+sidestream/1.0.57/Sidestream-1.0.57-Windows-Beta-Installer.exe
 ```
+
+Alex approved publishing Windows 1.0.57 as an unsigned beta on November 28,
+2026. The exact installer from FlowState source
+`cf21a44908c8a19712994997b737afd1f86ba637` is 91,765,278 bytes with SHA-256
+`d1ebfca1f727c5eeed0f628addff3dd7bf83cd47812884cfdd1d88d6d733420f`.
+Its Adobe CEP payload is signed and verified; the outer EXE has no Microsoft
+Authenticode signature. SmartScreen can warn and Smart App Control can block
+installation. This approval is specific to these beta bytes and does not relax
+FlowState's signed-candidate builder. Windows 11 ARM64 x64 emulation with
+Premiere 26.5.2 passed installation/reinstallation/uninstallation, search,
+preview, video/audio clipping and automatic import. Interactive downloaded
+installer behavior and physical Windows x64 qualification remain unverified.
+The noncritical Windows manifest and separate rollout record bind this release
+at 100% update-notice eligibility, with a new observation start and 1.0.21 as
+the baseline. Preserve the previous 1.0.21 artifact as the rollback target.
+Mac and receipt-gated paid manifests are independent and unchanged.
 
 The current receipt-gated paid Mac pathname is:
 

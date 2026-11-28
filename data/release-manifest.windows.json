@@ -2,17 +2,17 @@
   "schemaVersion": 1,
   "product": "sidestream",
   "channel": "stable",
-  "version": "1.0.21",
+  "version": "1.0.57",
   "minSupportedVersion": "1.0.12",
   "critical": false,
   "rolloutPercent": 100,
-  "publishedAt": "2026-09-30T20:59:54.463Z",
+  "publishedAt": "2026-11-28T09:33:37.314Z",
   "releaseNotesUrl": "https://sidestream.tv/api/download?platform=win32-x64",
   "artifact": {
     "type": "exe",
     "url": "https://sidestream.tv/api/download?platform=win32-x64",
-    "pathname": "sidestream/1.0.21/Sidestream-1.0.21-Windows-Beta-Installer.exe",
-    "sha256": "eefbee05be820c22dbc495004d31af2a8a3f58589b56319bdbacaa099416c037",
-    "sizeBytes": 61341479
+    "pathname": "sidestream/1.0.57/Sidestream-1.0.57-Windows-Beta-Installer.exe",
+    "sha256": "d1ebfca1f727c5eeed0f628addff3dd7bf83cd47812884cfdd1d88d6d733420f",
+    "sizeBytes": 91765278
   }
 }
